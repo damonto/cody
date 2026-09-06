@@ -2,41 +2,22 @@
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/damonto/cody)
 
-Use several upstream services through one Cloudflare Workers endpoint. It works with Codex and other OpenAI-compatible clients.
-
-## What it does
-
-- Combines multiple upstream services behind one address.
-- Routes models by priority and controls access with client API keys.
-- Supports multiple upstream API keys per service with independent cooldowns.
-- Supports layered client-facing model routes at service, API key, and global scope.
-- Supports Codex Image Gen through configured `gpt-image-2` services.
-- Proxies Codex Responses WebSockets and remote compaction, and can proxy or adapt standalone search.
-- Keeps a session on the same service/key while it remains the highest-priority available target.
-- Lists and clears session bindings through authenticated management endpoints.
-- Can retry selected status codes with a separate policy for each service.
+An AI API gateway on Cloudflare Workers for Codex and OpenAI- and Anthropic-compatible clients. Manage multiple upstream services, model aliases, and client API keys in one configuration.
 
 ## Quick setup
 
 You need Node.js 24 or newer and a Cloudflare account with Workers and KV.
 
-Install the project, sign in, and create a KV namespace:
+From the project directory, install dependencies, sign in, and create a KV namespace:
 
 ```bash
 npm install
 npx wrangler login
 npx wrangler kv namespace create CODY_CONFIG_KV
-```
-
-Put the returned namespace ID in `wrangler.jsonc`, replacing the placeholder KV ID.
-
-Create and edit your private configuration:
-
-```bash
 cp config.example.json config.json
 ```
 
-Then validate, upload, and deploy:
+Put the returned namespace ID in `wrangler.jsonc`, replacing the placeholder. Edit `config.json` with your upstream URLs, models, and keys, then deploy:
 
 ```bash
 npm run config:validate -- config.json
@@ -48,40 +29,26 @@ npm run deploy
 
 ## Configuration
 
+A minimal configuration with one upstream and one client key:
+
 ```json
 {
+  "$schema": "./config.schema.json",
   "services": [
     {
       "id": "primary",
       "base_url": "https://api.example.com/v1",
       "keys": [
         {
-          "id": "primary-key",
-          "api_key": "sk-upstream-primary",
-          "disabled": false,
-          "priority": 100
-        },
-        {
-          "id": "backup-key",
-          "api_key": "sk-upstream-backup",
-          "disabled": true,
-          "priority": 50
+          "id": "default",
+          "api_key": "sk-upstream",
+          "priority": 100,
+          "disabled": false
         }
       ],
-      "disabled": false,
       "priority": 100,
-      "supports_websocket": true,
-      "supports_web_search": true,
-      "models": ["grok-4.5", "gpt-image-2"],
-      "model_routes": {
-        "client-model": {
-          "model": "gpt-image-2"
-        }
-      },
-      "retry": {
-        "status_codes": [429],
-        "delays_ms": [250, 500, 1000]
-      }
+      "disabled": false,
+      "models": ["grok-4.5"]
     }
   ],
   "api_keys": [
@@ -94,195 +61,32 @@ npm run deploy
   "model_routes": {
     "gpt-5.6-sol": {
       "model": "grok-4.5"
-    },
-    "codex-auto-review": {
-      "model": "grok-4.5",
-      "services": ["primary"]
     }
-  },
-  "web_search": {
-    "mode": "proxy"
   }
 }
 ```
 
-- `services`: upstream services and the models they provide. Higher priority wins.
-- `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
-- `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
-- `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
-- `services[].supports_context_management`: whether the service can receive native Codex history/notes requests and ingest context history. Defaults to `false` when omitted. See Context Management below for client requirements and session routing.
-- `services[].model_routes`: optional client-facing routes scoped to this service. Each route has only a `model` field, which must be listed in the service's `models`. Service routes override the per-key and global routes for the same client-facing model.
-- `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`. An entry may also include optional `model_routes` that override the global routes for that key.
-- `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services. Each `api_keys[]` entry may provide its own `model_routes`; per-key entries override the global route for the same client-facing model, while unconfigured models fall back to the global routes.
-- `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` upstream service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
-- `web_search.base_url`: optional provider base URL. Defaults to `https://api.tavily.com` or `https://api.exa.ai` for adapter modes.
-- `web_search.api_key`: provider credential. Keep it in the KV configuration and out of source-controlled example files.
-- `web_search.max_results`: maximum results requested from the configured adapter. Tavily accepts 0 to 20 (default 5); Exa accepts 1 to 100 (default 10).
-- `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
+Replace the example URL, model, and credentials with your own.
 
-Existing configurations must add an `id` to every `api_keys` entry before they can be validated or loaded.
+| Field          | What to configure                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `services`     | Upstream URLs, real model names, and upstream API keys. Higher `priority` is preferred; `disabled: true` disables a service or key. |
+| `api_keys`     | Gateway client keys and the service IDs each client may access. Give each client a unique `id`.                                     |
+| `model_routes` | Optional model aliases. The example exposes `gpt-5.6-sol` to clients and sends `grok-4.5` upstream.                                 |
 
-When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
+For optional features:
 
-A client API key can override individual global routes by adding `model_routes` to its `api_keys` entry:
+- Set `services[].supports_websocket: true` for upstreams that support Responses WebSockets.
+- Set `services[].supports_web_search: true` to use an upstream for Codex search. Alternatively, set `web_search` to `{"mode": "tavily", "api_key": "your-provider-key"}` or use mode `exa`.
+- Make `gpt-image-2` available to the client to use Codex Image Gen.
 
-```json
-{
-  "api_keys": [
-    {
-      "id": "client-a",
-      "api_key": "sk-gateway-client-a",
-      "services": ["primary", "secondary"],
-      "model_routes": {
-        "gpt-5.6-sol": {
-          "model": "grok-4.5",
-          "services": ["secondary"]
-        }
-      }
-    }
-  ]
-}
-```
+See [config.example.json](config.example.json) for more examples and [config.schema.json](config.schema.json) for all options.
 
-The per-key map uses the same shape and validation as the global `model_routes` and is merged per model: a model configured for the key overrides the global route of the same name, and every other model falls back to the global map.
-
-Routes are resolved independently for each candidate service with the priority `services[].model_routes` > `api_keys[].model_routes` > `model_routes`. Because service routes apply only to their own service, they do not accept a `services` field. A service route can map the same client-facing model to a different upstream model than another service, and the selected service's route is used for request rewriting. All three layers affect both request routing and the `/v1/models` catalog shown to that client.
-
-In `proxy` mode, standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
-
-Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header, `client_metadata.session_id`, or the Anthropic `metadata.user_id` (whose JSON payload carries Claude Code's `session_id`) keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. In `proxy` mode, standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
-
-### Standalone web search
-
-Choose exactly one global search mode. Omitting `web_search` preserves the existing `proxy` behavior.
-
-To forward `/v1/alpha/search` unchanged to an upstream, enable search on the eligible services and select `proxy`:
-
-```json
-{
-  "web_search": {
-    "mode": "proxy"
-  }
-}
-```
-
-At least one client-authorized service for the requested model must also set `supports_web_search: true`.
-
-To adapt Codex search requests to Tavily:
-
-```json
-{
-  "web_search": {
-    "mode": "tavily",
-    "api_key": "tvly-your-private-key",
-    "max_results": 5
-  }
-}
-```
-
-To adapt them to Exa:
-
-```json
-{
-  "web_search": {
-    "mode": "exa",
-    "api_key": "your-private-exa-key",
-    "max_results": 10
-  }
-}
-```
-
-Adapter modes never fall back to an upstream service after a 404 or any other provider failure, and they never switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
-
-Tavily and Exa modes support up to four `commands.search_query` entries with per-query `domains` and `recency` (0–3650 days) filters, plus global domain filters. Tavily accepts up to 300 included and 150 excluded domains; Exa accepts up to 1200 of each. The Codex `response_length` hint is validated as `short`, `medium`, or `long`; result count stays controlled by `web_search.max_results`. Commands requiring a full browsing backend (`image_query`, `open`, `click`, `find`, `screenshot`) return `unsupported_search_command`, and unknown fields are rejected rather than ignored. Codex `allowed_callers` and `external_web_access` metadata are validated but do not change provider selection. The requested model must still be available to the client API key, but adapter requests do not participate in service health, retries, or session affinity.
-
-Adapter responses are limited to 2 MiB per query and 4 MiB for the complete request batch. At most two provider queries run concurrently; crossing either response budget cancels the remaining batch and returns `web_search_invalid_response`.
-
-Which statuses count against health depends on the dialect of the request, since one service may serve both. For an OpenAI-dialect request, 400 and 503 count against the service and 402 and 403 immediately cool the selected key. For an Anthropic-dialect request, 500, 502, 503, and 529 count against the service and 401 and 403 cool the key. A status affects at most one of the two, so a single response never records both. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
-
-Session bindings are isolated by the authenticated client's `api_keys[].id` and survive credential rotation. HTTP and WebSocket requests with a session ID require the binding store to be available; otherwise they return an error. Requests without a session ID do not use affinity. Bindings can be managed through both versioned and unversioned paths:
-
-- `GET /sessions` lists bindings. `limit` defaults to 100 and may be set from 1 to 1000; pass the returned opaque `next_cursor` as `cursor` to continue.
-- `DELETE /sessions` clears all bindings visible to the authenticated API key and returns the number deleted.
-- `DELETE /sessions/{session_id}` clears one URL-encoded session ID. Missing bindings return `deleted: 0`.
-
-Every service must declare a non-empty `keys` array, although all entries may be disabled to take that service out of routing. The former `services[].api_key` field is no longer accepted.
-
-Client key IDs appear as `client_key_id` in authenticated request summaries. Upstream key IDs continue to appear in routing and upstream log sections. Use descriptive, non-sensitive labels and never copy credential values into `id`.
-
-To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through global, per-key, or per-service `model_routes`.
-
-The gateway accepts both versioned and unversioned forms of these inference paths:
-
-- `POST /responses`
-- `GET /responses` with a WebSocket upgrade
-- `POST /responses/compact`
-- `POST /alpha/search`
-- `POST /chat/completions`
-- `POST /images/generations`
-- `POST /images/edits`
-
-The Anthropic Messages paths are accepted in their versioned form only, matching the Anthropic SDKs:
-
-- `POST /v1/messages`
-- `POST /v1/messages/count_tokens`
-
-A request is treated as Anthropic-protocol when it carries an `anthropic-version` header or targets a `/v1/messages` path. For the endpoints that belong to neither dialect (`/v1/models`, `/health`, `/sessions`) a Claude user agent selects Anthropic. Services never declare a dialect, because one upstream may serve both. Those requests receive Anthropic-shaped error bodies (`{"type": "error", "error": {"type", "message"}}`) with the `type` derived from the HTTP status, and `/v1/models` returns the Anthropic model-list shape. Client credentials are accepted from either `Authorization: Bearer` or `x-api-key`; upstream services always receive `Authorization: Bearer` with the selected service key.
-
-In the Anthropic model-list shape, an upstream that already returns a real `ModelInfo` (a `type: "model"` entry with a `capabilities` object) is passed through unchanged, so its own `created_at`, `max_tokens`, and capability flags are preserved. Only entries from upstreams that do not publish `ModelInfo` are synthesized from the bundled Codex catalog. Every entry carries `name`, which Claude Desktop Discovery requires; a passthrough entry gets it added only when the upstream did not send one. Synthesized entries also carry `supports1m`/`prefer1m` for Claude Code's 1M context window, and report `context_management` as unsupported because the Codex catalog has no equivalent for those beta strategies.
-
-After changing `config.json`, re-upload it with `npm run config:put -- config.json`; a Worker redeploy is not required.
-
-## Context Management
-
-Set `supports_context_management: true` on an upstream service to enable native Codex context-management proxying. Set `supports_websocket: true` as well when using Responses WebSockets. The gateway assumes the configured upstream implements the native protocol.
-
-When an accessible, enabled service with context management enabled exposes `gpt-6-astra` through its effective model routes, the Codex model-list response sets `supports_experimental_context`, `model_messages.token_budget.enabled`, and `use_history_notes_extension` to `true`; otherwise all three are `false`. It preserves the bundled prompts and does not modify the synchronized catalog. Other models and the Anthropic context-management capability flags retain their existing behavior.
-
-These POST endpoints accept both unversioned paths and the `/v1` prefix:
-
-| Prefix               | Operations                                                                                            |
-| -------------------- | ----------------------------------------------------------------------------------------------------- |
-| `/alpha/history/v2/` | `list_windows`, `list_items`, `read_item`, `search_contents`                                          |
-| `/alpha/notes/v2/`   | `list_files_by_prefix`, `read_file`, `search_contents`, `append_to_file`, `write_file`, `thread_hint` |
-
-Native requests require `context.session_id` and `context.current_agent_name`, without a `model` field. If a `session-id` header is present, it must match the body. Requests are limited to 4 MiB; bodies, query strings, encrypted arguments, encrypted outputs, image attachments, and truncation headers are forwarded unchanged after ordinary credential/header filtering. Each auxiliary request makes one upstream attempt, including when the service has inference retries configured, and its result never changes inference health.
-
-The first `thread_hint` can arrive before inference. A new native session selects a healthy service/key from the client's effective `gpt-6-astra` routes with context management enabled. Existing sessions keep their bound target. Responses HTTP and WebSocket requests that carry `history_ingest_requested: true` in `client_metadata["x-codex-turn-metadata"]` require a session ID and a capable service. WebSockets require both service capabilities.
-
-Once context management is active, the service and key remain fixed across priority changes and context windows, including requests without an ingestion flag. Disabled, inaccessible, incompatible, or cooling targets produce an error instead of rebinding. Restore the target or explicitly clear the session binding to start routing again; clearing or idle expiry can select a different backend on the next request.
-
-Session ownership is recorded against the non-sensitive `api_keys[].id`, so another gateway client cannot reuse the same raw session ID to access upstream history, even with a shared upstream key. Ownership survives client credential rotation and session-binding deletion or expiry, since the upstream may retain history. Use a fresh session ID for another client.
-
-To reclaim an ownership record, first stop all writers for that session and erase its history and notes at the upstream. The owning client can then call `DELETE /sessions/{session_id}?release_context_ownership=true` (also with `/v1`). This clears its routing binding and deletes the ownership object's full storage; the response includes `ownership_released`. Other clients receive 403. Ordinary single-session and bulk deletion retain ownership. Cody cannot verify upstream erasure, so ownership has no automatic timeout.
-
-Ordinary and context-management sessions share one registry per client ID. Session listing and bulk clearing use the same index pagination; stale entries may produce a short or empty page with a non-null `next_cursor`. Follow that cursor until it is null.
-
-The gateway switch prepares the backend and model catalog. The Codex version currently referenced in `refs/codex` still restricts `features.context_management.experimental_mode` and native history/notes registration to its supported ChatGPT authentication path. Custom-provider clients need the corresponding client-side integration before enabling this switch; changing gateway configuration alone does not register those tools in an unmodified client.
+To apply configuration changes, validate again and run `npm run config:put -- config.json`. A Worker redeploy is not required.
 
 ## Use with Codex
 
-Add a provider to `~/.codex/config.toml`:
-
-```toml
-model = "gpt-5.6-sol"
-model_provider = "gateway"
-
-[model_providers.gateway]
-name = "Gateway"
-base_url = "https://cody.example.workers.dev/v1"
-wire_api = "responses"
-http_headers = { "x-openai-actor-authorization" = "cody" }
-```
-
-To use the Image Gen tool, configure `http_headers = { "x-openai-actor-authorization" = "cody" }` for the provider.
-
-### Let Codex refresh the model catalog
-
-The basic provider configuration above is enough when `model` is set explicitly, but it does not
-make Codex fetch this gateway's model catalog. To make Codex request `GET /v1/models`, add
-command-backed authentication to the provider. The command output becomes the Bearer token used
-for the catalog request and other requests sent through this provider:
+Add this provider to `~/.codex/config.toml`, replacing `base_url` with your Worker URL and choosing a configured model:
 
 ```toml
 model = "gpt-5.6-sol"
@@ -301,42 +105,24 @@ timeout_ms = 5000
 refresh_interval_ms = 300000
 ```
 
-Set the environment variable before starting Codex so it is available to the Codex process:
+Start Codex with a gateway client key matching an `api_keys[].api_key` entry:
 
 ```bash
 export OPENAI_API_KEY="your-gateway-client-key"
 codex
 ```
 
-`printenv` must print only the gateway client key to stdout. Another credential helper can be used
-instead as long as it has the same output behavior.
+This setup lets Codex refresh the model catalog and enables its Image Gen and search integrations when configured above.
 
-The value must match an `api_keys[].api_key` entry in this gateway's private `config.json`. Do not
-put an upstream service key or an unrelated OpenAI/ChatGPT credential there, and never commit the
-key.
-
-Keep `requires_openai_auth` omitted (its default is `false`) and do not combine command-backed
-authentication with `env_key` or `experimental_bearer_token`. Command-backed authentication makes
-Codex refresh the remote model catalog, while the `x-openai-actor-authorization` header continues
-to enable the Codex Image Gen and standalone Search integrations. Codex caches the command result
-for `refresh_interval_ms` and runs the command again after that interval expires.
+Other clients can use the gateway's OpenAI or Anthropic endpoints with the same client key, supplied through `Authorization: Bearer` or `x-api-key`.
 
 ## Automatic deployment
 
-Import the repository with [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) to deploy every push to `main`. Use `npm test && npm run typecheck` as the build command and `npm run deploy` as the deploy command.
+Connect the repository to [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and select `main` for automatic deployments. Use `npm test && npm run typecheck` as the build command and `npm run deploy` as the deploy command.
 
 ## Local development
 
 ```bash
 npm run config:put -- config.json --local
 npm run dev
-```
-
-Run checks before deploying:
-
-```bash
-npm test
-npm run typecheck
-npm run config:validate -- config.example.json
-npx wrangler deploy --dry-run
 ```
