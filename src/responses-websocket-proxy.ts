@@ -2,6 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 
 import { loadConfig } from "./config.ts";
 import {
+  contextManagementRequested,
+  contextManagementSessionMatches,
+} from "./context-management-protocol.ts";
+import {
   healthFailureScope,
   recordKeyFailure,
   recordServiceFailure,
@@ -81,6 +85,7 @@ interface StoredWebSocketSession {
   selected_key_id?: string;
   active_response: boolean;
   response_outcome_recorded: boolean;
+  context_management?: boolean;
 }
 
 interface StateTransition {
@@ -141,6 +146,32 @@ function targetFromRoute(
         routeApplied: routed.routeApplied,
       }
     : undefined;
+}
+
+function frameUsesContextManagement(
+  frame: ResponseCreateFrame,
+  state: StoredWebSocketSession,
+): boolean {
+  return (
+    state.context_management === true ||
+    contextManagementRequested(frame.payload)
+  );
+}
+
+function contextSessionIdsMatch(
+  frame: ResponseCreateFrame,
+  state: StoredWebSocketSession,
+  sessionId: string | undefined,
+): boolean {
+  if (!contextManagementSessionMatches(frame.payload, sessionId)) {
+    return false;
+  }
+  const boundSessionId = state.header_session_id ?? state.current_session_id;
+  return !(
+    boundSessionId !== undefined &&
+    frame.sessionId !== undefined &&
+    frame.sessionId !== boundSessionId
+  );
 }
 
 function shouldRecordUpstreamFailure(
@@ -606,6 +637,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     route: ModelRoute,
     target: ModelServiceTarget,
     sessionId: string | undefined,
+    contextManagement: boolean,
   ): Promise<void> {
     const connecting = await this.transition(["routing"], (state) => ({
       ...state,
@@ -613,6 +645,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       ...(sessionId ? { current_session_id: sessionId } : {}),
       selected_service_id: target.service.id,
       selected_key_id: target.key.id,
+      ...(contextManagement ? { context_management: true } : {}),
     }));
     if (!connecting) {
       return;
@@ -794,28 +827,40 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     route: ModelRoute,
     sessionId: string | undefined,
     client: ClientApiKeyConfig,
-  ): Promise<boolean> {
+    contextManagement: boolean,
+  ): Promise<{ valid: boolean; contextManagement: boolean }> {
     const selectedTarget = targetFromRoute(route, state);
     if (!selectedTarget) {
-      return false;
+      return { valid: false, contextManagement: false };
     }
     if (!sessionId) {
-      return targetIsAvailableForRoute(this.env, route, selectedTarget);
+      return {
+        valid:
+          !contextManagement &&
+          (await targetIsAvailableForRoute(this.env, route, selectedTarget)),
+        contextManagement: false,
+      };
     }
     const selection = await selectAvailableServiceWithDetails(this.env, route, {
-      session: { clientApiKey: client.api_key, sessionId },
+      contextManagement,
+      session: { clientId: client.id, sessionId },
     });
     if (selection.affinity?.status === "failed") {
       logWarn("websocket.affinity.failed", {
         request_id: state.request_id,
         error: selection.affinity.error,
       });
-      return targetIsAvailableForRoute(this.env, route, selectedTarget);
+      return {
+        valid: false,
+        contextManagement: false,
+      };
     }
-    return (
-      selection.target?.service.id === selectedTarget.service.id &&
-      selection.target.key.id === selectedTarget.key.id
-    );
+    return {
+      valid:
+        selection.target?.service.id === selectedTarget.service.id &&
+        selection.target.key.id === selectedTarget.key.id,
+      contextManagement: selection.affinity?.context_management === true,
+    };
   }
 
   private async processFirstFrame(message: WebSocketMessage): Promise<void> {
@@ -873,11 +918,39 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       return;
     }
     const frame = parsedFrame.frame;
+    const contextManagement = frameUsesContextManagement(frame, claimed.next);
+    const sessionId = claimed.next.header_session_id ?? frame.sessionId;
+    if (
+      contextManagement &&
+      !contextManagementSessionMatches(frame.payload, sessionId)
+    ) {
+      safeSend(
+        this.clientSocket(),
+        gatewayErrorEvent(
+          400,
+          "Context management requires consistent session ids",
+          "invalid_context_management_request",
+        ),
+      );
+      await this.closeAll(
+        1008,
+        "missing context session",
+        "invalid_context_management_request",
+      );
+      return;
+    }
     const route = resolveModelRoute(
       routingContext.config,
       routingContext.client,
       frame.model,
-      { requiredCapability: "supports_websocket" },
+      {
+        requiredCapabilities: [
+          "supports_websocket",
+          ...(contextManagement
+            ? ["supports_context_management" as const]
+            : []),
+        ],
+      },
     );
     if (route.targets.length === 0) {
       safeSend(
@@ -892,14 +965,14 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       return;
     }
 
-    const sessionId = claimed.next.header_session_id ?? frame.sessionId;
     const selection = await selectAvailableServiceWithDetails(
       this.env,
       route,
       sessionId
         ? {
+            contextManagement,
             session: {
-              clientApiKey: routingContext.client.api_key,
+              clientId: routingContext.client.id,
               sessionId,
             },
           }
@@ -912,12 +985,27 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       });
     }
     if (!selection.target) {
+      const forbidden = selection.affinity?.status === "forbidden";
+      const storeUnavailable = selection.affinity?.status === "failed";
+      const bindingBlocked = selection.affinity?.status === "blocked";
       safeSend(
         this.clientSocket(),
         gatewayErrorEvent(
-          503,
-          `No healthy service is currently available for model ${frame.model}`,
-          "service_cooling_down",
+          forbidden ? 403 : 503,
+          forbidden
+            ? "This context session belongs to another client"
+            : storeUnavailable
+              ? "The session binding store is unavailable"
+              : bindingBlocked
+                ? "The context session binding is unavailable"
+                : `No healthy service is currently available for model ${frame.model}`,
+          forbidden
+            ? "context_session_forbidden"
+            : storeUnavailable
+              ? "session_affinity_unavailable"
+              : bindingBlocked
+                ? "context_session_unavailable"
+                : "service_cooling_down",
         ),
       );
       await this.closeAll(
@@ -927,12 +1015,32 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       );
       return;
     }
+    if (
+      selection.affinity?.context_management &&
+      !contextManagementSessionMatches(frame.payload, sessionId)
+    ) {
+      safeSend(
+        this.clientSocket(),
+        gatewayErrorEvent(
+          400,
+          "Context management session ids must match",
+          "invalid_context_management_request",
+        ),
+      );
+      await this.closeAll(
+        1008,
+        "inconsistent context session",
+        "invalid_context_management_request",
+      );
+      return;
+    }
     await this.connectUpstream(
       message,
       frame,
       route,
       selection.target,
       sessionId,
+      contextManagement || selection.affinity?.context_management === true,
     );
   }
 
@@ -968,25 +1076,31 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           return;
         }
         const frame = parsedFrame.frame;
+        const contextManagement = frameUsesContextManagement(frame, current);
         const route = resolveModelRoute(
           routingContext.config,
           routingContext.client,
           frame.model,
-          { requiredCapability: "supports_websocket" },
+          {
+            requiredCapabilities: [
+              "supports_websocket",
+              ...(contextManagement
+                ? ["supports_context_management" as const]
+                : []),
+            ],
+          },
         );
-        const sessionId =
-          current.header_session_id ??
-          frame.sessionId ??
-          current.current_session_id;
-        if (
-          route.targets.length === 0 ||
-          !(await this.validateCurrentTarget(
-            current,
-            route,
-            sessionId,
-            routingContext.client,
-          ))
-        ) {
+        const boundSessionId =
+          current.header_session_id ?? current.current_session_id;
+        const sessionId = boundSessionId ?? frame.sessionId;
+        const targetValidation = await this.validateCurrentTarget(
+          current,
+          route,
+          sessionId,
+          routingContext.client,
+          contextManagement,
+        );
+        if (route.targets.length === 0 || !targetValidation.valid) {
           safeSend(
             this.clientSocket(),
             gatewayErrorEvent(
@@ -1002,9 +1116,33 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           );
           return;
         }
+        const activeContextManagement =
+          contextManagement ||
+          current.context_management === true ||
+          targetValidation.contextManagement;
+        if (
+          activeContextManagement &&
+          !contextSessionIdsMatch(frame, current, sessionId)
+        ) {
+          safeSend(
+            this.clientSocket(),
+            gatewayErrorEvent(
+              400,
+              "Context management session ids must match",
+              "invalid_context_management_request",
+            ),
+          );
+          await this.closeAll(
+            1008,
+            "inconsistent context session",
+            "invalid_context_management_request",
+          );
+          return;
+        }
         const activated = await this.transition(["open"], (latest) => ({
           ...latest,
           ...(sessionId ? { current_session_id: sessionId } : {}),
+          ...(activeContextManagement ? { context_management: true } : {}),
           active_response: true,
           response_outcome_recorded: false,
         }));

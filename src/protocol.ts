@@ -1,5 +1,26 @@
 export type ApiProtocol = "openai" | "anthropic";
 
+export const CONTEXT_MANAGEMENT_PATHS = [
+  "alpha/history/v2/list_windows",
+  "alpha/history/v2/list_items",
+  "alpha/history/v2/read_item",
+  "alpha/history/v2/search_contents",
+  "alpha/notes/v2/list_files_by_prefix",
+  "alpha/notes/v2/read_file",
+  "alpha/notes/v2/search_contents",
+  "alpha/notes/v2/append_to_file",
+  "alpha/notes/v2/write_file",
+  "alpha/notes/v2/thread_hint",
+] as const;
+
+export type ContextManagementPath = (typeof CONTEXT_MANAGEMENT_PATHS)[number];
+
+export function isContextManagementPath(
+  path: string,
+): path is ContextManagementPath {
+  return CONTEXT_MANAGEMENT_PATHS.some((endpoint) => endpoint === path);
+}
+
 /** Inference paths the gateway forwards, relative to a service's base URL. */
 export type InferencePath =
   | "responses"
@@ -12,7 +33,8 @@ export type InferencePath =
   | "messages/count_tokens";
 
 /** Every endpoint the gateway routes, including the non-inference ones. */
-export type GatewayEndpoint = "models" | "health" | "sessions" | InferencePath;
+export type GatewayEndpoint =
+  "models" | "health" | "sessions" | InferencePath | ContextManagementPath;
 
 // The dialect each endpoint is defined in. `undefined` marks the endpoints that
 // belong to neither dialect, where the client's own identity decides.
@@ -22,6 +44,16 @@ const ENDPOINT_PROTOCOLS: Record<GatewayEndpoint, ApiProtocol | undefined> = {
   responses: "openai",
   "responses/compact": "openai",
   "alpha/search": "openai",
+  "alpha/history/v2/list_windows": "openai",
+  "alpha/history/v2/list_items": "openai",
+  "alpha/history/v2/read_item": "openai",
+  "alpha/history/v2/search_contents": "openai",
+  "alpha/notes/v2/list_files_by_prefix": "openai",
+  "alpha/notes/v2/read_file": "openai",
+  "alpha/notes/v2/search_contents": "openai",
+  "alpha/notes/v2/append_to_file": "openai",
+  "alpha/notes/v2/write_file": "openai",
+  "alpha/notes/v2/thread_hint": "openai",
   "chat/completions": "openai",
   "images/generations": "openai",
   "images/edits": "openai",

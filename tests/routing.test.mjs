@@ -245,13 +245,13 @@ test("required capabilities filter services before routing selection", () => {
   );
   assert.deepEqual(
     resolveModelRoute(capabilityConfig, capabilityClient, "model", {
-      requiredCapability: "supports_web_search",
+      requiredCapabilities: ["supports_web_search"],
     }).targets.map(({ service }) => service.id),
     ["supported"],
   );
   assert.deepEqual(
     resolveModelRoute(capabilityConfig, capabilityClient, "model", {
-      requiredCapability: "supports_websocket",
+      requiredCapabilities: ["supports_websocket"],
     }).targets.map(({ service }) => service.id),
     ["supported"],
   );
@@ -702,7 +702,7 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
   const firstRandom = [0.999999, 0.999999];
   const first = await selectAvailableServiceWithDetails(env, route, {
     random: () => firstRandom.shift(),
-    session: { clientApiKey: "client-a", sessionId: "session" },
+    session: { clientId: "client-a", sessionId: "session" },
   });
   assert.deepEqual(
     [first.target.service.id, first.target.key.id, first.affinity.status],
@@ -711,7 +711,7 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
 
   const repeated = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
-    session: { clientApiKey: "client-a", sessionId: "session" },
+    session: { clientId: "client-a", sessionId: "session" },
   });
   assert.deepEqual(
     [
@@ -724,7 +724,7 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
 
   const otherClient = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
-    session: { clientApiKey: "client-b", sessionId: "session" },
+    session: { clientId: "client-b", sessionId: "session" },
   });
   assert.deepEqual(
     [otherClient.target.service.id, otherClient.target.key.id],
@@ -734,7 +734,7 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
   healthObject("key:second:second-b").recordImmediateFailure();
   const rebound = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
-    session: { clientApiKey: "client-a", sessionId: "session" },
+    session: { clientId: "client-a", sessionId: "session" },
   });
   assert.deepEqual(
     [rebound.target.service.id, rebound.target.key.id, rebound.affinity.status],
@@ -748,7 +748,7 @@ test("session affinity upgrades when a higher-priority service recovers", async 
     healthObject("primary").recordFailure();
   }
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const session = { clientApiKey: "client", sessionId: "service-upgrade" };
+  const session = { clientId: "client", sessionId: "service-upgrade" };
   const initial = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
     session,
@@ -777,7 +777,7 @@ test("session affinity upgrades a key only inside its current top-priority servi
   const { env, healthObject } = routingEnvironment();
   healthObject("key:primary:primary-key").recordImmediateFailure();
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const session = { clientApiKey: "client", sessionId: "key-upgrade" };
+  const session = { clientId: "client", sessionId: "key-upgrade" };
   const initial = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
     session,
@@ -842,7 +842,7 @@ test("equal service and key priorities do not churn an existing affinity", async
     equalConfig.api_keys[0],
     "model",
   );
-  const session = { clientApiKey: "client", sessionId: "equal-priority" };
+  const session = { clientId: "client", sessionId: "equal-priority" };
   const initial = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0.999999,
     session,
@@ -898,11 +898,11 @@ test("session affinity rebinds after a required service capability is removed", 
     model_routes: {},
   });
   const { env } = routingEnvironment();
-  const session = { clientApiKey: "client", sessionId: "capability-change" };
+  const session = { clientId: "client", sessionId: "capability-change" };
   const initial = await selectAvailableServiceWithDetails(
     env,
     resolveModelRoute(capabilityConfig, capabilityConfig.api_keys[0], "model", {
-      requiredCapability: "supports_web_search",
+      requiredCapabilities: ["supports_web_search"],
     }),
     { random: () => 0, session },
   );
@@ -922,7 +922,7 @@ test("session affinity rebinds after a required service capability is removed", 
   const rebound = await selectAvailableServiceWithDetails(
     env,
     resolveModelRoute(updatedConfig, capabilityConfig.api_keys[0], "model", {
-      requiredCapability: "supports_web_search",
+      requiredCapabilities: ["supports_web_search"],
     }),
     { random: () => 0, session },
   );
@@ -937,7 +937,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
   const initialRoute = resolveModelRoute(config, client, "gpt-5.6-sol");
   const initial = await selectAvailableServiceWithDetails(env, initialRoute, {
     random: () => 0,
-    session: { clientApiKey: "client", sessionId: "reconfigure" },
+    session: { clientId: "client", sessionId: "reconfigure" },
   });
   assert.equal(initial.target.service.id, "primary");
 
@@ -952,7 +952,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     resolveModelRoute(disabledConfig, client, "gpt-5.6-sol"),
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -970,7 +970,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     permissionRoute,
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -990,7 +990,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     resolveModelRoute(removedConfig, client, "gpt-5.6-sol"),
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -1011,7 +1011,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     resolveModelRoute(unsupportedConfig, client, "gpt-5.6-sol"),
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -1040,7 +1040,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     resolveModelRoute(disabledKeyConfig, client, "gpt-5.6-sol"),
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -1060,7 +1060,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
     resolveModelRoute(config, client, "gpt-5.6-sol"),
     {
       random: () => 0,
-      session: { clientApiKey: "client", sessionId: "reconfigure" },
+      session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
@@ -1069,7 +1069,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
   );
 });
 
-test("affinity read failures fail open to deterministic random selection", async () => {
+test("affinity read failures prevent session requests from changing targets", async () => {
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
   const { env } = routingEnvironment();
   env.SESSION_AFFINITY.getByName = () => {
@@ -1077,11 +1077,10 @@ test("affinity read failures fail open to deterministic random selection", async
   };
   const selection = await selectAvailableServiceWithDetails(env, route, {
     random: () => 0,
-    session: { clientApiKey: "client", sessionId: "session" },
+    session: { clientId: "client", sessionId: "session" },
   });
 
-  assert.equal(selection.target.service.id, "primary");
-  assert.equal(selection.target.key.id, "primary-key");
+  assert.equal(selection.target, undefined);
   assert.equal(selection.affinity.status, "failed");
 });
 

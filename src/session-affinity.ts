@@ -30,6 +30,7 @@ export type {
 } from "./affinity.ts";
 
 const AFFINITY_STORAGE_KEY = "affinity";
+const CONTEXT_OWNER_STORAGE_KEY = "context_owner";
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 
 interface ClearedSessionAffinityBinding {
@@ -40,6 +41,15 @@ interface ClearedSessionAffinityBinding {
 interface AffinityTransactionResult {
   resolution: SessionAffinityResolution | undefined;
   obsolete?: SessionAffinityRecord;
+}
+
+interface ContextOwnerRecord {
+  client_id: string;
+}
+
+export interface SessionAffinityResolveOptions {
+  contextManagement?: boolean;
+  initialServiceIds?: readonly string[];
 }
 
 function validGeneration(value: unknown): value is number {
@@ -71,8 +81,18 @@ function validRecord(value: unknown): value is SessionAffinityRecord {
     typeof record.session_id === "string" &&
     record.session_id.length > 0 &&
     typeof record.index_registered === "boolean" &&
+    (record.context_management === undefined ||
+      typeof record.context_management === "boolean") &&
     validGeneration(record.generation)
   );
+}
+
+function validContextOwner(value: unknown): value is ContextOwnerRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const owner = value as Partial<ContextOwnerRecord>;
+  return typeof owner.client_id === "string" && owner.client_id.trim() !== "";
 }
 
 function nextBindingGeneration(
@@ -105,7 +125,15 @@ export class SessionAffinity extends DurableObject<Env> {
     candidates: AffinityServiceCandidate[],
     preferred: AffinitySelection | undefined,
     registration: SessionAffinityRegistration,
+    options: SessionAffinityResolveOptions = {},
   ): Promise<SessionAffinityResolution | undefined> {
+    const contextManagement = options.contextManagement === true;
+    const initialServiceIds = options.initialServiceIds;
+    if (contextManagement) {
+      candidates = candidates.filter(
+        (candidate) => candidate.supports_context_management,
+      );
+    }
     const now = Date.now();
     const result: AffinityTransactionResult =
       await this.ctx.storage.transaction(async (transaction) => {
@@ -122,6 +150,24 @@ export class SessionAffinity extends DurableObject<Env> {
           stored !== undefined &&
           stored.updated_at + SESSION_AFFINITY_TTL_MS > now;
         if (storedActive) {
+          if (stored.context_management || contextManagement) {
+            const service = candidates.find(
+              (candidate) => candidate.service_id === stored.service_id,
+            );
+            if (
+              !service?.supports_context_management ||
+              !service.keys.some((key) => key.key_id === stored.key_id)
+            ) {
+              return { resolution: { ...stored, status: "blocked" as const } };
+            }
+            const next = {
+              ...stored,
+              context_management: true,
+              updated_at: now,
+            };
+            await transaction.put(AFFINITY_STORAGE_KEY, next);
+            return { resolution: { ...next, status: "hit" as const } };
+          }
           const decision = resolveStoredAffinity(stored, candidates, preferred);
           if (!decision.selection) {
             await transaction.delete(AFFINITY_STORAGE_KEY);
@@ -150,12 +196,18 @@ export class SessionAffinity extends DurableObject<Env> {
           };
         }
 
+        const initialCandidates =
+          initialServiceIds === undefined
+            ? candidates
+            : candidates.filter((candidate) =>
+                initialServiceIds.includes(candidate.service_id),
+              );
         const selected = affinitySelectionIsHighestPriority(
           preferred,
-          candidates,
+          initialCandidates,
         )
           ? preferred
-          : chooseAffinityCandidate(candidates);
+          : chooseAffinityCandidate(initialCandidates);
         if (!selected) {
           await transaction.delete(AFFINITY_STORAGE_KEY);
           return {
@@ -173,6 +225,7 @@ export class SessionAffinity extends DurableObject<Env> {
           session_digest: registration.session_digest,
           session_id: registration.session_id,
           index_registered: false,
+          ...(contextManagement ? { context_management: true } : {}),
         };
         await transaction.put(AFFINITY_STORAGE_KEY, next);
         return {
@@ -183,7 +236,9 @@ export class SessionAffinity extends DurableObject<Env> {
 
     try {
       if (result.resolution) {
-        await this.ctx.storage.setAlarm(now + SESSION_AFFINITY_TTL_MS);
+        await this.ctx.storage.setAlarm(
+          result.resolution.updated_at + SESSION_AFFINITY_TTL_MS,
+        );
       } else {
         await this.ctx.storage.deleteAlarm();
       }
@@ -192,6 +247,42 @@ export class SessionAffinity extends DurableObject<Env> {
     }
     this.scheduleIndexSync(result.obsolete, result.resolution);
     return result.resolution;
+  }
+
+  // A raw upstream session ID must never be claimed by two gateway clients.
+  // Ownership outlives affinity expiry because the upstream may retain history.
+  async claimContextSession(clientId: string): Promise<boolean> {
+    if (clientId.trim() === "") {
+      return false;
+    }
+    return this.ctx.storage.transaction(async (transaction) => {
+      const owner = await transaction.get<unknown>(CONTEXT_OWNER_STORAGE_KEY);
+      if (owner !== undefined) {
+        return validContextOwner(owner) && owner.client_id === clientId;
+      }
+      await transaction.put(CONTEXT_OWNER_STORAGE_KEY, { client_id: clientId });
+      return true;
+    });
+  }
+
+  async releaseContextSession(
+    clientId: string,
+  ): Promise<"released" | "missing" | "forbidden"> {
+    // A release is explicit, after upstream history is erased and writers stop.
+    // Keep the ownership check and full storage reclamation in one input gate.
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const owner = await this.ctx.storage.get<unknown>(
+        CONTEXT_OWNER_STORAGE_KEY,
+      );
+      if (owner === undefined) {
+        return "missing";
+      }
+      if (!validContextOwner(owner) || owner.client_id !== clientId) {
+        return "forbidden";
+      }
+      await this.ctx.storage.deleteAll();
+      return "released";
+    });
   }
 
   private scheduleIndexSync(

@@ -1,6 +1,11 @@
 import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
 import {
+  codexTurnMetadata,
+  contextManagementRequested,
+  contextManagementSessionMatches,
+} from "./context-management-protocol.ts";
+import {
   healthFailureScope,
   recordKeyFailure,
   recordServiceFailure,
@@ -197,6 +202,10 @@ export function sessionIdForInference(
   if (clientMetadataSessionId) {
     return clientMetadataSessionId;
   }
+  const codexSessionId = nonBlankString(codexTurnMetadata(payload)?.session_id);
+  if (codexSessionId) {
+    return codexSessionId;
+  }
   const metadataSessionId = anthropicMetadataSessionId(payload);
   if (metadataSessionId) {
     return metadataSessionId;
@@ -294,14 +303,34 @@ export async function handleInference(
     );
   }
 
-  const route = resolveModelRoute(
-    config,
-    client,
-    payload.model,
-    upstreamPath === "alpha/search"
-      ? { requiredCapability: "supports_web_search" }
-      : {},
-  );
+  const contextManagement =
+    upstreamPath === "responses" && contextManagementRequested(payload);
+  const sessionId = sessionIdForInference(request, payload, upstreamPath);
+  if (contextManagement && !sessionId) {
+    return apiError(protocol, 400, "Context management requires a session id", {
+      code: "invalid_context_management_request",
+      requestId,
+    });
+  }
+  if (
+    contextManagement &&
+    !contextManagementSessionMatches(payload, sessionId)
+  ) {
+    return apiError(
+      protocol,
+      400,
+      "Context management session ids must match",
+      { code: "invalid_context_management_request", requestId },
+    );
+  }
+  const route = resolveModelRoute(config, client, payload.model, {
+    requiredCapabilities: [
+      ...(upstreamPath === "alpha/search"
+        ? ["supports_web_search" as const]
+        : []),
+      ...(contextManagement ? ["supports_context_management" as const] : []),
+    ],
+  });
   const candidateServices = route.targets.map((target) => target.service.id);
   requestLog?.set({
     model: {
@@ -318,12 +347,17 @@ export async function handleInference(
       { code: "model_not_found", requestId },
     );
   }
-  const sessionId = sessionIdForInference(request, payload, upstreamPath);
-  const selection = await selectAvailableServiceWithDetails(
-    env,
-    route,
-    sessionId ? { session: { clientApiKey: client.api_key, sessionId } } : {},
-  );
+  const selection = await selectAvailableServiceWithDetails(env, route, {
+    contextManagement,
+    ...(sessionId
+      ? {
+          session: {
+            clientId: client.id,
+            sessionId,
+          },
+        }
+      : {}),
+  });
   const target = selection.target;
   const routing = {
     candidate_services: candidateServices,
@@ -352,6 +386,38 @@ export async function handleInference(
     requestLog?.set({ routing });
   }
   if (!target) {
+    if (selection.affinity?.status === "forbidden") {
+      return apiError(
+        protocol,
+        403,
+        "This context session belongs to another client",
+        { code: "context_session_forbidden", requestId },
+      );
+    }
+    if (selection.affinity?.status === "failed") {
+      return apiError(
+        protocol,
+        503,
+        "The session binding store is unavailable",
+        {
+          type: "server_error",
+          code: "session_affinity_unavailable",
+          requestId,
+        },
+      );
+    }
+    if (selection.affinity?.status === "blocked") {
+      return apiError(
+        protocol,
+        503,
+        "The context session binding is unavailable",
+        {
+          type: "server_error",
+          code: "context_session_unavailable",
+          requestId,
+        },
+      );
+    }
     requestLog?.warn({ outcome: "service_cooling_down" });
     return apiError(
       protocol,
@@ -361,6 +427,17 @@ export async function handleInference(
     );
   }
   const { service, key: selectedKey } = target;
+  if (
+    (contextManagement || selection.affinity?.context_management) &&
+    !contextManagementSessionMatches(payload, sessionId)
+  ) {
+    return apiError(
+      protocol,
+      400,
+      "Context management session ids must match",
+      { code: "invalid_context_management_request", requestId },
+    );
+  }
   const upstreamModel = target.upstreamModel;
   requestLog?.set({
     model: {

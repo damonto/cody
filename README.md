@@ -110,6 +110,7 @@ npm run deploy
 - `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
+- `services[].supports_context_management`: whether the service can receive native Codex history/notes requests and ingest context history. Defaults to `false` when omitted. See Context Management below for client requirements and session routing.
 - `services[].model_routes`: optional client-facing routes scoped to this service. Each route has only a `model` field, which must be listed in the service's `models`. Service routes override the per-key and global routes for the same client-facing model.
 - `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`. An entry may also include optional `model_routes` that override the global routes for that key.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services. Each `api_keys[]` entry may provide its own `model_routes`; per-key entries override the global route for the same client-facing model, while unconfigured models fall back to the global routes.
@@ -199,7 +200,7 @@ Adapter responses are limited to 2 MiB per query and 4 MiB for the complete requ
 
 Which statuses count against health depends on the dialect of the request, since one service may serve both. For an OpenAI-dialect request, 400 and 503 count against the service and 402 and 403 immediately cool the selected key. For an Anthropic-dialect request, 500, 502, 503, and 529 count against the service and 401 and 403 cool the key. A status affects at most one of the two, so a single response never records both. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
 
-Session bindings are isolated by the authenticated client API key and can be managed through both versioned and unversioned paths:
+Session bindings are isolated by the authenticated client's `api_keys[].id` and survive credential rotation. HTTP and WebSocket requests with a session ID require the binding store to be available; otherwise they return an error. Requests without a session ID do not use affinity. Bindings can be managed through both versioned and unversioned paths:
 
 - `GET /sessions` lists bindings. `limit` defaults to 100 and may be set from 1 to 1000; pass the returned opaque `next_cursor` as `cursor` to continue.
 - `DELETE /sessions` clears all bindings visible to the authenticated API key and returns the number deleted.
@@ -231,6 +232,33 @@ A request is treated as Anthropic-protocol when it carries an `anthropic-version
 In the Anthropic model-list shape, an upstream that already returns a real `ModelInfo` (a `type: "model"` entry with a `capabilities` object) is passed through unchanged, so its own `created_at`, `max_tokens`, and capability flags are preserved. Only entries from upstreams that do not publish `ModelInfo` are synthesized from the bundled Codex catalog. Every entry carries `name`, which Claude Desktop Discovery requires; a passthrough entry gets it added only when the upstream did not send one. Synthesized entries also carry `supports1m`/`prefer1m` for Claude Code's 1M context window, and report `context_management` as unsupported because the Codex catalog has no equivalent for those beta strategies.
 
 After changing `config.json`, re-upload it with `npm run config:put -- config.json`; a Worker redeploy is not required.
+
+## Context Management
+
+Set `supports_context_management: true` on an upstream service to enable native Codex context-management proxying. Set `supports_websocket: true` as well when using Responses WebSockets. The gateway assumes the configured upstream implements the native protocol.
+
+When an accessible, enabled service with context management enabled exposes `gpt-6-astra` through its effective model routes, the Codex model-list response sets `supports_experimental_context`, `model_messages.token_budget.enabled`, and `use_history_notes_extension` to `true`; otherwise all three are `false`. It preserves the bundled prompts and does not modify the synchronized catalog. Other models and the Anthropic context-management capability flags retain their existing behavior.
+
+These POST endpoints accept both unversioned paths and the `/v1` prefix:
+
+| Prefix               | Operations                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `/alpha/history/v2/` | `list_windows`, `list_items`, `read_item`, `search_contents`                                          |
+| `/alpha/notes/v2/`   | `list_files_by_prefix`, `read_file`, `search_contents`, `append_to_file`, `write_file`, `thread_hint` |
+
+Native requests require `context.session_id` and `context.current_agent_name`, without a `model` field. If a `session-id` header is present, it must match the body. Requests are limited to 4 MiB; bodies, query strings, encrypted arguments, encrypted outputs, image attachments, and truncation headers are forwarded unchanged after ordinary credential/header filtering. Each auxiliary request makes one upstream attempt, including when the service has inference retries configured, and its result never changes inference health.
+
+The first `thread_hint` can arrive before inference. A new native session selects a healthy service/key from the client's effective `gpt-6-astra` routes with context management enabled. Existing sessions keep their bound target. Responses HTTP and WebSocket requests that carry `history_ingest_requested: true` in `client_metadata["x-codex-turn-metadata"]` require a session ID and a capable service. WebSockets require both service capabilities.
+
+Once context management is active, the service and key remain fixed across priority changes and context windows, including requests without an ingestion flag. Disabled, inaccessible, incompatible, or cooling targets produce an error instead of rebinding. Restore the target or explicitly clear the session binding to start routing again; clearing or idle expiry can select a different backend on the next request.
+
+Session ownership is recorded against the non-sensitive `api_keys[].id`, so another gateway client cannot reuse the same raw session ID to access upstream history, even with a shared upstream key. Ownership survives client credential rotation and session-binding deletion or expiry, since the upstream may retain history. Use a fresh session ID for another client.
+
+To reclaim an ownership record, first stop all writers for that session and erase its history and notes at the upstream. The owning client can then call `DELETE /sessions/{session_id}?release_context_ownership=true` (also with `/v1`). This clears its routing binding and deletes the ownership object's full storage; the response includes `ownership_released`. Other clients receive 403. Ordinary single-session and bulk deletion retain ownership. Cody cannot verify upstream erasure, so ownership has no automatic timeout.
+
+Ordinary and context-management sessions share one registry per client ID. Session listing and bulk clearing use the same index pagination; stale entries may produce a short or empty page with a non-null `next_cursor`. Follow that cursor until it is null.
+
+The gateway switch prepares the backend and model catalog. The Codex version currently referenced in `refs/codex` still restricts `features.context_management.experimental_mode` and native history/notes registration to its supported ChatGPT authentication path. Custom-provider clients need the corresponding client-side integration before enabling this switch; changing gateway configuration alone does not register those tools in an unmodified client.
 
 ## Use with Codex
 

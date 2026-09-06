@@ -14,10 +14,7 @@ import {
 import { jsonResponse, openAiError } from "./http.ts";
 import type { RequestLogContext } from "./log.ts";
 import type { ClientApiKeyConfig } from "./types.ts";
-import type {
-  SessionAffinityIndexEntry,
-  SessionAffinityIndexPage,
-} from "./session-affinity-index.ts";
+import type { SessionAffinityIndexEntry } from "./session-affinity-index.ts";
 
 export const SESSION_LIST_DEFAULT_LIMIT = 100;
 export const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
@@ -35,8 +32,8 @@ function sessionJsonResponse(value: unknown): Response {
   return jsonResponse(value, 200, { "cache-control": "no-store" });
 }
 
-function encodeCursor(value: string): string {
-  return btoa(`v1:${value}`)
+function encodeCursor(digest: string): string {
+  return btoa(digest)
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
@@ -51,8 +48,7 @@ function decodeCursor(value: string | null): string | null | undefined {
       value.replace(/-/g, "+").replace(/_/g, "/") +
       "=".repeat((4 - (value.length % 4)) % 4);
     const decoded = atob(padded);
-    const digest = decoded.startsWith("v1:") ? decoded.slice(3) : "";
-    return /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    return /^[a-f0-9]{64}$/.test(decoded) ? decoded : undefined;
   } catch {
     return undefined;
   }
@@ -158,13 +154,13 @@ export async function handleSessionList(
     return invalidListQuery(requestLog);
   }
 
-  const registryName = await affinityRegistryName(client.api_key);
+  const registryName = await affinityRegistryName(client.id);
   const index = sessionIndex(env, registryName);
-  const page: SessionAffinityIndexPage = await index.listPage(cursor, limit);
+  const page = await index.listPage(cursor, limit);
   const entries = await mapWithConcurrency(
     page.data,
     SERVICE_FAN_OUT_CONCURRENCY,
-    async (entry): Promise<SessionBindingView | undefined> => {
+    async (entry) => {
       const status = await sessionAffinity(
         env,
         registryName,
@@ -183,9 +179,7 @@ export async function handleSessionList(
       return view;
     },
   );
-  const data = entries.filter(
-    (entry): entry is SessionBindingView => entry !== undefined,
-  );
+  const data = entries.filter((entry) => entry !== undefined);
   requestLog.set({
     sessions: {
       action: "list",
@@ -246,18 +240,18 @@ export async function handleSessionClearAll(
   client: ClientApiKeyConfig,
   requestLog: RequestLogContext,
 ): Promise<Response> {
-  const registryName = await affinityRegistryName(client.api_key);
+  const registryName = await affinityRegistryName(client.id);
   const index = sessionIndex(env, registryName);
   let cursor: string | null = null;
   let deleted = 0;
   do {
     const page = await index.listPage(cursor, SESSION_LIST_MAX_LIMIT);
-    const results = await mapWithConcurrency(
+    const cleared = await mapWithConcurrency(
       page.data,
       SERVICE_FAN_OUT_CONCURRENCY,
       (entry) => clearIndexedEntry(env, registryName, entry),
     );
-    deleted += results.filter(Boolean).length;
+    deleted += cleared.filter(Boolean).length;
     cursor = page.next_cursor;
   } while (cursor !== null);
 
@@ -272,11 +266,28 @@ export async function handleSessionClearOne(
   client: ClientApiKeyConfig,
   sessionId: string,
   requestLog: RequestLogContext,
+  options: { releaseContextOwnership?: boolean } = {},
 ): Promise<Response> {
-  const identity = await sessionAffinityIdentity(client.api_key, sessionId);
+  const identity = await sessionAffinityIdentity(client.id, sessionId);
+  let ownershipReleased = false;
+  if (options.releaseContextOwnership) {
+    const released = await env.SESSION_AFFINITY.getByName(
+      `context-owner:${identity.session_digest}`,
+    ).releaseContextSession(client.id);
+    if (released === "forbidden") {
+      requestLog.warn({ outcome: "context_session_forbidden" });
+      return openAiError(
+        403,
+        "This context session belongs to another client",
+        "permission_error",
+        "context_session_forbidden",
+      );
+    }
+    ownershipReleased = released === "released";
+  }
+  let deleted = 0;
   const index = sessionIndex(env, identity.registry_name);
   const entry = await index.get(identity.session_digest);
-  let deleted = 0;
   if (entry && entry.session_id !== sessionId) {
     await index.remove(
       identity.session_digest,
@@ -296,7 +307,16 @@ export async function handleSessionClearOne(
       action: "clear_one",
       session_digest: identity.session_digest,
       deleted,
+      ...(options.releaseContextOwnership
+        ? { ownership_released: ownershipReleased }
+        : {}),
     },
   });
-  return sessionJsonResponse({ session_id: sessionId, deleted });
+  return sessionJsonResponse({
+    session_id: sessionId,
+    deleted,
+    ...(options.releaseContextOwnership
+      ? { ownership_released: ownershipReleased }
+      : {}),
+  });
 }

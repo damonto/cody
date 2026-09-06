@@ -59,33 +59,40 @@ export interface KeySelectionCheck extends ServiceAvailability {
 }
 
 export interface SelectionAffinity {
-  status: "hit" | "created" | "rebound" | "failed";
+  status: "hit" | "created" | "rebound" | "failed" | "blocked" | "forbidden";
   error?: string;
+  context_management?: boolean;
 }
 
-export interface ServiceSelection {
+export interface TargetSelection {
   // Always present, possibly undefined: selection computes a target that may
   // not exist. `affinity` is genuinely absent when no session was involved.
-  target: ModelServiceTarget | undefined;
+  target: ServiceTarget | undefined;
   checks: ServiceSelectionCheck[];
   keyChecks: KeySelectionCheck[];
   affinity?: SelectionAffinity;
 }
 
+export interface ServiceSelection extends TargetSelection {
+  target: ModelServiceTarget | undefined;
+}
+
 export interface ServiceSelectionOptions {
   scope?: HealthScope;
   random?: AffinityRandomSource;
+  contextManagement?: boolean;
+  initialServiceIds?: readonly string[];
   session?: {
-    clientApiKey: string;
+    clientId: string;
     sessionId: string;
   };
 }
 
 export type RequiredServiceCapability =
-  "supports_websocket" | "supports_web_search";
+  "supports_websocket" | "supports_web_search" | "supports_context_management";
 
 export interface ResolveModelRouteOptions {
-  requiredCapability?: RequiredServiceCapability;
+  requiredCapabilities?: readonly RequiredServiceCapability[];
 }
 
 export interface CatalogSelection {
@@ -193,8 +200,7 @@ export function resolveModelRoute(
     if (
       service.disabled ||
       !allowedServices.has(service.id) ||
-      (options.requiredCapability !== undefined &&
-        !service[options.requiredCapability])
+      options.requiredCapabilities?.some((capability) => !service[capability])
     ) {
       return [];
     }
@@ -302,6 +308,7 @@ function affinityCandidates(
   return candidates.map(({ service, keys }) => ({
     service_id: service.id,
     priority: service.priority,
+    supports_context_management: service.supports_context_management,
     keys: keys.map((key) => ({
       key_id: key.id,
       priority: key.priority,
@@ -310,26 +317,24 @@ function affinityCandidates(
 }
 
 function targetByIds(
-  candidates: ModelRoutedService[],
+  candidates: RoutedService[],
   serviceId: string,
   keyId: string,
-): ModelServiceTarget | undefined {
+): ServiceTarget | undefined {
   const candidate = candidates.find(({ service }) => service.id === serviceId);
   const key = candidate?.keys.find((entry) => entry.id === keyId);
   return candidate && key
     ? {
         service: candidate.service,
         key,
-        upstreamModel: candidate.upstreamModel,
-        routeApplied: candidate.routeApplied,
       }
     : undefined;
 }
 
 function selectRandomTarget(
-  candidates: ModelRoutedService[],
+  candidates: RoutedService[],
   random?: AffinityRandomSource,
-): ModelServiceTarget | undefined {
+): ServiceTarget | undefined {
   const selected = chooseAffinityCandidate(
     affinityCandidates(candidates),
     random,
@@ -344,9 +349,39 @@ export async function selectAvailableServiceWithDetails(
   route: ModelRoute,
   options: ServiceSelectionOptions = {},
 ): Promise<ServiceSelection> {
-  const availability = await evaluateAvailability(
+  const selection = await selectAvailableTargetWithDetails(
     env,
     route.targets,
+    options,
+  );
+  const target = selection.target;
+  const routed =
+    target &&
+    route.targets.find(({ service }) => service.id === target.service.id);
+  return {
+    ...selection,
+    target:
+      target && routed
+        ? {
+            ...target,
+            upstreamModel: routed.upstreamModel,
+            routeApplied: routed.routeApplied,
+          }
+        : undefined,
+  };
+}
+
+export async function selectAvailableTargetWithDetails(
+  env: Env,
+  services: RoutedService[],
+  options: ServiceSelectionOptions = {},
+): Promise<TargetSelection> {
+  const contextManagement = options.contextManagement === true;
+  const availability = await evaluateAvailability(
+    env,
+    contextManagement
+      ? services.filter(({ service }) => service.supports_context_management)
+      : services,
     options.scope ?? "inference",
   );
   if (availability.candidates.length === 0) {
@@ -357,19 +392,54 @@ export async function selectAvailableServiceWithDetails(
     };
   }
 
+  if (contextManagement && !options.session) {
+    return {
+      target: undefined,
+      checks: availability.checks,
+      keyChecks: availability.keyChecks,
+      affinity: { status: "blocked" },
+    };
+  }
   if (options.session) {
     const candidates = affinityCandidates(availability.candidates);
     const preferred = chooseAffinityCandidate(candidates, options.random);
     try {
       const identity = await sessionAffinityIdentity(
-        options.session.clientApiKey,
+        options.session.clientId,
         options.session.sessionId,
       );
       const resolution = await env.SESSION_AFFINITY.getByName(
         identity.object_name,
-      ).resolve(candidates, preferred, identity);
+      ).resolve(candidates, preferred, identity, {
+        contextManagement,
+        ...(options.initialServiceIds === undefined
+          ? {}
+          : { initialServiceIds: options.initialServiceIds }),
+      });
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
+      }
+      if (resolution.status === "blocked") {
+        return {
+          target: undefined,
+          checks: availability.checks,
+          keyChecks: availability.keyChecks,
+          affinity: { status: "blocked" },
+        };
+      }
+      if (resolution.context_management) {
+        if (
+          !(await env.SESSION_AFFINITY.getByName(
+            `context-owner:${identity.session_digest}`,
+          ).claimContextSession(options.session.clientId))
+        ) {
+          return {
+            target: undefined,
+            checks: availability.checks,
+            keyChecks: availability.keyChecks,
+            affinity: { status: "forbidden" },
+          };
+        }
       }
       const target = targetByIds(
         availability.candidates,
@@ -383,17 +453,16 @@ export async function selectAvailableServiceWithDetails(
         target,
         checks: availability.checks,
         keyChecks: availability.keyChecks,
-        affinity: { status: resolution.status },
+        affinity: {
+          status: resolution.status,
+          ...(resolution.context_management
+            ? { context_management: true }
+            : {}),
+        },
       };
     } catch (error) {
       return {
-        target: preferred
-          ? targetByIds(
-              availability.candidates,
-              preferred.service_id,
-              preferred.key_id,
-            )
-          : undefined,
+        target: undefined,
         checks: availability.checks,
         keyChecks: availability.keyChecks,
         affinity: { status: "failed", error: errorMessage(error) },

@@ -51,15 +51,15 @@ function requireResolution(
   return resolution;
 }
 
-test("affinity object names isolate client credentials and sessions", async () => {
-  const first = await affinityObjectName("client-secret-a", "session-a");
-  const repeated = await affinityObjectName("client-secret-a", "session-a");
-  const otherClient = await affinityObjectName("client-secret-b", "session-a");
-  const otherSession = await affinityObjectName("client-secret-a", "session-b");
+test("affinity object names isolate client IDs and sessions", async () => {
+  const first = await affinityObjectName("client-a", "session-a");
+  const repeated = await affinityObjectName("client-a", "session-a");
+  const otherClient = await affinityObjectName("client-b", "session-a");
+  const otherSession = await affinityObjectName("client-a", "session-b");
 
   expect(first).toBe(repeated);
   expect(first).toMatch(/^[a-f0-9]{64}:[a-f0-9]{64}$/);
-  expect(first).not.toContain("client-secret-a");
+  expect(first).not.toContain("client-a");
   expect(first).not.toContain("session-a");
   expect(otherClient).not.toBe(first);
   expect(otherSession).not.toBe(first);
@@ -127,6 +127,89 @@ test("concurrent first resolutions atomically converge on one binding", async ()
   expect(new Set([left?.status, right?.status])).toEqual(
     new Set(["created", "hit"]),
   );
+});
+
+test("context bindings survive eviction and keep their key despite priority changes", async () => {
+  const identity = registration("context-binding");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
+  const supported = candidates.map((candidate) => ({
+    ...candidate,
+    supports_context_management: true,
+  }));
+  const initial = await stub.resolve(
+    supported,
+    { service_id: "first", key_id: "first-a" },
+    identity,
+    { contextManagement: true },
+  );
+  await evictDurableObject(stub);
+  const raised = supported.map((candidate) => ({
+    ...candidate,
+    priority: candidate.service_id === "second" ? 100 : 10,
+  }));
+  const hit = await stub.resolve(
+    raised,
+    { service_id: "second", key_id: "second-a" },
+    identity,
+  );
+  expect(hit).toMatchObject({
+    status: "hit",
+    context_management: true,
+    service_id: "first",
+    key_id: "first-a",
+    binding_id: initial?.binding_id,
+  });
+  const blocked = await stub.resolve(
+    [raised[1]],
+    { service_id: "second", key_id: "second-a" },
+    identity,
+  );
+  expect(blocked?.status).toBe("blocked");
+  expect((await stub.getStatus())?.binding_id).toBe(initial?.binding_id);
+  expect((await stub.resolve(supported, undefined, identity))?.status).toBe(
+    "hit",
+  );
+});
+
+test("concurrent context session ownership claims admit exactly one client", async () => {
+  const stub = env.SESSION_AFFINITY.getByName(
+    `context-owner:${crypto.randomUUID()}`,
+  );
+  const claims = await Promise.all([
+    stub.claimContextSession("client-a"),
+    stub.claimContextSession("client-b"),
+  ]);
+  expect(claims.filter(Boolean)).toHaveLength(1);
+  await evictDurableObject(stub);
+  const winner = claims[0] ? "client-a" : "client-b";
+  expect(await stub.claimContextSession(winner)).toBe(true);
+  expect(
+    await stub.claimContextSession(claims[0] ? "client-b" : "client-a"),
+  ).toBe(false);
+});
+
+test("only the owner can release context ownership and reclaim its storage", async () => {
+  const stub = env.SESSION_AFFINITY.getByName(
+    `context-owner:${crypto.randomUUID()}`,
+  );
+  expect(await stub.claimContextSession("client-a")).toBe(true);
+  await runInDurableObject(stub, async (_instance, state) => {
+    await state.storage.setAlarm(Date.now() + 60_000);
+  });
+  expect(await runDurableObjectAlarm(stub)).toBe(true);
+  expect(await stub.claimContextSession("client-b")).toBe(false);
+  expect(await stub.releaseContextSession("client-b")).toBe("forbidden");
+  await evictDurableObject(stub);
+  expect(await stub.releaseContextSession("client-a")).toBe("released");
+  await runInDurableObject(stub, async (_instance, state) => {
+    expect((await state.storage.list()).size).toBe(0);
+    expect(await state.storage.getAlarm()).toBeNull();
+  });
+  expect(await stub.releaseContextSession("client-a")).toBe("missing");
+  expect(await stub.claimContextSession("client-b")).toBe(true);
+  expect(await stub.releaseContextSession("client-a")).toBe("forbidden");
 });
 
 test("a removed target is rebound to the preferred current candidate", async () => {

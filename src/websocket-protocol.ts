@@ -1,4 +1,5 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
+import { codexTurnMetadata } from "./context-management-protocol.ts";
 const MAX_UPSTREAM_ERROR_BYTES = 32 * 1024;
 const MAX_CLOSE_REASON_BYTES = 123;
 
@@ -49,12 +50,15 @@ export function clientFrame(text: string): ClientFrame {
     return { kind: "invalid_response_create" };
   }
   const metadata = payload.client_metadata;
-  const sessionId =
+  const projectedSessionId =
     typeof metadata === "object" &&
     metadata !== null &&
     !Array.isArray(metadata)
       ? nonBlankString((metadata as JsonObject).session_id)
       : undefined;
+  const sessionId =
+    projectedSessionId ??
+    nonBlankString(codexTurnMetadata(payload)?.session_id);
   return {
     kind: "response_create",
     frame: { payload, model, sessionId },

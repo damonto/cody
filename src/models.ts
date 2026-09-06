@@ -436,10 +436,37 @@ function codexModelIds(
 
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
+  contextManagementModelIds: Set<string> = new Set(),
 ): JsonObject[] {
-  return codexCatalogModels.filter(
-    (model) => typeof model.slug === "string" && clientModelIds.has(model.slug),
-  );
+  return codexCatalogModels
+    .filter(
+      (model) =>
+        typeof model.slug === "string" && clientModelIds.has(model.slug),
+    )
+    .map((model) => {
+      if (model.slug !== "gpt-6-astra") {
+        return model;
+      }
+      if (
+        !isObject(model.model_messages) ||
+        !isObject(model.model_messages.token_budget)
+      ) {
+        return { ...model, supports_experimental_context: false };
+      }
+      const enabled = contextManagementModelIds.has(model.slug);
+      return {
+        ...model,
+        supports_experimental_context: enabled,
+        model_messages: {
+          ...model.model_messages,
+          token_budget: {
+            ...model.model_messages.token_budget,
+            enabled,
+            use_history_notes_extension: enabled,
+          },
+        },
+      };
+    });
 }
 
 export function isCodexUserAgent(request: Request): boolean {
@@ -723,6 +750,13 @@ function modelsPayload(
       return {
         models: aggregateCodexModels(
           codexModelIds(standardModels, results, routesByService),
+          codexModelIds(
+            [],
+            results.filter(
+              ({ service }) => service.supports_context_management,
+            ),
+            routesByService,
+          ),
         ),
       };
     case "anthropic": {

@@ -37,6 +37,7 @@ const SERVICE_FIELDS = new Set([
   "model_routes",
   "supports_websocket",
   "supports_web_search",
+  "supports_context_management",
   "retry",
 ]);
 const SERVICE_API_KEY_FIELDS = new Set([
@@ -319,6 +320,10 @@ function parseService(value: unknown, index: number): ServiceConfig {
     supports_web_search: optionalBoolean(
       value.supports_web_search,
       `${path}.supports_web_search`,
+    ),
+    supports_context_management: optionalBoolean(
+      value.supports_context_management,
+      `${path}.supports_context_management`,
     ),
     ...(retry === undefined ? {} : { retry }),
   };

@@ -24,6 +24,7 @@ export interface ServiceConfig {
   model_routes?: Record<string, ServiceModelRouteConfig>;
   supports_websocket: boolean;
   supports_web_search: boolean;
+  supports_context_management: boolean;
   retry?: ServiceRetryConfig;
 }
 

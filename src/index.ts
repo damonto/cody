@@ -21,6 +21,7 @@ import {
 import { handleModels } from "./models.ts";
 import { handleInference } from "./proxy.ts";
 import { handleConfiguredWebSearch } from "./search.ts";
+import { handleContextManagement } from "./context-management.ts";
 import {
   decodeSessionIdPath,
   handleSessionClearAll,
@@ -28,7 +29,11 @@ import {
   handleSessionList,
 } from "./session-bindings.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
-import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
+import {
+  isContextManagementPath,
+  requestProtocol,
+  type GatewayEndpoint,
+} from "./protocol.ts";
 import { handleResponsesWebSocket } from "./websocket.ts";
 
 type GatewayRoute =
@@ -39,6 +44,12 @@ type GatewayRoute =
   | { endpoint: "sessions"; action: "clear"; encodedSessionId: string };
 
 function route(pathname: string): GatewayRoute | undefined {
+  const contextPath = pathname.startsWith("/v1/")
+    ? pathname.slice(4)
+    : pathname.slice(1);
+  if (isContextManagementPath(contextPath)) {
+    return { endpoint: contextPath };
+  }
   const sessionMatch = pathname.match(/^\/(?:v1\/)?sessions\/(.*)$/);
   if (sessionMatch) {
     return {
@@ -240,6 +251,24 @@ async function handleSessions(
   matchedRoute: Extract<GatewayRoute, { endpoint: "sessions" }>,
   requestLog: RequestLogContext,
 ): Promise<Response> {
+  const releaseValues = incomingUrl.searchParams.getAll(
+    "release_context_ownership",
+  );
+  const releaseOwnership = releaseValues[0];
+  if (
+    releaseValues.length > 0 &&
+    (releaseValues.length !== 1 ||
+      matchedRoute.action !== "clear" ||
+      (releaseOwnership !== "true" && releaseOwnership !== "false"))
+  ) {
+    requestLog.warn({ outcome: "invalid_session_release_query" });
+    return openAiError(
+      400,
+      "release_context_ownership must occur once, be true or false, and requires a single session",
+      "invalid_request_error",
+      "invalid_session_release_query",
+    );
+  }
   if (matchedRoute.action === "collection") {
     return request.method === "GET"
       ? handleSessionList(env, client, incomingUrl, requestLog)
@@ -258,7 +287,9 @@ async function handleSessions(
       "invalid_session_id",
     );
   }
-  return handleSessionClearOne(env, client, sessionId, requestLog);
+  return handleSessionClearOne(env, client, sessionId, requestLog, {
+    releaseContextOwnership: releaseOwnership === "true",
+  });
 }
 
 function isResponsesWebSocketRequest(
@@ -323,6 +354,17 @@ async function handleMatchedRoute(
     config.web_search.mode !== "proxy"
   ) {
     return handleConfiguredWebSearch(request, config, client, requestLog);
+  }
+  if (isContextManagementPath(matchedRoute.endpoint)) {
+    return handleContextManagement(
+      request,
+      env,
+      config,
+      client,
+      matchedRoute.endpoint,
+      requestId,
+      requestLog,
+    );
   }
   if (websocketRequest) {
     return handleResponsesWebSocket(

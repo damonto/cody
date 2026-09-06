@@ -12,6 +12,7 @@ export interface AffinityServiceCandidate {
   service_id: string;
   priority: number;
   keys: AffinityKeyCandidate[];
+  supports_context_management?: boolean;
 }
 
 export interface SessionAffinityRecord {
@@ -25,10 +26,11 @@ export interface SessionAffinityRecord {
   session_digest: string;
   session_id: string;
   index_registered: boolean;
+  context_management?: boolean;
 }
 
 export interface SessionAffinityResolution extends SessionAffinityRecord {
-  status: "hit" | "created" | "rebound";
+  status: "hit" | "created" | "rebound" | "blocked";
 }
 
 export interface AffinitySelection {
@@ -214,8 +216,8 @@ export function affinityObjectNameFromDigests(
   return `${registryName}:${sessionDigest}`;
 }
 
-export function affinityRegistryName(clientApiKey: string): Promise<string> {
-  return sha256Hex(clientApiKey);
+export function affinityRegistryName(clientId: string): Promise<string> {
+  return sha256Hex(clientId);
 }
 
 export function affinitySessionDigest(sessionId: string): Promise<string> {
@@ -223,11 +225,11 @@ export function affinitySessionDigest(sessionId: string): Promise<string> {
 }
 
 export async function sessionAffinityIdentity(
-  clientApiKey: string,
+  clientId: string,
   sessionId: string,
 ): Promise<SessionAffinityIdentity> {
   const [registryName, sessionDigest] = await Promise.all([
-    affinityRegistryName(clientApiKey),
+    affinityRegistryName(clientId),
     affinitySessionDigest(sessionId),
   ]);
   return {
@@ -239,8 +241,8 @@ export async function sessionAffinityIdentity(
 }
 
 export async function affinityObjectName(
-  clientApiKey: string,
+  clientId: string,
   sessionId: string,
 ): Promise<string> {
-  return (await sessionAffinityIdentity(clientApiKey, sessionId)).object_name;
+  return (await sessionAffinityIdentity(clientId, sessionId)).object_name;
 }

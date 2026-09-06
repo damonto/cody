@@ -36,6 +36,7 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   assert.equal(config.services[0].disabled, false);
   assert.equal(config.services[0].supports_websocket, false);
   assert.equal(config.services[0].supports_web_search, false);
+  assert.equal(config.services[0].supports_context_management, false);
   assert.deepEqual(config.services[0].keys, [
     {
       id: "primary-key",
@@ -125,9 +126,11 @@ test("parseConfig accepts explicit service capability flags", () => {
   const input = validConfig();
   input.services[0].supports_websocket = true;
   input.services[0].supports_web_search = false;
+  input.services[0].supports_context_management = true;
 
   const config = parseConfig(input);
   assert.equal(config.services[0].supports_websocket, true);
+  assert.equal(config.services[0].supports_context_management, true);
   assert.equal(config.services[0].supports_web_search, false);
 });
 
@@ -145,7 +148,11 @@ test("parseConfig rejects a service protocol field", () => {
 });
 
 test("parseConfig rejects non-boolean service capability flags", () => {
-  for (const field of ["supports_websocket", "supports_web_search"]) {
+  for (const field of [
+    "supports_websocket",
+    "supports_web_search",
+    "supports_context_management",
+  ]) {
     const input = validConfig();
     input.services[0][field] = "true";
     assert.throws(

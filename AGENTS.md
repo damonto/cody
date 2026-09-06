@@ -32,7 +32,7 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 - Authenticate upstream requests with `Authorization: Bearer <key>` for every protocol. Client credentials, including `x-api-key`, are stripped before forwarding.
 - Accept client credentials from either `Authorization: Bearer` or `x-api-key`, since the Claude Code SDK sends the latter.
 - Return Anthropic-shaped errors to Anthropic-protocol clients, with the `type` derived from the HTTP status via the documented Anthropic set. Diagnostic `code` values are OpenAI-only and remain in the request log.
-- Resolve the affinity session id from the `session-id` header, then `client_metadata.session_id`, then the Anthropic `metadata.user_id` JSON payload, then the `alpha/search` top-level `id`. Claude Code carries its session only in `metadata.user_id`.
+- Resolve the affinity session id from the `session-id` header, then `client_metadata.session_id`, then Codex's JSON-encoded `client_metadata["x-codex-turn-metadata"].session_id`, then the Anthropic `metadata.user_id` JSON payload, then the `alpha/search` top-level `id`. Claude Code carries its session only in `metadata.user_id`.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
 - Within the selected service, use the highest-priority enabled key and break ties by configuration order. Key switching is configuration-driven, not automatic.
 - Apply only the selected service's configured retry policy. Retries resend the same request with the same selected key; they never switch keys or services, and the final upstream response is returned unchanged.
@@ -43,6 +43,9 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 - The Responses WebSocket Durable Object accepts only Codex `response.create` frames, so every status it classifies is OpenAI-shaped.
 - `GET /health` and `/v1/health` list current inference cooldowns visible to the authenticated client API key. `DELETE /health/{service_id}` and `/v1/health/{service_id}` manually clear one inference cooldown. `scope=catalog` selects catalog health for either operation.
 - Keep catalog/model-list health separate from inference health. Catalog failures must not change inference routing health.
+- `supports_context_management` defaults to false. Native history/notes endpoints require a consistent `context.session_id` and use a dedicated model-less handler; new sessions bootstrap from the client's effective Astra routes.
+- Context-management sessions pin their service and key, fail closed on unavailable bindings, and preserve upstream session ownership by client ID. Auxiliary history/notes calls make one attempt and never alter inference health; keep encrypted payloads and truncation headers intact.
+- All session bindings and indexes use the stable client ID, including ordinary inference. Session requests fail closed if affinity storage is unavailable; do not add credential-keyed compatibility registries or choose identity based on current route capabilities.
 - Schedule health writes with `ExecutionContext.waitUntil` in Workers; direct test callers may use synchronous fallback behavior.
 - User-Agents containing `codex` receive the Codex `{models: [...]}` shape; other clients receive the standard model-list shape.
 

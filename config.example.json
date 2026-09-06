@@ -22,6 +22,7 @@
       "priority": 100,
       "supports_websocket": true,
       "supports_web_search": true,
+      "supports_context_management": false,
       "models": ["grok-4.5", "gpt-4.1", "gpt-image-2"],
       "model_routes": {
         "client-model": {
@@ -48,6 +49,7 @@
       "priority": 50,
       "supports_websocket": false,
       "supports_web_search": false,
+      "supports_context_management": false,
       "models": ["grok-4.5"],
       "model_routes": {
         "client-model": {
@@ -74,6 +76,7 @@
       "priority": 75,
       "supports_websocket": false,
       "supports_web_search": false,
+      "supports_context_management": false,
       "models": ["claude-opus-5"],
       "retry": {
         "status_codes": [429, 529],
