@@ -1,6 +1,9 @@
 import { expect, test, vi } from "vitest";
 
-import { closeSocket, truncateUtf8 } from "../../src/websocket-protocol.ts";
+import {
+  closeSocket,
+  truncateUtf8,
+} from "../../src/gateway/websocket/websocket-protocol.ts";
 
 function openSocketSpy(): {
   socket: WebSocket;

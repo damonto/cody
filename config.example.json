@@ -113,5 +113,35 @@
   },
   "web_search": {
     "mode": "proxy"
-  }
+  },
+  "reporting": {
+    "time_zone": "Asia/Shanghai",
+    "retention_days": 120
+  },
+  "model_policies": [
+    {
+      "service_id": "primary",
+      "model": "gpt-4.1",
+      "context_window": 1000000,
+      "pricing": {
+        "currency": "USD",
+        "tiers": [
+          {
+            "up_to_input_tokens": 200000,
+            "input": "3",
+            "output": "15",
+            "cache_write": "3.75",
+            "cache_read": "0.30"
+          },
+          {
+            "up_to_input_tokens": null,
+            "input": "6",
+            "output": "30",
+            "cache_write": "7.50",
+            "cache_read": "0.60"
+          }
+        ]
+      }
+    }
+  ]
 }

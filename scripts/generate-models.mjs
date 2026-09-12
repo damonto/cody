@@ -14,7 +14,7 @@ export const CODEX_TARGET_PATH = fileURLToPath(
   new URL("./models/codex.json", import.meta.url),
 );
 export const TARGET_PATH = fileURLToPath(
-  new URL("../src/models.json", import.meta.url),
+  new URL("../src/gateway/catalog/models.json", import.meta.url),
 );
 
 function githubHeaders() {
@@ -230,7 +230,7 @@ export async function syncCodexModels({
   const mergedChanged = await replaceIfChanged(targetPath, prepared.text);
   onProgress(
     mergedChanged
-      ? "Writing merged model catalog to src/models.json"
+      ? "Writing merged model catalog to src/gateway/catalog/models.json"
       : "Merged model catalog is unchanged; no file write needed",
   );
   return {

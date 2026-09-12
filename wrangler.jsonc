@@ -5,6 +5,18 @@
   "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "secrets": {
+    "required": ["CONFIG_ENCRYPTION_KEY"],
+  },
+  "dev": {
+    "port": 8788,
+  },
+  "assets": {
+    "directory": "./console/dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application",
+  },
   "observability": {
     "enabled": true,
     "logs": {
@@ -21,14 +33,41 @@
     "CONFIG_CACHE_TTL_SECONDS": "10",
     "MODELS_CACHE_TTL_SECONDS": "30",
     "LOG_LEVEL": "info",
+    "ACCESS_TEAM_DOMAIN": "https://damonto.cloudflareaccess.com",
+    "ACCESS_AUD": "67f224db541b57523a0d49a02d41ee179b19bae02b4f9bc3eee2a5801fda8df4",
+    "ADMIN_LOCAL_DEV": "false",
   },
   "kv_namespaces": [
     {
       "binding": "CODY_CONFIG_KV",
-      // Replace this placeholder with the ID from `wrangler kv namespace create CODY_CONFIG_KV`.
       "id": "8c9a59105a1e4c4f918e33a93323c533",
     },
   ],
+  "d1_databases": [
+    {
+      "binding": "CODY_DB",
+      "database_name": "cody",
+      "database_id": "78c229f6-390b-4ffc-815f-ced5f5563277",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "USAGE_QUEUE",
+        "queue": "cody-usage",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "cody-usage",
+        "max_batch_size": 25,
+        "max_batch_timeout": 2,
+        "max_retries": 10,
+        "dead_letter_queue": "cody-usage-dlq",
+      },
+    ],
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -46,6 +85,14 @@
       {
         "name": "RESPONSES_WEBSOCKET",
         "class_name": "ResponsesWebSocketProxy",
+      },
+      {
+        "name": "USAGE_OUTBOX",
+        "class_name": "UsageOutbox",
+      },
+      {
+        "name": "CONFIG_PUBLISHER",
+        "class_name": "ConfigPublisher",
       },
     ],
   },
@@ -66,5 +113,16 @@
       "tag": "v4",
       "new_sqlite_classes": ["SessionAffinityIndex"],
     },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["UsageOutbox"],
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["ConfigPublisher"],
+    },
   ],
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
 }

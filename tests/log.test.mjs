@@ -8,7 +8,7 @@ import {
   logInfo,
   logWarn,
   RequestLogContext,
-} from "../src/log.ts";
+} from "../src/shared/log.ts";
 
 test("logging honors production levels and redacts credentials", () => {
   const original = {

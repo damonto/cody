@@ -11,7 +11,7 @@ import {
   SESSION_AFFINITY_TTL_MS,
   type AffinityServiceCandidate,
   type SessionAffinityResolution,
-} from "../../src/session-affinity.ts";
+} from "../../src/gateway/sessions/session-affinity.ts";
 
 const candidates: AffinityServiceCandidate[] = [
   {

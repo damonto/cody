@@ -1,36 +1,51 @@
-import { spawn } from "node:child_process";
-
 import { readValidatedConfig } from "./config-utils.mjs";
+import { ADMIN_API_PATH } from "../src/admin/paths.ts";
 
 const args = process.argv.slice(2);
 const local = args.includes("--local");
 const path = args.find((arg) => !arg.startsWith("--")) ?? "config.json";
 
 try {
-  await readValidatedConfig(path);
+  const { config } = await readValidatedConfig(path);
+  const base = local ? "http://localhost:8788" : process.env.CODY_ADMIN_URL;
+  if (!base)
+    throw new Error("Set CODY_ADMIN_URL to the gateway origin, or use --local");
+  const url = new URL(base);
+  if (!local && url.protocol !== "https:")
+    throw new Error("CODY_ADMIN_URL must use HTTPS");
+  const headers = new Headers({
+    "content-type": "application/json",
+    "x-cody-admin": "1",
+  });
+  if (process.env.CF_ACCESS_CLIENT_ID)
+    headers.set("CF-Access-Client-Id", process.env.CF_ACCESS_CLIENT_ID);
+  if (process.env.CF_ACCESS_CLIENT_SECRET)
+    headers.set("CF-Access-Client-Secret", process.env.CF_ACCESS_CLIENT_SECRET);
+  async function call(pathname, method = "GET", body) {
+    const response = await fetch(new URL(`${ADMIN_API_PATH}${pathname}`, url), {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: "error",
+    });
+    if (!response.ok)
+      throw new Error(
+        `Admin API returned ${response.status}; inspect the panel for details`,
+      );
+    return response.json();
+  }
+  const current = await call("/config");
+  const saved = await call("/config", "PUT", {
+    version: current.version,
+    config,
+  });
+  const published = await call("/config/publish", "POST", {
+    version: saved.version,
+  });
+  console.log(
+    `Published configuration revision ${published.published_revision}. KV propagation is eventual.`,
+  );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-}
-
-const wranglerArgs = [
-  "kv",
-  "key",
-  "put",
-  "gateway-config",
-  "--binding",
-  "CODY_CONFIG_KV",
-  "--path",
-  path,
-  local ? "--local" : "--remote",
-];
-const command = process.platform === "win32" ? "wrangler.cmd" : "wrangler";
-const child = spawn(command, wranglerArgs, { stdio: "inherit" });
-
-child.on("error", (error) => {
-  console.error(`could not start Wrangler: ${error.message}`);
   process.exitCode = 1;
-});
-child.on("exit", (code) => {
-  process.exitCode = code ?? 1;
-});
+}

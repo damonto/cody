@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RequestMeter } from "../src/telemetry/meter.ts";
 
-import { ServiceHealthState } from "../src/health.ts";
+import { ServiceHealthState } from "../src/gateway/health/health.ts";
 import {
   anthropicErrorType,
   apiError,
@@ -9,12 +10,12 @@ import {
   forwardRequestHeaders,
   forwardWebSocketHeaders,
   requestCredentialTokens,
-} from "../src/http.ts";
+} from "../src/gateway/http/http.ts";
 import {
   handleInference,
   sessionIdForInference,
   upstreamBody,
-} from "../src/proxy.ts";
+} from "../src/gateway/http/proxy.ts";
 
 function inferenceFixture(retry) {
   const service = {
@@ -1148,6 +1149,88 @@ test("inference network exceptions continue to record a health failure", async (
     assert.equal(response.status, 502);
     assert.equal(fixture.calls.failure, 1);
     assert.equal(fixture.calls.success, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("metering records routing, retries, pricing and failures without a request logger", async () => {
+  const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });
+  fixture.config.model_routes = { alias: { model: "model" } };
+  fixture.config.revision = 4;
+  fixture.config.model_policies = [
+    {
+      service_id: "primary",
+      model: "model",
+      context_window: 200000,
+      pricing: {
+        currency: "USD",
+        tiers: [
+          {
+            up_to_input_tokens: null,
+            input: "1",
+            output: "2",
+            cache_read: "0",
+            cache_write: "0",
+          },
+        ],
+      },
+    },
+  ];
+  const events = [];
+  const meter = new RequestMeter({
+    requestId: "without-log",
+    endpoint: "responses",
+    method: "POST",
+    protocol: "openai",
+    sink: { send: async (event) => events.push(event) },
+  });
+  meter.configure(fixture.config);
+  meter.authenticate(fixture.client.id);
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts++;
+    return Response.json(
+      {
+        usage: {
+          input_tokens: 100,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+          output_tokens: 10,
+        },
+      },
+      { status: 503 },
+    );
+  };
+  try {
+    const upstream = await handleInference(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "alias" }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "without-log",
+      undefined,
+      {},
+      undefined,
+      meter,
+    );
+    await meter.response(upstream).text();
+    await meter.drain();
+    const event = events.at(-1);
+    assert.equal(attempts, 2);
+    assert.equal(event.requested_model, "alias");
+    assert.equal(event.model, "model");
+    assert.equal(event.service_id, "primary");
+    assert.equal(event.key_id, "primary-key");
+    assert.equal(event.attempts.length, 2);
+    assert.equal(event.diagnostic_code, "upstream_error");
+    assert.equal(event.billing.price_version, '[4,"primary","model"]');
+    assert.equal(event.context_window, 200000);
   } finally {
     globalThis.fetch = originalFetch;
   }

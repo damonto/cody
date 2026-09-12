@@ -9,11 +9,11 @@ import {
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { clearConfigCacheForTests } from "../../src/config.ts";
-import { FAILURE_THRESHOLD } from "../../src/health.ts";
-import worker from "../../src/index.ts";
-import { ResponsesWebSocketProxy } from "../../src/responses-websocket-proxy.ts";
-import type { GatewayConfig } from "../../src/types.ts";
+import { clearConfigCacheForTests } from "../../src/config/store.ts";
+import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
+import { gatewayApp as worker } from "../../src/gateway/app.ts";
+import { ResponsesWebSocketProxy } from "../../src/gateway/websocket/responses-websocket-proxy.ts";
+import type { GatewayConfig } from "../../src/config/types.ts";
 
 interface UpstreamMessage {
   kind: "text" | "binary";
@@ -618,6 +618,7 @@ test("context WebSockets reject a frame session conflicting with the handshake h
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -1067,27 +1068,44 @@ test("the client WebSocket survives Durable Object hibernation before routing", 
 test("closing during the upstream handshake cannot revive a closed session", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  const fetchMock = vi.fn(async () => openUpstream(upstream, 100));
+  let releaseHandshake!: () => void;
+  const handshake = new Promise<void>((resolve) => {
+    releaseHandshake = resolve;
+  });
+  const fetchMock = vi.fn(async () => {
+    await handshake;
+    return openUpstream(upstream);
+  });
   vi.stubGlobal("fetch", fetchMock);
 
-  const { socket, proxy } = await openGatewaySocket();
-  socket.send(
-    JSON.stringify({ type: "response.create", model: "client-model" }),
-  );
-  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  try {
+    const { socket, proxy } = await openGatewaySocket();
+    socket.send(
+      JSON.stringify({ type: "response.create", model: "client-model" }),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 
-  socket.close(1000, "client left");
-  await vi.waitFor(async () => {
+    socket.close(1000, "client left");
+    await vi.waitFor(async () => {
+      await runInDurableObject(proxy, async (_instance, state) => {
+        expect(await state.storage.get("session")).toBeUndefined();
+      });
+    });
+
+    const upstreamClosed = nextUpstreamClose(upstream);
+    releaseHandshake();
+    expect(await upstreamClosed).toMatchObject({
+      code: 1000,
+      reason: "client disconnected",
+    });
     await runInDurableObject(proxy, async (_instance, state) => {
       expect(await state.storage.get("session")).toBeUndefined();
     });
-  });
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  await runInDurableObject(proxy, async (_instance, state) => {
-    expect(await state.storage.get("session")).toBeUndefined();
-  });
-  await takeUpstreamMessages(upstream);
-  expect(upstream.pendingMessages).toHaveLength(0);
+    await takeUpstreamMessages(upstream);
+    expect(upstream.pendingMessages).toHaveLength(0);
+  } finally {
+    releaseHandshake();
+  }
 });
 
 test("an upstream WebSocket handshake times out after 10 seconds", async () => {
@@ -1769,4 +1787,196 @@ test("custom WebSocket subprotocols are rejected before an upstream connection",
     "websocket_subprotocol_unsupported",
   );
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test("WebSocket generations retain separate models, timing, usage, and request-time prices", async () => {
+  const records: import("../../src/telemetry/types.ts").UsageEvent[] = [];
+  const config = gatewayConfig();
+  config.revision = 12;
+  config.model_policies = ["upstream-model", "other-model"].map(
+    (model, index) => ({
+      service_id: "primary",
+      model,
+      context_window: 1000000,
+      pricing: {
+        currency: "USD",
+        tiers: [
+          {
+            up_to_input_tokens: null,
+            input: String(index + 1),
+            output: "10",
+            cache_read: "0.1",
+            cache_write: "1",
+          },
+        ],
+      },
+    }),
+  );
+  await putConfig(config);
+  const upstream = upstreamPair();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => openUpstream(upstream)),
+  );
+  const { socket, context, proxy } = await openGatewaySocket();
+  await runInDurableObject(proxy, async (instance) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    vi.spyOn(bindings.USAGE_QUEUE, "send").mockImplementation(async (body) => {
+      const event = body as import("../../src/telemetry/types.ts").UsageEvent;
+      if (event.phase === "finished" && event.transport === "websocket") {
+        records.push(structuredClone(event));
+      }
+      return { metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } };
+    });
+  });
+  socket.send(
+    JSON.stringify({
+      type: "response.create",
+      model: "client-model",
+      input: "never log this prompt",
+    }),
+  );
+  await nextUpstreamMessage(upstream);
+  socket.send(
+    JSON.stringify({
+      type: "response.create",
+      model: "other-model",
+      input: "second prompt",
+    }),
+  );
+  await nextUpstreamMessage(upstream);
+  async function deliver(event: unknown) {
+    const received = nextMessage(socket);
+    await sendUpstream(upstream, JSON.stringify(event));
+    await received;
+  }
+  await deliver({ type: "response.created", response: { id: "response-a" } });
+  await deliver({ type: "response.created", response: { id: "response-b" } });
+  await deliver({
+    type: "response.reasoning_summary_text.delta",
+    response_id: "response-a",
+    delta: "private thought",
+  });
+  await deliver({
+    type: "response.output_text.delta",
+    response_id: "response-b",
+    delta: "second answer",
+  });
+  await deliver({
+    type: "response.output_text.delta",
+    response_id: "response-a",
+    delta: "first answer",
+  });
+  const usage = (input: number) => ({
+    input_tokens: input,
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+    output_tokens: 10,
+    output_tokens_details: { reasoning_tokens: 2 },
+  });
+  await deliver({
+    type: "response.completed",
+    response: { id: "response-b", usage: usage(200) },
+  });
+  // A late duplicate must not be assigned to the remaining generation.
+  await deliver({
+    type: "response.completed",
+    response: { id: "response-b", usage: usage(999) },
+  });
+  await deliver({
+    type: "response.completed",
+    response: { id: "response-a", usage: usage(100) },
+  });
+  await runInDurableObject(proxy, async () => {});
+  await expect.poll(() => records.length).toBe(2);
+  const first = records.find((event) => event.response_id === "response-a")!;
+  const second = records.find((event) => event.response_id === "response-b")!;
+  expect(first.model).toBe("upstream-model");
+  expect(first.requested_model).toBe("client-model");
+  expect(first.usage.tokens.input_tokens).toBe(100);
+  expect(first.billing.total_nano).toBe(200000);
+  expect(second.model).toBe("other-model");
+  expect(second.usage.tokens.input_tokens).toBe(200);
+  expect(second.billing.total_nano).toBe(500000);
+  expect(first.request_id).not.toBe(second.request_id);
+  expect(first.connection_id).toBe(second.connection_id);
+  expect(first.context_window).toBe(1000000);
+  expect(first.billing.price_version).toBe('[12,"primary","upstream-model"]');
+  expect(first.first_text_ms).toBeTypeOf("number");
+  expect(first.ttft_ms!).toBeLessThanOrEqual(first.first_text_ms!);
+  expect(JSON.stringify(records)).not.toMatch(
+    /private thought|never log this prompt|second answer/,
+  );
+  const upstreamClosed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await upstreamClosed;
+  await waitOnExecutionContext(context);
+});
+
+test("WebSocket terminal delivery persists before sending and retries the same record", async () => {
+  await putConfig(gatewayConfig());
+  const upstream = upstreamPair();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => openUpstream(upstream)),
+  );
+  const { socket, proxy } = await openGatewaySocket();
+  let failDelivery = true;
+  const terminals: import("../../src/telemetry/types.ts").UsageEvent[] = [];
+  await runInDurableObject(proxy, async (instance, state) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    vi.spyOn(bindings.USAGE_QUEUE, "send").mockImplementation(async (body) => {
+      const delivered = {
+        metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+      };
+      const event = body as import("../../src/telemetry/types.ts").UsageEvent;
+      if (event.phase !== "finished") return delivered;
+      expect(
+        await state.storage.get(`usage-outbox:${event.request_id}`),
+      ).toEqual(event);
+      terminals.push(structuredClone(event));
+      if (failDelivery) throw new Error("queue unavailable");
+      return delivered;
+    });
+  });
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  await nextUpstreamMessage(upstream);
+  const completed = nextMessage(socket);
+  await sendUpstream(
+    upstream,
+    JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "durable-response",
+        usage: { input_tokens: 100, output_tokens: 20 },
+      },
+    }),
+  );
+  await completed;
+  await expect
+    .poll(async () =>
+      runInDurableObject(
+        proxy,
+        async (_instance, state) =>
+          (await state.storage.list({ prefix: "usage-outbox:" })).size,
+      ),
+    )
+    .toBe(1);
+  await expect.poll(() => terminals.length).toBe(1);
+  expect(terminals[0].outcome).toBe("success");
+  failDelivery = false;
+  await runDurableObjectAlarm(proxy);
+  expect(terminals).toHaveLength(2);
+  expect(terminals[1]).toEqual(terminals[0]);
+  expect(
+    await runInDurableObject(
+      proxy,
+      async (_instance, state) =>
+        (await state.storage.list({ prefix: "usage-outbox:" })).size,
+    ),
+  ).toBe(0);
+  const closed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await closed;
 });

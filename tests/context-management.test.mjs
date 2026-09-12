@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   contextManagementRequested,
   parseContextManagementSession,
-} from "../src/context-management-protocol.ts";
+} from "../src/gateway/sessions/context-management-protocol.ts";
 
 test("history ingestion is recognized in HTTP and WebSocket Codex metadata", () => {
   const metadata = JSON.stringify({ history_ingest_requested: true });

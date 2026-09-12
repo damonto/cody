@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BodyTooLargeError, readBodyWithinLimit } from "../src/body.ts";
-import { handleInference, MAX_INFERENCE_BODY_BYTES } from "../src/proxy.ts";
+import {
+  BodyTooLargeError,
+  readBodyWithinLimit,
+} from "../src/gateway/http/body.ts";
+import {
+  handleInference,
+  MAX_INFERENCE_BODY_BYTES,
+} from "../src/gateway/http/proxy.ts";
 
 const encoder = new TextEncoder();
 

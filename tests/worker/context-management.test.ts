@@ -5,17 +5,20 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { sessionAffinityIdentity } from "../../src/affinity.ts";
-import { clearConfigCacheForTests, parseConfig } from "../../src/config.ts";
-import { MAX_CONTEXT_MANAGEMENT_BODY_BYTES } from "../../src/context-management.ts";
+import { sessionAffinityIdentity } from "../../src/gateway/routing/affinity.ts";
+import {
+  clearConfigCacheForTests,
+  parseConfig,
+} from "../../src/config/store.ts";
+import { MAX_CONTEXT_MANAGEMENT_BODY_BYTES } from "../../src/gateway/sessions/context-management.ts";
 import {
   getServiceAvailability,
   recordServiceFailure,
-} from "../../src/health.ts";
-import worker from "../../src/index.ts";
-import { clearModelsCacheForTests } from "../../src/models.ts";
-import { CONTEXT_MANAGEMENT_PATHS } from "../../src/protocol.ts";
-import type { GatewayConfig } from "../../src/types.ts";
+} from "../../src/gateway/health/health.ts";
+import { gatewayApp as worker } from "../../src/gateway/app.ts";
+import { clearModelsCacheForTests } from "../../src/gateway/catalog/models.ts";
+import { CONTEXT_MANAGEMENT_PATHS } from "../../src/gateway/protocol.ts";
+import type { GatewayConfig } from "../../src/config/types.ts";
 
 function config(): GatewayConfig {
   const suffix = crypto.randomUUID();

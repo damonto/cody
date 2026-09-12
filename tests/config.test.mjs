@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ConfigError, parseConfig } from "../src/config.ts";
+import { ConfigError, parseConfig } from "../src/config/store.ts";
 
 function validConfig() {
   return {

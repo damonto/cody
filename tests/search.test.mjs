@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { handleConfiguredWebSearch } from "../src/search.ts";
-import { webSearchProviderFor } from "../src/search-providers/index.ts";
+import { handleConfiguredWebSearch } from "../src/gateway/search/search.ts";
+import { webSearchProviderFor } from "../src/gateway/search/providers/index.ts";
 import {
   MAX_SEARCH_BATCH_RESPONSE_BYTES,
   MAX_SEARCH_PROVIDER_RESPONSE_BYTES,
   SEARCH_PROVIDER_CONCURRENCY,
-} from "../src/search-executor.ts";
+} from "../src/gateway/search/search-executor.ts";
 
 function fixture(mode) {
   return {

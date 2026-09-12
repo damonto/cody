@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { keyIsAvailable, ServiceHealthState } from "../src/health.ts";
+import {
+  keyIsAvailable,
+  ServiceHealthState,
+} from "../src/gateway/health/health.ts";
 import {
   aggregateCodexModels,
   aggregateStandardModels,
@@ -10,7 +13,7 @@ import {
   MAX_MODEL_CATALOG_BODY_BYTES,
   MODEL_CATALOG_CONCURRENCY,
   modelsFormatFor,
-} from "../src/models.ts";
+} from "../src/gateway/catalog/models.ts";
 
 const results = [
   {

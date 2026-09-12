@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveStoredAffinity } from "../src/affinity.ts";
-import { parseConfig } from "../src/config.ts";
-import { FAILURE_THRESHOLD, ServiceHealthState } from "../src/health.ts";
+import { resolveStoredAffinity } from "../src/gateway/routing/affinity.ts";
+import { parseConfig } from "../src/config/store.ts";
+import {
+  FAILURE_THRESHOLD,
+  ServiceHealthState,
+} from "../src/gateway/health/health.ts";
 import {
   allowedServiceCandidates,
   resolveModelRoute,
@@ -11,7 +14,7 @@ import {
   selectAvailableService,
   selectAvailableServiceWithDetails,
   selectServiceApiKey,
-} from "../src/routing.ts";
+} from "../src/gateway/routing/routing.ts";
 
 const config = parseConfig({
   services: [

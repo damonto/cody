@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "tsBuildInfoFile": "./.generated/tooling.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": [
+    "vitest.config.ts",
+    "console/vite.config.ts",
+    "console/playwright.config.ts"
+  ]
+}

@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { expect, test } from "vitest";
 
-import { FAILURE_THRESHOLD } from "../../src/health.ts";
+import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
 
 test("failure streaks and cooldowns survive Durable Object eviction", async () => {
   const stub = env.HEALTH.getByName("eviction-test");

@@ -1,6 +1,7 @@
 node_modules/
 .wrangler/
 dist/
+.generated/
 config.json
 config.local.json
 .dev.vars
@@ -10,3 +11,7 @@ config.local.json
 .claude
 .tmp*
 refs/
+
+# Browser test artifacts
+console/test-results/
+console/playwright-report/

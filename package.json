@@ -7,27 +7,53 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "dev": "npm run build:web && wrangler dev --local",
+    "dev:web": "npm run dev --workspace @cody/console",
+    "dev:setup": "node scripts/setup-local.mjs",
+    "deploy": "npm run build:web && wrangler deploy",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @cody/console",
+    "types": "wrangler types --include-runtime=false --strict-vars=false",
+    "build:web": "npm run build --workspace @cody/console",
+    "db:migrate:local": "wrangler d1 migrations apply CODY_DB --local",
     "lint": "oxlint --deny-warnings .",
     "lint:fix": "oxlint --fix --deny-warnings .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test:unit && npm run test:worker",
-    "test:unit": "tsx --test tests/*.test.mjs",
+    "test:unit": "node --import tsx --test tests/*.test.mjs",
     "test:worker": "vitest run",
     "models:sync": "node scripts/generate-models.mjs",
-    "config:validate": "tsx scripts/validate-config.mjs",
-    "config:put": "tsx scripts/upload-config.mjs"
+    "config:validate": "node --import tsx scripts/validate-config.mjs",
+    "config:schema": "node --import tsx scripts/generate-config-schema.mjs",
+    "config:schema:check": "npm run config:schema -- --check",
+    "config:put": "node --import tsx scripts/upload-config.mjs",
+    "test:e2e": "playwright test --config console/playwright.config.ts",
+    "pretest:e2e": "npm run build:web",
+    "deploy:check": "npm run build:web && wrangler deploy --dry-run",
+    "pretest:worker": "npm run build:web"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260911.1",
     "oxlint": "^1.81.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "prettier": "^3.9.6",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
     "wrangler": "^4.128.0"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.9.1",
+    "@js-temporal/polyfill": "^0.5.1",
+    "hono": "^4.13.7",
+    "jose": "^6.2.12",
+    "zod": "^4.6.2"
+  },
+  "workspaces": [
+    "console"
+  ],
+  "overrides": {
+    "sharp": "0.35.4"
   }
 }

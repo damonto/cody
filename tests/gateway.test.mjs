@@ -5,16 +5,17 @@ import {
   resolveStoredAffinity,
   SESSION_AFFINITY_TTL_MS,
   sessionAffinityIdentity,
-} from "../src/affinity.ts";
-import { clearConfigCacheForTests } from "../src/config.ts";
+} from "../src/gateway/routing/affinity.ts";
+import { clearConfigCacheForTests } from "../src/config/store.ts";
 import {
   FAILURE_THRESHOLD,
   keyIsAvailable,
   ServiceHealthState,
   serviceIsAvailable,
-} from "../src/health.ts";
-import worker from "../src/index.ts";
-import { clearModelsCacheForTests } from "../src/models.ts";
+} from "../src/gateway/health/health.ts";
+import { gatewayApp as worker } from "../src/gateway/app.ts";
+import { clearModelsCacheForTests } from "../src/gateway/catalog/models.ts";
+import { CONTEXT_MANAGEMENT_PATHS } from "../src/gateway/protocol.ts";
 
 function gatewayConfig() {
   return {
@@ -1254,7 +1255,7 @@ test("gateway summarizes configured retries in the single request log", async ()
   );
 });
 
-test("model endpoint switches between standard and Codex response formats", async () => {
+test("model endpoints preserve standard and Codex formats without usage records", async () => {
   clearConfigCacheForTests();
   clearModelsCacheForTests();
   const originalFetch = globalThis.fetch;
@@ -1266,7 +1267,14 @@ test("model endpoint switches between standard and Codex response formats", asyn
         { id: "review-model", object: "model", owned_by: "newapi" },
       ],
     });
-  const env = testEnv(gatewayConfig());
+  const events = [];
+  const env = {
+    ...testEnv(gatewayConfig()),
+    USAGE_OUTBOX: {
+      getByName: () => ({ enqueue: async (event) => events.push(event) }),
+    },
+  };
+  const execution = trackedExecutionContext();
 
   try {
     const standard = await worker.fetch(
@@ -1277,7 +1285,7 @@ test("model endpoint switches between standard and Codex response formats", asyn
         },
       }),
       env,
-      {},
+      execution.context,
     );
     const standardBody = await standard.json();
     assert.deepEqual(
@@ -1293,15 +1301,69 @@ test("model endpoint switches between standard and Codex response formats", asyn
         },
       }),
       env,
-      {},
+      execution.context,
     );
     const codexBody = await codex.json();
     assert.deepEqual(
       codexBody.models.map((model) => model.slug),
       ["gpt-5.6-sol", "codex-auto-review"],
     );
+    await execution.drain();
+    assert.deepEqual(events, []);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("only messages and responses record rejected requests, including aliases", async () => {
+  clearConfigCacheForTests();
+  const events = [];
+  const env = {
+    ...testEnv(gatewayConfig()),
+    USAGE_OUTBOX: {
+      getByName: () => ({ enqueue: async (event) => events.push(event) }),
+    },
+  };
+  const endpoints = [
+    ["responses", "POST"],
+    ["models", "GET"],
+    ["health", "GET"],
+    ["sessions", "GET"],
+    ["responses/compact", "POST"],
+    ["alpha/search", "POST"],
+    ["chat/completions", "POST"],
+    ["images/generations", "POST"],
+    ["images/edits", "POST"],
+    ...CONTEXT_MANAGEMENT_PATHS.map((endpoint) => [endpoint, "POST"]),
+  ];
+  const cases = [
+    ["/v1/messages", "messages", "POST"],
+    ["/v1/messages/count_tokens", "messages/count_tokens", "POST"],
+    ...endpoints.flatMap(([endpoint, method]) =>
+      ["", "/v1"].map((prefix) => [`${prefix}/${endpoint}`, endpoint, method]),
+    ),
+  ];
+  for (const [path, endpoint, method] of cases) {
+    events.length = 0;
+    const execution = trackedExecutionContext();
+    const response = await worker.fetch(
+      new Request(`https://gateway.example${path}`, { method }),
+      env,
+      execution.context,
+    );
+    assert.equal(response.status, 401, path);
+    await response.text();
+    await execution.drain();
+    assert.deepEqual(
+      events.map((event) => [event.endpoint, event.phase]),
+      endpoint === "messages" || endpoint === "responses"
+        ? [
+            [endpoint, "started"],
+            [endpoint, "finished"],
+          ]
+        : [],
+      path,
+    );
   }
 });
 
@@ -1619,15 +1681,17 @@ test("concurrent model catalog misses do not share request-scoped I/O", async ()
     };
     for (let index = 0; index < 2; index += 1) {
       pending.push(
-        worker.fetch(
-          new Request("https://gateway.example/v1/models", {
-            headers: {
-              authorization: "Bearer client-key",
-              "user-agent": "OpenAI-SDK",
-            },
-          }),
-          env,
-          {},
+        Promise.resolve(
+          worker.fetch(
+            new Request("https://gateway.example/v1/models", {
+              headers: {
+                authorization: "Bearer client-key",
+                "user-agent": "OpenAI-SDK",
+              },
+            }),
+            env,
+            {},
+          ),
         ),
       );
     }

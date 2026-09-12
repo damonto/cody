@@ -1,88 +1,29 @@
 # Cody Gateway
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/damonto/cody)
+An AI API gateway with a web console on Cloudflare Workers, for Codex and other OpenAI- or Anthropic-compatible clients.
 
-An AI API gateway on Cloudflare Workers for Codex and OpenAI- and Anthropic-compatible clients. Manage multiple upstream services, model aliases, and client API keys in one configuration.
+- Manage upstream services, API keys, and model aliases in the console.
+- View usage and costs for today, this week, this month, and all time.
+- Inspect request timing, token usage, caching, reasoning, and context information.
+- Set prices by service and model, including different rates for larger contexts.
 
-## Quick setup
+## Quick start
 
-You need Node.js 24 or newer and a Cloudflare account with Workers and KV.
-
-From the project directory, install dependencies, sign in, and create a KV namespace:
+Requires Node.js 24 or newer.
 
 ```bash
 npm install
-npx wrangler login
-npx wrangler kv namespace create CODY_CONFIG_KV
-cp config.example.json config.json
+npm run dev:setup
+npm run dev
 ```
 
-Put the returned namespace ID in `wrangler.jsonc`, replacing the placeholder. Edit `config.json` with your upstream URLs, models, and keys, then deploy:
+Open the console at `http://localhost:8788/console/`. Add an upstream service and its models, create a client key, then **Publish**. The gateway endpoint is `http://localhost:8788/v1`.
 
-```bash
-npm run config:validate -- config.json
-npm run config:put -- config.json
-npm run deploy
-```
+Configure token prices in **Pricing** and your reporting time zone in **Settings**. Cost estimates depend on the usage reported by your upstream providers.
 
-`config.json` contains credentials and is ignored by Git. Never commit it.
+To import an existing configuration, use **Settings → Import JSON**. See [config.example.json](config.example.json) and [config.schema.json](config.schema.json) for the JSON format.
 
-## Configuration
-
-A minimal configuration with one upstream and one client key:
-
-```json
-{
-  "$schema": "./config.schema.json",
-  "services": [
-    {
-      "id": "primary",
-      "base_url": "https://api.example.com/v1",
-      "keys": [
-        {
-          "id": "default",
-          "api_key": "sk-upstream",
-          "priority": 100,
-          "disabled": false
-        }
-      ],
-      "priority": 100,
-      "disabled": false,
-      "models": ["grok-4.5"]
-    }
-  ],
-  "api_keys": [
-    {
-      "id": "client",
-      "api_key": "sk-client",
-      "services": ["primary"]
-    }
-  ],
-  "model_routes": {
-    "gpt-5.6-sol": {
-      "model": "grok-4.5"
-    }
-  }
-}
-```
-
-Replace the example URL, model, and credentials with your own.
-
-| Field          | What to configure                                                                                                                   |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `services`     | Upstream URLs, real model names, and upstream API keys. Higher `priority` is preferred; `disabled: true` disables a service or key. |
-| `api_keys`     | Gateway client keys and the service IDs each client may access. Give each client a unique `id`.                                     |
-| `model_routes` | Optional model aliases. The example exposes `gpt-5.6-sol` to clients and sends `grok-4.5` upstream.                                 |
-
-For optional features:
-
-- Set `services[].supports_websocket: true` for upstreams that support Responses WebSockets.
-- Set `services[].supports_web_search: true` to use an upstream for Codex search. Alternatively, set `web_search` to `{"mode": "tavily", "api_key": "your-provider-key"}` or use mode `exa`.
-- Make `gpt-image-2` available to the client to use Codex Image Gen.
-
-See [config.example.json](config.example.json) for more examples and [config.schema.json](config.schema.json) for all options.
-
-To apply configuration changes, validate again and run `npm run config:put -- config.json`. A Worker redeploy is not required.
+For frontend hot reload, keep the Worker running and start `npm run dev:web` in another terminal, then open `http://localhost:5173/console/`.
 
 ## Use with Codex
 
@@ -112,17 +53,32 @@ export OPENAI_API_KEY="your-gateway-client-key"
 codex
 ```
 
-This setup lets Codex refresh the model catalog and enables its Image Gen and search integrations when configured above.
-
 Other clients can use the gateway's OpenAI or Anthropic endpoints with the same client key, supplied through `Authorization: Bearer` or `x-api-key`.
 
-## Automatic deployment
+## Deploy to Cloudflare
 
-Connect the repository to [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and select `main` for automatic deployments. Use `npm test && npm run typecheck` as the build command and `npm run deploy` as the deploy command.
-
-## Local development
+Create the required resources in your Cloudflare account:
 
 ```bash
-npm run config:put -- config.json --local
-npm run dev
+npx wrangler login
+npx wrangler kv namespace create CODY_CONFIG_KV
+npx wrangler d1 create cody
+npx wrangler queues create cody-usage
+npx wrangler queues create cody-usage-dlq
 ```
+
+Before deploying:
+
+1. Put the returned KV namespace and D1 database IDs in [wrangler.jsonc](wrangler.jsonc).
+2. Bind your domain to the Worker. Create a Cloudflare Access self-hosted application for `your-domain/console/*` (Path: `console/*`) and allow your administrator emails. This protects the console pages, assets, and `/console/api/*`; model API paths such as `/v1/*` continue to use client API keys. Set `ACCESS_TEAM_DOMAIN` to `https://your-team.cloudflareaccess.com`, set `ACCESS_AUD` to the application's AUD tag, and keep `ADMIN_LOCAL_DEV=false` in `wrangler.jsonc`. See [Access application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/).
+3. Generate a base64-encoded 32-byte encryption key and store it securely. Supply it when the following command prompts for `CONFIG_ENCRYPTION_KEY`:
+
+```bash
+npx wrangler secret put CONFIG_ENCRYPTION_KEY
+npx wrangler d1 migrations apply CODY_DB --remote
+npm run deploy
+```
+
+Open `/console/` on your domain to configure and publish your services. The root `/` and `/console` redirect there. Keep the encryption key unchanged across deployments, and keep `config.json`, `config.local.json`, and `.dev.vars` out of Git.
+
+For automatic deployments, connect `main` through [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and use `npm run deploy` as the deploy command.

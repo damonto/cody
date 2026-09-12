@@ -1,4 +1,7 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import {
+  cloudflareTest,
+  readD1Migrations,
+} from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -6,6 +9,12 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
+        queueProducers: { USAGE_QUEUE: "cody-test-usage" },
+        bindings: {
+          TEST_MIGRATIONS: await readD1Migrations("./migrations"),
+          CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          ADMIN_LOCAL_DEV: "true",
+        },
         serviceBindings: {
           TEST_UPSTREAM: "test-upstream",
         },
@@ -131,6 +140,8 @@ export default defineConfig({
     }),
   ],
   test: {
-    include: ["tests/worker/**/*.test.ts"],
+    include: ["tests/{worker,admin}/**/*.test.ts"],
+    // Each test file starts its own workerd runtime and upstream fixture.
+    maxWorkers: 4,
   },
 });

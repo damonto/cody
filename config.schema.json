@@ -1,329 +1,319 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/cody.schema.json",
   "title": "Cody Gateway Configuration",
+  "$id": "https://example.invalid/cody.schema.json",
   "type": "object",
-  "additionalProperties": false,
-  "$defs": {
-    "model_routes": {
-      "type": "object",
-      "propertyNames": {
-        "minLength": 1
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["model"],
-        "properties": {
-          "model": {
-            "type": "string",
-            "minLength": 1
-          },
-          "services": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        }
-      }
-    },
-    "service_model_routes": {
-      "type": "object",
-      "propertyNames": {
-        "minLength": 1
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["model"],
-        "properties": {
-          "model": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      }
-    }
-  },
-  "required": ["services", "api_keys"],
   "properties": {
-    "$schema": {
-      "type": "string"
-    },
+    "$schema": { "type": "string" },
     "services": {
-      "type": "array",
       "minItems": 1,
+      "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "base_url",
-          "keys",
-          "disabled",
-          "priority",
-          "models"
-        ],
         "properties": {
           "id": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 256,
             "pattern": "^[A-Za-z0-9._-]+$"
           },
-          "base_url": {
-            "type": "string",
-            "format": "uri",
-            "pattern": "^https?://"
-          },
+          "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
           "keys": {
-            "type": "array",
             "minItems": 1,
+            "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": false,
-              "required": ["id", "api_key", "disabled", "priority"],
               "properties": {
                 "id": {
                   "type": "string",
                   "minLength": 1,
+                  "maxLength": 256,
                   "pattern": "^[A-Za-z0-9._-]+$"
                 },
-                "api_key": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "disabled": {
-                  "type": "boolean"
-                },
+                "api_key": { "type": "string", "minLength": 1 },
                 "priority": {
-                  "type": "integer"
-                }
-              }
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "disabled": { "type": "boolean" }
+              },
+              "required": ["id", "api_key", "priority", "disabled"],
+              "additionalProperties": false
             }
-          },
-          "disabled": {
-            "type": "boolean"
-          },
-          "priority": {
-            "type": "integer"
           },
           "models": {
-            "type": "array",
             "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "uniqueItems": true
           },
-          "model_routes": {
-            "$ref": "#/$defs/service_model_routes"
+          "disabled": { "type": "boolean" },
+          "priority": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
           },
-          "supports_websocket": {
-            "type": "boolean",
-            "default": false
-          },
-          "supports_web_search": {
-            "type": "boolean",
-            "default": false
-          },
+          "supports_websocket": { "default": false, "type": "boolean" },
+          "supports_web_search": { "default": false, "type": "boolean" },
           "supports_context_management": {
-            "type": "boolean",
-            "default": false
+            "default": false,
+            "type": "boolean"
           },
           "retry": {
             "type": "object",
-            "additionalProperties": false,
-            "required": ["status_codes", "delays_ms"],
             "properties": {
               "status_codes": {
-                "type": "array",
                 "maxItems": 20,
-                "uniqueItems": true,
-                "items": {
-                  "type": "integer",
-                  "minimum": 400,
-                  "maximum": 599
-                }
+                "type": "array",
+                "items": { "type": "integer", "minimum": 400, "maximum": 599 },
+                "uniqueItems": true
               },
               "delays_ms": {
-                "type": "array",
                 "maxItems": 10,
-                "items": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 60000
-                }
+                "type": "array",
+                "items": { "type": "integer", "minimum": 0, "maximum": 60000 }
               }
             },
-            "oneOf": [
+            "required": ["status_codes", "delays_ms"],
+            "additionalProperties": false,
+            "anyOf": [
               {
                 "properties": {
-                  "status_codes": {
-                    "minItems": 1
-                  },
-                  "delays_ms": {
-                    "minItems": 1
-                  }
+                  "status_codes": { "maxItems": 0 },
+                  "delays_ms": { "maxItems": 0 }
                 }
               },
               {
                 "properties": {
-                  "status_codes": {
-                    "maxItems": 0
-                  },
-                  "delays_ms": {
-                    "maxItems": 0
-                  }
+                  "status_codes": { "minItems": 1 },
+                  "delays_ms": { "minItems": 1 }
                 }
               }
             ]
+          },
+          "model_routes": {
+            "type": "object",
+            "propertyNames": { "type": "string", "pattern": "\\S" },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "model": { "type": "string", "minLength": 1, "maxLength": 256 }
+              },
+              "required": ["model"],
+              "additionalProperties": false
+            }
           }
-        }
+        },
+        "required": [
+          "id",
+          "base_url",
+          "keys",
+          "models",
+          "disabled",
+          "priority"
+        ],
+        "additionalProperties": false
       }
     },
     "api_keys": {
-      "type": "array",
       "minItems": 1,
+      "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "api_key", "services"],
         "properties": {
           "id": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 256,
             "pattern": "^[A-Za-z0-9._-]+$"
           },
-          "api_key": {
-            "type": "string",
-            "minLength": 1
-          },
+          "api_key": { "type": "string", "minLength": 1 },
           "services": {
-            "type": "array",
             "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "uniqueItems": true
           },
           "model_routes": {
-            "$ref": "#/$defs/model_routes"
+            "type": "object",
+            "propertyNames": { "type": "string", "pattern": "\\S" },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "services": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": ["model"],
+              "additionalProperties": false
+            }
           }
-        }
+        },
+        "required": ["id", "api_key", "services"],
+        "additionalProperties": false
       }
     },
     "model_routes": {
-      "$ref": "#/$defs/model_routes"
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "\\S" },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "services": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "uniqueItems": true
+          }
+        },
+        "required": ["model"],
+        "additionalProperties": false
+      }
     },
     "web_search": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["mode"],
-      "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["proxy", "tavily", "exa"],
-          "default": "proxy"
-        },
-        "base_url": {
-          "type": "string",
-          "format": "uri",
-          "pattern": "^https?://"
-        },
-        "api_key": {
-          "type": "string",
-          "minLength": 1
-        },
-        "max_results": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 100
-        }
-      },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "proxy"
-              }
-            },
-            "required": ["mode"]
-          },
-          "then": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": ["base_url"]
-                },
-                {
-                  "required": ["api_key"]
-                },
-                {
-                  "required": ["max_results"]
-                }
-              ]
+          "type": "object",
+          "properties": { "mode": { "type": "string", "const": "proxy" } },
+          "required": ["mode"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "const": "tavily" },
+            "api_key": { "type": "string", "minLength": 1 },
+            "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
+            "max_results": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
             }
-          }
+          },
+          "required": ["mode", "api_key"],
+          "additionalProperties": false
         },
         {
-          "if": {
-            "properties": {
-              "mode": {
-                "enum": ["tavily", "exa"]
-              }
-            },
-            "required": ["mode"]
-          },
-          "then": {
-            "required": ["api_key"]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "tavily"
-              }
-            },
-            "required": ["mode"]
-          },
-          "then": {
-            "properties": {
-              "max_results": {
-                "minimum": 0,
-                "maximum": 20,
-                "default": 5
-              }
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "const": "exa" },
+            "api_key": { "type": "string", "minLength": 1 },
+            "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
+            "max_results": {
+              "default": 10,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
             }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "exa"
-              }
-            },
-            "required": ["mode"]
           },
-          "then": {
-            "properties": {
-              "max_results": {
-                "minimum": 1,
-                "maximum": 100,
-                "default": 10
-              }
-            }
-          }
+          "required": ["mode", "api_key"],
+          "additionalProperties": false
         }
       ]
+    },
+    "model_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "service_id": { "type": "string", "minLength": 1 },
+          "model": { "type": "string", "minLength": 1 },
+          "context_window": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+              "tiers": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "up_to_input_tokens": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        { "type": "null" }
+                      ]
+                    },
+                    "input": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    },
+                    "output": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    },
+                    "cache_write": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    },
+                    "cache_read": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    },
+                    "cache_write_5m": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    },
+                    "cache_write_1h": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,6})(?:\\.\\d{1,6})?$"
+                    }
+                  },
+                  "required": [
+                    "up_to_input_tokens",
+                    "input",
+                    "output",
+                    "cache_write",
+                    "cache_read"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["currency", "tiers"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["service_id", "model"],
+        "additionalProperties": false
+      }
+    },
+    "reporting": {
+      "type": "object",
+      "properties": {
+        "time_zone": { "type": "string", "minLength": 1 },
+        "retention_days": { "type": "integer", "minimum": 100, "maximum": 730 }
+      },
+      "required": ["time_zone", "retention_days"],
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
     }
-  }
+  },
+  "required": ["services", "api_keys"],
+  "additionalProperties": false
 }

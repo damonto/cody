@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVICE_FAN_OUT_CONCURRENCY } from "../src/concurrency.ts";
+import { SERVICE_FAN_OUT_CONCURRENCY } from "../src/shared/concurrency.ts";
 import {
   COOLDOWN_MS,
   FAILURE_THRESHOLD,
@@ -17,7 +17,7 @@ import {
   scheduleHealthUpdate,
   serviceIsAvailable,
   ServiceHealthState,
-} from "../src/health.ts";
+} from "../src/gateway/health/health.ts";
 
 test("ten consecutive failures start a cooldown and success resets state", async () => {
   const health = new ServiceHealthState();

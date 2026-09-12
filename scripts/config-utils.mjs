@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.ts";
+import { parseConfig } from "../src/config/store.ts";
 
 export async function readValidatedConfig(path) {
   const raw = await readFile(path, "utf8");

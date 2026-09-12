@@ -4,13 +4,13 @@ import { expect, test } from "vitest";
 import {
   affinityRegistryName,
   type SessionAffinityRecord,
-} from "../../src/affinity.ts";
-import { RequestLogContext } from "../../src/log.ts";
+} from "../../src/gateway/routing/affinity.ts";
+import { RequestLogContext } from "../../src/shared/log.ts";
 import {
   handleSessionClearAll,
   handleSessionList,
-} from "../../src/session-bindings.ts";
-import type { ClientApiKeyConfig } from "../../src/types.ts";
+} from "../../src/gateway/sessions/session-bindings.ts";
+import type { ClientApiKeyConfig } from "../../src/config/types.ts";
 
 function client(): ClientApiKeyConfig {
   return {
