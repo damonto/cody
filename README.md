@@ -55,6 +55,27 @@ codex
 
 Other clients can use the gateway's OpenAI or Anthropic endpoints with the same client key, supplied through `Authorization: Bearer` or `x-api-key`.
 
+## SOCKS5 proxies
+
+Set **Outbound proxy** on a service's **Connection** tab or on an individual key. SOCKS5 supports API requests, streaming, and WebSockets within the same deployment.
+
+The JSON field is `proxy` on either `services[]` or `services[].keys[]`:
+
+```json
+{
+  "proxy": {
+    "url": "socks5://proxy.example.com:1080",
+    "username": "proxy-user",
+    "password": "proxy-password"
+  }
+}
+```
+
+- Keys inherit the service's proxy by default. Set a key's `proxy` to override it, or to `null` to connect directly.
+- Include the host and port in the URL. Supply username and password together, or omit both for a proxy without authentication.
+
+Use a proxy [reachable from Cloudflare Workers](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/). Proxy failures do not fall back to a direct connection.
+
 ## Deploy to Cloudflare
 
 Create the required resources in your Cloudflare account:

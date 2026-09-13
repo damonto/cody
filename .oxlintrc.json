@@ -15,6 +15,20 @@
   "ignorePatterns": ["node_modules/**", ".wrangler/**", "refs/**"],
   "overrides": [
     {
+      "files": ["src/gateway/transport/**/*.ts"],
+      "rules": {
+        "curly": ["error", "all"],
+        "typescript/no-deprecated": "error",
+        "typescript/no-non-null-assertion": "error"
+      }
+    },
+    {
+      "files": ["src/config/**/*.ts"],
+      "rules": {
+        "typescript/no-deprecated": "error"
+      }
+    },
+    {
       "files": ["tests/*.test.mjs"],
       "rules": {
         "typescript/no-floating-promises": [

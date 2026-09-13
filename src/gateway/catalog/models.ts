@@ -1,9 +1,10 @@
 import { discardBody, readBodyWithinLimit } from "../http/body.ts";
+import { createUpstreamFetch, type UpstreamFetch } from "../transport/index.ts";
 import {
   mapWithConcurrency,
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
-import { upstreamApiKeyValues } from "../routing/credentials.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   healthFailureScope,
   recordKeyFailure,
@@ -204,14 +205,20 @@ function timeoutError(): Error {
 async function fetchCatalogResponse(
   url: string,
   init: RequestInit,
+  send: UpstreamFetch,
 ): Promise<{ response: Response; body?: unknown }> {
   const controller = new AbortController();
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, controller.signal])
+    : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const operation = (async () => {
-    const response = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
+    const response = await send(
+      new Request(url, {
+        ...init,
+        signal,
+      }),
+    );
     if (!response.ok) {
       return { response };
     }
@@ -269,7 +276,9 @@ async function fetchServiceModels(
         method: "GET",
         headers,
         redirect: "manual",
+        signal: request.signal,
       },
+      createUpstreamFetch(service, key),
     );
     const durationMs = elapsedMs(startedAt);
     if (!result.response.ok) {
@@ -338,14 +347,16 @@ async function fetchServiceModels(
     const upstream = {
       service_id: service.id,
       key_id: key.id,
-      outcome: "exception",
+      outcome: request.signal.aborted ? "cancelled" : "exception",
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
     };
-    await scheduleHealthUpdate(
-      context,
-      recordServiceFailure(env, service.id, requestId, "catalog"),
-    );
+    if (!request.signal.aborted) {
+      await scheduleHealthUpdate(
+        context,
+        recordServiceFailure(env, service.id, requestId, "catalog"),
+      );
+    }
     return { service, success: false, models: [], upstream };
   }
 }
@@ -788,7 +799,7 @@ export async function handleModels(
   const configuredTargets = allowedServiceCandidates(config, client);
   requestLog?.registerSensitiveValues([
     client.api_key,
-    ...upstreamApiKeyValues(config),
+    ...upstreamSecretValues(config),
   ]);
   const format = modelsFormatFor(request);
   const ttlMs = cacheTtlMs(env);

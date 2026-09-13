@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ConfigError, parseConfig } from "../src/config/store.ts";
+import {
+  maskSecrets,
+  restoreSecrets,
+  SECRET_PLACEHOLDER,
+} from "../src/control/store.ts";
+import { upstreamSecretValues } from "../src/gateway/routing/credentials.ts";
 
 function validConfig() {
   return {
@@ -29,6 +35,117 @@ function validConfig() {
     },
   };
 }
+
+test("service and key SOCKS5 configuration preserves credentials and explicit direct overrides", () => {
+  const input = validConfig();
+  input.services[0].proxy = {
+    url: "socks5://service-proxy.test:1080/",
+    username: "user",
+    password: " space sensitive ",
+  };
+  input.services[0].keys[0].proxy = {
+    url: "socks5://key-proxy.test:1081",
+    username: "key-user",
+    password: "key-password",
+  };
+  const parsed = parseConfig(input);
+  assert.equal(
+    parsed.services[0].proxy.url,
+    "socks5://service-proxy.test:1080",
+  );
+  assert.equal(parsed.services[0].proxy.password, " space sensitive ");
+  assert.equal(
+    parsed.services[0].keys[0].proxy.url,
+    "socks5://key-proxy.test:1081",
+  );
+  assert.ok(upstreamSecretValues(parsed).includes(" space sensitive "));
+  assert.ok(upstreamSecretValues(parsed).includes("key-password"));
+  input.services[0].keys[0].proxy = null;
+  assert.equal(parseConfig(input).services[0].keys[0].proxy, null);
+});
+
+test("SOCKS5 configuration rejects other proxy protocols, embedded secrets and invalid authentication", () => {
+  const invalid = [
+    { url: "https://proxy.test:443" },
+    { url: "http://proxy.test:8080" },
+    { url: "socks5://proxy.test" },
+    { url: "socks5://proxy.test:0" },
+    { url: "socks5://proxy.test:65536" },
+    { url: "socks5://user:secret@proxy.test:1080" },
+    { url: "socks5://proxy.test:1080/path" },
+    { url: "socks5://proxy.test:1080?token=secret" },
+    { url: "socks5://proxy.test:1080#fragment" },
+    { url: "socks5://proxy.test:1080", username: "user" },
+    { url: "socks5://proxy.test:1080", password: "password" },
+    { url: "socks5://proxy.test:1080", username: "", password: "password" },
+    {
+      url: "socks5://proxy.test:1080",
+      username: "user",
+      password: "密".repeat(86),
+    },
+    { url: "socks5://proxy.test:1080", insecure: true },
+  ];
+  for (const proxy of invalid) {
+    for (const level of ["service", "key"]) {
+      const input = validConfig();
+      (level === "service"
+        ? input.services[0]
+        : input.services[0].keys[0]
+      ).proxy = proxy;
+      assert.throws(() => parseConfig(input), ConfigError);
+    }
+  }
+});
+
+test("proxy passwords are masked and restored by service and key IDs, including reordering and rotation", () => {
+  const input = validConfig();
+  input.services[0].proxy = {
+    url: "socks5://service.test:1080",
+    username: "service",
+    password: "service-proxy-password",
+  };
+  input.services[0].keys[0].proxy = {
+    url: "socks5://key.test:1080",
+    username: "key",
+    password: "key-proxy-password",
+  };
+  input.services[0].keys.push({
+    ...input.services[0].keys[0],
+    id: "second-key",
+    api_key: "another-upstream-key",
+    proxy: {
+      url: "socks5://second.test:1080",
+      username: "second",
+      password: "second-proxy-password",
+    },
+  });
+  const masked = maskSecrets(input);
+  assert.doesNotMatch(
+    JSON.stringify(masked),
+    /service-proxy-password|key-proxy-password|second-proxy-password/,
+  );
+  assert.equal(masked.services[0].proxy.password, SECRET_PLACEHOLDER);
+  masked.services[0].keys.reverse();
+  const restored = restoreSecrets(masked, input);
+  assert.equal(
+    restored.services[0].keys[0].proxy.password,
+    "second-proxy-password",
+  );
+  assert.equal(
+    restored.services[0].keys[1].proxy.password,
+    "key-proxy-password",
+  );
+  assert.equal(restored.services[0].proxy.password, "service-proxy-password");
+  masked.services[0].keys[0].proxy.password = "rotated-password";
+  assert.equal(
+    restoreSecrets(masked, input).services[0].keys[0].proxy.password,
+    "rotated-password",
+  );
+  masked.services[0].keys[1].proxy = null;
+  assert.equal(restoreSecrets(masked, input).services[0].keys[1].proxy, null);
+  masked.services[0].id = "new-service";
+  assert.throws(() => restoreSecrets(masked, input), /new credential/);
+});
 
 test("parseConfig normalizes and validates a complete configuration", () => {
   const config = parseConfig(validConfig());

@@ -9,7 +9,9 @@ import type {
   searchSchema,
   serviceRouteSchema,
   serviceSchema,
+  socksProxySchema,
 } from "./schema.ts";
+export type SocksProxyConfig = z.output<typeof socksProxySchema>;
 export type ServiceRetryConfig = z.output<typeof retrySchema>;
 export type ServiceApiKeyConfig = z.output<typeof credentialSchema>;
 export type ServiceModelRouteConfig = z.output<typeof serviceRouteSchema>;

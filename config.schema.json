@@ -18,6 +18,45 @@
             "pattern": "^[A-Za-z0-9._-]+$"
           },
           "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
+          "proxy": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "maxLength": 2048,
+                    "pattern": "^socks5:\\/\\/"
+                  },
+                  "username": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  }
+                },
+                "required": ["url"],
+                "additionalProperties": false,
+                "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+                "anyOf": [
+                  { "required": ["username", "password"] },
+                  {
+                    "not": {
+                      "anyOf": [
+                        { "required": ["username"] },
+                        { "required": ["password"] }
+                      ]
+                    }
+                  }
+                ]
+              },
+              { "type": "null" }
+            ]
+          },
           "keys": {
             "minItems": 1,
             "type": "array",
@@ -36,7 +75,46 @@
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
                 },
-                "disabled": { "type": "boolean" }
+                "disabled": { "type": "boolean" },
+                "proxy": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 2048,
+                          "pattern": "^socks5:\\/\\/"
+                        },
+                        "username": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        },
+                        "password": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        }
+                      },
+                      "required": ["url"],
+                      "additionalProperties": false,
+                      "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+                      "anyOf": [
+                        { "required": ["username", "password"] },
+                        {
+                          "not": {
+                            "anyOf": [
+                              { "required": ["username"] },
+                              { "required": ["password"] }
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    { "type": "null" }
+                  ]
+                }
               },
               "required": ["id", "api_key", "priority", "disabled"],
               "additionalProperties": false

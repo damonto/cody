@@ -1,10 +1,11 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { parseContextManagementSession } from "./context-management-protocol.ts";
-import { upstreamApiKeyValues } from "../routing/credentials.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
 import { apiError, forwardRequestHeaders, upstreamUrl } from "../http/http.ts";
 import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { requestProtocol, type ContextManagementPath } from "../protocol.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
+import { createUpstreamFetch } from "../transport/index.ts";
 import {
   allowedServiceCandidates,
   resolveModelRoute,
@@ -26,7 +27,7 @@ export async function handleContextManagement(
   const protocol = requestProtocol(request, path);
   requestLog?.registerSensitiveValues([
     client.api_key,
-    ...upstreamApiKeyValues(config),
+    ...upstreamSecretValues(config),
   ]);
   const candidates = allowedServiceCandidates(config, client).filter(
     ({ service }) => service.supports_context_management,
@@ -128,7 +129,10 @@ export async function handleContextManagement(
         },
       ),
     undefined,
-    { attemptTimeoutMs: 35_000 },
+    {
+      attemptTimeoutMs: 35_000,
+      send: createUpstreamFetch(target.service, target.key),
+    },
   );
   requestLog?.set({
     outcome: result.response?.ok

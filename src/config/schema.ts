@@ -25,9 +25,8 @@ const integer = z
   .int({ error: "must be an integer" });
 const boolean = z.boolean({ error: "must be a boolean" });
 export const baseUrlSchema = z
-  .string()
-  .trim()
   .url("must be an absolute http(s) URL")
+  .trim()
   .regex(/^https?:\/\//, "must use http or https")
   .refine((value) => {
     const url = URL.parse(value);
@@ -115,15 +114,70 @@ export const retrySchema = z
     ],
   });
 
+const socksCredentialSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= 255,
+    "must contain at most 255 UTF-8 bytes",
+  );
+export const socksProxySchema = z
+  .strictObject({
+    url: z
+      .url("must be an absolute socks5 URL")
+      .trim()
+      .max(2048)
+      .regex(/^socks5:\/\//, "must use socks5")
+      .refine((value) => {
+        const url = URL.parse(value);
+        return (
+          url !== null &&
+          !!url.hostname &&
+          !!url.port &&
+          Number(url.port) > 0 &&
+          !url.username &&
+          !url.password &&
+          (!url.pathname || url.pathname === "/") &&
+          !url.search &&
+          !url.hash &&
+          URL.canParse(value.replace(/^socks5:/, "http:"))
+        );
+      }, "must include a host and port (1–65535), without credentials, a path, query, or fragment")
+      .transform((value) => value.replace(/\/$/, "")),
+    username: socksCredentialSchema.optional(),
+    password: socksCredentialSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      (value.username === undefined) === (value.password === undefined),
+    "username and password must be supplied together",
+  )
+  .meta({
+    description:
+      "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+    anyOf: [
+      { required: ["username", "password"] },
+      {
+        not: {
+          anyOf: [{ required: ["username"] }, { required: ["password"] }],
+        },
+      },
+    ],
+  });
+const proxySchema = socksProxySchema.nullable().optional();
+
 export const credentialSchema = z.strictObject({
   id: identifierSchema,
   api_key: secretSchema,
   priority: integer,
   disabled: boolean,
+  proxy: proxySchema,
 });
 export const serviceSchema = z.strictObject({
   id: identifierSchema,
   base_url: baseUrlSchema,
+  proxy: proxySchema,
   keys: z
     .array(credentialSchema, { error: "must be a non-empty array" })
     .min(1, "must be a non-empty array")

@@ -1126,7 +1126,7 @@ test("an upstream WebSocket handshake times out after 10 seconds", async () => {
       callback: (...args: unknown[]) => void,
       delay?: number,
       ...args: unknown[]
-    ): number => {
+    ): number | ReturnType<typeof setTimeout> => {
       if (delay === 10_000) {
         callback(...args);
         return 0;

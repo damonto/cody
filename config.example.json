@@ -4,6 +4,11 @@
     {
       "id": "primary",
       "base_url": "https://primary.example.com/v1",
+      "proxy": {
+        "url": "socks5://proxy.example.com:1080",
+        "username": "proxy-user",
+        "password": "replace-with-proxy-password"
+      },
       "keys": [
         {
           "id": "primary-key",
@@ -14,6 +19,9 @@
         {
           "id": "backup-key",
           "api_key": "sk-upstream-primary-backup",
+          "proxy": {
+            "url": "socks5://key-proxy.example.com:1080"
+          },
           "disabled": true,
           "priority": 50
         }

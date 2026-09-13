@@ -67,6 +67,9 @@ export const CredentialFields = withForm({
                         <field.ToggleField label="Key enabled" inverse />
                       )}
                     </form.AppField>
+                    <form.AppField name={`keys[${position}].proxy`}>
+                      {(field) => <field.SocksProxyField inherit />}
+                    </form.AppField>
                   </CardContent>
                 </Card>
               ))}

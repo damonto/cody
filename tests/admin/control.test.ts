@@ -12,7 +12,10 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import adminWorker, { app } from "../../src/worker.ts";
-import { clearConfigCacheForTests } from "../../src/config/store.ts";
+import {
+  clearConfigCacheForTests,
+  parseConfig,
+} from "../../src/config/store.ts";
 import {
   listCoolingHealth,
   recordKeyFailure,
@@ -148,6 +151,33 @@ test("AES-GCM authenticates payloads and key material", async () => {
     decryptConfig(JSON.stringify(envelope), bindings.CONFIG_ENCRYPTION_KEY),
   ).rejects.toThrow();
   await expect(encryptConfig({}, "invalid-key")).rejects.toThrow("32-byte key");
+});
+
+test("service and key proxy passwords stay encrypted and survive masked draft edits", async () => {
+  const input = parseConfig(config());
+  input.services[0].proxy = {
+    url: "socks5://service.test:1080",
+    username: "service-user",
+    password: "service-proxy-secret",
+  };
+  input.services[0].keys[0].proxy = {
+    url: "socks5://key.test:1081",
+    username: "key-user",
+    password: "key-proxy-secret",
+  };
+  const saved = await control().save(input, 0, "tester");
+  expect(saved.config.services[0].proxy?.password).toBe(SECRET_PLACEHOLDER);
+  expect(saved.config.services[0].keys[0].proxy?.password).toBe(
+    SECRET_PLACEHOLDER,
+  );
+  expect(JSON.stringify(saved)).not.toContain("service-proxy-secret");
+  expect(JSON.stringify(saved)).not.toContain("key-proxy-secret");
+  expect((await control().state()).draft_payload).not.toContain("proxy-secret");
+  saved.config.services[0].priority += 1;
+  await control().save(saved.config, 1, "tester");
+  const restored = parseConfig(await control().rawDraft());
+  expect(restored.services[0].proxy?.password).toBe("service-proxy-secret");
+  expect(restored.services[0].keys[0].proxy?.password).toBe("key-proxy-secret");
 });
 
 test("an audit insert failure rolls back the draft and its version", async () => {

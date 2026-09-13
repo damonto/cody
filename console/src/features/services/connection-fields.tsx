@@ -37,6 +37,9 @@ export const ConnectionFields = withForm({
             />
           )}
         </form.AppField>
+        <form.AppField name="proxy">
+          {(field) => <field.SocksProxyField />}
+        </form.AppField>
         <form.AppField name="models">
           {(field) => (
             <field.StringListField

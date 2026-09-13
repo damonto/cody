@@ -1,5 +1,6 @@
 import { createFormHook } from "@tanstack/react-form";
 import { fieldContext, formContext } from "./form-context";
+import { SocksProxyField } from "@/components/form/proxy-field";
 import {
   FormErrors,
   NumberField,
@@ -18,6 +19,7 @@ export const { useAppForm, withForm } = createFormHook({
     StringListField,
     NumberListField,
     ToggleField,
+    SocksProxyField,
   },
   formComponents: { Errors: FormErrors },
 });

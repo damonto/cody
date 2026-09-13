@@ -1,6 +1,7 @@
 import { recordKeyFailure, healthFailureScope } from "../health/health.ts";
 import { upstreamUrl } from "../http/http.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
+import { createUpstreamFetch } from "../transport/index.ts";
 import { logError, errorMessage } from "../../shared/log.ts";
 import type { ModelServiceTarget } from "../routing/routing.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
@@ -74,6 +75,7 @@ export class UpstreamWebSocket {
           ),
         target.service.retry,
         {
+          send: createUpstreamFetch(target.service, target.key),
           wait: (delayMs) => abortableDelay(delayMs, controller.signal),
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
           onResponse: async (response) => {

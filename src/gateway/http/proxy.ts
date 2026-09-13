@@ -2,7 +2,8 @@ import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import type { NormalizedUsage } from "../../billing/types.ts";
 import { retryResponseUsage } from "../../telemetry/retry.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
-import { upstreamApiKeyValues } from "../routing/credentials.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
+import { createUpstreamFetch, type UpstreamFetch } from "../transport/index.ts";
 import {
   codexTurnMetadata,
   contextManagementRequested,
@@ -51,6 +52,7 @@ const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
 
 export interface UpstreamRetryOptions {
+  send?: UpstreamFetch;
   wait?: (delayMs: number) => Promise<void>;
   onResponse?: (response: Response, attempt: number) => Promise<void> | void;
   attemptTimeoutMs?: number;
@@ -74,8 +76,19 @@ export interface FetchWithRetriesResult {
   error?: unknown;
 }
 
-function wait(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
+function wait(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export class UpstreamAttemptTimeoutError extends Error {
@@ -88,9 +101,11 @@ export class UpstreamAttemptTimeoutError extends Error {
 async function fetchAttempt(
   request: Request,
   timeoutMs: number | undefined,
+  send: UpstreamFetch,
 ): Promise<Response> {
+  request.signal.throwIfAborted();
   if (timeoutMs === undefined) {
-    return fetch(request);
+    return send(request);
   }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new RangeError("attemptTimeoutMs must be a positive finite number");
@@ -105,7 +120,7 @@ async function fetchAttempt(
   const signal = AbortSignal.any([request.signal, timeoutController.signal]);
 
   try {
-    return await fetch(new Request(request, { signal }));
+    return await send(new Request(request, { signal }));
   } catch (error) {
     if (timeoutError && !request.signal.aborted) {
       throw timeoutError;
@@ -125,10 +140,13 @@ export async function fetchWithConfiguredRetries(
   for (let attemptIndex = 0; ; attemptIndex += 1) {
     const attemptStartedAt = performance.now();
     let response: Response;
+    let request: Request;
     try {
+      request = makeRequest();
       response = await fetchAttempt(
-        makeRequest(),
+        request,
         retryOptions.attemptTimeoutMs,
+        retryOptions.send ?? ((request) => fetch(request)),
       );
     } catch (error) {
       attempts.push({
@@ -165,7 +183,10 @@ export async function fetchWithConfiguredRetries(
     }
     await discardBody(response.body);
     try {
-      await (retryOptions.wait ?? wait)(delayMs);
+      request.signal.throwIfAborted();
+      if (retryOptions.wait) await retryOptions.wait(delayMs);
+      else await wait(delayMs, request.signal);
+      request.signal.throwIfAborted();
     } catch (error) {
       return { attempts, error };
     }
@@ -275,7 +296,7 @@ export async function handleInference(
 ): Promise<Response> {
   requestLog?.registerSensitiveValues([
     client.api_key,
-    ...upstreamApiKeyValues(config),
+    ...upstreamSecretValues(config),
   ]);
   const protocol = requestProtocol(request, upstreamPath);
   let rawBody: Uint8Array<ArrayBuffer>;
@@ -497,10 +518,12 @@ export async function handleInference(
         headers,
         body,
         redirect: "manual",
+        signal: request.signal,
       }),
     service.retry,
     {
       ...retryOptions,
+      send: retryOptions.send ?? createUpstreamFetch(service, selectedKey),
       ...(meter
         ? {
             observeDiscardedResponse: (response: Response) =>
@@ -521,9 +544,13 @@ export async function handleInference(
   meter?.recordAttempts(result.attempts);
   const upstreamDurationMs = elapsedMs(startedAt);
   if (!result.response) {
-    meter?.diagnostic("upstream_unavailable");
+    const cancelled = request.signal.aborted;
+    const status = cancelled ? 499 : 502;
+    const code = cancelled ? "request_cancelled" : "upstream_unavailable";
+    meter?.diagnostic(code);
+    if (cancelled) meter?.finish("cancelled", status);
     requestLog?.warn({
-      outcome: "upstream_unavailable",
+      outcome: code,
       upstream: {
         service_id: service.id,
         key_id: selectedKey.id,
@@ -534,15 +561,23 @@ export async function handleInference(
         error: errorMessage(result.error),
       },
     });
-    await scheduleHealthUpdate(
-      context,
-      recordServiceFailure(env, service.id, requestId),
-    );
+    if (!cancelled) {
+      await scheduleHealthUpdate(
+        context,
+        recordServiceFailure(env, service.id, requestId),
+      );
+    }
     return apiError(
       protocol,
-      502,
-      "The selected upstream service could not be reached",
-      { type: "server_error", code: "upstream_unavailable", requestId },
+      status,
+      cancelled
+        ? "The client cancelled the request"
+        : "The selected upstream service could not be reached",
+      {
+        type: cancelled ? "invalid_request_error" : "server_error",
+        code,
+        requestId,
+      },
     );
   }
 

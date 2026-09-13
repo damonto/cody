@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 
 import { ServiceHealthState } from "../src/gateway/health/health.ts";
@@ -13,6 +14,7 @@ import {
 } from "../src/gateway/http/http.ts";
 import {
   handleInference,
+  fetchWithConfiguredRetries,
   sessionIdForInference,
   upstreamBody,
 } from "../src/gateway/http/proxy.ts";
@@ -819,6 +821,57 @@ test("health classification follows the request dialect, not the endpoint host",
   }
 });
 
+test("inference uses the selected key's proxy override and never bypasses a failed proxy", async () => {
+  const originalFetch = globalThis.fetch;
+  let directCalls = 0;
+  globalThis.fetch = async () => {
+    directCalls += 1;
+    return new Response("direct");
+  };
+  try {
+    for (const override of [
+      undefined,
+      null,
+      { url: "socks5://key-proxy.test:1081" },
+    ]) {
+      const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });
+      fixture.config.services[0].proxy = {
+        url: "socks5://service-proxy.test:1080",
+      };
+      fixture.config.services[0].keys[0].proxy = override;
+      fixture.config.services[0].keys[1].proxy = null;
+      const response = await handleInference(
+        inferenceRequest(),
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        "responses",
+      );
+      assert.equal(response.status, override === null ? 200 : 502);
+      assert.equal(fixture.calls.failure, override === null ? 0 : 1);
+    }
+    assert.equal(directCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Connection-nominated headers are removed from HTTP and WebSocket forwarding", () => {
+  const request = new Request("https://gateway.example/", {
+    headers: {
+      connection: "keep-alive, x-hop",
+      "x-hop": "strip",
+      "x-app": "keep",
+    },
+  });
+  for (const forward of [forwardRequestHeaders, forwardWebSocketHeaders]) {
+    const headers = forward(request, "upstream-key");
+    assert.equal(headers.has("x-hop"), false);
+    assert.equal(headers.get("x-app"), "keep");
+    assert.equal(headers.get("authorization"), "Bearer upstream-key");
+  }
+});
+
 test("a retrying 403 cools the key even when the same-key retry succeeds", async () => {
   const fixture = inferenceFixture({ status_codes: [403], delays_ms: [0] });
   const originalFetch = globalThis.fetch;
@@ -1153,6 +1206,108 @@ test("inference network exceptions continue to record a health failure", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+for (const protocol of ["openai", "anthropic"]) {
+  test(
+    `${protocol} inference cancellation preserves health and records a cancelled request`,
+    { timeout: 1000 },
+    async () => {
+      const fixture = inferenceFixture();
+      const controller = new AbortController();
+      const started = Promise.withResolvers();
+      const events = [];
+      const meter = new RequestMeter({
+        requestId: "cancelled-request",
+        endpoint: "responses",
+        method: "POST",
+        protocol,
+        sink: { send: async (event) => events.push(event) },
+      });
+      meter.configure(fixture.config);
+      meter.authenticate(fixture.client.id);
+      const request = new Request(inferenceRequest(), {
+        signal: controller.signal,
+        ...(protocol === "anthropic"
+          ? { headers: { "anthropic-version": "2023-06-01" } }
+          : {}),
+      });
+      const operation = handleInference(
+        request,
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        "responses",
+        "cancelled-request",
+        undefined,
+        {
+          send(upstream) {
+            return new Promise((_, reject) => {
+              upstream.signal.addEventListener(
+                "abort",
+                () => reject(upstream.signal.reason),
+                { once: true },
+              );
+              started.resolve(upstream.signal);
+            });
+          },
+        },
+        undefined,
+        meter,
+      );
+      const signal = await started.promise;
+      controller.abort();
+      const response = await operation;
+      assert.equal(signal.aborted, true);
+      assert.equal(response.status, 499);
+      const body = await meter.response(response).json();
+      assert.equal(
+        body.error.type,
+        protocol === "anthropic" ? "api_error" : "invalid_request_error",
+      );
+      assert.equal(
+        body.error.code,
+        protocol === "openai" ? "request_cancelled" : undefined,
+      );
+      await meter.drain();
+      assert.deepEqual(fixture.calls, {
+        failure: 0,
+        keyFailure: 0,
+        success: 0,
+      });
+      assert.equal(events.at(-1).outcome, "cancelled");
+      assert.equal(events.at(-1).diagnostic_code, "request_cancelled");
+    },
+  );
+}
+
+test(
+  "cancelling during the configured retry delay stops promptly without another attempt",
+  { timeout: 1000 },
+  async () => {
+    const controller = new AbortController();
+    let sends = 0;
+    const operation = fetchWithConfiguredRetries(
+      () =>
+        new Request("https://upstream.test/", { signal: controller.signal }),
+      { status_codes: [429], delays_ms: [10_000] },
+      {
+        send: async () => {
+          sends += 1;
+          return new Response(null, { status: 429 });
+        },
+      },
+    );
+    // Let the first attempt and body discard finish before cancelling the delay.
+    await setImmediate();
+    controller.abort();
+    const result = await operation;
+    assert.equal(sends, 1);
+    assert.equal(result.response, undefined);
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.attempts[0].retry_delay_ms, 10_000);
+    assert.equal(result.error.name, "AbortError");
+  },
+);
 
 test("metering records routing, retries, pricing and failures without a request logger", async () => {
   const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });

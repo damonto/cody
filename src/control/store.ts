@@ -57,25 +57,36 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
   const restore = (
     entry: Record<string, unknown>,
     existing: Record<string, unknown> | undefined,
+    field = "api_key",
   ): void => {
-    if (entry.api_key === SECRET_PLACEHOLDER) {
+    if (entry[field] === SECRET_PLACEHOLDER) {
       if (
-        typeof existing?.api_key !== "string" ||
-        existing.api_key === SECRET_PLACEHOLDER
+        typeof existing?.[field] !== "string" ||
+        existing[field] === SECRET_PLACEHOLDER
       )
         throw new ControlInputError("A new credential requires a secret value");
-      entry.api_key = existing.api_key;
+      entry[field] = existing[field];
     }
+  };
+  const restoreProxy = (
+    entry: Record<string, unknown>,
+    existing: Record<string, unknown> | undefined,
+  ): void => {
+    const proxy = record(entry.proxy);
+    if (proxy) restore(proxy, record(existing?.proxy), "password");
   };
   for (const service of entries(input.services)) {
     const existing = entries(old?.services).find(
       (item) => item.id === service.id,
     );
-    for (const credential of entries(service.keys))
-      restore(
-        credential,
-        entries(existing?.keys).find((item) => item.id === credential.id),
+    restoreProxy(service, existing);
+    for (const credential of entries(service.keys)) {
+      const oldCredential = entries(existing?.keys).find(
+        (item) => item.id === credential.id,
       );
+      restore(credential, oldCredential);
+      restoreProxy(credential, oldCredential);
+    }
   }
   for (const client of entries(input.api_keys))
     restore(
@@ -99,7 +110,9 @@ export function maskSecrets(value: unknown): JsonValue {
   return Object.fromEntries(
     Object.entries(input).map(([name, entry]) => [
       name,
-      name === "api_key" && typeof entry === "string" && entry
+      (name === "api_key" || name === "password") &&
+      typeof entry === "string" &&
+      entry
         ? SECRET_PLACEHOLDER
         : maskSecrets(entry),
     ]),

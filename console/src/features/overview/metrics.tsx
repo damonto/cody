@@ -28,7 +28,7 @@ export function MetricCard({
           <span>{title}</span>
           <span className="[&>svg]:size-4">{icon}</span>
         </div>
-        <div className="mt-3 break-words text-xl font-semibold tracking-tight tabular-nums sm:text-2xl xl:text-3xl">
+        <div className="mt-3 wrap-break-word text-xl font-semibold tracking-tight tabular-nums sm:text-2xl xl:text-3xl">
           {value}
         </div>
         <p className="mt-1 text-[11px] text-muted-foreground">{comparison}</p>

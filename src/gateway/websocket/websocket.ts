@@ -1,4 +1,4 @@
-import { upstreamApiKeyValues } from "../routing/credentials.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   clientApiKeyDigest,
   forwardableWebSocketHeaders,
@@ -31,7 +31,7 @@ export async function handleResponsesWebSocket(
 
   requestLog?.registerSensitiveValues([
     initialClient.api_key,
-    ...upstreamApiKeyValues(initialConfig),
+    ...upstreamSecretValues(initialConfig),
   ]);
 
   const headers = forwardableWebSocketHeaders(request);

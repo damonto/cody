@@ -35,6 +35,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.8",
     "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "24.13.4",
     "oxlint": "^1.82.0",
     "oxlint-tsgolint": "^7.0.2001",
     "prettier": "^3.9.6",
@@ -46,8 +47,11 @@
   "dependencies": {
     "@hono/zod-validator": "^0.9.1",
     "@js-temporal/polyfill": "^0.5.1",
+    "@peculiar/x509": "1.14.3",
+    "@reclaimprotocol/tls": "0.1.4",
     "hono": "^4.13.7",
     "jose": "^6.2.12",
+    "websocket-driver": "0.7.5",
     "zod": "^4.6.2"
   },
   "workspaces": [

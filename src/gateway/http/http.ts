@@ -51,9 +51,16 @@ export function shouldStripRequestHeader(name: string): boolean {
 
 export function forwardableWebSocketHeaders(request: Request): Headers {
   const headers = new Headers();
+  const connectionHeaders = new Set(
+    (request.headers.get("connection") ?? "")
+      .toLowerCase()
+      .split(",")
+      .map((name) => name.trim()),
+  );
   request.headers.forEach((value, name) => {
     if (
       !shouldStripRequestHeader(name) &&
+      !connectionHeaders.has(name.toLowerCase()) &&
       !name.toLowerCase().startsWith("sec-websocket-")
     ) {
       headers.set(name, value);
@@ -307,8 +314,17 @@ export function forwardRequestHeaders(
   serviceApiKey: string,
 ): Headers {
   const headers = new Headers();
+  const connectionHeaders = new Set(
+    (request.headers.get("connection") ?? "")
+      .toLowerCase()
+      .split(",")
+      .map((name) => name.trim()),
+  );
   request.headers.forEach((value, name) => {
-    if (!shouldStripRequestHeader(name)) {
+    if (
+      !shouldStripRequestHeader(name) &&
+      !connectionHeaders.has(name.toLowerCase())
+    ) {
       headers.set(name, value);
     }
   });

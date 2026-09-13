@@ -191,6 +191,26 @@ test("native endpoints enforce opt-in, authentication, methods and the path whit
   expect(fetch).not.toHaveBeenCalled();
 });
 
+test("native context calls use the pinned key's explicit direct proxy override", async () => {
+  const settings = config();
+  settings.services[0].proxy = {
+    url: "socks5://unreachable-proxy.invalid:1080",
+  };
+  settings.services[0].keys[0].proxy = null;
+  const fetch = vi.fn(
+    async () => new Response("encrypted-output", { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const response = await call(
+    settings,
+    "/v1/alpha/notes/v2/thread_hint",
+    toolPayload(crypto.randomUUID()),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe("encrypted-output");
+  expect(fetch).toHaveBeenCalledOnce();
+});
+
 test("invalid identities and oversized native bodies are rejected before contacting upstream", async () => {
   const settings = config();
   const fetch = vi.fn();

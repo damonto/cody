@@ -739,6 +739,55 @@ test("HTTP 503 model catalog responses increment catalog health", async () => {
   }
 });
 
+for (const phase of ["headers", "body"]) {
+  test(
+    `client cancellation during catalog ${phase} does not count against health`,
+    { timeout: 1000 },
+    async (t) => {
+      clearModelsCacheForTests();
+      const config = modelConfig();
+      const { env, calls } = healthEnvironment();
+      const controller = new AbortController();
+      const started = Promise.withResolvers();
+      t.mock.method(globalThis, "fetch", async (request) => {
+        const { signal } = request;
+        if (phase === "headers") {
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+            started.resolve(signal);
+          });
+        }
+        return new Response(
+          new ReadableStream({
+            start(body) {
+              signal.addEventListener(
+                "abort",
+                () => body.error(signal.reason),
+                { once: true },
+              );
+              started.resolve(signal);
+            },
+          }),
+        );
+      });
+      const response = handleModels(
+        new Request(modelRequest(), { signal: controller.signal }),
+        env,
+        config,
+        config.api_keys[0],
+        "cancelled-catalog",
+      );
+      const signal = await started.promise;
+      controller.abort();
+      await response;
+      assert.equal(signal.aborted, true);
+      assert.deepEqual(calls, { failure: 0, keyFailure: 0, success: 0 });
+    },
+  );
+}
+
 test("HTTP 403 model catalog responses cool only the selected catalog key", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
@@ -846,6 +895,36 @@ test("oversized model catalogs are cancelled before buffering", async () => {
     assert.equal(response.status, 502);
     assert.equal(cancelled, true);
     assert.equal(calls.failure, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model catalogs honor key direct overrides and never bypass inherited proxies", async () => {
+  const originalFetch = globalThis.fetch;
+  let directCalls = 0;
+  globalThis.fetch = async () => {
+    directCalls += 1;
+    return Response.json({ data: [{ id: "model" }] });
+  };
+  try {
+    for (const override of [undefined, null]) {
+      clearModelsCacheForTests();
+      const config = modelConfig();
+      config.services[0].proxy = { url: "socks5://proxy.test:1080" };
+      config.services[0].keys[0].proxy = override;
+      const { env, calls } = healthEnvironment();
+      const response = await handleModels(
+        modelRequest(),
+        env,
+        config,
+        config.api_keys[0],
+        "proxy-selection",
+      );
+      assert.equal(response.status, override === null ? 200 : 502);
+      assert.equal(calls.failure, override === null ? 0 : 1);
+    }
+    assert.equal(directCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
