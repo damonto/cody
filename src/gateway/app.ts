@@ -120,7 +120,6 @@ async function inference(
       r.config,
       r.client,
       r.requestLog,
-      r.meter,
     );
   }
   if (r.websocketRequest) {
@@ -169,7 +168,6 @@ for (const path of CONTEXT_MANAGEMENT_PATHS) {
       path,
       r.requestId,
       r.requestLog,
-      r.meter,
     ),
   );
 }

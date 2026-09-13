@@ -136,6 +136,27 @@ test("recovery preserves completed records and marks unfinished checkpoints inco
   });
 });
 
+test("WebSocket recovery delivers inference and removes non-inference without Queue writes", async () => {
+  await runInDurableObject(proxy(), async (_instance, state) => {
+    const store = new WebSocketStorage(state.storage);
+    const event = usage("inference-recovery", Date.now());
+    await store.finish(event);
+    for (const kind of ["auxiliary", "catalog", "handshake"]) {
+      await state.storage.put(`usage-outbox:${kind}`, {
+        ...event,
+        request_id: kind,
+        kind,
+      });
+    }
+    const send = vi.fn(async () => {});
+    const journal = new WebSocketUsage(store, { send }, state);
+    await journal.flush();
+    expect(send).toHaveBeenCalledExactlyOnceWith(event);
+    expect((await store.pendingUsage()).size).toBe(0);
+    expect(await state.storage.getAlarm()).toBeNull();
+  });
+});
+
 test("overlapping flushes share one delivery and retain a retry after queue failure", async () => {
   await runInDurableObject(proxy(), async (_instance, state) => {
     const store = new WebSocketStorage(state.storage);

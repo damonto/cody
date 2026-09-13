@@ -3,14 +3,15 @@ import test from "node:test";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 import { SseObserver } from "../src/telemetry/stream.ts";
 
-function fixture(protocol = "openai") {
+function fixture(protocol = "openai", websocket = false) {
   const events = [];
   let clock = 1000;
   const meter = new RequestMeter({
     requestId: "request",
     endpoint: protocol === "openai" ? "responses" : "messages",
-    method: "POST",
+    method: websocket ? "WS" : "POST",
     protocol,
+    websocket,
     now: () => clock,
     sink: { send: async (event) => events.push(event) },
   });
@@ -47,6 +48,36 @@ function fixture(protocol = "openai") {
     },
   };
 }
+
+test("meters reject non-inference requests before sending any usage", async () => {
+  const events = [];
+  for (const [endpoint, method, websocket = false] of [
+    ["models", "GET"],
+    ["health", "GET"],
+    ["sessions", "DELETE"],
+    ["alpha/search", "POST"],
+    ["alpha/history/v2/list_windows", "POST"],
+    ["alpha/notes/v2/thread_hint", "POST"],
+    ["responses", "GET"],
+    ["messages", "GET"],
+    ["messages", "WS", true],
+  ]) {
+    assert.throws(
+      () =>
+        new RequestMeter({
+          requestId: "not-inference",
+          endpoint,
+          method,
+          websocket,
+          protocol: "openai",
+          sink: { send: async (event) => events.push(event) },
+        }),
+      /Only inference requests can be metered/,
+    );
+  }
+  await Promise.resolve();
+  assert.deepEqual(events, []);
+});
 
 test("SSE is forwarded byte for byte, including UTF-8 split across chunks", async () => {
   const { meter, events, advance } = fixture();
@@ -91,6 +122,7 @@ test("SSE is forwarded byte for byte, including UTF-8 split across chunks", asyn
     events.map((event) => event.sequence),
     [0, 1, 2],
   );
+  assert.ok(events.every((event) => event.kind === "inference"));
 });
 
 test("HTTP 200 in-band errors and disconnects have their own terminal outcome", async () => {
@@ -138,6 +170,80 @@ test("nonstream JSON cannot invent a first-token timestamp", async () => {
   assert.equal(events.at(-1).first_text_ms, null);
   assert.equal(events.at(-1).usage.status, "partial");
 });
+
+for (const transport of ["sse", "websocket"]) {
+  test(`${transport} custom tool input records generation latency without first text`, async () => {
+    const { meter, events, advance } = fixture(
+      "openai",
+      transport === "websocket",
+    );
+    const frames = [
+      { type: "response.created", response: { id: "resp_tool" } },
+      {
+        type: "response.output_item.added",
+        item: { type: "custom_tool_call", name: "exec", input: "" },
+      },
+      { type: "response.custom_tool_call_input.delta", delta: "" },
+      {
+        type: "response.custom_tool_call_input.delta",
+        delta: "print(",
+      },
+      { type: "response.custom_tool_call_input.delta", delta: "1)" },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_tool",
+          usage: {
+            input_tokens: 20,
+            input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+            output_tokens: 3,
+          },
+        },
+      },
+    ];
+    if (transport === "sse") {
+      let index = 0;
+      const source = frames
+        .map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
+        .join("");
+      const response = meter.response(
+        new Response(
+          new ReadableStream(
+            {
+              pull(controller) {
+                advance(100);
+                if (index === frames.length) controller.close();
+                else {
+                  controller.enqueue(
+                    new TextEncoder().encode(
+                      `data: ${JSON.stringify(frames[index++])}\n\n`,
+                    ),
+                  );
+                }
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      );
+      assert.equal(await response.text(), source);
+    } else {
+      for (const frame of frames) {
+        advance(100);
+        meter.observe(frame);
+      }
+      meter.finish("success", 200);
+    }
+    await meter.drain();
+    const final = events.at(-1);
+    assert.equal(final.ttft_ms, 400);
+    assert.equal(final.first_text_ms, null);
+    assert.equal(final.outcome, "success");
+    assert.equal(final.observation_issue, null);
+    assert.equal(final.usage.tokens.output_tokens, 3);
+  });
+}
 
 test("SSE observation is bounded and recovers at the next event", () => {
   const events = [],
@@ -264,3 +370,116 @@ test("configured retry responses contribute separately priced usage without read
     null,
   );
 });
+
+for (const transport of ["http", "sse", "websocket"]) {
+  test(`${transport} meters apply cache write pricing to each attempt's usage`, async () => {
+    const { retryResponseUsage } = await import("../src/telemetry/retry.ts");
+    const previous = await retryResponseUsage(
+      Response.json({
+        usage: {
+          input_tokens: 200_000,
+          output_tokens: 0,
+          input_tokens_details: { cached_tokens: 0 },
+        },
+      }),
+      "openai",
+    );
+    assert.equal(previous.status, "partial");
+    const events = [];
+    const meter = new RequestMeter({
+      requestId: "omitted-cache-writes",
+      endpoint: "responses",
+      method: transport === "websocket" ? "WS" : "POST",
+      protocol: "openai",
+      websocket: transport === "websocket",
+      sink: { send: async (event) => events.push(event) },
+    });
+    const config = {
+      revision: 7,
+      model_policies: [
+        {
+          service_id: "a",
+          model: "gemini-3.8-flash",
+          context_window: 1_000_000,
+          pricing: {
+            currency: "USD",
+            tiers: [
+              {
+                up_to_input_tokens: 200_000,
+                input: "0.75",
+                output: "3.75",
+                cache_write: "0",
+                cache_read: "0.075",
+              },
+              {
+                up_to_input_tokens: null,
+                input: "1.50",
+                output: "7.50",
+                cache_write: "1.875",
+                cache_read: "0.15",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    meter.configure(config);
+    meter.authenticate("client");
+    meter.select({ serviceId: "a", keyId: "key", model: "gemini-3.8-flash" });
+    config.model_policies[0].pricing.tiers[0].cache_write = "0.9375";
+    meter.recordAttempts([
+      { attempt: 1, status: 503, duration_ms: 30, usage: previous },
+      { attempt: 2, status: 200, duration_ms: 50 },
+    ]);
+    const response = {
+      id: "response",
+      model: "gemini-3.8-flash",
+      usage: {
+        input_tokens: 14_436,
+        output_tokens: 5,
+        total_tokens: 14_441,
+        input_tokens_details: { cached_tokens: 0 },
+      },
+    };
+    const frame = { type: "response.completed", response };
+    if (transport === "websocket") {
+      meter.observe(frame);
+      assert.equal(meter.checkpoint().usage.status, "reported");
+      meter.finish("success", 200);
+    } else {
+      const source =
+        transport === "sse"
+          ? `data: ${JSON.stringify(frame)}\n\n`
+          : JSON.stringify(response);
+      const forwarded = meter.response(
+        new Response(source, {
+          headers: {
+            "content-type":
+              transport === "sse" ? "text/event-stream" : "application/json",
+          },
+        }),
+      );
+      assert.equal(await forwarded.text(), source);
+    }
+    await meter.drain();
+    const event = events.at(-1);
+    assert.equal(event.outcome, "success");
+    assert.equal(event.observation_issue, null);
+    assert.equal(event.context_tokens, 14_436);
+    assert.equal(event.usage.tokens.input_tokens, 214_436);
+    assert.equal(event.usage.tokens.uncached_input_tokens, 214_436);
+    assert.equal(event.usage.tokens.cache_write_tokens, 0);
+    assert.equal(event.usage.status, "reported");
+    assert.equal(event.billing.status, "complete");
+    assert.equal(event.billing.total_nano, 160_845_750);
+    assert.deepEqual(
+      event.attempts.map((attempt) => attempt.billing.total_nano),
+      [150_000_000, 10_845_750],
+    );
+    assert.ok(
+      event.attempts.every((attempt) => attempt.usage.status === "reported"),
+    );
+    assert.deepEqual(event.usage.raw, response.usage);
+    assert.equal(previous.status, "partial");
+  });
+}

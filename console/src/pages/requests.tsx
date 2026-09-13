@@ -27,7 +27,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 
 export default function Requests() {
-  const { values } = useReportFilters();
+  const { values, invalid } = useReportFilters();
   const draft = useDraft();
   const [cursor, setCursor] = useState<{ filter: string; history: string[] }>({
     filter: "",
@@ -47,6 +47,7 @@ export default function Requests() {
         ),
       ),
     refetchInterval: 15_000,
+    enabled: !invalid,
   });
   const timeZone =
     report.data?.range?.time_zone ?? draft.data?.config.reporting?.time_zone;
@@ -165,6 +166,7 @@ export default function Requests() {
       />
       <ReportFilters
         timeZone={timeZone}
+        range={report.data?.range}
         requests
         fetching={report.isFetching}
         refresh={() => void report.refetch()}
@@ -172,8 +174,22 @@ export default function Requests() {
       {report.error && (
         <ErrorNotice error={report.error} retry={() => void report.refetch()} />
       )}
+      {report.data?.range && (
+        <p className="text-xs text-muted-foreground">
+          {report.data.range.period === "total"
+            ? "All time through "
+            : date(report.data.range.from, timeZone) + " – "}
+          {date(report.data.range.to, timeZone)}
+          {report.data.retention &&
+          report.data.range.from < report.data.retention.from
+            ? " · Request details are retained for " +
+              report.data.retention.days +
+              " days; older aggregates remain in Overview."
+            : ""}
+        </p>
+      )}
       <Card className="overflow-hidden py-0 shadow-none">
-        {report.isPending ? (
+        {report.isPending && !invalid ? (
           <Loading />
         ) : (
           <DataTable
@@ -273,7 +289,7 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
       <div className="flex items-center justify-between">
         <Status value={item.outcome} />
         <span className="text-xs text-muted-foreground">
-          {item.protocol} · {item.transport} · {item.kind}
+          {item.protocol} · {item.transport}
         </span>
       </div>
       <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">

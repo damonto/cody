@@ -3,7 +3,6 @@ import type { ApiProtocol } from "../gateway/protocol.ts";
 
 export type RequestOutcome =
   "pending" | "success" | "failed" | "cancelled" | "incomplete";
-export type RequestKind = "inference" | "auxiliary" | "catalog" | "handshake";
 
 export interface AttemptRecord {
   attempt: number;
@@ -33,7 +32,7 @@ export interface UsageEvent {
   method: string;
   protocol: ApiProtocol;
   transport: "http" | "sse" | "websocket";
-  kind: RequestKind;
+  kind: "inference";
   outcome: RequestOutcome;
   http_status: number | null;
   diagnostic_code: string | null;

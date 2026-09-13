@@ -2,7 +2,11 @@ import { expect, type Page } from "@playwright/test";
 import type { Draft, Summary } from "../src/lib/api";
 
 import { draftSchema, reportQuerySchema } from "../../src/admin/schema";
-import { reportRange } from "../../src/reporting/ranges";
+import {
+  DAY_MS,
+  reportBucketMs,
+  reportRange,
+} from "../../src/reporting/ranges";
 
 const secret = "__CODY_SECRET_UNCHANGED__";
 function fixture(): Draft {
@@ -87,11 +91,19 @@ export async function mockApi(page: Page, initial = fixture()) {
       draft.published_revision = (draft.published_revision ?? 0) + 1;
       response = draft;
     } else if (url.pathname === "/console/api/summary") {
+      const query = reportQuerySchema.parse(
+        Object.fromEntries(url.searchParams),
+      );
+      const range = reportRange(
+        query.period,
+        "UTC",
+        Date.now(),
+        query.from !== undefined && query.to !== undefined
+          ? { from: query.from, to: query.to }
+          : undefined,
+      );
       response = {
-        range: reportRange(
-          reportQuerySchema.parse(Object.fromEntries(url.searchParams)).period,
-          "UTC",
-        ),
+        range,
         totals: {
           requests_count: 0,
           success_count: 0,
@@ -120,8 +132,26 @@ export async function mockApi(page: Page, initial = fixture()) {
         currencies: {},
         pending: 0,
         series: [],
+        bucket_ms: reportBucketMs(range),
+        previous: null,
+        ranking: {
+          dimension: query.group_by,
+          metric: query.sort_by,
+          currency: query.cost_currency ?? "",
+          items: [],
+          other: null,
+        },
+        retention: { days: 120, from: Date.now() - 120 * DAY_MS },
+        partial_history: false,
         updated_at: Date.now(),
       } satisfies Summary;
+    } else if (url.pathname === "/console/api/report-options") {
+      response = {
+        services: draft.config.services.map((service) => service.id),
+        models: draft.config.services.flatMap((service) => service.models),
+        clients: draft.config.api_keys.map((client) => client.id),
+        time_zone: "UTC",
+      };
     } else if (url.pathname === "/console/api/requests")
       response = { items: [], next_cursor: null };
     else if (url.pathname === "/console/api/pricing/version")

@@ -1,11 +1,7 @@
 import { z } from "zod";
-import {
-  modelPolicySchema,
-  timeZoneSchema,
-  tokenCountSchema,
-} from "../billing/schema.ts";
-import { REPORT_PERIODS } from "../reporting/ranges.ts";
+import { modelPolicySchema, tokenCountSchema } from "../billing/schema.ts";
 import { maskedConfigurationSchema } from "../config/schema.ts";
+export { reportQuerySchema } from "../reporting/query.ts";
 
 export const versionSchema = z.strictObject({ version: tokenCountSchema });
 export const rollbackSchema = versionSchema.extend({
@@ -14,26 +10,6 @@ export const rollbackSchema = versionSchema.extend({
 export const draftSchema = versionSchema.extend({
   config: maskedConfigurationSchema,
 });
-const optionalFilter = z.string().min(1).max(256).optional();
-export const reportQuerySchema = z.object({
-  period: z.enum(REPORT_PERIODS).default("day"),
-  time_zone: timeZoneSchema.optional(),
-  service_id: optionalFilter,
-  key_id: optionalFilter,
-  client_id: optionalFilter,
-  model: optionalFilter,
-  kind: z.enum(["inference", "auxiliary", "catalog", "handshake"]).optional(),
-  currency: z
-    .string()
-    .regex(/^[A-Z]{3}$/)
-    .optional(),
-  outcome: z
-    .enum(["pending", "success", "failed", "cancelled", "incomplete"])
-    .optional(),
-  cursor: z.string().max(2048).optional(),
-  limit: z.coerce.number<string>().int().min(1).max(100).default(50),
-});
-
 export const priceHistoryQuerySchema = z.object({
   service_id: z.string().min(1).max(256),
   model: z.string().min(1).max(256),

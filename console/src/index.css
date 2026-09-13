@@ -128,6 +128,22 @@
     @apply font-sans;
   }
 }
+
+.overview {
+  --overview-accent: oklch(0.54 0.12 163);
+  --overview-cache: oklch(0.6 0.1 185);
+  --overview-output: oklch(0.57 0.15 265);
+  --overview-write: oklch(0.66 0.13 80);
+  --overview-failure: oklch(0.59 0.17 25);
+}
+
+.dark .overview {
+  --overview-accent: oklch(0.73 0.12 163);
+  --overview-cache: oklch(0.72 0.1 185);
+  --overview-output: oklch(0.74 0.12 265);
+  --overview-write: oklch(0.77 0.12 80);
+  --overview-failure: oklch(0.72 0.13 25);
+}
 @layer base {
   button,
   [role="button"],

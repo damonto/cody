@@ -12,13 +12,9 @@ import { logWarn, type LogExecutionContext } from "../shared/log.ts";
 import type { ApiProtocol } from "../gateway/protocol.ts";
 import type { GatewayConfig } from "../config/types.ts";
 import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
-import type {
-  AttemptRecord,
-  RequestKind,
-  RequestOutcome,
-  UsageEvent,
-} from "./types.ts";
+import type { AttemptRecord, RequestOutcome, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
+import { generationSignal } from "./generation.ts";
 
 export interface UsageSink {
   send(event: UsageEvent): Promise<unknown>;
@@ -38,45 +34,29 @@ export interface MeterAttempt {
   usage?: NormalizedUsage | null;
 }
 
-export interface MeterOptions {
+export type MeterOptions = {
   requestId: string;
-  endpoint: string;
-  method: string;
   protocol: ApiProtocol;
   sink: UsageSink;
   executionContext?: LogExecutionContext;
   connectionId?: string;
-  websocket?: boolean;
   startedAt?: number;
   now?: () => number;
-}
+} & (
+  | {
+      endpoint: "messages" | "responses";
+      method: "POST";
+      websocket?: false;
+    }
+  | {
+      endpoint: "responses";
+      method: "WS";
+      websocket: true;
+    }
+);
 
 function name(value: unknown): string {
   return typeof value === "string" ? value.slice(0, 256) : "";
-}
-
-function kindFor(
-  endpoint: string,
-  method: string,
-  websocket: boolean,
-): RequestKind {
-  if (websocket) return "inference";
-  if (endpoint === "responses" && method === "GET") return "handshake";
-  if (endpoint === "models") return "catalog";
-  return [
-    "responses",
-    "chat/completions",
-    "messages",
-    "responses/compact",
-    "images/generations",
-    "images/edits",
-  ].includes(endpoint)
-    ? "inference"
-    : "auxiliary";
-}
-
-function nonempty(value: unknown): boolean {
-  return typeof value === "string" && value.length > 0;
 }
 
 export class RequestMeter {
@@ -92,6 +72,14 @@ export class RequestMeter {
   private streamCompleted = false;
 
   constructor(private readonly options: MeterOptions) {
+    const endpointAllowed =
+      options.endpoint === "responses" ||
+      (!options.websocket && options.endpoint === "messages");
+    const methodAllowed =
+      options.method === (options.websocket ? "WS" : "POST");
+    if (!endpointAllowed || !methodAllowed) {
+      throw new Error("Only inference requests can be metered");
+    }
     this.now = options.now ?? Date.now;
     this.accumulator = new UsageAccumulator(options.protocol);
     this.data = {
@@ -113,11 +101,7 @@ export class RequestMeter {
       method: options.method,
       protocol: options.protocol,
       transport: options.websocket ? "websocket" : "http",
-      kind: kindFor(
-        options.endpoint,
-        options.method,
-        options.websocket === true,
-      ),
+      kind: "inference",
       outcome: "pending",
       http_status: null,
       diagnostic_code: null,
@@ -170,7 +154,7 @@ export class RequestMeter {
   checkpoint(): UsageEvent {
     return structuredClone({
       ...this.data,
-      usage: this.accumulator.snapshot(),
+      usage: this.accumulator.snapshot(this.policy),
     });
   }
 
@@ -233,6 +217,14 @@ export class RequestMeter {
   }
 
   observe(value: unknown, event = "", at = this.now()): void {
+    this.observePayload(value, event, at);
+  }
+
+  private observePayload(
+    value: unknown,
+    event: string,
+    at: number | null,
+  ): void {
     if (this.finished) return;
     const payload = record(value);
     if (!payload) return;
@@ -257,43 +249,17 @@ export class RequestMeter {
       this.data.response_id = name(responseId);
     const model = response?.model ?? payload.model ?? message?.model;
     if (typeof model === "string") this.data.reported_model = name(model);
-    let text = type === "response.output_text.delta" && nonempty(payload.delta);
-    let generated =
-      text ||
-      (/^response\.(?:reasoning.*|function_call_arguments)\.delta$/.test(
-        type,
-      ) &&
-        nonempty(payload.delta));
-    if (type === "content_block_delta") {
-      const delta = record(payload.delta);
-      text ||= delta?.type === "text_delta" && nonempty(delta.text);
-      generated ||=
-        text || nonempty(delta?.thinking) || nonempty(delta?.partial_json);
+    if (
+      Array.isArray(payload.choices) &&
+      payload.choices.some((item) => record(item)?.finish_reason)
+    )
+      this.streamCompleted = true;
+    if (at !== null) {
+      const signal = generationSignal(payload, type);
+      if (signal) this.data.ttft_ms ??= Math.max(0, at - this.data.started_at);
+      if (signal === "text")
+        this.data.first_text_ms ??= Math.max(0, at - this.data.started_at);
     }
-    if (type === "content_block_start") {
-      const block = record(payload.content_block);
-      text ||= block?.type === "text" && nonempty(block.text);
-      generated ||=
-        text || (block?.type === "thinking" && nonempty(block.thinking));
-    }
-    if (Array.isArray(payload.choices)) {
-      for (const item of payload.choices) {
-        if (record(item)?.finish_reason) this.streamCompleted = true;
-        const delta = record(record(item)?.delta);
-        text ||= nonempty(delta?.content);
-        generated ||=
-          text ||
-          nonempty(delta?.reasoning_content) ||
-          nonempty(delta?.reasoning);
-        if (Array.isArray(delta?.tool_calls))
-          generated ||= delta.tool_calls.some((tool) =>
-            nonempty(record(record(tool)?.function)?.arguments),
-          );
-      }
-    }
-    if (generated) this.data.ttft_ms ??= Math.max(0, at - this.data.started_at);
-    if (text)
-      this.data.first_text_ms ??= Math.max(0, at - this.data.started_at);
     if (
       type === "error" ||
       type === "response.failed" ||
@@ -333,7 +299,7 @@ export class RequestMeter {
       outcome === "failed"
     )
       this.data.outcome = outcome;
-    const usage = this.accumulator.snapshot();
+    const usage = this.accumulator.snapshot(this.policy);
     this.data.context_tokens = usage.tokens.input_tokens;
     this.data.context_source =
       usage.tokens.input_tokens === null ? "unavailable" : "reported_input";
@@ -347,11 +313,9 @@ export class RequestMeter {
       : null;
     try {
       this.data.billing =
-        this.data.kind === "inference" && usage.status !== "invalid"
+        usage.status !== "invalid"
           ? calculateCost(usage.tokens, this.policy, version)
-          : emptyCost(
-              this.data.kind === "inference" ? "unknown" : "not_applicable",
-            );
+          : emptyCost("unknown");
       const last = this.data.attempts.at(-1);
       if (last) {
         last.usage = structuredClone(usage);
@@ -365,6 +329,9 @@ export class RequestMeter {
             this.data.billing.status = "partial";
           continue;
         }
+        const previousUsage = new UsageAccumulator(this.options.protocol);
+        previousUsage.add(attempt.usage.raw);
+        attempt.usage = previousUsage.snapshot(this.policy);
         attempt.billing =
           attempt.usage.status === "invalid"
             ? emptyCost("unknown")
@@ -420,11 +387,8 @@ export class RequestMeter {
     if (this.wrapped) return response;
     this.wrapped = true;
     this.data.http_status = response.status;
-    if (!response.body || response.status === 101) {
-      this.finish(
-        response.ok || response.status === 101 ? "success" : "failed",
-        response.status,
-      );
+    if (!response.body) {
+      this.finish(response.ok ? "success" : "failed", response.status);
       return response;
     }
     const contentType =
@@ -471,8 +435,10 @@ export class RequestMeter {
                 observer.push(decoder.decode());
                 observer.end();
               } else if (json && !tooLarge)
-                this.observe(
+                this.observePayload(
                   JSON.parse(jsonBody + decoder.decode()) as unknown,
+                  "",
+                  null,
                 );
             } catch {
               this.issue("invalid_response_json");

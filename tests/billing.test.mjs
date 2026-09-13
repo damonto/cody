@@ -28,6 +28,23 @@ const policy = {
   },
 };
 
+const noWriteChargePolicy = {
+  service_id: "a",
+  model: "gemini-3.8-flash",
+  pricing: {
+    currency: "USD",
+    tiers: [
+      {
+        up_to_input_tokens: null,
+        input: "0.75",
+        output: "3.75",
+        cache_write: "0",
+        cache_read: "0.075",
+      },
+    ],
+  },
+};
+
 function openai(input = 220_000, cached = 140_000, write = 20_000) {
   const accumulator = new UsageAccumulator("openai");
   accumulator.add({
@@ -104,7 +121,7 @@ test("missing counters and unknown cache TTLs never become free usage", () => {
     output_tokens: 100,
     input_tokens_details: { cached_tokens: 500 },
   });
-  const usage = accumulator.snapshot();
+  const usage = accumulator.snapshot(policy);
   assert.equal(usage.tokens.cache_write_tokens, null);
   assert.equal(usage.tokens.uncached_input_tokens, null);
   assert.equal(usage.status, "partial");
@@ -115,6 +132,147 @@ test("missing counters and unknown cache TTLs never become free usage", () => {
     calculateCost(openai().tokens, ttlPolicy).cache_write_nano,
     null,
   );
+});
+
+for (const dialect of ["responses", "chat/completions"]) {
+  test(`${dialect} usage without separately charged cache writes includes input cost`, () => {
+    for (const [cached, expectedCost] of [
+      [0, 10_845_750],
+      [10_000, 4_095_750],
+    ]) {
+      const raw =
+        dialect === "responses"
+          ? {
+              input_tokens: 14_436,
+              output_tokens: 5,
+              total_tokens: 14_441,
+              input_tokens_details: { cached_tokens: cached },
+            }
+          : {
+              prompt_tokens: 14_436,
+              completion_tokens: 5,
+              total_tokens: 14_441,
+              prompt_tokens_details: { cached_tokens: cached },
+            };
+      const accumulator = new UsageAccumulator("openai");
+      accumulator.add(raw);
+      const usage = accumulator.snapshot(noWriteChargePolicy);
+      assert.equal(usage.status, "reported");
+      assert.equal(usage.tokens.uncached_input_tokens, 14_436 - cached);
+      assert.equal(usage.tokens.cache_write_tokens, 0);
+      assert.equal(usage.tokens.reasoning_tokens, null);
+      assert.deepEqual(usage.raw, raw);
+      const cost = calculateCost(usage.tokens, noWriteChargePolicy);
+      assert.equal(cost.status, "complete");
+      assert.equal(cost.total_nano, expectedCost);
+      assert.equal(cost.cache_write_nano, 0);
+    }
+  });
+}
+
+test("omitted cache writes use the request's selected tier and all cache write rates", () => {
+  const tiered = structuredClone(policy);
+  tiered.pricing.tiers[0].cache_write = "0.000000";
+  for (const [input, expected] of [
+    [199_999, "reported"],
+    [200_000, "reported"],
+    [200_001, "partial"],
+  ]) {
+    const accumulator = new UsageAccumulator("openai");
+    accumulator.add({
+      input_tokens: input,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 0 },
+    });
+    assert.equal(accumulator.snapshot(tiered).status, expected);
+  }
+  for (const field of ["cache_write", "cache_write_5m", "cache_write_1h"]) {
+    const withWriteCharge = structuredClone(noWriteChargePolicy);
+    withWriteCharge.pricing.tiers[0][field] = "0.000001";
+    const accumulator = new UsageAccumulator("openai");
+    accumulator.add({
+      input_tokens: 1000,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 0 },
+    });
+    assert.equal(accumulator.snapshot(withWriteCharge).status, "partial");
+  }
+});
+
+test("zero cache write prices do not hide missing, invalid, or explicit counters", () => {
+  const raw = {
+    input_tokens: 1000,
+    output_tokens: 5,
+    input_tokens_details: { cached_tokens: 100 },
+  };
+  const accumulator = new UsageAccumulator("openai");
+  assert.equal(accumulator.snapshot(noWriteChargePolicy).status, "missing");
+  accumulator.add(raw);
+  assert.equal(accumulator.snapshot().status, "partial");
+  assert.equal(
+    accumulator.snapshot({ service_id: "a", model: "unpriced" }).status,
+    "partial",
+  );
+  for (const value of [null, -1, "0", 0.5]) {
+    accumulator.add({ input_tokens_details: { cache_write_tokens: value } });
+    const usage = accumulator.snapshot(noWriteChargePolicy);
+    assert.equal(usage.status, "partial");
+    assert.equal(usage.tokens.cache_write_tokens, null);
+    assert.equal(usage.tokens.uncached_input_tokens, null);
+  }
+  accumulator.add({ input_tokens_details: { cache_write_tokens: 250 } });
+  const explicit = accumulator.snapshot(noWriteChargePolicy);
+  assert.equal(explicit.status, "reported");
+  assert.equal(explicit.tokens.cache_write_tokens, 250);
+  assert.equal(explicit.tokens.uncached_input_tokens, 650);
+
+  for (const incomplete of [
+    { input_tokens: 1000, output_tokens: 5 },
+    { input_tokens: 1000, input_tokens_details: { cached_tokens: 0 } },
+    { output_tokens: 5, input_tokens_details: { cached_tokens: 0 } },
+  ]) {
+    const missing = new UsageAccumulator("openai");
+    missing.add(incomplete);
+    assert.equal(missing.snapshot(noWriteChargePolicy).status, "partial");
+  }
+
+  const anthropic = new UsageAccumulator("anthropic");
+  anthropic.add({
+    input_tokens: 1000,
+    output_tokens: 5,
+    cache_read_input_tokens: 0,
+  });
+  assert.equal(anthropic.snapshot(noWriteChargePolicy).status, "partial");
+  assert.equal(
+    anthropic.snapshot(noWriteChargePolicy).tokens.cache_write_tokens,
+    null,
+  );
+});
+
+test("inferred cache writes do not alter cumulative usage or conceal contradictions", () => {
+  const accumulator = new UsageAccumulator("openai");
+  accumulator.add({
+    input_tokens: 1000,
+    output_tokens: 5,
+    input_tokens_details: { cached_tokens: 100 },
+  });
+  const first = accumulator.snapshot(noWriteChargePolicy);
+  assert.equal(first.tokens.uncached_input_tokens, 900);
+  assert.equal(first.tokens.cache_write_tokens, 0);
+  assert.equal(accumulator.snapshot().tokens.cache_write_tokens, null);
+  accumulator.add({ input_tokens_details: { cache_write_tokens: 250 } });
+  const updated = accumulator.snapshot(noWriteChargePolicy);
+  assert.equal(updated.tokens.uncached_input_tokens, 650);
+  assert.equal(updated.tokens.cache_write_tokens, 250);
+  assert.equal(first.tokens.cache_write_tokens, 0);
+
+  const invalid = new UsageAccumulator("openai");
+  invalid.add({
+    input_tokens: 1000,
+    output_tokens: 5,
+    input_tokens_details: { cached_tokens: 1001 },
+  });
+  assert.equal(invalid.snapshot(noWriteChargePolicy).status, "invalid");
 });
 
 test("policies are unique per service and real model, with sorted complete tiers", () => {

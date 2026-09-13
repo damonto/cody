@@ -1789,6 +1789,43 @@ test("custom WebSocket subprotocols are rejected before an upstream connection",
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
+test.each(["/responses", "/v1/responses"])(
+  "WebSocket handshakes at %s never enter the usage journal",
+  async (path) => {
+    await putConfig(gatewayConfig());
+    const journal = vi.spyOn(env.USAGE_OUTBOX, "getByName");
+    const { socket, context } = await openGatewaySocket(path, {
+      upgrade: "WebSocket",
+    });
+    await waitOnExecutionContext(context);
+    expect(journal).not.toHaveBeenCalled();
+    socket.close(1000, "done");
+
+    for (const [headers, status] of [
+      [{ authorization: "Bearer invalid" }, 401],
+      [{ "sec-websocket-protocol": "custom" }, 400],
+      [{ upgrade: "" }, 405],
+    ] as const) {
+      const rejectedContext = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`https://gateway.example${path}`, {
+          headers: {
+            authorization: "Bearer client-secret",
+            upgrade: "websocket",
+            ...headers,
+          },
+        }),
+        env,
+        rejectedContext,
+      );
+      expect(response.status).toBe(status);
+      await response.text();
+      await waitOnExecutionContext(rejectedContext);
+      expect(journal).not.toHaveBeenCalled();
+    }
+  },
+);
+
 test("WebSocket generations retain separate models, timing, usage, and request-time prices", async () => {
   const records: import("../../src/telemetry/types.ts").UsageEvent[] = [];
   const config = gatewayConfig();

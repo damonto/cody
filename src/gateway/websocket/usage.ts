@@ -132,7 +132,7 @@ export class WebSocketUsage {
       const pending = await this.storage.pendingUsage();
       for (const event of pending.values()) {
         try {
-          await this.sink.send(event);
+          if (event.kind === "inference") await this.sink.send(event);
           await this.storage.acknowledgeUsage(event.request_id);
         } catch {
           logWarn("usage.recovery.failed", { request_id: event.request_id });

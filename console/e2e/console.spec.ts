@@ -44,6 +44,9 @@ test("report ranges, filters, empty states, and mobile navigation work", async (
     .toBe(true);
   await page.goto("/console/requests?period=total");
   await expect(
+    page.getByRole("combobox", { name: "Filter by request kind" }),
+  ).toHaveCount(0);
+  await expect(
     page.getByRole("tab", { name: "Total", exact: true }),
   ).toHaveAttribute("data-state", "active");
   await expect

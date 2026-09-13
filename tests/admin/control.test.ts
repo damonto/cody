@@ -32,6 +32,7 @@ import {
   summary,
 } from "../../src/reporting/store.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
+import { RequestMeter } from "../../src/telemetry/meter.ts";
 import type { GatewayConfig } from "../../src/config/types.ts";
 import { emptyUsage } from "../../src/telemetry/usage.ts";
 import { emptyCost } from "../../src/billing/calculate.ts";
@@ -380,7 +381,7 @@ test("reports combine full hours with precise boundaries and never sum currencie
   const result = await summary(
     bindings.CODY_DB,
     range(base + 30 * 60_000, base + 140 * 60_000),
-    { kind: "inference", client_id: "client" },
+    { client_id: "client" },
   );
   expect(result.totals.requests_count).toBe(3);
   expect(result.totals.cost_nano).toBe(0);
@@ -455,22 +456,14 @@ test("request pages omit historical endpoints other than messages and responses 
     await ingestUsage(bindings.CODY_DB, event);
   }
   const hidden = [
-    ["models", "catalog"],
-    ["alpha/search", "auxiliary"],
-    ["alpha/notes/v2/thread_hint", "auxiliary"],
-    ["alpha/history/v2/list_windows", "auxiliary"],
-    ["responses/compact", "inference"],
-    ["chat/completions", "inference"],
-    ["messages/count_tokens", "auxiliary"],
-    ["images/generations", "inference"],
-    ["health", "auxiliary"],
-    ["sessions", "auxiliary"],
+    "responses/compact",
+    "chat/completions",
+    "images/generations",
   ] as const;
-  for (const [index, [endpoint, kind]] of hidden.entries()) {
+  for (const [index, endpoint] of hidden.entries()) {
     await ingestUsage(bindings.CODY_DB, {
       ...usage(`hidden-${index}`, at + 3 + index),
       endpoint,
-      kind,
     });
   }
   const response = await call("/console/api/requests?period=total&limit=2");
@@ -490,6 +483,58 @@ test("request pages omit historical endpoints other than messages and responses 
   const second = (await next.json()) as Awaited<ReturnType<typeof requestList>>;
   expect(second.items.map((item) => item.request_id)).toEqual(["response-old"]);
   expect(second.next_cursor).toBeNull();
+});
+
+test("request reports always select inference regardless of removed kind filters", async () => {
+  const at = Date.now() - 10_000;
+  const options = {
+    endpoint: "responses" as const,
+    protocol: "openai" as const,
+    sink: { send: async () => {} },
+  };
+  const websocket: UsageEvent = {
+    ...usage("websocket-inference", at + 1),
+    connection_id: "websocket-connection",
+    method: "WS",
+    transport: "websocket",
+  };
+  const rejected = new RequestMeter({
+    ...options,
+    requestId: "unrouted-inference",
+    method: "POST",
+    now: () => at + 2,
+  }).finish("failed", 400);
+  for (const event of [websocket, rejected])
+    await ingestUsage(bindings.CODY_DB, event);
+
+  const inferenceIds = [rejected.request_id, websocket.request_id];
+  for (const kind of [
+    "",
+    "inference",
+    "handshake",
+    "catalog",
+    "auxiliary",
+    "all",
+  ]) {
+    const response = await call(
+      `/console/api/requests?period=total${kind ? `&kind=${kind}` : ""}`,
+    );
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as Awaited<
+      ReturnType<typeof requestList>
+    >;
+    expect(page.items.map((item) => item.request_id)).toEqual(inferenceIds);
+  }
+  const overview = await call("/console/api/summary?period=total");
+  expect((await overview.json<{ totals: unknown }>()).totals).toMatchObject({
+    requests_count: 2,
+    success_count: 1,
+    failed_count: 1,
+  });
+  const all = await call("/console/api/summary?period=total&kind=all");
+  expect((await all.json<{ totals: unknown }>()).totals).toMatchObject({
+    requests_count: 2,
+  });
 });
 
 test("request cursors have stable ordering for equal timestamps and retention keeps aggregates", async () => {
@@ -520,9 +565,21 @@ test("request cursors have stable ordering for equal timestamps and retention ke
   ).toBe(3);
 });
 
-test("queue consumer acknowledges committed records and retries invalid messages", async () => {
+test("queue consumer ignores non-inference, commits inference, and retries invalid inference", async () => {
   const event = usage("queued", Date.now() - 10000);
+  const ignored = ["auxiliary", "catalog", "handshake"].map((kind) => ({
+    ...event,
+    request_id: `ignored-${kind}`,
+    kind,
+  }));
   const batch = createMessageBatch<UsageEvent>("cody-usage", [
+    ...ignored.map((body) => ({
+      id: body.request_id,
+      timestamp: new Date(),
+      attempts: 1,
+      // Queue payloads can predate the current event type.
+      body: body as unknown as UsageEvent,
+    })),
     { id: "valid", timestamp: new Date(), attempts: 1, body: event },
     {
       id: "invalid",
@@ -534,9 +591,21 @@ test("queue consumer acknowledges committed records and retries invalid messages
   const ctx = createExecutionContext();
   await adminWorker.queue(batch, bindings);
   const result = await getQueueResult(batch, ctx);
-  expect(result.explicitAcks).toContain("valid");
+  expect(result.explicitAcks.sort()).toEqual([
+    "ignored-auxiliary",
+    "ignored-catalog",
+    "ignored-handshake",
+    "valid",
+  ]);
   expect(result.retryMessages).toEqual([{ msgId: "invalid" }]);
   expect(await requestDetail(bindings.CODY_DB, "queued")).toEqual(event);
+  for (const body of ignored)
+    expect(await requestDetail(bindings.CODY_DB, body.request_id)).toBeNull();
+  expect(
+    await bindings.CODY_DB.prepare(
+      "SELECT SUM(requests_count) AS count FROM usage_hourly",
+    ).first("count"),
+  ).toBe(1);
 });
 
 test("admin API enforces local scope, Access authentication, same-origin writes, and Zod validation", async () => {

@@ -5,7 +5,6 @@ import { apiError, forwardRequestHeaders, upstreamUrl } from "../http/http.ts";
 import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { requestProtocol, type ContextManagementPath } from "../protocol.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
-import type { RequestMeter } from "../../telemetry/meter.ts";
 import {
   allowedServiceCandidates,
   resolveModelRoute,
@@ -23,7 +22,6 @@ export async function handleContextManagement(
   path: ContextManagementPath,
   requestId: string,
   requestLog?: RequestLogContext,
-  meter?: RequestMeter,
 ): Promise<Response> {
   const protocol = requestProtocol(request, path);
   requestLog?.registerSensitiveValues([
@@ -111,11 +109,6 @@ export async function handleContextManagement(
     );
   }
 
-  meter?.select({
-    serviceId: target.service.id,
-    keyId: target.key.id,
-    model: "",
-  });
   const headers = forwardRequestHeaders(request, target.key.api_key);
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -137,9 +130,6 @@ export async function handleContextManagement(
     undefined,
     { attemptTimeoutMs: 35_000 },
   );
-  meter?.recordAttempts(result.attempts);
-  if (!result.response?.ok)
-    meter?.diagnostic("context_management_upstream_error");
   requestLog?.set({
     outcome: result.response?.ok
       ? "success"

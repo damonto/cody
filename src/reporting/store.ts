@@ -1,42 +1,41 @@
-import type { ReportRange } from "./ranges.ts";
+import {
+  HOUR_MS,
+  previousRange,
+  reportBucketMs,
+  type ReportRange,
+} from "./ranges.ts";
 import type { UsageEvent } from "../telemetry/types.ts";
 import { USAGE_FIELDS } from "../billing/types.ts";
-
-export const AGGREGATE_FIELDS = [
-  "requests_count",
-  "success_count",
-  "failed_count",
-  "cancelled_count",
-  "incomplete_count",
-  "missing_usage_count",
-  "unpriced_count",
-  "input_tokens",
-  "uncached_input_tokens",
-  "output_tokens",
-  "cache_read_tokens",
-  "cache_write_tokens",
-  "cache_write_5m_tokens",
-  "cache_write_1h_tokens",
-  "reasoning_tokens",
-  "reasoning_samples",
-  "cost_nano",
-  "duration_sum",
-  "duration_samples",
-  "ttft_sum",
-  "ttft_samples",
-  "first_text_sum",
-  "first_text_samples",
-] as const;
-export type AggregateField = (typeof AGGREGATE_FIELDS)[number];
-export type Aggregate = Record<AggregateField, number>;
-export type SeriesRow = Aggregate & { hour: number; currency: string };
+import type { ReportQuery } from "./query.ts";
+import {
+  AGGREGATE_FIELDS,
+  defaultCurrency,
+  summarize,
+  type Aggregate,
+  type Rollup,
+  type SeriesRow,
+} from "./aggregates.ts";
+export { AGGREGATE_FIELDS } from "./aggregates.ts";
+export type { Aggregate, AggregateField, SeriesRow } from "./aggregates.ts";
 export interface ReportFilters {
   service_id?: string;
   key_id?: string;
   client_id?: string;
   model?: string;
-  kind?: string;
   currency?: string;
+}
+export interface ReportPresentation {
+  group_by?: ReportQuery["group_by"];
+  sort_by?: ReportQuery["sort_by"];
+  cost_currency?: string;
+  compare?: boolean;
+}
+interface RankRow extends Aggregate {
+  value: string;
+  currency: string;
+}
+interface PendingRow {
+  count: number;
 }
 
 const AGGREGATE_EXPRESSIONS = {
@@ -71,12 +70,11 @@ const FILTER_FIELDS = [
   "key_id",
   "client_id",
   "model",
-  "kind",
   "currency",
 ] as const;
 
 function conditions(filters: ReportFilters): { sql: string; values: string[] } {
-  const clauses: string[] = [];
+  const clauses = ["kind = 'inference'"];
   const values: string[] = [];
   for (const field of FILTER_FIELDS) {
     const value = filters[field];
@@ -85,13 +83,14 @@ function conditions(filters: ReportFilters): { sql: string; values: string[] } {
       values.push(value);
     }
   }
-  return { sql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "", values };
+  return { sql: ` AND ${clauses.join(" AND ")}`, values };
 }
 
 export async function ingestUsage(
   db: D1Database,
   event: UsageEvent,
 ): Promise<void> {
+  if (event.kind !== "inference") return;
   if (
     event.schema_version !== 1 ||
     !["started", "finished"].includes(event.phase) ||
@@ -193,74 +192,202 @@ export async function ingestUsage(
   await db.batch(statements);
 }
 
-export async function summary(
-  db: D1Database,
-  range: ReportRange,
-  filters: ReportFilters,
-) {
-  const hour = 3_600_000;
-  const fullStart = Math.ceil(range.from / hour) * hour;
-  const fullEnd = Math.max(fullStart, Math.floor(range.to / hour) * hour);
+function reportSource(range: ReportRange, filters: ReportFilters) {
+  const fullStart = Math.ceil(range.from / HOUR_MS) * HOUR_MS;
+  const fullEnd = Math.max(fullStart, Math.floor(range.to / HOUR_MS) * HOUR_MS);
   const filter = conditions(filters);
   const columns = AGGREGATE_FIELDS.join(", ");
   const edgeExpressions = AGGREGATE_FIELDS.map(
     (field) =>
       `${AGGREGATE_EXPRESSIONS[field].replaceAll("NEW.", "")} AS ${field}`,
   ).join(", ");
-  const sql = `SELECT hour, currency, ${AGGREGATE_FIELDS.map((field) => `SUM(${field}) AS ${field}`).join(", ")}
-    FROM (
-      SELECT hour, currency, ${columns} FROM usage_hourly
-        WHERE hour >= ? AND hour < ? ${filter.sql}
-      UNION ALL
-      SELECT (started_at / 3600000) * 3600000 AS hour, currency, ${edgeExpressions} FROM requests
-        WHERE finished_at IS NOT NULL AND started_at >= ? AND started_at < ?
-        AND NOT (started_at >= ? AND started_at < ?) ${filter.sql}
-    ) GROUP BY hour, currency ORDER BY hour, currency`;
-  const result = await db
-    .prepare(sql)
-    .bind(
-      fullStart,
-      fullEnd,
-      ...filter.values,
-      range.from,
-      range.to,
-      fullStart,
-      fullEnd,
-      ...filter.values,
-    )
-    .all<SeriesRow>();
-  const pending = await db
-    .prepare(
-      `SELECT COUNT(*) AS count FROM requests WHERE finished_at IS NULL AND started_at >= ? AND started_at < ? ${filter.sql}`,
-    )
-    .bind(range.from, range.to, ...filter.values)
-    .first<{ count: number }>();
-  const totals = Object.fromEntries(
-    AGGREGATE_FIELDS.map((field) => [field, 0]),
-  ) as Aggregate;
-  const currencies: Record<
-    string,
-    { cost_nano: number; unpriced_count: number }
-  > = {};
-  for (const row of result.results) {
-    for (const field of AGGREGATE_FIELDS) {
-      // Monetary amounts of different currencies are never added together.
-      if (field !== "cost_nano") totals[field] += row[field];
-    }
-    const currency = (currencies[row.currency] ??= {
-      cost_nano: 0,
-      unpriced_count: 0,
-    });
-    currency.cost_nano += row.cost_nano;
-    currency.unpriced_count += row.unpriced_count;
+  const queries = [
+    `SELECT hour, currency, service_id, key_id, client_id, model, kind, ${columns}
+     FROM usage_hourly WHERE hour >= ? AND hour < ? ${filter.sql}`,
+  ];
+  const values: (string | number)[] = [fullStart, fullEnd, ...filter.values];
+  const edges =
+    fullStart === fullEnd
+      ? [range]
+      : [
+          { from: range.from, to: fullStart },
+          { from: fullEnd, to: range.to },
+        ];
+  // Bound each edge independently so the time index skips every full hour.
+  // Filtering a whole-range detail query with NOT still scans those requests.
+  for (const { from, to } of edges) {
+    if (from >= to) continue;
+    queries.push(
+      `SELECT (started_at / ${HOUR_MS}) * ${HOUR_MS} AS hour, currency,
+         service_id, key_id, client_id, model, kind, ${edgeExpressions}
+       FROM requests WHERE finished_at IS NOT NULL
+         AND started_at >= ? AND started_at < ? ${filter.sql}`,
+    );
+    values.push(from, to, ...filter.values);
   }
+  return { sql: queries.join(" UNION ALL "), values };
+}
+
+const sumColumns = AGGREGATE_FIELDS.map(
+  (field) => `SUM(${field}) AS ${field}`,
+).join(", ");
+
+function seriesQuery(
+  db: D1Database,
+  range: ReportRange,
+  filters: ReportFilters,
+  bucketMs: number,
+) {
+  const source = reportSource(range, filters);
+  return db
+    .prepare(
+      `SELECT (hour / ${bucketMs}) * ${bucketMs} AS hour, currency, ${sumColumns}
+     FROM (${source.sql}) GROUP BY 1, 2 ORDER BY 1, 2`,
+    )
+    .bind(...source.values);
+}
+
+function rankQuery(
+  db: D1Database,
+  range: ReportRange,
+  filters: ReportFilters,
+  presentation: ReportPresentation,
+) {
+  const source = reportSource(range, filters);
+  const dimension = presentation.group_by ?? "service_id";
+  const metric = presentation.sort_by ?? "requests";
+  const score =
+    metric === "cost"
+      ? "SUM(CASE WHEN currency = COALESCE(?, (SELECT currency FROM source WHERE currency <> '' GROUP BY currency ORDER BY currency = 'USD' DESC, currency LIMIT 1)) THEN cost_nano ELSE 0 END)"
+      : metric === "tokens"
+        ? "SUM(input_tokens + output_tokens)"
+        : "SUM(requests_count)";
+  const query = db.prepare(
+    `WITH source AS (${source.sql}),
+     grouped AS (SELECT ${dimension} AS value, currency, ${sumColumns} FROM source GROUP BY ${dimension}, currency),
+     leaders AS (SELECT value, ${score} AS score FROM grouped GROUP BY value ORDER BY score DESC, value LIMIT 5)
+     SELECT grouped.* FROM grouped JOIN leaders ON grouped.value = leaders.value
+     ORDER BY leaders.score DESC, grouped.value, grouped.currency`,
+  );
+  return query.bind(
+    ...source.values,
+    ...(metric === "cost" ? [presentation.cost_currency ?? null] : []),
+  );
+}
+
+function ranking(rows: RankRow[], total: Rollup) {
+  const groups = new Map<string, RankRow[]>();
+  for (const row of rows) {
+    const group = groups.get(row.value) ?? [];
+    group.push(row);
+    groups.set(row.value, group);
+  }
+  const items = [...groups].map(([value, group]) => ({
+    value,
+    ...summarize(group),
+  }));
+  const visible = summarize(rows);
+  const other = structuredClone(total);
+  for (const field of AGGREGATE_FIELDS)
+    other.totals[field] -= visible.totals[field];
+  for (const [currency, amount] of Object.entries(other.currencies)) {
+    const selected = visible.currencies[currency];
+    if (selected) {
+      amount.cost_nano -= selected.cost_nano;
+      amount.requests_count -= selected.requests_count;
+      amount.unpriced_count -= selected.unpriced_count;
+    }
+    if (!amount.requests_count) delete other.currencies[currency];
+  }
+  return { items, other: other.totals.requests_count ? other : null };
+}
+
+export async function summary(
+  db: D1Database,
+  range: ReportRange,
+  filters: ReportFilters,
+  presentation: ReportPresentation = {},
+) {
+  const bucketMs = reportBucketMs(range);
+  const comparison =
+    presentation.compare === false ? null : previousRange(range);
+  const filter = conditions(filters);
+  const statements = [
+    seriesQuery(db, range, filters, bucketMs),
+    rankQuery(db, range, filters, presentation),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM requests WHERE finished_at IS NULL AND started_at >= ? AND started_at < ? ${filter.sql}`,
+      )
+      .bind(range.from, range.to, ...filter.values),
+  ];
+  if (comparison)
+    statements.push(seriesQuery(db, comparison, filters, bucketMs));
+  // Keep totals, ranking and comparison in one D1 transaction while usage arrives.
+  const [currentResult, rankResult, pendingResult, previousResult] =
+    await db.batch<SeriesRow | RankRow | PendingRow>(statements);
+  // D1 preserves statement order but its batch generic cannot describe a
+  // different row type per statement. These types match the SELECTs above.
+  const series = currentResult.results as SeriesRow[];
+  const total = summarize(series);
+  const previous = previousResult?.results as SeriesRow[] | undefined;
+  const pending = pendingResult.results as PendingRow[];
   return {
     range,
-    totals,
-    currencies,
-    pending: pending?.count ?? 0,
-    series: result.results,
+    ...total,
+    bucket_ms: bucketMs,
+    pending: pending[0]?.count ?? 0,
+    series,
+    previous:
+      comparison && previous
+        ? {
+            range: comparison,
+            ...summarize(previous),
+            series: previous,
+            bucket_ms: bucketMs,
+          }
+        : null,
+    ranking: {
+      dimension: presentation.group_by ?? "service_id",
+      metric: presentation.sort_by ?? "requests",
+      currency: presentation.cost_currency ?? defaultCurrency(total.currencies),
+      ...ranking(rankResult.results as RankRow[], total),
+    },
     updated_at: Date.now(),
+  };
+}
+
+/** Include historic IDs from the selected window, even after configuration changes. */
+export async function reportDimensions(
+  db: D1Database,
+  range: ReportRange,
+  serviceId?: string,
+) {
+  const fields = ["service_id", "model", "client_id"] as const;
+  const statements = fields.map((field) => {
+    const selected = field === "model" && serviceId ? [serviceId] : [];
+    const service = selected.length ? " AND service_id = ?" : "";
+    return db
+      .prepare(
+        `SELECT DISTINCT ${field} AS value FROM (
+        SELECT ${field} FROM usage_hourly WHERE kind = 'inference' AND hour >= ? AND hour < ? ${service}
+        UNION ALL SELECT ${field} FROM requests WHERE kind = 'inference' AND finished_at IS NULL AND started_at >= ? AND started_at < ? ${service}
+      ) WHERE ${field} <> '' ORDER BY value`,
+      )
+      .bind(
+        Math.floor(range.from / HOUR_MS) * HOUR_MS,
+        range.to,
+        ...selected,
+        range.from,
+        range.to,
+        ...selected,
+      );
+  });
+  const result = await db.batch<{ value: string }>(statements);
+  return {
+    services: result[0].results.map((row) => row.value),
+    models: result[1].results.map((row) => row.value),
+    clients: result[2].results.map((row) => row.value),
   };
 }
 
@@ -268,11 +395,22 @@ export async function requestList(
   db: D1Database,
   range: ReportRange,
   filters: ReportFilters,
-  options: { limit: number; cursor?: string; outcome?: string },
+  options: {
+    limit: number;
+    cursor?: string;
+    outcome?: ReportQuery["outcome"];
+    quality?: ReportQuery["quality"];
+  },
 ) {
   const filter = conditions(filters);
   let cursorSql = "";
   const extra: (string | number)[] = [];
+  if (options.quality) {
+    cursorSql +=
+      options.quality === "missing_usage"
+        ? " AND finished_at IS NOT NULL AND kind = 'inference' AND usage_status <> 'reported'"
+        : " AND finished_at IS NOT NULL AND kind = 'inference' AND billing_status <> 'complete'";
+  }
   if (options.outcome) {
     cursorSql += " AND outcome = ?";
     extra.push(options.outcome);
@@ -287,12 +425,13 @@ export async function requestList(
     if (
       !Array.isArray(cursor) ||
       cursor.length !== 2 ||
+      typeof cursor[0] !== "number" ||
       !Number.isSafeInteger(cursor[0]) ||
       typeof cursor[1] !== "string"
     )
       throw new Error("Invalid cursor");
     cursorSql += " AND (started_at < ? OR (started_at = ? AND request_id < ?))";
-    extra.push(cursor[0] as number, cursor[0] as number, cursor[1]);
+    extra.push(cursor[0], cursor[0], cursor[1]);
   }
   const limit = Math.min(100, Math.max(1, options.limit));
   const rows = await db

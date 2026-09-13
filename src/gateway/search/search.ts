@@ -19,7 +19,6 @@ import {
 } from "./search-request.ts";
 import { codexOutput, codexResults } from "./search-response.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
-import type { RequestMeter } from "../../telemetry/meter.ts";
 
 export const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
 
@@ -28,7 +27,6 @@ export async function handleConfiguredWebSearch(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestLog?: RequestLogContext,
-  meter?: RequestMeter,
 ): Promise<Response> {
   const providerConfig = config.web_search;
   if (providerConfig.mode === "proxy") {
@@ -78,7 +76,6 @@ export async function handleConfiguredWebSearch(
     );
   }
 
-  meter?.requestedModel(parsedRequest.model);
   if (!modelIsAvailableForClient(config, client, parsedRequest.model)) {
     requestLog?.warn({ outcome: "model_not_found" });
     return openAiError(

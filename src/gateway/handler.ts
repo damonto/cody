@@ -45,8 +45,15 @@ export function gatewayHandler(
     const requestId = newRequestId();
     const incomingUrl = new URL(request.url);
     const protocol = requestProtocol(request, endpoint);
+    const websocketRequest =
+      endpoint === "responses" &&
+      request.method === "GET" &&
+      request.headers.get("upgrade")?.toLowerCase() === "websocket";
+    // WebSocket usage starts with response.create in the Durable Object.
     const meter =
-      env.USAGE_OUTBOX && (endpoint === "messages" || endpoint === "responses")
+      env.USAGE_OUTBOX &&
+      request.method === "POST" &&
+      (endpoint === "messages" || endpoint === "responses")
         ? new RequestMeter({
             requestId,
             endpoint,
@@ -90,10 +97,6 @@ export function gatewayHandler(
         }),
       );
     }
-    const websocketRequest =
-      endpoint === "responses" &&
-      request.method === "GET" &&
-      request.headers.get("upgrade")?.toLowerCase() === "websocket";
     if (!websocketRequest && !allowedMethods.includes(request.method)) {
       meter?.diagnostic("method_rejected");
       requestLog.warn({

@@ -11,6 +11,51 @@ import { usage } from "../admin/fixtures.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
+test.each(["auxiliary", "catalog", "handshake"])(
+  "%s usage never enters the journal or Queue",
+  async (kind) => {
+    const outbox = env.USAGE_OUTBOX.getByName(`ignored-${kind}`);
+    const event = { ...usage(`ignored-${kind}`, Date.now()), kind };
+    await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+      const bindings = Reflect.get(instance, "env") as Env;
+      const send = vi.spyOn(bindings.USAGE_QUEUE, "sendBatch");
+      await instance.enqueue(event as unknown as UsageEvent);
+      expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
+
+      // Also reject records already persisted by an older producer.
+      await state.storage.put(`event:${event.request_id}:2`, event);
+      await instance.alarm();
+      expect(send).not.toHaveBeenCalled();
+      expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+  },
+);
+
+test("mixed journal batches deliver only inference records", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("mixed-usage-kinds");
+  const inference = usage("inference-only", Date.now());
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    const send = vi.spyOn(bindings.USAGE_QUEUE, "sendBatch");
+    await state.storage.put({
+      "event:inference-only:2": inference,
+      "event:ignored:2": {
+        ...inference,
+        request_id: "ignored",
+        kind: "catalog",
+      },
+    });
+    await instance.alarm();
+    expect(send).toHaveBeenCalledExactlyOnceWith([
+      { body: inference, contentType: "json" },
+    ]);
+    expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
+    expect(await state.storage.getAlarm()).toBeNull();
+  });
+});
+
 test("HTTP usage survives queue failure and eviction, then delivers the original record", async () => {
   const outbox = env.USAGE_OUTBOX.getByName("queue-failure-test");
   const event = usage("durable-http-request", Date.now() - 1000);

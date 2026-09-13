@@ -1,6 +1,7 @@
 import type { ApiProtocol } from "../gateway/protocol.ts";
 import {
   USAGE_FIELDS,
+  type ModelPolicy,
   type NormalizedUsage,
   type TokenUsage,
 } from "../billing/types.ts";
@@ -64,7 +65,7 @@ export class UsageAccumulator {
     }
   }
 
-  snapshot(): NormalizedUsage {
+  snapshot(policy?: ModelPolicy): NormalizedUsage {
     const tokens = emptyUsage();
     const raw = structuredClone(this.raw);
     if (Object.keys(raw).length === 0)
@@ -102,6 +103,30 @@ export class UsageAccumulator {
       );
       tokens.cache_read_tokens = count(input?.cached_tokens);
       tokens.cache_write_tokens = count(input?.cache_write_tokens);
+      const inputTokens = tokens.input_tokens;
+      if (
+        inputTokens !== null &&
+        tokens.cache_read_tokens !== null &&
+        input &&
+        !Object.hasOwn(input, "cache_write_tokens")
+      ) {
+        // Compatible providers can omit writes when they have no separate
+        // charge. A priced write or an explicit invalid counter stays unknown.
+        const tier = policy?.pricing?.tiers.find(
+          (tier) =>
+            tier.up_to_input_tokens === null ||
+            inputTokens <= tier.up_to_input_tokens,
+        );
+        if (
+          tier &&
+          [
+            tier.cache_write,
+            tier.cache_write_5m ?? tier.cache_write,
+            tier.cache_write_1h ?? tier.cache_write,
+          ].every((rate) => Number(rate) === 0)
+        )
+          tokens.cache_write_tokens = 0;
+      }
       tokens.reasoning_tokens = count(
         output?.reasoning_tokens ?? raw.reasoning_tokens,
       );

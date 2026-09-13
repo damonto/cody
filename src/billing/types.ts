@@ -32,7 +32,7 @@ export interface NormalizedUsage {
 }
 
 export interface CostBreakdown {
-  status: "complete" | "partial" | "unpriced" | "unknown" | "not_applicable";
+  status: "complete" | "partial" | "unpriced" | "unknown";
   currency: string;
   price_version: string | null;
   tier_index: number | null;

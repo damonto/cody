@@ -75,10 +75,13 @@ Before deploying:
 
 ```bash
 npx wrangler secret put CONFIG_ENCRYPTION_KEY
-npx wrangler d1 migrations apply CODY_DB --remote
 npm run deploy
 ```
 
+`npm run deploy` builds the console, applies unapplied D1 migrations to the remote `CODY_DB`, then deploys the Worker. A failed build or migration stops the release. Applied migrations are tracked by Wrangler and skipped on later deployments. The release runs non-interactively.
+
+Use `npm run deploy:check` (or `npm run deploy -- --dry-run`) to build and validate the Worker bundle without applying migrations or deploying. The deploy script also accepts `--env`/`-e`, `--config`/`-c`, and repeated `--env-file` options; the same target settings are used for migration and deployment.
+
 Open `/console/` on your domain to configure and publish your services. The root `/` and `/console` redirect there. Keep the encryption key unchanged across deployments, and keep `config.json`, `config.local.json`, and `.dev.vars` out of Git.
 
-For automatic deployments, connect `main` through [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and use `npm run deploy` as the deploy command.
+For automatic deployments, connect `main` through [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and use `npm run deploy` as the deploy command. Its API token must include Account → D1 → Edit in addition to the Worker deployment permissions, so the same release can apply migrations.

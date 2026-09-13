@@ -17,6 +17,7 @@ export class UsageOutbox extends DurableObject<Env> {
   }
 
   async enqueue(event: UsageEvent): Promise<void> {
+    if (event.kind !== "inference") return;
     const key = `${PREFIX}${event.request_id}:${event.sequence}`;
     await this.ctx.storage.transaction(async (transaction) => {
       // An RPC retry may repeat an accepted event. Keep its original payload.
@@ -60,9 +61,14 @@ export class UsageOutbox extends DurableObject<Env> {
           limit: BATCH_SIZE,
         });
         if (!pending.size) break;
-        await this.env.USAGE_QUEUE.sendBatch(
-          [...pending.values()].map((body) => ({ body, contentType: "json" })),
+        const inference = [...pending.values()].filter(
+          (event) => event.kind === "inference",
         );
+        if (inference.length) {
+          await this.env.USAGE_QUEUE.sendBatch(
+            inference.map((body) => ({ body, contentType: "json" })),
+          );
+        }
         await this.ctx.storage.delete([...pending.keys()]);
       }
     } catch {
