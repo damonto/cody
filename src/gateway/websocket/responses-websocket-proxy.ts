@@ -18,6 +18,7 @@ import {
 } from "./routing.ts";
 
 import { loadConfig } from "../../config/store.ts";
+import { webSocketUsageSink } from "../../telemetry/delivery.ts";
 import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
 import { healthFailureScope } from "../health/health.ts";
 import {
@@ -125,7 +126,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     });
     this.usage = new WebSocketUsage(
       this.storage,
-      this.env.USAGE_QUEUE,
+      this.env.USAGE_QUEUE ? webSocketUsageSink(this.env) : undefined,
       this.ctx,
     );
     if (this.env.USAGE_QUEUE) {
@@ -358,7 +359,9 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
 
     if (payload.type === "response.completed") {
-      if (meter) this.usage.finish(meter, "success");
+      if (meter) {
+        this.usage.finish(meter, "success");
+      }
       await this.health.complete();
       return;
     }
@@ -366,17 +369,20 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       payload.type === "response.failed" ||
       payload.type === "response.incomplete"
     ) {
-      if (meter)
+      if (meter) {
         this.usage.finish(
           meter,
           payload.type === "response.failed" ? "failed" : "incomplete",
           status ?? null,
         );
+      }
       await this.health.inactive();
       return;
     }
     if (payload.type === "error") {
-      if (meter) this.usage.finish(meter, "failed", status ?? null);
+      if (meter) {
+        this.usage.finish(meter, "failed", status ?? null);
+      }
       await this.health.inactive();
       // Codex frame status, as above.
       const keyFailure =

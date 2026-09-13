@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 import { SseObserver } from "../src/telemetry/stream.ts";
+import { WebSocketUsage } from "../src/gateway/websocket/usage.ts";
 
 function fixture(protocol = "openai", websocket = false) {
   const events = [];
@@ -114,6 +115,7 @@ test("SSE is forwarded byte for byte, including UTF-8 split across chunks", asyn
   assert.equal(final.context_tokens, 1000);
   assert.equal(final.context_window, 1_000_000);
   assert.equal(final.response_id, "resp");
+  assert.ok(final.first_response_ms <= final.ttft_ms);
   assert.ok(final.ttft_ms < final.first_text_ms);
   assert.ok(final.first_text_ms < final.duration_ms);
   assert.equal(final.billing.price_version, '[7,"a","real"]');
@@ -158,6 +160,7 @@ test("HTTP 200 in-band errors and disconnects have their own terminal outcome", 
   await second.meter.drain();
   assert.equal(cancelled, true);
   assert.equal(second.events.at(-1).outcome, "cancelled");
+  assert.equal(second.events.at(-1).first_response_ms, null);
 });
 
 test("nonstream JSON cannot invent a first-token timestamp", async () => {
@@ -166,6 +169,7 @@ test("nonstream JSON cannot invent a first-token timestamp", async () => {
     .response(Response.json({ usage: { input_tokens: 20, output_tokens: 3 } }))
     .text();
   await meter.drain();
+  assert.equal(events.at(-1).first_response_ms, null);
   assert.equal(events.at(-1).ttft_ms, null);
   assert.equal(events.at(-1).first_text_ms, null);
   assert.equal(events.at(-1).usage.status, "partial");
@@ -237,6 +241,7 @@ for (const transport of ["sse", "websocket"]) {
     }
     await meter.drain();
     const final = events.at(-1);
+    assert.equal(final.first_response_ms, 100);
     assert.equal(final.ttft_ms, 400);
     assert.equal(final.first_text_ms, null);
     assert.equal(final.outcome, "success");
@@ -245,19 +250,275 @@ for (const transport of ["sse", "websocket"]) {
   });
 }
 
+for (const protocol of ["openai", "anthropic"]) {
+  test(`${protocol} first response includes lifecycle data before tool-only generation`, async () => {
+    const { meter, events, advance } = fixture(protocol);
+    const lifecycle =
+      protocol === "openai"
+        ? { type: "response.created", response: { id: "resp_tool" } }
+        : { type: "message_start", message: { id: "msg_tool", content: [] } };
+    const generation =
+      protocol === "openai"
+        ? { type: "response.custom_tool_call_input.delta", delta: "print(1)" }
+        : {
+            type: "content_block_delta",
+            delta: { type: "input_json_delta", partial_json: '{"command":' },
+          };
+    const terminal =
+      protocol === "openai"
+        ? { type: "response.completed", response: { id: "resp_tool" } }
+        : { type: "message_stop" };
+    const timeline = [
+      [100, ": ping\n\n"],
+      [1000, `event: ${lifecycle.type}\n`],
+      [2200, `data: ${JSON.stringify(lifecycle)}\n`],
+      // Dispatch is delayed, but New API records arrival on the data line.
+      [6000, "\n"],
+      [7679, `data: ${JSON.stringify(generation)}\n\n`],
+      [125145, `data: ${JSON.stringify(terminal)}\n\n`],
+    ];
+    let index = 0;
+    let elapsed = 0;
+    const response = meter.response(
+      new Response(
+        new ReadableStream(
+          {
+            pull(controller) {
+              if (index === timeline.length) return controller.close();
+              const [at, chunk] = timeline[index++];
+              advance(at - elapsed);
+              elapsed = at;
+              controller.enqueue(new TextEncoder().encode(chunk));
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    assert.equal(
+      await response.text(),
+      timeline.map(([, chunk]) => chunk).join(""),
+    );
+    await meter.drain();
+    const result = events.at(-1);
+    assert.equal(result.first_response_ms, 2200);
+    assert.equal(result.ttft_ms, 7679);
+    assert.equal(result.first_text_ms, null);
+    assert.equal(result.duration_ms, 125145);
+    assert.equal(result.outcome, "success");
+    assert.equal(result.observation_issue, null);
+  });
+}
+
+test("SSE first response ignores comments, empty data, and DONE markers", async () => {
+  for (const source of [
+    ": ping\r\n\r\nid: heartbeat\r\nevent: ping\r\n\r\n",
+    "data:\n\ndata:   \n\ndata: [DONE]\n\n",
+    "data: [DONE]  \n\n",
+  ]) {
+    const { meter, events, advance } = fixture();
+    advance(500);
+    await meter
+      .response(
+        new Response(source, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .text();
+    await meter.drain();
+    assert.equal(events.at(-1).first_response_ms, null);
+    assert.equal(events.at(-1).ttft_ms, null);
+    assert.equal(events.at(-1).first_text_ms, null);
+  }
+});
+
+test("empty SSE data and whitespace around DONE do not degrade reported usage", async () => {
+  const { meter, events, advance } = fixture();
+  const source =
+    ': ping\r\n\r\ndata:\r\n\r\ndata: \t \r\n\r\ndata: {"usage":{"input_tokens":20,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":3}}\r\n\r\ndata: \t[DONE] \t\r\n\r\n';
+  advance(500);
+  const response = meter.response(
+    new Response(source, {
+      headers: { "content-type": "text/event-stream" },
+    }),
+  );
+  assert.equal(await response.text(), source);
+  await meter.drain();
+  const result = events.at(-1);
+  assert.equal(result.outcome, "success");
+  assert.equal(result.observation_issue, null);
+  assert.equal(result.usage.status, "reported");
+  assert.equal(result.first_response_ms, 500);
+  assert.equal(result.ttft_ms, null);
+  assert.equal(result.first_text_ms, null);
+});
+
+test("an observer failure is distinct from invalid SSE JSON and preserves forwarded bytes", async () => {
+  const { meter, events } = fixture();
+  meter.observe = () => {
+    throw new Error("observer failed");
+  };
+  const source = 'data: {"type":"response.completed"}\n\n';
+  const response = meter.response(
+    new Response(source, {
+      headers: { "content-type": "text/event-stream" },
+    }),
+  );
+  assert.equal(await response.text(), source);
+  await meter.drain();
+  assert.equal(events.at(-1).observation_issue, "response_observer_failed");
+});
+
+test("first response survives invalid JSON and an error without generated content", async () => {
+  for (const source of [
+    'data: not-json\n\ndata: {"type":"response.completed"}\n\n',
+    'data: {"type":"error","error":{"code":"overloaded"}}\n\n',
+  ]) {
+    const { meter, events, advance } = fixture();
+    advance(500);
+    await meter
+      .response(
+        new Response(source, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .text();
+    await meter.drain();
+    assert.equal(events.at(-1).first_response_ms, 500);
+    assert.equal(events.at(-1).ttft_ms, null);
+    assert.equal(events.at(-1).first_text_ms, null);
+  }
+});
+
+test("first response at zero is retained and late observations cannot invent a response", () => {
+  const { meter, advance } = fixture("openai", true);
+  meter.observe({ type: "response.created" });
+  advance(200);
+  meter.observe({ type: "response.output_text.delta", delta: "Hello" });
+  const result = meter.finish("success", 200);
+  assert.equal(result.first_response_ms, 0);
+  assert.equal(result.ttft_ms, 200);
+  assert.equal(result.first_text_ms, 200);
+  const cancelled = fixture("openai", true).meter;
+  cancelled.finish("cancelled");
+  cancelled.observe({ type: "response.created" });
+  assert.equal(cancelled.checkpoint().first_response_ms, null);
+});
+
+test("interleaved WebSocket generations measure first response from each request start", async () => {
+  const usage = new WebSocketUsage(
+    { checkpoint: async () => {} },
+    { send: async () => {} },
+    { waitUntil: () => {} },
+  );
+  const first = await usage.start("connection", "model", 1000);
+  const second = await usage.start("connection", "model", 2000);
+  usage.observe({ type: "response.created", response: { id: "first" } }, 3200);
+  usage.observe({ type: "response.created", response: { id: "second" } }, 3500);
+  usage.observe(
+    {
+      type: "response.custom_tool_call_input.delta",
+      response_id: "first",
+      delta: "print(1)",
+    },
+    8679,
+  );
+  usage.observe(
+    {
+      type: "response.output_text.delta",
+      response_id: "second",
+      delta: "Hello",
+    },
+    9000,
+  );
+  assert.equal(first.checkpoint().first_response_ms, 2200);
+  assert.equal(first.checkpoint().ttft_ms, 7679);
+  assert.equal(first.checkpoint().first_text_ms, null);
+  assert.equal(second.checkpoint().first_response_ms, 1500);
+  assert.equal(second.checkpoint().ttft_ms, 7000);
+  assert.equal(second.checkpoint().first_text_ms, 7000);
+  await Promise.all([first.drain(), second.drain()]);
+});
+
 test("SSE observation is bounded and recovers at the next event", () => {
   const events = [],
     issues = [];
-  const observer = new SseObserver(
-    (value) => events.push(value),
-    (issue) => issues.push(issue),
-    40,
-  );
+  const observer = new SseObserver({
+    onEvent: (value) => events.push(value),
+    onIssue: (issue) => issues.push(issue),
+    maxEventChars: 40,
+  });
   observer.push('data: "' + "x".repeat(100));
   observer.push('"\n\ndata: {"usage":1}\n\n');
   observer.end();
   assert.deepEqual(events, [{ usage: 1 }]);
   assert.ok(issues.includes("sse_event_too_large"));
+});
+
+test("SSE arrival is recorded once even when observation drops an oversized event", () => {
+  for (const chunks of [
+    ['data: "' + "x".repeat(100) + '"\n\n'],
+    ["da", 'ta: "' + "x".repeat(100), '"\n\n'],
+  ]) {
+    let arrivals = 0;
+    const issues = [];
+    const observer = new SseObserver({
+      onEvent: () => {},
+      onIssue: (issue) => issues.push(issue),
+      maxEventChars: 40,
+      onFirstData: () => arrivals++,
+    });
+    for (const chunk of chunks) observer.push(chunk);
+    assert.equal(arrivals, 1);
+    assert.ok(issues.includes("sse_event_too_large"));
+    observer.push('data: {"type":"response.completed"}\n\n');
+    observer.end();
+    assert.equal(arrivals, 1);
+  }
+});
+
+test("oversized first data is timed at the line boundary regardless of chunk splits", () => {
+  for (const prefix of [
+    'data: "' + "x".repeat(100),
+    "data: " + " ".repeat(100),
+  ]) {
+    let clock = 1000;
+    const arrivals = [];
+    const observer = new SseObserver({
+      onEvent: () => {},
+      onIssue: () => {},
+      maxEventChars: 40,
+      onFirstData: () => arrivals.push(clock),
+    });
+    observer.push(prefix);
+    assert.deepEqual(arrivals, []);
+    clock = 2200;
+    observer.push("{}\n\n");
+    assert.deepEqual(arrivals, [2200]);
+  }
+});
+
+test("discarded data lines still distinguish DONE from response data at EOF", () => {
+  for (const [chunks, expected] of [
+    [["data: [DONE]" + " ".repeat(100), " \t"], 0],
+    [["data: " + " ".repeat(100), "[DO", "NE]"], 0],
+    [["data: [DO" + " ".repeat(100), "NE]"], 1],
+    [["data: [DONE]" + " ".repeat(100), "more data"], 1],
+    [["data: " + " ".repeat(100), "{}"], 1],
+  ]) {
+    let arrivals = 0;
+    const observer = new SseObserver({
+      onEvent: () => {},
+      onIssue: () => {},
+      maxEventChars: 40,
+      onFirstData: () => arrivals++,
+    });
+    for (const chunk of chunks) observer.push(chunk);
+    assert.equal(arrivals, 0);
+    observer.end();
+    assert.equal(arrivals, expected);
+  }
 });
 
 test("one meter emits a terminal event once and retains request-time pricing", async () => {

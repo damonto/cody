@@ -94,11 +94,11 @@ export default function Requests() {
         cell: ({ row }) => <Status value={row.original.outcome} />,
       },
       {
-        id: "first_text",
-        header: "First text",
+        id: "first_response",
+        header: "First response",
         cell: ({ row }) => (
           <span className="whitespace-nowrap tabular-nums">
-            {duration(row.original.first_text_ms)}
+            {duration(row.original.first_response_ms)}
           </span>
         ),
       },
@@ -317,8 +317,9 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
           <Details
             rows={[
               ["Started", date(item.started_at, timeZone)],
-              ["First text", duration(item.first_text_ms)],
+              ["First response", duration(item.first_response_ms)],
               ["First generation event", duration(item.ttft_ms)],
+              ["First text", duration(item.first_text_ms)],
               ["Total duration", duration(item.duration_ms)],
               [
                 "Usage status",
@@ -365,11 +366,6 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
               </p>
             </div>
           )}
-          <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            Context size comes from the upstream input token count. The window
-            shows the configured model capacity. Non-streaming requests do not
-            report first-text latency.
-          </p>
         </TabsContent>
         <TabsContent value="billing">
           <Details

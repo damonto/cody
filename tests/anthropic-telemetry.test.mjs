@@ -133,9 +133,11 @@ test("Anthropic thinking precedes text, while message usage remains cumulative",
     assert.equal(result.transport, "sse");
     assert.equal(result.outcome, "success");
     assert.equal(result.observation_issue, null);
+    assert.ok(result.first_response_ms < result.ttft_ms);
     assert.ok(result.ttft_ms < result.first_text_ms);
     assert.ok(result.first_text_ms < result.duration_ms);
     if (!chunkSize) {
+      assert.equal(result.first_response_ms, 100);
       assert.equal(result.ttft_ms, 400);
       assert.equal(result.first_text_ms, 800);
     }
@@ -353,6 +355,7 @@ test("Anthropic nonstream messages retain usage and do not report streaming late
   assert.equal(result.outcome, "success");
   assert.equal(result.ttft_ms, null);
   assert.equal(result.first_text_ms, null);
+  assert.equal(result.first_response_ms, null);
   assert.equal(result.usage.tokens.input_tokens, 60);
   assert.equal(result.usage.status, "reported");
 });

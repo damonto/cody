@@ -73,7 +73,9 @@ export function usage(id: string, at: number, currency = "USD"): UsageEvent {
     model: "real-model",
   });
   meter.recordAttempts([{ attempt: 1, status: 200, duration_ms: 100 }]);
-  now += 250;
+  now += 100;
+  meter.observe({ type: "response.created" });
+  now += 150;
   meter.observe({
     type: "response.output_text.delta",
     delta: "private completion content",

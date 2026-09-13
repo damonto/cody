@@ -76,6 +76,9 @@ export function Efficiency({ data }: { data: Summary }) {
   const firstText = totals.first_text_samples
     ? totals.first_text_sum / totals.first_text_samples
     : null;
+  const firstResponse = totals.first_response_samples
+    ? totals.first_response_sum / totals.first_response_samples
+    : null;
   const generation = totals.ttft_samples
     ? totals.ttft_sum / totals.ttft_samples
     : null;
@@ -86,13 +89,15 @@ export function Efficiency({ data }: { data: Summary }) {
       note: "Of reported input tokens",
     },
     {
-      title: "Avg. first text",
-      value: duration(firstText),
-      note: number(totals.first_text_samples) + " reported samples",
+      title: "Avg. first response",
+      value: duration(firstResponse),
+      note: number(totals.first_response_samples) + " reported samples",
       detail:
-        "First generation event: " +
+        "First upstream stream data, including lifecycle events. Avg. first generation: " +
         duration(generation) +
-        ". May include reasoning and tool arguments.",
+        ". Avg. first text: " +
+        duration(firstText) +
+        ".",
     },
     {
       title: "Avg. duration",

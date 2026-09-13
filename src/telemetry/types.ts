@@ -37,6 +37,8 @@ export interface UsageEvent {
   http_status: number | null;
   diagnostic_code: string | null;
   duration_ms: number | null;
+  /** First SSE data or WebSocket event, including lifecycle events; absent in older records. */
+  first_response_ms?: number | null;
   ttft_ms: number | null;
   first_text_ms: number | null;
   context_tokens: number | null;

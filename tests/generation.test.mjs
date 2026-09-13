@@ -372,6 +372,7 @@ test("nonstream JSON reports usage without inventing timing even for event-shape
     { type: "message", content: [{ type: "text", text: "Hello" }], usage },
   ]) {
     const result = await observe([payload], "http");
+    assert.equal(result.first_response_ms, null);
     assert.equal(result.ttft_ms, null);
     assert.equal(result.first_text_ms, null);
     assert.equal(result.usage.tokens.output_tokens, 3);

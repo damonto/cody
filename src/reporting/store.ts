@@ -60,6 +60,9 @@ const AGGREGATE_EXPRESSIONS = {
   cost_nano: "COALESCE(NEW.cost_nano, 0)",
   duration_sum: "COALESCE(NEW.duration_ms, 0)",
   duration_samples: "CASE WHEN NEW.duration_ms IS NULL THEN 0 ELSE 1 END",
+  first_response_sum: "COALESCE(NEW.first_response_ms, 0)",
+  first_response_samples:
+    "CASE WHEN NEW.first_response_ms IS NULL THEN 0 ELSE 1 END",
   ttft_sum: "COALESCE(NEW.ttft_ms, 0)",
   ttft_samples: "CASE WHEN NEW.ttft_ms IS NULL THEN 0 ELSE 1 END",
   first_text_sum: "COALESCE(NEW.first_text_ms, 0)",
@@ -86,6 +89,14 @@ function conditions(filters: ReportFilters): { sql: string; values: string[] } {
   return { sql: ` AND ${clauses.join(" AND ")}`, values };
 }
 
+function firstResponseLatency(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error("Invalid first response latency");
+  }
+  return value;
+}
+
 export async function ingestUsage(
   db: D1Database,
   event: UsageEvent,
@@ -103,6 +114,7 @@ export async function ingestUsage(
   ) {
     throw new Error("Invalid usage event envelope");
   }
+  const firstResponseMs = firstResponseLatency(event.first_response_ms);
   const columns = [
     "request_id",
     "event_sequence",
@@ -121,6 +133,7 @@ export async function ingestUsage(
     "outcome",
     "http_status",
     "duration_ms",
+    "first_response_ms",
     "ttft_ms",
     "first_text_ms",
     "context_tokens",
@@ -149,6 +162,7 @@ export async function ingestUsage(
     event.outcome,
     event.http_status,
     event.duration_ms,
+    firstResponseMs,
     event.ttft_ms,
     event.first_text_ms,
     event.context_tokens,
@@ -157,7 +171,10 @@ export async function ingestUsage(
     event.usage.status,
     event.billing.status,
     event.billing.total_nano,
-    JSON.stringify(event),
+    JSON.stringify({
+      ...event,
+      first_response_ms: firstResponseMs,
+    }),
   ];
   const statements = [
     db
@@ -391,6 +408,14 @@ export async function reportDimensions(
   };
 }
 
+function parseUsageEvent(json: string): UsageEvent {
+  // These rows contain UsageEvents serialized by ingestUsage. Version 1 rows
+  // written before first-response metering omit the new field.
+  const event = JSON.parse(json) as UsageEvent;
+  event.first_response_ms = firstResponseLatency(event.first_response_ms);
+  return event;
+}
+
 export async function requestList(
   db: D1Database,
   range: ReportRange,
@@ -442,9 +467,7 @@ export async function requestList(
     )
     .bind(range.from, range.to, ...filter.values, ...extra, limit + 1)
     .all<{ event_json: string }>();
-  const events = rows.results.map(
-    (row) => JSON.parse(row.event_json) as UsageEvent,
-  );
+  const events = rows.results.map((row) => parseUsageEvent(row.event_json));
   const more = events.length > limit;
   const items = events.slice(0, limit);
   const last = items.at(-1);
@@ -466,7 +489,7 @@ export async function requestDetail(
     .prepare("SELECT event_json FROM requests WHERE request_id = ?")
     .bind(id)
     .first<{ event_json: string }>();
-  return row ? (JSON.parse(row.event_json) as UsageEvent) : null;
+  return row ? parseUsageEvent(row.event_json) : null;
 }
 
 export async function cleanupRequests(

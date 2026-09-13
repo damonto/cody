@@ -1,19 +1,28 @@
 import {
+  applyD1Migrations,
   createExecutionContext,
   evictDurableObject,
   listDurableObjectIds,
   runDurableObjectAlarm,
   runInDurableObject,
   waitOnExecutionContext,
+  type D1Migration,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { clearConfigCacheForTests } from "../../src/config/store.ts";
 import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
 import { ResponsesWebSocketProxy } from "../../src/gateway/websocket/responses-websocket-proxy.ts";
 import type { GatewayConfig } from "../../src/config/types.ts";
+import { requestDetail } from "../../src/reporting/store.ts";
+import type { UsageEvent } from "../../src/telemetry/types.ts";
+
+beforeAll(async () => {
+  const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
+  await applyD1Migrations(bindings.CODY_DB, bindings.TEST_MIGRATIONS);
+});
 
 interface UpstreamMessage {
   kind: "text" | "binary";
@@ -1860,9 +1869,7 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
     const bindings = Reflect.get(instance, "env") as Env;
     vi.spyOn(bindings.USAGE_QUEUE, "send").mockImplementation(async (body) => {
       const event = body as import("../../src/telemetry/types.ts").UsageEvent;
-      if (event.phase === "finished" && event.transport === "websocket") {
-        records.push(structuredClone(event));
-      }
+      records.push(structuredClone(event));
       return { metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } };
     });
   });
@@ -1882,6 +1889,21 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
     }),
   );
   await nextUpstreamMessage(upstream);
+  const pending = await runInDurableObject(proxy, async (_instance, state) => [
+    ...(await state.storage.list<UsageEvent>({ prefix: "usage:" })).values(),
+  ]);
+  expect(pending).toHaveLength(2);
+  for (const event of pending) {
+    await expect
+      .poll(() => requestDetail(env.CODY_DB, event.request_id))
+      .toMatchObject({
+        sequence: 1,
+        phase: "started",
+        model: event.model,
+        client_id: "client",
+      });
+  }
+  expect(records).toEqual([]);
   async function deliver(event: unknown) {
     const received = nextMessage(socket);
     await sendUpstream(upstream, JSON.stringify(event));
@@ -1925,6 +1947,7 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
   });
   await runInDurableObject(proxy, async () => {});
   await expect.poll(() => records.length).toBe(2);
+  expect(records.every((event) => event.phase === "finished")).toBe(true);
   const first = records.find((event) => event.response_id === "response-a")!;
   const second = records.find((event) => event.response_id === "response-b")!;
   expect(first.model).toBe("upstream-model");
@@ -1938,6 +1961,10 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
   expect(first.connection_id).toBe(second.connection_id);
   expect(first.context_window).toBe(1000000);
   expect(first.billing.price_version).toBe('[12,"primary","upstream-model"]');
+  for (const event of [first, second]) {
+    expect(event.first_response_ms).toBeTypeOf("number");
+    expect(event.first_response_ms!).toBeLessThanOrEqual(event.ttft_ms!);
+  }
   expect(first.first_text_ms).toBeTypeOf("number");
   expect(first.ttft_ms!).toBeLessThanOrEqual(first.first_text_ms!);
   expect(JSON.stringify(records)).not.toMatch(

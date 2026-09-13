@@ -1,6 +1,6 @@
 import { record } from "./usage.ts";
 
-type Signal = "text" | "generation" | null;
+type Signal = "text" | "generation";
 
 const TEXT_FIELDS = new Map([
   ["response.output_text.delta", "delta"],
@@ -37,12 +37,15 @@ function strings(value: unknown): boolean {
   return Array.isArray(value) && value.some(nonempty);
 }
 
-function combine(a: Signal, b: Signal): Signal {
+function combine(a: Signal | null, b: Signal | null): Signal | null {
   return a === "text" || b === "text" ? "text" : (a ?? b);
 }
 
-function collect(value: unknown, read: (item: unknown) => Signal): Signal {
-  let signal: Signal = null;
+function collect(
+  value: unknown,
+  read: (item: unknown) => Signal | null,
+): Signal | null {
+  let signal: Signal | null = null;
   if (Array.isArray(value)) {
     for (const item of value) {
       signal = combine(signal, read(item));
@@ -52,7 +55,7 @@ function collect(value: unknown, read: (item: unknown) => Signal): Signal {
   return signal;
 }
 
-function contentSignal(value: unknown): Signal {
+function contentSignal(value: unknown): Signal | null {
   const part = record(value);
   if (!part) return null;
   switch (part.type) {
@@ -81,7 +84,7 @@ function contentSignal(value: unknown): Signal {
   }
 }
 
-function outputSignal(value: unknown): Signal {
+function outputSignal(value: unknown): Signal | null {
   const item = record(value);
   if (!item) return null;
   switch (item.type) {
@@ -135,7 +138,7 @@ function outputSignal(value: unknown): Signal {
   }
 }
 
-function chatSignal(value: unknown): Signal {
+function chatSignal(value: unknown): Signal | null {
   const choice = record(value);
   const delta = record(choice?.delta) ?? record(choice?.message);
   if (!delta) return null;
@@ -156,7 +159,7 @@ function chatSignal(value: unknown): Signal {
 export function generationSignal(
   payload: Record<string, unknown>,
   type: string,
-): Signal {
+): Signal | null {
   const textField = TEXT_FIELDS.get(type);
   if (textField) return nonempty(payload[textField]) ? "text" : null;
   const generationField = GENERATION_FIELDS.get(type);

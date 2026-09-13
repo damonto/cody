@@ -34,7 +34,7 @@ export interface MeterAttempt {
   usage?: NormalizedUsage | null;
 }
 
-export type MeterOptions = {
+interface MeterOptionsBase {
   requestId: string;
   protocol: ApiProtocol;
   sink: UsageSink;
@@ -42,18 +42,21 @@ export type MeterOptions = {
   connectionId?: string;
   startedAt?: number;
   now?: () => number;
-} & (
-  | {
-      endpoint: "messages" | "responses";
-      method: "POST";
-      websocket?: false;
-    }
-  | {
-      endpoint: "responses";
-      method: "WS";
-      websocket: true;
-    }
-);
+}
+
+interface HttpMeterOptions extends MeterOptionsBase {
+  endpoint: "messages" | "responses";
+  method: "POST";
+  websocket?: false;
+}
+
+interface WebSocketMeterOptions extends MeterOptionsBase {
+  endpoint: "responses";
+  method: "WS";
+  websocket: true;
+}
+
+export type MeterOptions = HttpMeterOptions | WebSocketMeterOptions;
 
 function name(value: unknown): string {
   return typeof value === "string" ? value.slice(0, 256) : "";
@@ -106,6 +109,7 @@ export class RequestMeter {
       http_status: null,
       diagnostic_code: null,
       duration_ms: null,
+      first_response_ms: null,
       ttft_ms: null,
       first_text_ms: null,
       context_tokens: null,
@@ -220,6 +224,11 @@ export class RequestMeter {
     this.observePayload(value, event, at);
   }
 
+  private observeFirstResponse(at: number): void {
+    if (!this.finished)
+      this.data.first_response_ms ??= Math.max(0, at - this.data.started_at);
+  }
+
   private observePayload(
     value: unknown,
     event: string,
@@ -255,6 +264,7 @@ export class RequestMeter {
     )
       this.streamCompleted = true;
     if (at !== null) {
+      this.observeFirstResponse(at);
       const signal = generationSignal(payload, type);
       if (signal) this.data.ttft_ms ??= Math.max(0, at - this.data.started_at);
       if (signal === "text")
@@ -401,14 +411,14 @@ export class RequestMeter {
         contentType.includes("+json"));
     const decoder = new TextDecoder();
     const observer = sse
-      ? new SseObserver(
-          (value, event) => this.observe(value, event),
-          (issue) => this.issue(issue),
-          undefined,
-          () => {
+      ? new SseObserver({
+          onEvent: (value, event) => this.observe(value, event),
+          onIssue: (issue) => this.issue(issue),
+          onDone: () => {
             this.streamCompleted = true;
           },
-        )
+          onFirstData: () => this.observeFirstResponse(this.now()),
+        })
       : undefined;
     let jsonBody = "";
     let tooLarge = false;

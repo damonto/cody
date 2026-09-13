@@ -134,91 +134,137 @@ test("context tier pricing and the calculator use the edited policy", async ({
   ).toBeEnabled();
 });
 
-test("request detail distinguishes missing counters and displays the original price version", async ({
-  page,
-}) => {
-  await mockApi(page);
-  const tokens = {
-    input_tokens: 220000,
-    uncached_input_tokens: 60000,
-    output_tokens: 4000,
-    cache_read_tokens: 140000,
-    cache_write_tokens: 20000,
-    cache_write_5m_tokens: null,
-    cache_write_1h_tokens: null,
-    reasoning_tokens: null,
-  };
-  const event: UsageEvent = {
-    schema_version: 1,
-    sequence: 2,
-    phase: "finished",
-    request_id: "example-request-123",
-    connection_id: null,
-    response_id: "response-123",
-    started_at: Date.now() - 1000,
-    finished_at: Date.now(),
-    client_id: "example-client",
-    service_id: "example-provider",
-    key_id: "primary",
-    model: "example-model",
-    requested_model: "alias",
-    reported_model: "example-model",
-    endpoint: "responses",
-    method: "POST",
-    protocol: "openai",
-    transport: "sse",
-    kind: "inference",
-    outcome: "success",
-    http_status: 200,
-    diagnostic_code: null,
-    duration_ms: 1000,
-    ttft_ms: 100,
-    first_text_ms: 250,
-    context_tokens: 220000,
-    context_window: 1000000,
-    context_source: "reported_input",
-    config_revision: 1,
-    observation_issue: null,
-    usage: { tokens, status: "reported", raw: {} },
-    billing: {
-      status: "complete",
-      currency: "USD",
-      price_version: '[1,"example-provider","example-model"]',
-      tier_index: 1,
+for (const protocol of ["openai", "anthropic"] as const) {
+  test(`${protocol} tool-only requests show first response separately from text and price version`, async ({
+    page,
+  }) => {
+    await mockApi(page);
+    const tokens = {
+      input_tokens: 220000,
+      uncached_input_tokens: 60000,
+      output_tokens: 4000,
+      cache_read_tokens: 140000,
+      cache_write_tokens: 20000,
+      cache_write_5m_tokens: null,
+      cache_write_1h_tokens: null,
+      reasoning_tokens: null,
+    };
+    const event: UsageEvent = {
+      schema_version: 1,
+      sequence: 2,
+      phase: "finished",
+      request_id: "example-request-123",
+      connection_id: null,
+      response_id: "response-123",
+      started_at: Date.now() - 125145,
+      finished_at: Date.now(),
+      client_id: "example-client",
+      service_id: "example-provider",
+      key_id: "primary",
+      model: "example-model",
+      requested_model: "alias",
+      reported_model: "example-model",
+      endpoint: protocol === "openai" ? "responses" : "messages",
+      method: "POST",
+      protocol,
+      transport: "sse",
+      kind: "inference",
+      outcome: "success",
+      http_status: 200,
+      diagnostic_code: null,
+      duration_ms: 125145,
+      first_response_ms: 2200,
+      ttft_ms: 7679,
+      first_text_ms: null,
       context_tokens: 220000,
-      input_nano: 360000000,
-      output_nano: 120000000,
-      cache_write_nano: 150000000,
-      cache_read_nano: 84000000,
-      total_nano: 714000000,
-    },
-    attempts: [],
-  };
-  await page.route("**/console/api/requests**", (route) =>
-    route.fulfill({
-      json: new URL(route.request().url()).pathname.endsWith(event.request_id)
-        ? event
-        : { items: [event], next_cursor: null },
-    }),
-  );
-  await page.goto("/console/requests");
-  await expect(
-    page.getByRole("cell", { name: "220K / 1M", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: /example-requ/ }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("250 ms", { exact: true })).toBeVisible();
-  await expect(
-    dialog
-      .getByText("Context size", { exact: true })
-      .locator("..")
-      .getByText("220K", { exact: true }),
-  ).toBeVisible();
-  await expect(dialog.getByText("1M", { exact: true })).toBeVisible();
-  await dialog.getByRole("tab", { name: "Pricing", exact: true }).click();
-  await expect(
-    dialog.getByText(event.billing.price_version!, { exact: true }),
-  ).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-});
+      context_window: 1000000,
+      context_source: "reported_input",
+      config_revision: 1,
+      observation_issue: null,
+      usage: { tokens, status: "reported", raw: {} },
+      billing: {
+        status: "complete",
+        currency: "USD",
+        price_version: '[1,"example-provider","example-model"]',
+        tier_index: 1,
+        context_tokens: 220000,
+        input_nano: 360000000,
+        output_nano: 120000000,
+        cache_write_nano: 150000000,
+        cache_read_nano: 84000000,
+        total_nano: 714000000,
+      },
+      attempts: [],
+    };
+    const legacy: UsageEvent = {
+      ...event,
+      request_id: "legacy-request-123",
+      ttft_ms: 100,
+      first_text_ms: 250,
+    };
+    delete legacy.first_response_ms;
+    await page.route("**/console/api/requests**", (route) =>
+      route.fulfill({
+        json: [event, legacy].find((item) =>
+          new URL(route.request().url()).pathname.endsWith(item.request_id),
+        ) ?? { items: [event, legacy], next_cursor: null },
+      }),
+    );
+    await page.goto("/console/requests");
+    await expect(
+      page.getByRole("columnheader", { name: "First response", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "2.20 s", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "220K / 1M", exact: true }).first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /example-requ/ }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog
+        .getByText("First response", { exact: true })
+        .locator("..")
+        .getByText("2.20 s", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog
+        .getByText("First generation event", { exact: true })
+        .locator("..")
+        .getByText("7.68 s", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog
+        .getByText("First text", { exact: true })
+        .locator("..")
+        .getByText("—", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog
+        .getByText("Context size", { exact: true })
+        .locator("..")
+        .getByText("220K", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByText("1M", { exact: true })).toBeVisible();
+    await dialog.getByRole("tab", { name: "Pricing", exact: true }).click();
+    await expect(
+      dialog.getByText(event.billing.price_version!, { exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: /legacy-reque/ }).click();
+    await expect(
+      dialog
+        .getByText("First response", { exact: true })
+        .locator("..")
+        .getByText("—", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog
+        .getByText("First text", { exact: true })
+        .locator("..")
+        .getByText("250 ms", { exact: true }),
+    ).toBeVisible();
+  });
+}

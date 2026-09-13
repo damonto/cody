@@ -1,4 +1,14 @@
 export const MAX_OBSERVED_JSON_CHARS = 2 * 1024 * 1024;
+const DATA_FIELD = "data:";
+const DONE_MARKER = "[DONE]";
+
+export interface SseObserverOptions {
+  readonly onEvent: (value: unknown, event: string) => void;
+  readonly onIssue: (issue: string) => void;
+  readonly maxEventChars?: number;
+  readonly onDone?: () => void;
+  readonly onFirstData?: () => void;
+}
 
 /** A bounded SSE observer. The forwarding stream never uses decoded bytes. */
 export class SseObserver {
@@ -9,13 +19,18 @@ export class SseObserver {
   private droppingLine = false;
   private droppingEvent = false;
   private skipLf = false;
+  private firstDataSeen = false;
+  private droppedDataPrefix: string | null = null;
+  private readonly limit: number;
+  private readonly lineLimit: number;
 
-  constructor(
-    private readonly onEvent: (value: unknown, event: string) => void,
-    private readonly onIssue: (issue: string) => void,
-    private readonly limit = MAX_OBSERVED_JSON_CHARS,
-    private readonly onDone?: () => void,
-  ) {}
+  constructor(private readonly options: SseObserverOptions) {
+    this.limit = options.maxEventChars ?? MAX_OBSERVED_JSON_CHARS;
+    if (!Number.isSafeInteger(this.limit) || this.limit <= 0) {
+      throw new RangeError("SSE observation limit must be a positive integer");
+    }
+    this.lineLimit = Math.max(this.limit, DATA_FIELD.length);
+  }
 
   push(text: string): void {
     if (this.skipLf && text) {
@@ -32,11 +47,19 @@ export class SseObserver {
       this.buffer = this.buffer.slice(end + width);
       if (this.droppingLine) {
         this.droppingLine = false;
+        this.finishDroppedLine(line);
         continue;
       }
       this.line(line);
     }
-    if (this.buffer.length > this.limit) {
+    if (this.buffer.length > this.lineLimit) {
+      if (this.droppingLine) {
+        this.observeDroppedData(this.buffer);
+      } else {
+        this.droppedDataPrefix =
+          !this.firstDataSeen && this.buffer.startsWith(DATA_FIELD) ? "" : null;
+        this.observeDroppedData(this.buffer.slice(DATA_FIELD.length));
+      }
       this.buffer = "";
       this.droppingLine = true;
       this.drop();
@@ -47,33 +70,81 @@ export class SseObserver {
     this.droppingEvent = true;
     this.data = [];
     this.size = 0;
-    this.onIssue("sse_event_too_large");
+    this.options.onIssue("sse_event_too_large");
+  }
+
+  private markFirstData(): void {
+    if (this.firstDataSeen) return;
+    this.firstDataSeen = true;
+    this.options.onFirstData?.();
+  }
+
+  private observeFirstData(line: string): void {
+    if (this.firstDataSeen || !line.startsWith(DATA_FIELD)) return;
+    const data = line.slice(DATA_FIELD.length).trim();
+    if (data && data !== DONE_MARKER) this.markFirstData();
+  }
+
+  private observeDroppedData(text: string): void {
+    if (
+      this.droppedDataPrefix === null ||
+      !DONE_MARKER.startsWith(this.droppedDataPrefix)
+    )
+      return;
+    // Retain at most seven characters to distinguish empty data and [DONE].
+    // Time oversized data at the same line boundary as ordinary data.
+    if (this.droppedDataPrefix === "") text = text.trimStart();
+    const remaining = DONE_MARKER.length - this.droppedDataPrefix.length;
+    this.droppedDataPrefix += text.slice(0, remaining);
+    const tail = text.slice(remaining).trimStart();
+    if (this.droppedDataPrefix === DONE_MARKER && tail)
+      this.droppedDataPrefix += tail.slice(0, 1);
+  }
+
+  private finishDroppedLine(remainder: string): void {
+    this.observeDroppedData(remainder);
+    const data = this.droppedDataPrefix;
+    this.droppedDataPrefix = null;
+    if (data && data !== DONE_MARKER) this.markFirstData();
+  }
+
+  private dispatch(): void {
+    const data = this.data;
+    const event = this.event;
+    const dropping = this.droppingEvent;
+    this.data = [];
+    this.event = "";
+    this.size = 0;
+    this.droppingEvent = false;
+    if (dropping || data.length === 0) return;
+    const text = data.join("\n").trim();
+    if (!text) return;
+    if (text === DONE_MARKER) {
+      this.options.onDone?.();
+      return;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      this.options.onIssue("invalid_sse_json");
+      return;
+    }
+    // Callback failures are observer failures, not malformed upstream JSON.
+    this.options.onEvent(value, event);
   }
 
   private line(line: string): void {
+    this.observeFirstData(line);
     if (line === "") {
-      if (!this.droppingEvent && this.data.length > 0) {
-        const text = this.data.join("\n");
-        if (text === "[DONE]") this.onDone?.();
-        else {
-          try {
-            this.onEvent(JSON.parse(text) as unknown, this.event);
-          } catch {
-            this.onIssue("invalid_sse_json");
-          }
-        }
-      }
-      this.data = [];
-      this.event = "";
-      this.size = 0;
-      this.droppingEvent = false;
+      this.dispatch();
       return;
     }
     if (this.droppingEvent || line.startsWith(":")) return;
     if (line.startsWith("event:"))
       this.event = line.slice(6).trim().slice(0, 160);
-    if (!line.startsWith("data:")) return;
-    const data = line.slice(5).replace(/^ /, "");
+    if (!line.startsWith(DATA_FIELD)) return;
+    const data = line.slice(DATA_FIELD.length).replace(/^ /, "");
     this.size += data.length + 1;
     if (this.size > this.limit) this.drop();
     else this.data.push(data);
@@ -81,9 +152,10 @@ export class SseObserver {
 
   end(): void {
     // Dispatch a final event even for providers that omit the trailing blank line.
-    if (this.buffer && !this.droppingLine)
-      this.line(this.buffer.replace(/\r$/, ""));
+    if (this.droppingLine) this.finishDroppedLine(this.buffer);
+    else if (this.buffer) this.line(this.buffer.replace(/\r$/, ""));
     this.buffer = "";
+    this.droppingLine = false;
     this.line("");
   }
 }

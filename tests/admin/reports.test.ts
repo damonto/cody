@@ -11,10 +11,12 @@ import {
   cleanupRequests,
   ingestUsage,
   reportDimensions,
+  requestDetail,
   requestList,
   summary,
 } from "../../src/reporting/store.ts";
 import { usage } from "./fixtures.ts";
+import type { UsageEvent } from "../../src/telemetry/types.ts";
 
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
 const now = Date.UTC(2026, 8, 12, 12, 30);
@@ -44,6 +46,117 @@ beforeEach(async () => {
   );
 });
 afterEach(() => vi.restoreAllMocks());
+
+test("invalid first response values cannot enter request or aggregate rows", async () => {
+  for (const value of [
+    "2200",
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    true,
+    {},
+  ]) {
+    const event = usage("invalid-latency", now - HOUR_MS);
+    // Simulate a malformed value arriving over the Queue's JSON boundary.
+    Reflect.set(event, "first_response_ms", value);
+    await expect(ingestUsage(bindings.CODY_DB, event)).rejects.toThrow(
+      "Invalid first response latency",
+    );
+  }
+  expect(await requestDetail(bindings.CODY_DB, "invalid-latency")).toBeNull();
+  const result = await summary(
+    bindings.CODY_DB,
+    window(now - 2 * HOUR_MS, now),
+    {},
+  );
+  expect(result.totals.requests_count).toBe(0);
+  expect(result.totals.first_response_samples).toBe(0);
+});
+
+test("first response samples stay independent across hourly rollups and request edges", async () => {
+  const base = Date.UTC(2026, 8, 12);
+  const samples = [
+    [40, 2200],
+    [70, 0],
+    [90, undefined],
+    [130, null],
+    [140, 1100],
+  ] as const;
+  for (const [minute, latency] of samples) {
+    const event = usage("latency-" + minute, base + minute * 60_000);
+    event.transport = latency === null ? "http" : "sse";
+    event.duration_ms = 125145;
+    event.finished_at = event.started_at + event.duration_ms;
+    event.ttft_ms = latency === null ? null : 7679;
+    event.first_text_ms = null;
+    if (latency === undefined) delete event.first_response_ms;
+    else event.first_response_ms = latency;
+    const start: UsageEvent = {
+      ...event,
+      phase: "started",
+      sequence: 0,
+      finished_at: null,
+      outcome: "pending",
+      first_response_ms: null,
+    };
+    // Exercise both finish triggers and delayed/duplicate queue deliveries.
+    if (minute === 40) await ingestUsage(bindings.CODY_DB, start);
+    await ingestUsage(bindings.CODY_DB, event);
+    await ingestUsage(bindings.CODY_DB, event);
+    await ingestUsage(bindings.CODY_DB, start);
+    await ingestUsage(bindings.CODY_DB, { ...start, sequence: 1 });
+    expect(
+      await requestDetail(bindings.CODY_DB, event.request_id),
+    ).toMatchObject({
+      first_response_ms: latency ?? null,
+      first_text_ms: null,
+    });
+  }
+  const pending: UsageEvent = {
+    ...usage("latency-pending", base + 80 * 60_000),
+    phase: "started",
+    sequence: 1,
+    outcome: "pending",
+    finished_at: null,
+    first_response_ms: 9000,
+  };
+  await ingestUsage(bindings.CODY_DB, pending);
+  for (const range of [
+    window(base, base + 3 * HOUR_MS),
+    window(base + 30 * 60_000, base + 150 * 60_000),
+  ]) {
+    const result = await summary(bindings.CODY_DB, range, {});
+    expect(result.totals).toMatchObject({
+      requests_count: 5,
+      first_response_sum: 3300,
+      first_response_samples: 3,
+      ttft_samples: 4,
+      first_text_samples: 0,
+    });
+    expect(result.pending).toBe(1);
+    expect(
+      result.series.reduce((sum, row) => sum + row.first_response_sum, 0),
+    ).toBe(3300);
+    expect(result.ranking.items[0].totals.first_response_samples).toBe(3);
+  }
+  const zero = await summary(
+    bindings.CODY_DB,
+    window(base + 69 * 60_000, base + 71 * 60_000),
+    {},
+  );
+  expect(zero.totals.first_response_sum).toBe(0);
+  expect(zero.totals.first_response_samples).toBe(1);
+  const list = await requestList(
+    bindings.CODY_DB,
+    window(base, base + 3 * HOUR_MS),
+    {},
+    { limit: 10 },
+  );
+  expect(
+    list.items.find((item) => item.request_id === "latency-90")
+      ?.first_response_ms,
+  ).toBeNull();
+});
 
 test("overview totals, ranking and currency series share exact request boundaries", async () => {
   const base = Date.UTC(2026, 8, 12);

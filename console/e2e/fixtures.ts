@@ -124,6 +124,8 @@ export async function mockApi(page: Page, initial = fixture()) {
           cost_nano: 0,
           duration_sum: 0,
           duration_samples: 0,
+          first_response_sum: 0,
+          first_response_samples: 0,
           ttft_sum: 0,
           ttft_samples: 0,
           first_text_sum: 0,

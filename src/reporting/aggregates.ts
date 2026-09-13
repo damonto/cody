@@ -18,6 +18,8 @@ export const AGGREGATE_FIELDS = [
   "cost_nano",
   "duration_sum",
   "duration_samples",
+  "first_response_sum",
+  "first_response_samples",
   "ttft_sum",
   "ttft_samples",
   "first_text_sum",

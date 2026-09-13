@@ -44,6 +44,10 @@ function source(hour: number, alternate: boolean, previous = false): SourceRow {
     output_tokens: requests * 100,
     reasoning_tokens: requests * 30,
     reasoning_samples: requests,
+    first_response_sum: requests * 40,
+    first_response_samples: requests,
+    ttft_sum: requests * 80,
+    ttft_samples: requests,
     first_text_sum: requests * 100,
     first_text_samples: requests,
     duration_sum: requests * 1000,
@@ -191,6 +195,19 @@ test("overview shows outcomes, token composition, comparison and currency-isolat
     metric(page, "Known cost").getByText("$3.50", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("70.00%", { exact: true })).toBeVisible();
+  const latency = page
+    .getByText("Avg. first response", { exact: true })
+    .locator("..");
+  await expect(latency.getByText("40 ms", { exact: true })).toBeVisible();
+  await expect(
+    latency.getByText("12 reported samples", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    latency.getByText("Avg. first response", { exact: true }),
+  ).toHaveAttribute(
+    "title",
+    /Avg\. first generation: 80 ms\. Avg\. first text: 100 ms/,
+  );
   await expect(page.getByText("Of output: reasoning")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("overview-light.png"),
