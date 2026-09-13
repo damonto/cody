@@ -10,6 +10,7 @@ import { searchFormSchema } from "../../../src/shared/forms";
 import type { GatewayConfig } from "../../../src/config/types";
 import {
   read,
+  revealSearchKey,
   rpc,
   draftOptions,
   useDraft,
@@ -17,6 +18,8 @@ import {
   type Draft,
 } from "@/lib/api";
 import { Choice, ErrorNotice, Loading, PageHeading } from "@/components/common";
+import { CredentialField } from "@/components/form/credential-field";
+import { fieldErrors } from "@/lib/form-errors";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -251,9 +254,17 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
                     </form.AppField>
                     <form.AppField name="web_search.api_key">
                       {(input) => (
-                        <input.TextField
+                        <CredentialField
+                          key={field.state.value.mode}
                           label="Search API key"
-                          type="password"
+                          name={input.name}
+                          value={input.state.value ?? ""}
+                          onChange={input.handleChange}
+                          onBlur={input.handleBlur}
+                          errors={fieldErrors(input)}
+                          reveal={(signal) =>
+                            revealSearchKey(snapshot.version, signal)
+                          }
                         />
                       )}
                     </form.AppField>

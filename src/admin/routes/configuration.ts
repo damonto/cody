@@ -1,16 +1,36 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import { draftConfigurationSchema } from "../../config/schema.ts";
 import { publisherReplySchema, revisionSchema } from "../../control/schema.ts";
-import { draftSchema, rollbackSchema, versionSchema } from "../schema.ts";
+import {
+  apiKeySchema,
+  clientIdSchema,
+  draftSchema,
+  rollbackSchema,
+  serviceKeyIdSchema,
+  versionSchema,
+} from "../schema.ts";
 import { validate } from "../validation.ts";
-import type { AdminContext } from "../context.ts";
+import { controlStore, type AdminContext } from "../context.ts";
 
 async function publisherReply(reply: Promise<string>) {
   const result = publisherReplySchema.parse(JSON.parse(await reply));
   if (!result.ok)
     throw new HTTPException(result.status, { message: result.error });
   return result.data;
+}
+
+async function credentialDraft(env: Env, version: number) {
+  const store = controlStore(env);
+  const state = await store.state();
+  if (state.draft_version !== version)
+    throw new HTTPException(409, {
+      message: "The draft changed; reload before viewing this key",
+    });
+  return draftConfigurationSchema.parse(
+    await store.rawDraft(Promise.resolve(state)),
+  );
 }
 
 export const configurationRoutes = new Hono<AdminContext>()
@@ -34,6 +54,42 @@ export const configurationRoutes = new Hono<AdminContext>()
       )),
       actor: c.get("actor"),
     });
+  })
+  .post(
+    "/clients/:id/reveal",
+    validate("param", clientIdSchema),
+    validate("json", versionSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const { version } = c.req.valid("json");
+      const config = await credentialDraft(c.env, version);
+      const client = config.api_keys.find((entry) => entry.id === id);
+      if (!client)
+        throw new HTTPException(404, { message: "Client does not exist" });
+      return c.json(apiKeySchema.parse({ api_key: client.api_key }));
+    },
+  )
+  .post(
+    "/services/:id/keys/:keyId/reveal",
+    validate("param", serviceKeyIdSchema),
+    validate("json", versionSchema),
+    async (c) => {
+      const { id, keyId } = c.req.valid("param");
+      const config = await credentialDraft(c.env, c.req.valid("json").version);
+      const service = config.services.find((entry) => entry.id === id);
+      const key = service?.keys.find((entry) => entry.id === keyId);
+      if (!key)
+        throw new HTTPException(404, { message: "Service key does not exist" });
+      return c.json(apiKeySchema.parse({ api_key: key.api_key }));
+    },
+  )
+  .post("/web-search/reveal", validate("json", versionSchema), async (c) => {
+    const config = await credentialDraft(c.env, c.req.valid("json").version);
+    if (config.web_search.mode === "proxy")
+      throw new HTTPException(404, {
+        message: "No search provider key is configured",
+      });
+    return c.json(apiKeySchema.parse({ api_key: config.web_search.api_key }));
   })
   .post("/publish", validate("json", versionSchema), async (c) =>
     c.json({

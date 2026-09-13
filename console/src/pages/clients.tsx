@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useAppForm } from "@/lib/form";
-import { KeyRound, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { KeyRound, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { clientFormSchema } from "../../../src/shared/forms";
+import { createClientKey } from "../../../src/shared/secrets";
 import type { ClientApiKeyConfig } from "../../../src/config/types";
 import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
 import {
-  CopyButton,
   DataTable,
   Empty,
   ErrorNotice,
@@ -14,6 +14,10 @@ import {
   Loading,
   PageHeading,
 } from "@/components/common";
+import {
+  ClientCredential,
+  ClientCredentialField,
+} from "@/features/clients/credential";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -37,24 +41,40 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-function createKey() {
-  return `cody_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+interface ClientEditor {
+  snapshot: Draft;
+  index: number;
+  initial: ClientApiKeyConfig;
 }
+
+interface ClientFormProps extends ClientEditor {
+  draftVersion: number;
+  close: () => void;
+}
+
 export default function Clients() {
   const draft = useDraft();
   const save = useSaveDraft();
-  const [editor, setEditor] = useState<{
-    snapshot: Draft;
-    index: number;
-  } | null>(null);
+  const [editor, setEditor] = useState<ClientEditor | null>(null);
   const [remove, setRemove] = useState<string | null>(null);
   if (draft.isPending) return <Loading />;
   if (draft.error)
     return (
       <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
     );
-  const edit = (index: number) =>
-    setEditor({ snapshot: structuredClone(draft.data), index });
+  const currentDraft = draft.data;
+  function edit(index: number) {
+    const snapshot = structuredClone(currentDraft);
+    const initial =
+      index === -1
+        ? {
+            id: "",
+            api_key: createClientKey(),
+            services: snapshot.config.services.map((service) => service.id),
+          }
+        : snapshot.config.api_keys[index];
+    setEditor({ snapshot, index, initial });
+  }
   return (
     <>
       <PageHeading
@@ -87,10 +107,13 @@ export default function Clients() {
               {
                 id: "secret",
                 header: "Credential",
-                cell: () => (
-                  <span className="font-mono text-muted-foreground">
-                    ••••••••••••••••
-                  </span>
+                cell: ({ row }) => (
+                  <ClientCredential
+                    key={`${row.original.id}:${draft.data.version}`}
+                    clientId={row.original.id}
+                    version={draft.data.version}
+                    value={row.original.api_key}
+                  />
                 ),
               },
               {
@@ -171,11 +194,17 @@ export default function Clients() {
               {editor?.index === -1 ? "Create client" : "Edit client"}
             </DialogTitle>
             <DialogDescription>
-              New credentials are shown only while editing. Copy them before
-              saving.
+              New and rotated keys take effect after publication. Copy saved
+              keys from the client list.
             </DialogDescription>
           </DialogHeader>
-          {editor && <ClientForm {...editor} close={() => setEditor(null)} />}
+          {editor && (
+            <ClientForm
+              {...editor}
+              draftVersion={draft.data.version}
+              close={() => setEditor(null)}
+            />
+          )}
         </DialogContent>
       </Dialog>
       <AlertDialog
@@ -218,22 +247,11 @@ export default function Clients() {
 function ClientForm({
   snapshot,
   index,
+  initial,
+  draftVersion,
   close,
-}: {
-  snapshot: Draft;
-  index: number;
-  close: () => void;
-}) {
+}: ClientFormProps) {
   const save = useSaveDraft();
-  const [initial] = useState<ClientApiKeyConfig>(() =>
-    index === -1
-      ? {
-          id: "",
-          api_key: createKey(),
-          services: snapshot.config.services.map((service) => service.id),
-        }
-      : snapshot.config.api_keys[index],
-  );
   const form = useAppForm({
     defaultValues: initial,
     validators: { onBlur: clientFormSchema, onSubmit: clientFormSchema },
@@ -276,26 +294,15 @@ function ClientForm({
       </form.AppField>
       <form.AppField name="api_key">
         {(field) => (
-          <div className="space-y-2">
-            <field.TextField label="Gateway API key" type="password" />
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => field.handleChange(createKey())}
-              >
-                <RefreshCw />
-                Generate new key
-              </Button>
-              {field.state.value !== "__CODY_SECRET_UNCHANGED__" && (
-                <CopyButton
-                  value={field.state.value}
-                  title="Copy client API key"
-                />
-              )}
-            </div>
-          </div>
+          <ClientCredentialField
+            key={`${initial.id}:${snapshot.version}:${draftVersion}`}
+            clientId={initial.id}
+            version={snapshot.version}
+            value={field.state.value}
+            onChange={field.handleChange}
+            onBlur={field.handleBlur}
+            errors={fieldErrors(field)}
+          />
         )}
       </form.AppField>
       <form.AppField name="services">

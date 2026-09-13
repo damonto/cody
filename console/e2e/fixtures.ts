@@ -1,15 +1,20 @@
 import { expect, type Page } from "@playwright/test";
 import type { Draft, Summary } from "../src/lib/api";
 
-import { draftSchema, reportQuerySchema } from "../../src/admin/schema";
+import {
+  draftSchema,
+  reportQuerySchema,
+  versionSchema,
+} from "../../src/admin/schema";
+import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import {
   DAY_MS,
   reportBucketMs,
   reportRange,
 } from "../../src/reporting/ranges";
 
-const secret = "__CODY_SECRET_UNCHANGED__";
-function fixture(): Draft {
+const secret = SECRET_PLACEHOLDER;
+export function draftFixture(): Draft {
   return {
     version: 1,
     published_revision: 1,
@@ -71,22 +76,150 @@ function fixture(): Draft {
     },
   };
 }
-export async function mockApi(page: Page, initial = fixture()) {
+function maskKeys(config: Draft["config"]): Draft["config"] {
+  return {
+    ...config,
+    api_keys: config.api_keys.map((client) => ({ ...client, api_key: secret })),
+    services: config.services.map((service) => ({
+      ...service,
+      keys: service.keys.map((key) => ({ ...key, api_key: secret })),
+    })),
+    web_search:
+      config.web_search.mode === "proxy"
+        ? config.web_search
+        : { ...config.web_search, api_key: secret },
+  };
+}
+
+function requiredKey(value: string | undefined, owner: string): string {
+  if (value === undefined) {
+    throw new Error(`${owner} has no credential in the test fixture`);
+  }
+  return value;
+}
+
+export async function mockApi(page: Page, initial = draftFixture()) {
   let draft = structuredClone(initial);
+  let clientKeys = new Map(
+    draft.config.api_keys.map((client) => [
+      client.id,
+      client.api_key === secret ? `test-key-${client.id}` : client.api_key,
+    ]),
+  );
+  let serviceKeys = new Map(
+    draft.config.services.flatMap((service) =>
+      service.keys.map((key): [string, string] => [
+        `${service.id}:${key.id}`,
+        key.api_key === secret
+          ? `test-key-${service.id}-${key.id}`
+          : key.api_key,
+      ]),
+    ),
+  );
+  const search = draft.config.web_search;
+  let searchApiKey =
+    search.mode === "proxy"
+      ? undefined
+      : search.api_key === secret
+        ? `test-search-key-${search.mode}`
+        : search.api_key;
+  function clientKey(id: string): string {
+    return requiredKey(clientKeys.get(id), `Client ${id}`);
+  }
+  function serviceKey(id: string, keyId: string): string {
+    return requiredKey(
+      serviceKeys.get(`${id}:${keyId}`),
+      `Service ${id}/${keyId}`,
+    );
+  }
+  function searchKey(): string {
+    return requiredKey(searchApiKey, "Web search");
+  }
+  draft.config = maskKeys(draft.config);
   const calls: string[] = [];
   await page.route("**/console/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     calls.push(`${request.method()} ${url.pathname}${url.search}`);
     let response: unknown = {};
+    const clientReveal = url.pathname.match(
+      /^\/console\/api\/config\/clients\/([^/]+)\/reveal$/,
+    );
+    const serviceReveal = url.pathname.match(
+      /^\/console\/api\/config\/services\/([^/]+)\/keys\/([^/]+)\/reveal$/,
+    );
+    const searchReveal =
+      url.pathname === "/console/api/config/web-search/reveal";
     if (url.pathname === "/console/api/config") {
       if (request.method() === "PUT") {
         const input = draftSchema.parse(request.postDataJSON());
         expect(request.headers()["x-cody-admin"]).toBe("1");
         expect(input.version).toBe(draft.version);
-        draft = { ...draft, version: draft.version + 1, config: input.config };
+        clientKeys = new Map(
+          input.config.api_keys.map((client) => {
+            const value =
+              client.api_key === secret ? clientKey(client.id) : client.api_key;
+            return [client.id, value];
+          }),
+        );
+        serviceKeys = new Map(
+          input.config.services.flatMap((service) =>
+            service.keys.map((key): [string, string] => [
+              `${service.id}:${key.id}`,
+              key.api_key === secret
+                ? serviceKey(service.id, key.id)
+                : key.api_key,
+            ]),
+          ),
+        );
+        const search = input.config.web_search;
+        searchApiKey =
+          search.mode === "proxy"
+            ? undefined
+            : search.api_key === secret
+              ? searchKey()
+              : search.api_key;
+        draft = {
+          ...draft,
+          version: draft.version + 1,
+          config: maskKeys(input.config),
+        };
       }
       response = draft;
+    } else if (
+      (clientReveal || serviceReveal || searchReveal) &&
+      request.method() === "POST"
+    ) {
+      expect(request.headers()["x-cody-admin"]).toBe("1");
+      const input = versionSchema.parse(request.postDataJSON());
+      if (input.version !== draft.version) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "The draft changed; reload before viewing this key" },
+        });
+        return;
+      }
+      const api_key = clientReveal
+        ? clientKeys.get(decodeURIComponent(clientReveal[1]))
+        : serviceReveal
+          ? serviceKeys.get(
+              `${decodeURIComponent(serviceReveal[1])}:${decodeURIComponent(serviceReveal[2])}`,
+            )
+          : searchApiKey;
+      if (!api_key) {
+        await route.fulfill({
+          status: 404,
+          json: {
+            error: clientReveal
+              ? "Client does not exist"
+              : serviceReveal
+                ? "Service key does not exist"
+                : "No search provider key is configured",
+          },
+        });
+        return;
+      }
+      response = { api_key };
     } else if (url.pathname === "/console/api/config/publish") {
       draft.published_revision = (draft.published_revision ?? 0) + 1;
       response = draft;
@@ -178,5 +311,11 @@ export async function mockApi(page: Page, initial = fixture()) {
       response = { items: [] };
     await route.fulfill({ json: response });
   });
-  return { current: () => draft, calls };
+  return {
+    current: () => draft,
+    clientKey,
+    serviceKey,
+    searchKey,
+    calls,
+  };
 }

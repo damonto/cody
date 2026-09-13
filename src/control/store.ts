@@ -3,13 +3,14 @@ import { priceVersion } from "../billing/calculate.ts";
 import { parseConfig } from "../config/store.ts";
 import { record } from "../telemetry/usage.ts";
 import { draftConfigurationSchema } from "../shared/forms.ts";
+import { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
 import { maskedConfigurationSchema } from "../config/schema.ts";
 import type { DraftView } from "./schema.ts";
 export type { DraftView } from "./schema.ts";
 import type { GatewayConfig } from "../config/types.ts";
 import { decryptConfig, encryptConfig } from "./crypto.ts";
 
-export const SECRET_PLACEHOLDER = "__CODY_SECRET_UNCHANGED__";
+export { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
 export type JsonValue =
   string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 

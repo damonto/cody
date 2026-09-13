@@ -1,5 +1,6 @@
 import { useId, useState, type ComponentProps, type ReactNode } from "react";
 import { useStore } from "@tanstack/react-form";
+import { SECRET_PLACEHOLDER } from "../../../../src/shared/secrets";
 import { useFieldContext, useFormContext } from "@/lib/form-context";
 import { fieldErrors, validationErrors } from "@/lib/form-errors";
 import {
@@ -49,7 +50,7 @@ export function TextField({
 }) {
   const field = useFieldContext<string | undefined>();
   const id = useId();
-  const secret = field.state.value === "__CODY_SECRET_UNCHANGED__";
+  const secret = field.state.value === SECRET_PLACEHOLDER;
   function change(value: string) {
     field.handleChange(emptyAsUndefined && !value ? undefined : value);
   }

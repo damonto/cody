@@ -8,6 +8,7 @@ import { parseResponse, type InferResponseType } from "hono/client";
 import { z } from "zod";
 import { toast } from "sonner";
 import { createAdminClient } from "../../../src/admin/client";
+import { apiKeySchema } from "../../../src/admin/schema";
 import type { GatewayConfig } from "../../../src/config/types";
 export type { GatewayConfig } from "../../../src/config/types";
 export type { UsageEvent } from "../../../src/telemetry/types";
@@ -49,6 +50,53 @@ export const rpc = createAdminClient(`${import.meta.env.BASE_URL}api`, {
   },
 });
 export const read = parseResponse;
+function apiKey(value: unknown): string {
+  const result = apiKeySchema.safeParse(value);
+  if (!result.success) throw new ApiError("Could not read the API key", 502);
+  return result.data.api_key;
+}
+export async function revealClientKey(
+  id: string,
+  version: number,
+  signal: AbortSignal,
+): Promise<string> {
+  return apiKey(
+    await read(
+      rpc.config.clients[":id"].reveal.$post(
+        { param: { id }, json: { version } },
+        { init: { signal } },
+      ),
+    ),
+  );
+}
+export async function revealServiceKey(
+  id: string,
+  keyId: string,
+  version: number,
+  signal: AbortSignal,
+): Promise<string> {
+  return apiKey(
+    await read(
+      rpc.config.services[":id"].keys[":keyId"].reveal.$post(
+        { param: { id, keyId }, json: { version } },
+        { init: { signal } },
+      ),
+    ),
+  );
+}
+export async function revealSearchKey(
+  version: number,
+  signal: AbortSignal,
+): Promise<string> {
+  return apiKey(
+    await read(
+      rpc.config["web-search"].reveal.$post(
+        { json: { version } },
+        { init: { signal } },
+      ),
+    ),
+  );
+}
 export type Draft = InferResponseType<typeof rpc.config.$get, 200>;
 export type Revision = InferResponseType<
   typeof rpc.config.versions.$get,

@@ -13,10 +13,12 @@ import { CapabilityFields } from "./capability-fields";
 export function ServiceForm({
   snapshot,
   index,
+  draftVersion,
   close,
 }: {
   snapshot: Draft;
   index: number;
+  draftVersion: number;
   close: () => void;
 }) {
   const save = useSaveDraft();
@@ -64,7 +66,12 @@ export function ServiceForm({
           <TabsTrigger value="routing">Capabilities & retry</TabsTrigger>
         </TabsList>
         <ConnectionFields form={form} index={index} close={close} />
-        <CredentialFields form={form} />
+        <CredentialFields
+          form={form}
+          serviceId={current.id}
+          version={snapshot.version}
+          draftVersion={draftVersion}
+        />
         <CapabilityFields form={form} />
       </Tabs>
       {save.error && <ErrorNotice error={save.error} />}

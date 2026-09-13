@@ -219,6 +219,7 @@ export default function Services() {
             <ServiceForm
               snapshot={editor.snapshot}
               index={editor.index}
+              draftVersion={draft.data.version}
               close={() => setEditor(null)}
             />
           )}

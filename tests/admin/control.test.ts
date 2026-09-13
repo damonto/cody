@@ -23,6 +23,7 @@ import {
 import { authenticateAdmin, safeAdminMutation } from "../../src/admin/auth.ts";
 import { ControlStore, SECRET_PLACEHOLDER } from "../../src/control/store.ts";
 import { decryptConfig, encryptConfig } from "../../src/control/crypto.ts";
+import { draftViewSchema } from "../../src/control/schema.ts";
 import type {
   ConfigPublisher,
   PublisherReply,
@@ -688,6 +689,359 @@ test("admin API enforces local scope, Access authentication, same-origin writes,
       .status,
   ).toBe(409);
 });
+
+test("client keys can be read individually from the current draft without changing credentials", async () => {
+  const published = await publishConfig();
+  const input = config();
+  const rotated = `sk-cody-${"a1".repeat(32)}`;
+  input.api_keys[0].api_key = rotated;
+  input.api_keys.unshift({
+    id: "other-client",
+    api_key: "custom-client-key",
+    services: ["provider"],
+  });
+  const saved = await control().save(input, published.version, "tester");
+  const before = await control().state();
+  const audit = await bindings.CODY_DB.prepare("SELECT * FROM audit_log").all();
+  for (const [id, api_key] of [
+    ["client", rotated],
+    ["other-client", "custom-client-key"],
+  ]) {
+    const response = await call(
+      `/console/api/config/clients/${id}/reveal`,
+      "POST",
+      {
+        version: saved.version,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ api_key });
+  }
+  expect(await control().state()).toEqual(before);
+  expect(
+    (await bindings.CODY_DB.prepare("SELECT * FROM audit_log").all()).results,
+  ).toEqual(audit.results);
+  expect(await bindings.CODY_CONFIG_KV.get("gateway-config")).toContain(
+    "test-client-secret",
+  );
+
+  const draft = await call("/console/api/config");
+  const view = draftViewSchema.parse(await draft.json());
+  expect(view.config.api_keys.map((client) => client.api_key)).toEqual([
+    SECRET_PLACEHOLDER,
+    SECRET_PLACEHOLDER,
+  ]);
+  const unchanged = await call("/console/api/config", "PUT", {
+    version: view.version,
+    config: view.config,
+  });
+  expect(unchanged.status).toBe(200);
+  expect(await unchanged.text()).not.toContain(rotated);
+  expect(parseConfig(await control().rawDraft()).api_keys).toEqual(
+    input.api_keys,
+  );
+});
+
+test("client key reads reject missing clients, invalid input, and stale versions", async () => {
+  const saved = await control().save(config(), 0, "tester");
+  const path = "/console/api/config/clients/client/reveal";
+  for (const version of [0, saved.version + 1]) {
+    const stale = await call(path, "POST", { version });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).not.toContain("test-client-secret");
+  }
+  const missing = await call(
+    "/console/api/config/clients/missing/reveal",
+    "POST",
+    {
+      version: saved.version,
+    },
+  );
+  expect(missing.status).toBe(404);
+  for (const input of [{}, { version: -1 }, { version: 0.5 }, { version: "1" }])
+    expect((await call(path, "POST", input)).status).toBe(400);
+  expect(
+    (
+      await call("/console/api/config/clients/invalid%20id/reveal", "POST", {
+        version: saved.version,
+      })
+    ).status,
+  ).toBe(400);
+  expect((await call(path)).status).toBe(404);
+
+  await control().save({ ...config(), api_keys: [] }, saved.version, "tester");
+  expect(
+    (await call(path, "POST", { version: saved.version + 1 })).status,
+  ).toBe(404);
+});
+
+test("client key reads require administrator authentication and same-origin JSON requests", async () => {
+  await control().save(config(), 0, "tester");
+  const path = "/console/api/config/clients/client/reveal";
+  const unauthenticated = await app.request(
+    `https://gateway.example${path}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-cody-admin": "1",
+        authorization: "Bearer test-client-secret",
+      },
+      body: JSON.stringify({ version: 1 }),
+    },
+    bindings,
+  );
+  expect(unauthenticated.status).toBe(401);
+  expect(unauthenticated.headers.get("cache-control")).toBe("no-store");
+  for (const headers of [
+    { origin: "https://evil.example" },
+    { "sec-fetch-site": "cross-site" },
+    { "x-cody-admin": "" },
+  ]) {
+    const response = await call(path, "POST", { version: 1 }, headers);
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).not.toContain("test-client-secret");
+  }
+  expect(
+    (
+      await call(
+        path,
+        "POST",
+        { version: 1 },
+        {
+          "content-type": "text/plain",
+        },
+      )
+    ).status,
+  ).toBe(415);
+});
+
+test("client key reads work in an unpublished draft with unresolved service references", async () => {
+  const input = config();
+  input.api_keys[0].services = ["missing"];
+  const saved = await control().save(input, 0, "tester");
+  expect(saved.valid).toBe(false);
+  expect(saved.published_revision).toBeNull();
+  const response = await call(
+    "/console/api/config/clients/client/reveal",
+    "POST",
+    {
+      version: saved.version,
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ api_key: "test-client-secret" });
+});
+
+test("client key reads fail closed on invalid or unreadable stored credentials", async () => {
+  await control().save(config(), 0, "tester");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const input = config();
+  input.api_keys[0].api_key = SECRET_PLACEHOLDER;
+  await bindings.CODY_DB.prepare(
+    "UPDATE control_state SET draft_payload = ? WHERE id = 1",
+  )
+    .bind(await encryptConfig(input, bindings.CONFIG_ENCRYPTION_KEY))
+    .run();
+  const invalid = await call(
+    "/console/api/config/clients/client/reveal",
+    "POST",
+    { version: 1 },
+  );
+  expect(invalid.status).toBe(500);
+  expect(await invalid.text()).not.toContain(SECRET_PLACEHOLDER);
+  expect(JSON.stringify(errors.mock.calls)).not.toContain(
+    "test-upstream-secret",
+  );
+  expect(JSON.stringify(errors.mock.calls)).not.toContain(SECRET_PLACEHOLDER);
+
+  await bindings.CODY_DB.prepare(
+    "UPDATE control_state SET draft_payload = 'unreadable' WHERE id = 1",
+  ).run();
+  const unreadable = await call(
+    "/console/api/config/clients/client/reveal",
+    "POST",
+    { version: 1 },
+  );
+  expect(unreadable.status).toBe(503);
+  expect(await unreadable.text()).not.toContain("test-client-secret");
+});
+
+for (const mode of ["tavily", "exa"] as const) {
+  test(`service and ${mode} keys can be viewed without changing the draft`, async () => {
+    const input = config();
+    input.services.push({
+      ...input.services[0],
+      id: "other-provider",
+      keys: [
+        {
+          id: "primary",
+          api_key: "other-upstream-key",
+          priority: 100,
+          disabled: false,
+        },
+      ],
+    });
+    input.web_search = {
+      mode,
+      api_key: "test-search-key",
+      base_url: "https://search.example",
+      max_results: 5,
+    };
+    const saved = await control().save(input, 0, "tester");
+    const before = await control().state();
+    for (const [path, api_key] of [
+      ["/services/provider/keys/primary/reveal", "test-upstream-secret"],
+      ["/services/other-provider/keys/primary/reveal", "other-upstream-key"],
+      ["/web-search/reveal", "test-search-key"],
+    ]) {
+      const response = await call(`/console/api/config${path}`, "POST", {
+        version: saved.version,
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({ api_key });
+    }
+    expect(await control().state()).toEqual(before);
+    const draft = draftViewSchema.parse(
+      await (await call("/console/api/config")).json(),
+    );
+    expect(
+      draft.config.services.map((service) => service.keys[0].api_key),
+    ).toEqual([SECRET_PLACEHOLDER, SECRET_PLACEHOLDER]);
+    expect(draft.config.web_search).toMatchObject({
+      api_key: SECRET_PLACEHOLDER,
+    });
+    const unchanged = await call("/console/api/config", "PUT", {
+      version: draft.version,
+      config: draft.config,
+    });
+    expect(unchanged.status).toBe(200);
+    const raw = parseConfig(await control().rawDraft());
+    expect(raw.services).toEqual(input.services);
+    expect(raw.web_search).toEqual(input.web_search);
+  });
+}
+
+for (const path of [
+  "/console/api/config/services/provider/keys/primary/reveal",
+  "/console/api/config/web-search/reveal",
+]) {
+  test(`credential access validates authentication, origin, and draft version: ${path}`, async () => {
+    const input = config();
+    input.web_search = {
+      mode: "tavily",
+      api_key: "test-search-key",
+      base_url: "https://search.example",
+      max_results: 5,
+    };
+    await control().save(input, 0, "tester");
+    const unauthenticated = await app.request(
+      `https://gateway.example${path}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-cody-admin": "1",
+          authorization: "Bearer test-client-secret",
+        },
+        body: JSON.stringify({ version: 1 }),
+      },
+      bindings,
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get("cache-control")).toBe("no-store");
+    for (const headers of [
+      { origin: "https://evil.example" },
+      { "sec-fetch-site": "cross-site" },
+      { "x-cody-admin": "" },
+    ]) {
+      const response = await call(path, "POST", { version: 1 }, headers);
+      expect(response.status).toBe(403);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    for (const version of [0, 2]) {
+      const stale = await call(path, "POST", { version });
+      expect(stale.status).toBe(409);
+      expect(await stale.text()).not.toContain("test-search-key");
+    }
+    for (const body of [{}, { version: -1 }, { version: "1" }]) {
+      expect((await call(path, "POST", body)).status).toBe(400);
+    }
+    expect(
+      (
+        await call(
+          path,
+          "POST",
+          { version: 1 },
+          { "content-type": "text/plain" },
+        )
+      ).status,
+    ).toBe(415);
+    expect((await call(path)).status).toBe(404);
+  });
+}
+
+test("service and search key reads reject missing or invalid credential targets", async () => {
+  await control().save(config(), 0, "tester");
+  for (const path of [
+    "/services/missing/keys/primary/reveal",
+    "/services/provider/keys/missing/reveal",
+    "/web-search/reveal",
+  ]) {
+    expect(
+      (await call(`/console/api/config${path}`, "POST", { version: 1 })).status,
+    ).toBe(404);
+  }
+  expect(
+    (
+      await call(
+        "/console/api/config/services/provider/keys/invalid%20id/reveal",
+        "POST",
+        { version: 1 },
+      )
+    ).status,
+  ).toBe(400);
+});
+
+for (const target of ["service", "search"]) {
+  test(`${target} key reads reject a stored placeholder and unreadable ciphertext`, async () => {
+    const input = config();
+    input.web_search = {
+      mode: "tavily",
+      api_key: "test-search-key",
+      base_url: "https://search.example",
+      max_results: 5,
+    };
+    await control().save(input, 0, "tester");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const path =
+      target === "service"
+        ? "/console/api/config/services/provider/keys/primary/reveal"
+        : "/console/api/config/web-search/reveal";
+    if (target === "service")
+      input.services[0].keys[0].api_key = SECRET_PLACEHOLDER;
+    else input.web_search.api_key = SECRET_PLACEHOLDER;
+    await bindings.CODY_DB.prepare(
+      "UPDATE control_state SET draft_payload = ? WHERE id = 1",
+    )
+      .bind(await encryptConfig(input, bindings.CONFIG_ENCRYPTION_KEY))
+      .run();
+    const response = await call(path, "POST", { version: 1 });
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain(SECRET_PLACEHOLDER);
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("test-search-key");
+    expect(JSON.stringify(errors.mock.calls)).not.toContain(
+      "test-upstream-secret",
+    );
+    await bindings.CODY_DB.prepare(
+      "UPDATE control_state SET draft_payload = 'unreadable' WHERE id = 1",
+    ).run();
+    expect((await call(path, "POST", { version: 1 })).status).toBe(503);
+  });
+}
 
 test("invalid persisted output is a server error without leaking its values", async () => {
   await publishConfig();

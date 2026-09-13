@@ -1,5 +1,8 @@
 import { withForm } from "@/lib/form";
 import { serviceFormOptions } from "./form-options";
+import { SECRET_PLACEHOLDER } from "../../../../src/shared/secrets";
+import { revealServiceKey } from "@/lib/api";
+import { CredentialField } from "@/components/form/credential-field";
 import { TabsContent } from "@/components/ui/tabs";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,8 +12,13 @@ import { fieldErrors } from "@/lib/form-errors";
 
 export const CredentialFields = withForm({
   ...serviceFormOptions,
-
-  render: function CredentialFields({ form }) {
+  props: { serviceId: "", version: 0, draftVersion: 0 },
+  render: function CredentialFields({
+    form,
+    serviceId,
+    version,
+    draftVersion,
+  }) {
     return (
       <TabsContent
         value="keys"
@@ -47,9 +55,7 @@ export const CredentialFields = withForm({
                         {(field) => (
                           <field.TextField
                             label="Key ID"
-                            readOnly={
-                              key.api_key === "__CODY_SECRET_UNCHANGED__"
-                            }
+                            readOnly={key.api_key === SECRET_PLACEHOLDER}
                           />
                         )}
                       </form.AppField>
@@ -59,7 +65,18 @@ export const CredentialFields = withForm({
                     </div>
                     <form.AppField name={`keys[${position}].api_key`}>
                       {(field) => (
-                        <field.TextField label="API key" type="password" />
+                        <CredentialField
+                          key={`${serviceId}:${key.id}:${version}:${draftVersion}`}
+                          label="API key"
+                          name={field.name}
+                          value={field.state.value}
+                          onChange={field.handleChange}
+                          onBlur={field.handleBlur}
+                          errors={fieldErrors(field)}
+                          reveal={(signal) =>
+                            revealServiceKey(serviceId, key.id, version, signal)
+                          }
+                        />
                       )}
                     </form.AppField>
                     <form.AppField name={`keys[${position}].disabled`}>
