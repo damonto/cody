@@ -12,9 +12,13 @@ import { socksFetch } from "../../src/gateway/transport/socks-fetch.ts";
 import { SocksProxyError } from "../../src/gateway/proxies/errors.ts";
 import { proxyGroupSnapshot } from "../../src/gateway/proxies/configuration.ts";
 
-vi.mock("../../src/gateway/transport/socks-fetch.ts", () => ({
-  socksFetch: vi.fn(),
-}));
+vi.mock(
+  import("../../src/gateway/transport/socks-fetch.ts"),
+  async (importOriginal) => ({
+    ...(await importOriginal()),
+    socksFetch: vi.fn<typeof socksFetch>(),
+  }),
+);
 afterEach(() => vi.resetAllMocks());
 
 function fixture() {
