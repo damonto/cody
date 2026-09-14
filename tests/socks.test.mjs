@@ -3,109 +3,32 @@ import test from "node:test";
 import { gzipSync, deflateSync, brotliCompressSync } from "node:zlib";
 import {
   socksFetch,
-  effectiveProxy,
+  effectiveProxyGroup,
   createUpstreamFetch,
 } from "../src/gateway/transport/index.ts";
 import { fetchWithConfiguredRetries } from "../src/gateway/http/proxy.ts";
 import { openSocksTunnel } from "../src/gateway/transport/socks.ts";
 import { tlsProxyFixture } from "./helpers/socks-fixture.mjs";
+import { memoryProxy } from "./helpers/memory-socks.mjs";
 
 const proxy = { url: "socks5://proxy.example:1080" };
-const reply = Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
 
-function memoryProxy(
-  response,
-  {
-    authenticated = false,
-    fragmented = true,
-    handshake,
-    stall = false,
-    keepOpen = false,
-    closeGate,
-  } = {},
-) {
-  const data = Buffer.concat([
-    handshake ??
-      Buffer.concat([
-        Buffer.from([5, authenticated ? 2 : 0]),
-        ...(authenticated ? [Buffer.from([1, 0])] : []),
-        reply,
-      ]),
-    Buffer.from(response),
-  ]);
-  let offset = 0;
-  let controller;
-  let ended = false;
-  let closes = 0;
-  const writes = [];
-  const endpoints = [];
-  const closing = Promise.withResolvers();
-  const readable = new ReadableStream(
-    {
-      start(value) {
-        controller = value;
-      },
-      pull(value) {
-        if (stall) return;
-        if (offset === data.length) {
-          if (keepOpen) return;
-          ended = true;
-          value.close();
-          return;
-        }
-        const next = fragmented ? offset + 1 : data.length;
-        value.enqueue(data.subarray(offset, next));
-        offset = next;
-      },
-      cancel() {
-        ended = true;
-      },
-    },
-    { highWaterMark: 0 },
+test("proxy references preserve inheritance, independent credential bindings and explicit direct access", async () => {
+  const provider = { id: "provider", proxy_group: "US" };
+  const credential = { id: "key" };
+  assert.deepEqual(effectiveProxyGroup(provider, credential), {
+    groupId: "US",
+    owner: { provider_id: "provider" },
+  });
+  assert.deepEqual(
+    effectiveProxyGroup(provider, { ...credential, proxy_group: "US" }),
+    { groupId: "US", owner: { provider_id: "provider", credential_id: "key" } },
   );
-  const socket = {
-    readable,
-    writable: new WritableStream({
-      write(chunk) {
-        writes.push(Buffer.from(chunk));
-      },
-    }),
-    opened: Promise.resolve(),
-    closed: Promise.resolve(),
-    close: async () => {
-      closes += 1;
-      closing.resolve();
-      if (!ended) {
-        ended = true;
-        controller.close();
-      }
-      await closeGate;
-    },
-  };
-  return {
-    writes,
-    endpoints,
-    socket,
-    closing: closing.promise,
-    get closes() {
-      return closes;
-    },
-    get consumed() {
-      return offset;
-    },
-    dial: async (address) => {
-      endpoints.push(address);
-      return socket;
-    },
-  };
-}
-
-test("key proxies replace provider proxies; null explicitly selects direct access", async () => {
-  const override = { url: "socks5://key.example:1081" };
-  assert.equal(effectiveProxy({ proxy }, {}), proxy);
-  assert.equal(effectiveProxy({ proxy }, { proxy: override }), override);
-  assert.equal(effectiveProxy({ proxy }, { proxy: null }), undefined);
-  assert.equal(effectiveProxy({}, {}), undefined);
+  assert.equal(
+    effectiveProxyGroup(provider, { ...credential, proxy_group: null }),
+    undefined,
+  );
+  assert.equal(effectiveProxyGroup({ id: "direct" }, credential), undefined);
   const previous = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -115,21 +38,24 @@ test("key proxies replace provider proxies; null explicitly selects direct acces
   try {
     assert.equal(
       await (
-        await createUpstreamFetch(
-          { proxy },
-          { proxy: null },
-        )(new Request("https://example.test"))
+        await createUpstreamFetch(provider, {
+          ...credential,
+          proxy_group: null,
+        })(new Request("https://example.test"))
       ).text(),
       "direct",
     );
     await assert.rejects(
-      createUpstreamFetch({ proxy }, {})(new Request("https://example.test")),
-      /SOCKS5/,
+      createUpstreamFetch(
+        provider,
+        credential,
+      )(new Request("https://example.test")),
+      /proxy group state/,
     );
     assert.equal(
       calls,
       1,
-      "a proxy connection failure must not fall back to fetch",
+      "an unavailable proxy group must not fall back to fetch",
     );
   } finally {
     globalThis.fetch = previous;

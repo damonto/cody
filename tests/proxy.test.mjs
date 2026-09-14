@@ -832,17 +832,14 @@ test("inference uses the selected key's proxy override and never bypasses a fail
     return new Response("direct");
   };
   try {
-    for (const override of [
-      undefined,
-      null,
-      { url: "socks5://key-proxy.test:1081" },
-    ]) {
+    for (const override of [undefined, null, "key-group"]) {
       const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });
-      fixture.config.providers[0].proxy = {
-        url: "socks5://provider-proxy.test:1080",
-      };
-      fixture.config.providers[0].credentials[0].proxy = override;
-      fixture.config.providers[0].credentials[1].proxy = null;
+      fixture.config.proxy_groups = ["provider-group", "key-group"].map(
+        (id) => ({ id, strategy: "random", proxies: [] }),
+      );
+      fixture.config.providers[0].proxy_group = "provider-group";
+      fixture.config.providers[0].credentials[0].proxy_group = override;
+      fixture.config.providers[0].credentials[1].proxy_group = null;
       const response = await handleInference(
         inferenceRequest(),
         fixture.env,
@@ -850,8 +847,8 @@ test("inference uses the selected key's proxy override and never bypasses a fail
         fixture.client,
         "responses",
       );
-      assert.equal(response.status, override === null ? 200 : 502);
-      assert.equal(fixture.calls.failure, override === null ? 0 : 1);
+      assert.equal(response.status, override === null ? 200 : 503);
+      assert.equal(fixture.calls.failure, 0);
     }
     assert.equal(directCalls, 1);
   } finally {

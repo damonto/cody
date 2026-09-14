@@ -22,6 +22,7 @@ export function draftFixture(): Draft {
     validation_error: null,
     actor: "admin@example.test",
     config: {
+      proxy_groups: [],
       providers: [
         {
           type: "ai_gateway",
@@ -85,6 +86,13 @@ export function draftFixture(): Draft {
 function maskKeys(config: Draft["config"]): Draft["config"] {
   return {
     ...config,
+    proxy_groups: config.proxy_groups.map((group) => ({
+      ...group,
+      proxies: group.proxies.map((node) => ({
+        ...node,
+        ...(node.password ? { password: secret } : {}),
+      })),
+    })),
     api_keys: config.api_keys.map((client) => ({ ...client, api_key: secret })),
     providers: config.providers.map((provider) => ({
       ...provider,
@@ -315,6 +323,7 @@ export async function mockApi(page: Page, initial = draftFixture()) {
     else if (
       url.pathname === "/console/api/pricing/history" ||
       url.pathname === "/console/api/config/versions" ||
+      url.pathname === "/console/api/runtime/proxy-groups" ||
       url.pathname === "/console/api/runtime/clients"
     )
       response = { items: [] };

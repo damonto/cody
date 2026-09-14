@@ -22,10 +22,24 @@
       }
     },
     {
-      "files": ["src/gateway/transport/**/*.ts"],
+      "files": [
+        "src/gateway/transport/**/*.ts",
+        "src/gateway/proxies/**/*.ts",
+        "src/shared/abort.ts"
+      ],
       "rules": {
         "curly": ["error", "all"],
         "typescript/no-deprecated": "error",
+        "typescript/no-non-null-assertion": "error"
+      }
+    },
+    {
+      "files": [
+        "console/src/features/proxies/**/*.{ts,tsx}",
+        "console/src/pages/proxies.tsx"
+      ],
+      "rules": {
+        "curly": ["error", "all"],
         "typescript/no-non-null-assertion": "error"
       }
     },

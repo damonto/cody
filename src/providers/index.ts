@@ -3,7 +3,8 @@ import type {
   ProviderCredentialConfig,
   ProviderType,
 } from "../config/types.ts";
-import { createUpstreamFetch } from "../gateway/transport/index.ts";
+import { createUpstreamTransport } from "../gateway/transport/index.ts";
+import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
 import { aiGatewayAdapter } from "./ai-gateway.ts";
 import { resolveCredential } from "./credentials.ts";
 import type {
@@ -33,6 +34,7 @@ export async function prepareProviderRequest(
   provider: ProviderConfig,
   credential: ProviderCredentialConfig,
   input: ProviderRequest,
+  context?: Omit<ProxyTransportContext, "clientSignal">,
 ): Promise<PreparedProviderRequest> {
   const adapter = adapters[provider.type];
   if (!adapter.supports(provider, input.endpoint, input.transport)) {
@@ -43,6 +45,10 @@ export async function prepareProviderRequest(
   const resolved = await resolveCredential(credential);
   return {
     ...adapter.prepare(provider, resolved, input),
-    send: createUpstreamFetch(provider, credential),
+    ...createUpstreamTransport(
+      provider,
+      credential,
+      context && { ...context, clientSignal: input.request.signal },
+    ),
   };
 }

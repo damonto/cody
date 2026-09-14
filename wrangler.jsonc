@@ -94,6 +94,10 @@
         "name": "CONFIG_PUBLISHER",
         "class_name": "ConfigPublisher",
       },
+      {
+        "name": "PROXY_GROUP",
+        "class_name": "ProxyGroup",
+      },
     ],
   },
   "migrations": [
@@ -124,6 +128,10 @@
     {
       "tag": "v7",
       "renamed_classes": [{ "from": "ServiceHealth", "to": "ProviderHealth" }],
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["ProxyGroup"],
     },
   ],
   "triggers": {

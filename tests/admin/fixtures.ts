@@ -4,6 +4,7 @@ import type { UsageEvent } from "../../src/telemetry/types.ts";
 
 export function config(): GatewayConfig {
   return {
+    proxy_groups: [],
     providers: [
       {
         type: "ai_gateway",

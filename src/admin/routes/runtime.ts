@@ -10,6 +10,13 @@ import {
   sessionListSchema,
 } from "../schema.ts";
 import { validate } from "../validation.ts";
+import { identifierSchema } from "../../config/schema.ts";
+import { proxyGroupSnapshot } from "../../gateway/proxies/configuration.ts";
+import { proxyGroupsStatusSchema } from "../../gateway/proxies/schema.ts";
+import {
+  mapWithConcurrency,
+  PROVIDER_FAN_OUT_CONCURRENCY,
+} from "../../shared/concurrency.ts";
 const runtimeErrorSchema = z.object({
   error: z.object({ message: z.string() }),
 });
@@ -80,6 +87,54 @@ async function clear(c: Context<AdminContext>, path: string) {
   return c.json({ ok: true as const });
 }
 export const runtimeRoutes = new Hono<AdminContext>()
+  .get("/proxy-groups", async (c) => {
+    const config = await publishedConfig(c.env);
+    if (!config) return c.json(proxyGroupsStatusSchema.parse({ items: [] }));
+    const items = await mapWithConcurrency(
+      config.proxy_groups,
+      PROVIDER_FAN_OUT_CONCURRENCY,
+      async (group) =>
+        c.env.PROXY_GROUP.getByName(group.id).getStatus(
+          await proxyGroupSnapshot(config, group),
+        ),
+    );
+    return c.json(proxyGroupsStatusSchema.parse({ items }));
+  })
+  .delete(
+    "/proxy-groups/:groupId/proxies/:proxyId/health",
+    validate(
+      "param",
+      z.object({ groupId: identifierSchema, proxyId: identifierSchema }),
+    ),
+    async (c) => {
+      const { groupId, proxyId } = c.req.valid("param");
+      const config = await publishedConfig(c.env);
+      const group = config?.proxy_groups.find((entry) => entry.id === groupId);
+      if (
+        !config ||
+        !group ||
+        !group.proxies.some((proxy) => proxy.id === proxyId)
+      )
+        throw new HTTPException(404, {
+          message: "Published proxy does not exist",
+        });
+      await c.env.PROXY_GROUP.getByName(groupId).clear(
+        await proxyGroupSnapshot(config, group),
+        proxyId,
+      );
+      await c.env.CODY_DB.prepare(
+        "INSERT INTO audit_log (id, created_at, actor, action) VALUES (?, ?, ?, ?)",
+      )
+        .bind(
+          crypto.randomUUID(),
+          Date.now(),
+          c.get("actor"),
+          `clear_proxy_health:${groupId}:${proxyId}`,
+        )
+        .run();
+      return c.json({ ok: true as const });
+    },
+  )
   .get("/clients", async (c) => {
     const config = await publishedConfig(c.env);
     return c.json({

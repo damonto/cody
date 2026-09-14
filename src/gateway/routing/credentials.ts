@@ -8,13 +8,16 @@ export function upstreamSecretValues(config: GatewayConfig): readonly string[] {
   if (cached) {
     return cached;
   }
-  const values = config.providers.flatMap((provider) => [
-    ...(provider.proxy?.password ? [provider.proxy.password] : []),
-    ...provider.credentials.flatMap((key) => [
-      ...credentialSecretValues(key),
-      ...(key.proxy?.password ? [key.proxy.password] : []),
-    ]),
-  ]);
+  const values = config.providers.flatMap((provider) =>
+    provider.credentials.flatMap(credentialSecretValues),
+  );
+  values.push(
+    ...(config.proxy_groups ?? []).flatMap((group) =>
+      group.proxies.flatMap((proxy) =>
+        proxy.password ? [proxy.password] : [],
+      ),
+    ),
+  );
   const allValues =
     config.web_search.mode === "proxy"
       ? values

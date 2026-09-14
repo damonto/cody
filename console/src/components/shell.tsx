@@ -15,6 +15,7 @@ import {
   ListFilter,
   Loader2,
   Monitor,
+  Network,
   Moon,
   Send,
   Server,
@@ -80,6 +81,7 @@ const navigation = [
     title: "Configure",
     items: [
       { path: "/providers", title: "Providers", icon: Server },
+      { path: "/proxies", title: "Proxies", icon: Network },
       { path: "/clients", title: "Client keys", icon: KeyRound },
       { path: "/routing", title: "Model routes", icon: GitBranch },
       { path: "/pricing", title: "Model pricing", icon: CircleDollarSign },

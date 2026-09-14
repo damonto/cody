@@ -77,12 +77,18 @@ export function ProviderForm({
           <TabsTrigger value="credentials">Upstream credentials</TabsTrigger>
           <TabsTrigger value="routing">Capabilities & retry</TabsTrigger>
         </TabsList>
-        <ConnectionFields form={form} index={index} close={close} />
+        <ConnectionFields
+          form={form}
+          index={index}
+          close={close}
+          groups={snapshot.config.proxy_groups}
+        />
         <CredentialFields
           form={form}
           providerId={current.id}
           version={snapshot.version}
           draftVersion={draftVersion}
+          groups={snapshot.config.proxy_groups}
         />
         <CapabilityFields form={form} />
       </Tabs>

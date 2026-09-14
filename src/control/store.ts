@@ -30,6 +30,7 @@ export class ControlInputError extends Error {
 
 function initialConfig(): unknown {
   return {
+    proxy_groups: [],
     providers: [],
     api_keys: [],
     model_routes: {},
@@ -69,13 +70,17 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
       entry[field] = existing[field];
     }
   };
-  const restoreProxy = (
-    entry: Record<string, unknown>,
-    existing: Record<string, unknown> | undefined,
-  ): void => {
-    const proxy = record(entry.proxy);
-    if (proxy) restore(proxy, record(existing?.proxy), "password");
-  };
+  for (const group of entries(input.proxy_groups)) {
+    const existing = entries(old?.proxy_groups).find(
+      (item) => item.id === group.id,
+    );
+    for (const proxy of entries(group.proxies))
+      restore(
+        proxy,
+        entries(existing?.proxies).find((item) => item.id === proxy.id),
+        "password",
+      );
+  }
   for (const provider of entries(input.providers)) {
     const existing = entries(old?.providers).find(
       (item) => item.id === provider.id,
@@ -84,7 +89,6 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
       throw new ControlInputError(
         "A provider's type cannot be changed; create a new provider",
       );
-    restoreProxy(provider, existing);
     for (const credential of entries(provider.credentials)) {
       const oldCredential = entries(existing?.credentials).find(
         (item) => item.id === credential.id,
@@ -93,7 +97,6 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
       const oldAuth = record(oldCredential?.auth);
       if (auth)
         restore(auth, auth.type === oldAuth?.type ? oldAuth : undefined);
-      restoreProxy(credential, oldCredential);
     }
   }
   for (const client of entries(input.api_keys))

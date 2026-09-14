@@ -1,7 +1,17 @@
 import { Buffer } from "node:buffer";
 import { expect, test, vi } from "vitest";
-import { socksFetch } from "../../src/gateway/transport/index.ts";
+import {
+  socksFetch,
+  createUpstreamTransport,
+} from "../../src/gateway/transport/index.ts";
 import type { SocksSocket } from "../../src/gateway/transport/socks.ts";
+import { env } from "cloudflare:workers";
+import {
+  createExecutionContext,
+  waitOnExecutionContext,
+} from "cloudflare:test";
+import { parseConfig } from "../../src/config/store.ts";
+import { proxyGroupSnapshot } from "../../src/gateway/proxies/configuration.ts";
 
 function frame(
   opcode: number,
@@ -118,6 +128,83 @@ const request = (signal?: AbortSignal) =>
     },
     ...(signal ? { signal } : {}),
   });
+
+test("WebSocket setup switches proxy once and an established socket keeps its connection", async () => {
+  const id = crypto.randomUUID();
+  const config = parseConfig({
+    proxy_groups: [
+      {
+        id,
+        strategy: "priority",
+        proxies: ["bad", "good"].map((node, index) => ({
+          id: node,
+          url: `socks5://${node}.test:1080`,
+          priority: 100 - index,
+          disabled: false,
+        })),
+      },
+    ],
+    providers: [
+      {
+        type: "ai_gateway",
+        id,
+        base_url: "http://upstream.test/v1",
+        proxy_group: id,
+        credentials: [
+          {
+            id: "key",
+            auth: { type: "api_key", api_key: "secret" },
+            priority: 100,
+            disabled: false,
+          },
+        ],
+        priority: 100,
+        disabled: false,
+        models: ["model"],
+      },
+    ],
+    api_keys: [{ id: "client", api_key: "client-secret", providers: [id] }],
+  });
+  const upstream = fixture();
+  const incoming = request();
+  const context = createExecutionContext();
+  const dialed: string[] = [];
+  const transport = createUpstreamTransport(
+    config.providers[0],
+    config.providers[0].credentials[0],
+    {
+      config,
+      env,
+      context,
+      clientSignal: incoming.signal,
+      socks: {
+        dial: async ({ hostname }) => {
+          dialed.push(hostname);
+          if (hostname === "bad.test") throw new Error("unreachable");
+          return upstream.dial();
+        },
+      },
+    },
+  );
+  const response = await transport.send(incoming);
+  expect(response.status).toBe(101);
+  const socket = response.webSocket!;
+  socket.accept();
+  socket.send("first");
+  await vi.waitFor(() => expect(upstream.frames).toHaveLength(1));
+  config.proxy_groups[0].proxies.forEach((node) => {
+    node.disabled = true;
+  });
+  await env.PROXY_GROUP.getByName(id).getStatus(
+    await proxyGroupSnapshot(config, config.proxy_groups[0]),
+  );
+  socket.send("second");
+  await vi.waitFor(() => expect(upstream.frames).toHaveLength(2));
+  expect(dialed).toEqual(["bad.test", "good.test"]);
+  socket.close(1000, "done");
+  await vi.waitFor(() => expect(upstream.closes).toBe(1));
+  await waitOnExecutionContext(context);
+});
 
 test("SOCKS5 WebSocket preserves messages, masking, fragmentation, ping/pong and close", async () => {
   const upstream = fixture();

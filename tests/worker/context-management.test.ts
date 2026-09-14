@@ -206,10 +206,22 @@ test("native endpoints enforce opt-in, authentication, methods and the path whit
 
 test("native context calls use the pinned key's explicit direct proxy override", async () => {
   const settings = config();
-  settings.providers[0].proxy = {
-    url: "socks5://unreachable-proxy.invalid:1080",
-  };
-  settings.providers[0].credentials[0].proxy = null;
+  settings.proxy_groups = [
+    {
+      id: "US",
+      strategy: "random",
+      proxies: [
+        {
+          id: "node",
+          url: "socks5://unreachable-proxy.invalid:1080",
+          priority: 100,
+          disabled: false,
+        },
+      ],
+    },
+  ];
+  settings.providers[0].proxy_group = "US";
+  settings.providers[0].credentials[0].proxy_group = null;
   const fetch = vi.fn(
     async () => new Response("encrypted-output", { status: 200 }),
   );

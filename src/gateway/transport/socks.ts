@@ -1,6 +1,8 @@
 import { isIP } from "node:net";
 import type { SocksProxyConfig } from "../../config/types.ts";
 import { ByteReader, concatenate, type Connection } from "./bytes.ts";
+import { SocksProxyError } from "../proxies/errors.ts";
+import { abortable } from "../../shared/abort.ts";
 
 export interface SocksSocket {
   readonly readable: ReadableStream<Uint8Array>;
@@ -15,33 +17,6 @@ export type SocksDial = (address: {
 }) => Promise<SocksSocket>;
 
 const ENCODER = new TextEncoder();
-
-class SocksProxyError extends Error {
-  override readonly name = "SocksProxyError";
-}
-
-function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const aborted = (): void => {
-      signal.removeEventListener("abort", aborted);
-      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-    };
-    signal.addEventListener("abort", aborted, { once: true });
-    void operation.then(
-      (value) => {
-        signal.removeEventListener("abort", aborted);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", aborted);
-        reject(error);
-      },
-    );
-    if (signal.aborted) {
-      aborted();
-    }
-  });
-}
 
 async function dialSocks(address: {
   hostname: string;
@@ -81,7 +56,10 @@ function destination(hostname: string): Uint8Array {
   }
   const domain = ENCODER.encode(host);
   if (!domain.length || domain.length > 255) {
-    throw new SocksProxyError("SOCKS5 destination hostname is too long");
+    throw new SocksProxyError(
+      "SOCKS5 destination hostname is too long",
+      "target",
+    );
   }
   return concatenate([new Uint8Array([3, domain.length]), domain]);
 }
@@ -205,11 +183,8 @@ export async function openSocksTunnel(
       ]),
     );
     const reply = await bytes.readExactly(4);
-    if (reply[0] !== 5 || reply[2] !== 0) {
+    if (reply[0] !== 5 || reply[2] !== 0 || reply[1] > 8) {
       throw new SocksProxyError("Invalid SOCKS5 CONNECT response");
-    }
-    if (reply[1] !== 0) {
-      throw new SocksProxyError(`SOCKS5 CONNECT failed (reply ${reply[1]})`);
     }
     let addressLength: number;
     switch (reply[3]) {
@@ -229,6 +204,12 @@ export async function openSocksTunnel(
       throw new SocksProxyError("Invalid SOCKS5 bound address");
     }
     await bytes.readExactly(addressLength + 2);
+    if (reply[1] !== 0) {
+      throw new SocksProxyError(
+        `SOCKS5 CONNECT failed (reply ${reply[1]})`,
+        "target",
+      );
+    }
     return { read: () => bytes.readSome(), write, close };
   } catch (error) {
     await close();

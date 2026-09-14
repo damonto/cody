@@ -43,6 +43,7 @@ interface UpstreamPair {
 
 function gatewayConfig(): GatewayConfig {
   return {
+    proxy_groups: [],
     providers: [
       {
         type: "ai_gateway",
@@ -1285,6 +1286,34 @@ test("a final upstream handshake rejection is forwarded and records provider hea
   expect((await closed).code).toBe(1011);
   await waitOnExecutionContext(context);
   expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(1);
+});
+
+test("an unavailable proxy group sends a WebSocket 503 without cooling the provider or using direct fetch", async () => {
+  const config = gatewayConfig();
+  config.proxy_groups = [
+    { id: `empty-${crypto.randomUUID()}`, strategy: "random", proxies: [] },
+  ];
+  config.providers[0].proxy_group = config.proxy_groups[0].id;
+  await putConfig(config);
+  const fetch = vi.fn(async () => new Response("unexpected direct connection"));
+  vi.stubGlobal("fetch", fetch);
+  const { socket, context } = await openGatewaySocket();
+  const message = nextMessage(socket);
+  const closed = nextClose(socket);
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  const received = await message;
+  if (typeof received !== "string")
+    throw new Error("Expected a JSON error frame");
+  expect(JSON.parse(received)).toMatchObject({
+    type: "error",
+    error: { code: "proxy_group_unavailable" },
+  });
+  expect((await closed).code).toBe(1011);
+  await waitOnExecutionContext(context);
+  expect(fetch).not.toHaveBeenCalled();
+  expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(0);
 });
 
 test("an upstream 402 frame is processed before an immediate close", async () => {

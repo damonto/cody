@@ -227,6 +227,12 @@ export class RequestLogContext {
     Object.assign(this.fields, fields);
   }
 
+  append(section: string, fields: LogFields): void {
+    const current = this.fields[section];
+    const entries: unknown[] = Array.isArray(current) ? current : [];
+    this.fields[section] = [...entries, fields];
+  }
+
   registerSensitiveValues(values: Iterable<unknown>): void {
     this.sensitiveValues = [
       ...new Set([

@@ -1,6 +1,6 @@
 import type { ProviderConfig } from "../config/types.ts";
 import type { GatewayEndpoint } from "../gateway/protocol.ts";
-import type { UpstreamFetch } from "../gateway/transport/index.ts";
+import type { UpstreamTransport } from "../gateway/transport/index.ts";
 import type { ResolvedCredential } from "./credentials.ts";
 
 export type ProviderEndpoint = Exclude<GatewayEndpoint, "health" | "sessions">;
@@ -17,9 +17,8 @@ export interface PreparedUpstreamRequest {
   readonly headers: Headers;
 }
 
-export interface PreparedProviderRequest extends PreparedUpstreamRequest {
-  readonly send: UpstreamFetch;
-}
+export interface PreparedProviderRequest
+  extends PreparedUpstreamRequest, UpstreamTransport {}
 
 /** Adapters prepare one upstream attempt. Retries and health remain in the gateway. */
 export interface ProviderAdapter<

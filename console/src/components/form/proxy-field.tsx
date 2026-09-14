@@ -1,5 +1,5 @@
 import { useId } from "react";
-import type { SocksProxyConfig } from "../../../../src/config/types";
+import type { ProxyGroupConfig } from "../../../../src/config/types";
 import { useFieldContext } from "@/lib/form-context";
 import { fieldErrors } from "@/lib/form-errors";
 import {
@@ -8,8 +8,6 @@ import {
   FieldError,
   FieldLabel,
 } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -18,116 +16,61 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export function SocksProxyField({ inherit = false }: { inherit?: boolean }) {
-  const field = useFieldContext<SocksProxyConfig | null | undefined>();
+export function ProxyGroupField({
+  groups,
+  inherit = false,
+}: {
+  groups: readonly ProxyGroupConfig[];
+  inherit?: boolean;
+}) {
+  const field = useFieldContext<string | null | undefined>();
   const id = useId();
-  const proxy = field.state.value;
-  const mode = proxy
-    ? "socks5"
-    : inherit && proxy === undefined
+  const group = field.state.value;
+  const value = group
+    ? `group:${group}`
+    : inherit && group === undefined
       ? "inherit"
       : "direct";
-  const hasSavedPassword = proxy?.password === "__CODY_SECRET_UNCHANGED__";
   return (
     <Field data-invalid={field.state.meta.errors.length > 0}>
-      <FieldLabel htmlFor={id}>Outbound proxy</FieldLabel>
+      <FieldLabel htmlFor={id}>Proxy group</FieldLabel>
       <Select
-        value={mode}
-        onValueChange={(value) => {
+        value={value}
+        onValueChange={(next) =>
           field.handleChange(
-            value === "socks5"
-              ? { url: "" }
-              : value === "inherit" || !inherit
+            next.startsWith("group:")
+              ? next.slice(6)
+              : next === "inherit"
                 ? undefined
                 : null,
-          );
-        }}
+          )
+        }
       >
         <SelectTrigger id={id} className="w-full" onBlur={field.handleBlur}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {inherit && (
-            <SelectItem value="inherit">Use provider proxy</SelectItem>
+            <SelectItem value="inherit">Use provider proxy group</SelectItem>
           )}
           <SelectItem value="direct">Direct connection</SelectItem>
-          <SelectItem value="socks5">SOCKS5</SelectItem>
+          {groups.map((entry) => (
+            <SelectItem key={entry.id} value={`group:${entry.id}`}>
+              {entry.id} · {entry.strategy}
+            </SelectItem>
+          ))}
+          {group && !groups.some((entry) => entry.id === group) && (
+            <SelectItem value={`group:${group}`} disabled>
+              {group} · missing group
+            </SelectItem>
+          )}
         </SelectContent>
       </Select>
       <FieldDescription>
         {inherit
-          ? "This key can override the provider proxy or connect directly."
-          : "Used by provider credentials that inherit this setting."}
+          ? "Inherited sticky groups share the provider's fixed proxy. Choosing a group gives this credential its own binding."
+          : "Credentials inherit this group unless they select another group or connect directly."}
       </FieldDescription>
-      {proxy && (
-        <div className="space-y-3 rounded-lg border p-3">
-          <Field>
-            <FieldLabel htmlFor={`${id}-url`}>SOCKS5 URL</FieldLabel>
-            <Input
-              id={`${id}-url`}
-              type="url"
-              value={proxy.url}
-              placeholder="socks5://proxy.example.com:1080"
-              autoComplete="off"
-              onBlur={field.handleBlur}
-              onChange={(event) =>
-                field.handleChange({ ...proxy, url: event.target.value })
-              }
-            />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor={`${id}-username`}>Username</FieldLabel>
-              <Input
-                id={`${id}-username`}
-                value={proxy.username ?? ""}
-                autoComplete="off"
-                onBlur={field.handleBlur}
-                onChange={(event) =>
-                  field.handleChange({
-                    ...proxy,
-                    username: event.target.value || undefined,
-                  })
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor={`${id}-password`}>Password</FieldLabel>
-              <Input
-                id={`${id}-password`}
-                type="password"
-                value={hasSavedPassword ? "" : (proxy.password ?? "")}
-                placeholder={
-                  hasSavedPassword
-                    ? "Saved password · enter a value to rotate"
-                    : undefined
-                }
-                autoComplete="new-password"
-                onBlur={field.handleBlur}
-                onChange={(event) =>
-                  field.handleChange({
-                    ...proxy,
-                    password: event.target.value || undefined,
-                  })
-                }
-              />
-            </Field>
-          </div>
-          <FieldDescription>
-            Leave both credentials empty for a proxy without authentication.
-          </FieldDescription>
-          {(proxy.username !== undefined || proxy.password !== undefined) && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => field.handleChange({ url: proxy.url })}
-            >
-              Remove authentication
-            </Button>
-          )}
-        </div>
-      )}
       <FieldError errors={fieldErrors(field)} />
     </Field>
   );

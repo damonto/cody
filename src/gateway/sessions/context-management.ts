@@ -5,6 +5,7 @@ import { apiError } from "../http/http.ts";
 import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { requestProtocol, type ContextManagementPath } from "../protocol.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
+import type { HealthExecutionContext } from "../health/health.ts";
 import {
   prepareProviderRequest,
   providerSupportsEndpoint,
@@ -26,6 +27,7 @@ export async function handleContextManagement(
   path: ContextManagementPath,
   requestId: string,
   requestLog?: RequestLogContext,
+  context?: HealthExecutionContext,
 ): Promise<Response> {
   const protocol = requestProtocol(request, path);
   requestLog?.registerSensitiveValues([
@@ -121,6 +123,7 @@ export async function handleContextManagement(
       endpoint: path,
       transport: "http",
     },
+    { config, env, context, requestLog, requestId },
   );
   const { headers } = prepared;
   if (!headers.has("content-type")) {
@@ -153,13 +156,19 @@ export async function handleContextManagement(
       attempts: result.attempts,
     },
   });
+  const proxyFailure = prepared.proxyFailure(result.error);
   return (
     result.response ??
     apiError(
       protocol,
-      502,
-      "The context management upstream could not be reached",
-      { type: "server_error", code: "upstream_unavailable", requestId },
+      proxyFailure?.status ?? 502,
+      proxyFailure?.message ??
+        "The context management upstream could not be reached",
+      {
+        type: "server_error",
+        code: proxyFailure?.code ?? "upstream_unavailable",
+        requestId,
+      },
     )
   );
 }

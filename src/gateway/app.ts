@@ -168,6 +168,7 @@ for (const path of CONTEXT_MANAGEMENT_PATHS) {
       path,
       r.requestId,
       r.requestLog,
+      r.context,
     ),
   );
 }

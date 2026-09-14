@@ -9,8 +9,14 @@ import type {
   searchSchema,
   providerSchema,
   socksProxySchema,
+  proxyNodeSchema,
+  proxyGroupSchema,
+  proxyStrategySchema,
 } from "./schema.ts";
 export type SocksProxyConfig = z.output<typeof socksProxySchema>;
+export type ProxyNodeConfig = z.output<typeof proxyNodeSchema>;
+export type ProxyGroupConfig = z.output<typeof proxyGroupSchema>;
+export type ProxyStrategy = z.output<typeof proxyStrategySchema>;
 export type ProviderRetryConfig = z.output<typeof retrySchema>;
 export type ProviderCredentialConfig = z.output<typeof credentialSchema>;
 

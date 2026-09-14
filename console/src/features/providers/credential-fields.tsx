@@ -9,15 +9,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FieldError } from "@/components/ui/field";
 import { fieldErrors } from "@/lib/form-errors";
+import type { ProxyGroupConfig } from "../../../../src/config/types";
 
 export const CredentialFields = withForm({
   ...providerFormOptions,
-  props: { providerId: "", version: 0, draftVersion: 0 },
+  props: {
+    providerId: "",
+    version: 0,
+    draftVersion: 0,
+    groups: new Array<ProxyGroupConfig>(),
+  },
   render: function CredentialFields({
     form,
     providerId,
     version,
     draftVersion,
+    groups,
   }) {
     return (
       <TabsContent
@@ -95,8 +102,12 @@ export const CredentialFields = withForm({
                         <field.ToggleField label="Credential enabled" inverse />
                       )}
                     </form.AppField>
-                    <form.AppField name={`credentials[${position}].proxy`}>
-                      {(field) => <field.SocksProxyField inherit />}
+                    <form.AppField
+                      name={`credentials[${position}].proxy_group`}
+                    >
+                      {(field) => (
+                        <field.ProxyGroupField inherit groups={groups} />
+                      )}
                     </form.AppField>
                   </CardContent>
                 </Card>

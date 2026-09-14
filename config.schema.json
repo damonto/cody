@@ -5,6 +5,75 @@
   "type": "object",
   "properties": {
     "$schema": { "type": "string" },
+    "proxy_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": ["random", "sticky", "priority"]
+          },
+          "proxies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "pattern": "^socks5:\\/\\/"
+                },
+                "username": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "password": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "priority": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "disabled": { "type": "boolean" }
+              },
+              "required": ["url", "id", "priority", "disabled"],
+              "additionalProperties": false,
+              "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+              "anyOf": [
+                { "required": ["username", "password"] },
+                {
+                  "not": {
+                    "anyOf": [
+                      { "required": ["username"] },
+                      { "required": ["password"] }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "required": ["id", "strategy", "proxies"],
+        "additionalProperties": false
+      }
+    },
     "providers": {
       "minItems": 1,
       "type": "array",
@@ -21,41 +90,13 @@
                 "pattern": "^[A-Za-z0-9._-]+$"
               },
               "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
-              "proxy": {
+              "proxy_group": {
                 "anyOf": [
                   {
-                    "type": "object",
-                    "properties": {
-                      "url": {
-                        "type": "string",
-                        "maxLength": 2048,
-                        "pattern": "^socks5:\\/\\/"
-                      },
-                      "username": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 255
-                      },
-                      "password": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 255
-                      }
-                    },
-                    "required": ["url"],
-                    "additionalProperties": false,
-                    "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
-                    "anyOf": [
-                      { "required": ["username", "password"] },
-                      {
-                        "not": {
-                          "anyOf": [
-                            { "required": ["username"] },
-                            { "required": ["password"] }
-                          ]
-                        }
-                      }
-                    ]
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[A-Za-z0-9._-]+$"
                   },
                   { "type": "null" }
                 ]
@@ -91,41 +132,13 @@
                       "maximum": 9007199254740991
                     },
                     "disabled": { "type": "boolean" },
-                    "proxy": {
+                    "proxy_group": {
                       "anyOf": [
                         {
-                          "type": "object",
-                          "properties": {
-                            "url": {
-                              "type": "string",
-                              "maxLength": 2048,
-                              "pattern": "^socks5:\\/\\/"
-                            },
-                            "username": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 255
-                            },
-                            "password": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 255
-                            }
-                          },
-                          "required": ["url"],
-                          "additionalProperties": false,
-                          "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
-                          "anyOf": [
-                            { "required": ["username", "password"] },
-                            {
-                              "not": {
-                                "anyOf": [
-                                  { "required": ["username"] },
-                                  { "required": ["password"] }
-                                ]
-                              }
-                            }
-                          ]
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "pattern": "^[A-Za-z0-9._-]+$"
                         },
                         { "type": "null" }
                       ]

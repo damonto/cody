@@ -436,6 +436,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     target: ModelProviderTarget,
     sessionId: string | undefined,
     contextManagement: boolean,
+    config: GatewayConfig,
   ): Promise<void> {
     const connecting = await this.storage.transition(["routing"], (state) => ({
       ...state,
@@ -449,7 +450,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       return;
     }
 
-    const result = await this.upstream.connect(connecting.next, target);
+    const result = await this.upstream.connect(connecting.next, target, config);
 
     const current = await this.storage.loadSession();
     if (current?.phase !== "connecting") {
@@ -463,15 +464,17 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
     if (!result.response) {
       const timedOut = result.error instanceof UpstreamAttemptTimeoutError;
-      await this.health.fail();
+      if (!result.proxyError) await this.health.fail();
       safeSend(
         this.clientSocket(),
         gatewayErrorEvent(
-          timedOut ? 504 : 502,
-          timedOut
-            ? "The selected upstream WebSocket handshake timed out"
-            : "The selected upstream WebSocket could not be reached",
-          timedOut ? "upstream_handshake_timeout" : "upstream_unavailable",
+          result.proxyError?.status ?? (timedOut ? 504 : 502),
+          result.proxyError?.message ??
+            (timedOut
+              ? "The selected upstream WebSocket handshake timed out"
+              : "The selected upstream WebSocket could not be reached"),
+          result.proxyError?.code ??
+            (timedOut ? "upstream_handshake_timeout" : "upstream_unavailable"),
         ),
       );
       logWarn(
@@ -754,6 +757,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       selection.target,
       sessionId,
       contextManagement || selection.affinity?.context_management === true,
+      routingContext.config,
     );
   }
 

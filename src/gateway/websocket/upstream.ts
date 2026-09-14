@@ -2,7 +2,12 @@ import {
   recordCredentialFailure,
   healthFailureScope,
 } from "../health/health.ts";
-import { fetchWithConfiguredRetries } from "../http/proxy.ts";
+import {
+  fetchWithConfiguredRetries,
+  type FetchWithRetriesResult,
+} from "../http/proxy.ts";
+import type { GatewayConfig } from "../../config/types.ts";
+import type { ProxyFailure } from "../proxies/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { logError, errorMessage } from "../../shared/log.ts";
 import type { ModelProviderTarget } from "../routing/routing.ts";
@@ -14,6 +19,11 @@ import {
 } from "./websocket-protocol.ts";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+interface WebSocketConnectResult extends FetchWithRetriesResult {
+  readonly proxyError?: ProxyFailure | undefined;
+}
+
 interface UpstreamHandlers {
   message: (message: WebSocketMessage, receivedAt: number) => Promise<void>;
   close: (event: CloseEvent) => Promise<void>;
@@ -57,7 +67,8 @@ export class UpstreamWebSocket {
   async connect(
     state: StoredWebSocketSession,
     target: ModelProviderTarget,
-  ): ReturnType<typeof fetchWithConfiguredRetries> {
+    config: GatewayConfig,
+  ): Promise<WebSocketConnectResult> {
     const controller = new AbortController();
     this.controller = controller;
     try {
@@ -72,8 +83,14 @@ export class UpstreamWebSocket {
           endpoint: "responses",
           transport: "websocket",
         },
+        {
+          config,
+          env: this.env,
+          context: this.context,
+          requestId: state.request_id,
+        },
       );
-      return await fetchWithConfiguredRetries(
+      const result = await fetchWithConfiguredRetries(
         () =>
           new Request(prepared.url, {
             method: "GET",
@@ -100,6 +117,12 @@ export class UpstreamWebSocket {
           },
         },
       );
+      return {
+        ...result,
+        proxyError: result.response
+          ? undefined
+          : prepared.proxyFailure(result.error),
+      };
     } finally {
       if (this.controller === controller) this.controller = undefined;
     }

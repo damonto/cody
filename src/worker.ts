@@ -12,6 +12,7 @@ export { ProviderHealth } from "./gateway/health/provider-health.ts";
 export { SessionAffinity } from "./gateway/sessions/session-affinity.ts";
 export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
 export { ResponsesWebSocketProxy } from "./gateway/websocket/responses-websocket-proxy.ts";
+export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
 export { UsageOutbox } from "./telemetry/outbox.ts";
 export { ConfigPublisher } from "./control/publisher.ts";
 

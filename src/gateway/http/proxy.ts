@@ -5,6 +5,7 @@ import type { RequestMeter } from "../../telemetry/meter.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
+import { SocksProxyError } from "../proxies/errors.ts";
 import {
   codexTurnMetadata,
   contextManagementRequested,
@@ -123,7 +124,11 @@ async function fetchAttempt(
   try {
     return await send(new Request(request, { signal }));
   } catch (error) {
-    if (timeoutError && !request.signal.aborted) {
+    if (
+      timeoutError &&
+      !request.signal.aborted &&
+      !(error instanceof SocksProxyError)
+    ) {
       throw timeoutError;
     }
     throw error;
@@ -486,11 +491,16 @@ export async function handleInference(
     },
   });
 
-  const prepared = await prepareProviderRequest(provider, selectedCredential, {
-    request,
-    endpoint: upstreamPath,
-    transport: "http",
-  });
+  const prepared = await prepareProviderRequest(
+    provider,
+    selectedCredential,
+    {
+      request,
+      endpoint: upstreamPath,
+      transport: "http",
+    },
+    { config, env, context, requestLog, requestId },
+  );
   const { headers } = prepared;
   requestLog?.set({
     upstream: {
@@ -556,8 +566,13 @@ export async function handleInference(
   const upstreamDurationMs = elapsedMs(startedAt);
   if (!result.response) {
     const cancelled = request.signal.aborted;
-    const status = cancelled ? 499 : 502;
-    const code = cancelled ? "request_cancelled" : "upstream_unavailable";
+    const proxyFailure = retryOptions.send
+      ? undefined
+      : prepared.proxyFailure(result.error);
+    const status = cancelled ? 499 : (proxyFailure?.status ?? 502);
+    const code = cancelled
+      ? "request_cancelled"
+      : (proxyFailure?.code ?? "upstream_unavailable");
     meter?.diagnostic(code);
     if (cancelled) meter?.finish("cancelled", status);
     requestLog?.warn({
@@ -572,7 +587,7 @@ export async function handleInference(
         error: errorMessage(result.error),
       },
     });
-    if (!cancelled) {
+    if (!cancelled && !proxyFailure) {
       await scheduleHealthUpdate(
         context,
         recordProviderFailure(env, provider.id, requestId),
@@ -583,7 +598,8 @@ export async function handleInference(
       status,
       cancelled
         ? "The client cancelled the request"
-        : "The selected upstream provider could not be reached",
+        : (proxyFailure?.message ??
+            "The selected upstream provider could not be reached"),
       {
         type: cancelled ? "invalid_request_error" : "server_error",
         code,

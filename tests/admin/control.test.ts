@@ -41,6 +41,8 @@ import type { GatewayConfig } from "../../src/config/types.ts";
 import { emptyUsage } from "../../src/telemetry/usage.ts";
 import { emptyCost } from "../../src/billing/calculate.ts";
 import { config, usage } from "./fixtures.ts";
+import { proxyGroupSnapshot } from "../../src/gateway/proxies/configuration.ts";
+import { proxyGroupsStatusSchema } from "../../src/gateway/proxies/schema.ts";
 
 const bindings = env as unknown as Env & {
   TEST_MIGRATIONS: D1Migration[];
@@ -154,33 +156,134 @@ test("AES-GCM authenticates payloads and key material", async () => {
   await expect(encryptConfig({}, "invalid-key")).rejects.toThrow("32-byte key");
 });
 
-test("provider and key proxy passwords stay encrypted and survive masked draft edits", async () => {
+test("group proxy passwords stay encrypted and survive masked draft edits", async () => {
   const input = parseConfig(config());
-  input.providers[0].proxy = {
-    url: "socks5://provider.test:1080",
-    username: "provider-user",
-    password: "provider-proxy-secret",
-  };
-  input.providers[0].credentials[0].proxy = {
-    url: "socks5://key.test:1081",
-    username: "key-user",
-    password: "key-proxy-secret",
-  };
+  input.proxy_groups = [
+    {
+      id: "US",
+      strategy: "sticky",
+      proxies: [
+        {
+          id: "first",
+          url: "socks5://first.test:1080",
+          username: "user",
+          password: "first-proxy-secret",
+          priority: 100,
+          disabled: false,
+        },
+        {
+          id: "second",
+          url: "socks5://second.test:1080",
+          username: "user",
+          password: "second-proxy-secret",
+          priority: 50,
+          disabled: false,
+        },
+      ],
+    },
+  ];
+  input.providers[0].proxy_group = "US";
   const saved = await control().save(input, 0, "tester");
-  expect(saved.config.providers[0].proxy?.password).toBe(SECRET_PLACEHOLDER);
-  expect(saved.config.providers[0].credentials[0].proxy?.password).toBe(
+  expect(saved.config.proxy_groups[0].proxies[0].password).toBe(
     SECRET_PLACEHOLDER,
   );
-  expect(JSON.stringify(saved)).not.toContain("provider-proxy-secret");
-  expect(JSON.stringify(saved)).not.toContain("key-proxy-secret");
+  expect(JSON.stringify(saved)).not.toContain("proxy-secret");
   expect((await control().state()).draft_payload).not.toContain("proxy-secret");
-  saved.config.providers[0].priority += 1;
+  saved.config.proxy_groups[0].proxies.reverse();
   await control().save(saved.config, 1, "tester");
   const restored = parseConfig(await control().rawDraft());
-  expect(restored.providers[0].proxy?.password).toBe("provider-proxy-secret");
-  expect(restored.providers[0].credentials[0].proxy?.password).toBe(
-    "key-proxy-secret",
+  expect(restored.proxy_groups[0].proxies[0].password).toBe(
+    "second-proxy-secret",
   );
+  expect(restored.proxy_groups[0].proxies[1].password).toBe(
+    "first-proxy-secret",
+  );
+});
+
+test("proxy runtime endpoints expose published health and bindings, mask secrets and audit clears", async () => {
+  const input = config();
+  const group = {
+    id: `admin-${crypto.randomUUID()}`,
+    strategy: "sticky" as const,
+    proxies: [
+      {
+        id: "node",
+        url: "socks5://proxy.test:1080",
+        username: "user",
+        password: "proxy-secret",
+        priority: 100,
+        disabled: false,
+      },
+    ],
+  };
+  input.proxy_groups = [group];
+  input.providers[0].proxy_group = group.id;
+  const saved = await control().save(input, 0, "tester");
+  const revision = await control().createRevision(saved.version, "tester");
+  await control().publishRevision(revision);
+  const snapshot = await proxyGroupSnapshot({ revision }, group);
+  const stub = bindings.PROXY_GROUP.getByName(group.id);
+  const selected = await stub.select({
+    group: snapshot,
+    owner: { provider_id: "provider" },
+  });
+  if (selected.status !== "selected")
+    throw new Error("Expected a proxy binding");
+  let response = await call("/console/api/runtime/proxy-groups");
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(text).not.toContain("proxy-secret");
+  expect(
+    proxyGroupsStatusSchema.parse(JSON.parse(text)).items[0].bindings,
+  ).toHaveLength(1);
+  for (let index = 0; index < 3; index++)
+    await stub.observe({
+      lease: selected.lease,
+      outcome: "failure",
+      event_id: crypto.randomUUID(),
+      observed_at: Date.now(),
+    });
+  response = await call("/console/api/runtime/proxy-groups");
+  expect(
+    proxyGroupsStatusSchema.parse(await response.json()).items[0].proxies[0]
+      .status,
+  ).toBe("cooling");
+  expect(
+    (
+      await call(
+        `/console/api/runtime/proxy-groups/${group.id}/proxies/node/health`,
+        "DELETE",
+      )
+    ).status,
+  ).toBe(200);
+  expect((await stub.getStatus(snapshot)).proxies[0].failures).toBe(0);
+  expect(
+    await bindings.CODY_DB.prepare(
+      "SELECT action FROM audit_log WHERE action = ?",
+    )
+      .bind(`clear_proxy_health:${group.id}:node`)
+      .first(),
+  ).toEqual({ action: `clear_proxy_health:${group.id}:node` });
+  expect(
+    (
+      await call(
+        `/console/api/runtime/proxy-groups/${group.id}/proxies/missing/health`,
+        "DELETE",
+      )
+    ).status,
+  ).toBe(404);
+});
+
+test("unresolved proxy group references can be saved but cannot be published", async () => {
+  const input = config();
+  input.providers[0].proxy_group = "missing";
+  const saved = await control().save(input, 0, "tester");
+  expect(saved.valid).toBe(false);
+  const reply = JSON.parse(
+    await publisher().publish(saved.version, "tester"),
+  ) as PublisherReply;
+  expect(reply.ok).toBe(false);
+  expect(await bindings.CODY_CONFIG_KV.get("gateway-config")).toBeNull();
 });
 
 test("an audit insert failure rolls back the draft and its version", async () => {

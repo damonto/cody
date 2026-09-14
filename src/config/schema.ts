@@ -165,7 +165,27 @@ export const socksProxySchema = z
       },
     ],
   });
-const proxySchema = socksProxySchema.nullable().optional();
+export const proxyNodeSchema = socksProxySchema
+  .safeExtend({
+    id: identifierSchema,
+    priority: integer,
+    disabled: boolean,
+  })
+  .meta(socksProxySchema.meta() ?? {});
+export const proxyStrategySchema = z.enum(["random", "sticky", "priority"]);
+export const proxyGroupSchema = z.strictObject({
+  id: identifierSchema,
+  strategy: proxyStrategySchema,
+  proxies: z.array(proxyNodeSchema).superRefine((proxies, context) => {
+    if (!unique(proxies.map((proxy) => proxy.id)))
+      context.addIssue({
+        code: "custom",
+        path: ["id"],
+        message: "values must be unique",
+      });
+  }),
+});
+const proxyGroupReferenceSchema = identifierSchema.nullable().optional();
 
 const credentialAuthSchema = z.discriminatedUnion(
   "type",
@@ -178,13 +198,13 @@ export const credentialSchema = z.strictObject({
   auth: credentialAuthSchema,
   priority: integer,
   disabled: boolean,
-  proxy: proxySchema,
+  proxy_group: proxyGroupReferenceSchema,
 });
 export const aiGatewayProviderSchema = z.strictObject({
   type: z.literal("ai_gateway"),
   id: identifierSchema,
   base_url: baseUrlSchema,
-  proxy: proxySchema,
+  proxy_group: proxyGroupReferenceSchema,
   credentials: z
     .array(credentialSchema, { error: "must be a non-empty array" })
     .min(1, "must be a non-empty array")
@@ -244,6 +264,7 @@ export const searchSchema = z.discriminatedUnion(
 
 const shape = z.strictObject({
   $schema: z.string({ error: "must be a string" }).optional(),
+  proxy_groups: z.array(proxyGroupSchema).default([]),
   providers: z.array(providerSchema, { error: "must be a non-empty array" }),
   api_keys: z.array(clientSchema, { error: "must be a non-empty array" }),
   model_routes: routes(routeSchema).default({}),
@@ -256,6 +277,7 @@ type Configuration = z.output<typeof shape>;
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [path, values] of [
+    [["proxy_groups", "id"], config.proxy_groups.map((group) => group.id)],
     [["providers", "id"], config.providers.map((provider) => provider.id)],
     [["api_keys", "id"], config.api_keys.map((client) => client.id)],
     [["api_keys", "api_key"], config.api_keys.map((client) => client.api_key)],
@@ -270,6 +292,7 @@ function validateIdentities(config: Configuration, context: z.RefinementCtx) {
 }
 
 function validateReferences(config: Configuration, context: z.RefinementCtx) {
+  const proxyGroups = new Set(config.proxy_groups.map((group) => group.id));
   const providers = new Map(
     config.providers.map((provider) => [provider.id, provider]),
   );
@@ -312,6 +335,19 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
   for (const [alias, route] of Object.entries(config.model_routes))
     validateRoute(route, ["model_routes", alias]);
   for (const [index, provider] of config.providers.entries()) {
+    for (const [reference, path] of [
+      [provider.proxy_group, ["providers", index, "proxy_group"]],
+      ...provider.credentials.map(
+        (credential, credentialIndex) =>
+          [
+            credential.proxy_group,
+            ["providers", index, "credentials", credentialIndex, "proxy_group"],
+          ] as const,
+      ),
+    ] as const) {
+      if (reference && !proxyGroups.has(reference))
+        issue([...path], `references unknown proxy group ${reference}`);
+    }
     for (const [alias, route] of Object.entries(provider.model_routes ?? {})) {
       if (!provider.models.includes(route.model))
         issue(

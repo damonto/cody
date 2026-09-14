@@ -1,5 +1,7 @@
 import { discardBody, readBodyWithinLimit } from "../http/body.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
+import type { PreparedProviderRequest } from "../../providers/types.ts";
+import type { ProxyFailure } from "../proxies/errors.ts";
 import {
   prepareProviderRequest,
   providerSupportsEndpoint,
@@ -72,6 +74,7 @@ interface ProviderModelsResult {
   // Always present on a failed result, possibly undefined when the error body
   // was not JSON. Success results omit it.
   upstreamError?: Promise<LogFields> | undefined;
+  proxyError?: ProxyFailure | undefined;
 }
 
 interface ModelsCacheEntry {
@@ -256,6 +259,7 @@ async function fetchCatalogResponse(
 async function fetchProviderModels(
   request: Request,
   env: Env,
+  config: GatewayConfig,
   target: ProviderTarget,
   requestId: string,
   context?: HealthExecutionContext,
@@ -266,13 +270,18 @@ async function fetchProviderModels(
   // A provider may serve either dialect, so it cannot declare one.
   const protocol = requestProtocol(request, "models");
   const startedAt = performance.now();
-
+  let prepared: PreparedProviderRequest | undefined;
   try {
-    const prepared = await prepareProviderRequest(provider, key, {
-      request,
-      endpoint: "models",
-      transport: "http",
-    });
+    prepared = await prepareProviderRequest(
+      provider,
+      key,
+      {
+        request,
+        endpoint: "models",
+        transport: "http",
+      },
+      { config, env, context, requestLog, requestId },
+    );
     const result = await fetchCatalogResponse(
       prepared.url,
       {
@@ -353,6 +362,7 @@ async function fetchProviderModels(
       models: filteredModels,
     };
   } catch (error) {
+    const proxyError = prepared?.proxyFailure(error);
     const upstream = {
       provider_id: provider.id,
       credential_id: key.id,
@@ -360,13 +370,13 @@ async function fetchProviderModels(
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
     };
-    if (!request.signal.aborted) {
+    if (!request.signal.aborted && !proxyError) {
       await scheduleHealthUpdate(
         context,
         recordProviderFailure(env, provider.id, requestId, "catalog"),
       );
     }
-    return { provider, success: false, models: [], upstream };
+    return { provider, success: false, models: [], upstream, proxyError };
   }
 }
 
@@ -714,7 +724,15 @@ async function collectModels(
     available,
     MODEL_CATALOG_CONCURRENCY,
     (target) =>
-      fetchProviderModels(request, env, target, requestId, context, requestLog),
+      fetchProviderModels(
+        request,
+        env,
+        config,
+        target,
+        requestId,
+        context,
+        requestLog,
+      ),
   );
   const upstreamErrors = results.flatMap((result) =>
     !result.success && result.upstream ? [result.upstream] : [],
@@ -741,6 +759,18 @@ async function collectModels(
     );
   }
   if (!results.some((result) => result.success)) {
+    const proxyError = results.every(
+      (result) => result.proxyError?.status === 503,
+    )
+      ? results[0]?.proxyError
+      : undefined;
+    if (proxyError)
+      throw new ModelsRequestError(
+        proxyError.status,
+        proxyError.message,
+        "server_error",
+        proxyError.code,
+      );
     requestLog?.warn({ outcome: "upstream_unavailable" });
     throw new ModelsRequestError(
       502,

@@ -59,24 +59,42 @@ Other clients can use the gateway's OpenAI or Anthropic endpoints with the same 
 
 ## SOCKS5 proxies
 
-Set **Outbound proxy** on a provider's **Connection** tab or on an individual credential. SOCKS5 supports API requests, streaming, and WebSockets within the same deployment.
+Manage groups such as **US** and **UK** on the console's **Proxies** page, then select a **Proxy group** on a provider's **Connection** tab or on an individual credential. Each node belongs to one group. SOCKS5 supports API requests, streaming, WebSockets, model catalogs, and native context management.
 
-The JSON field is `proxy` on either `providers[]` or `providers[].credentials[]`:
+Groups are defined in the top-level `proxy_groups` array:
 
 ```json
 {
-  "proxy": {
-    "url": "socks5://proxy.example.com:1080",
-    "username": "proxy-user",
-    "password": "proxy-password"
-  }
+  "proxy_groups": [
+    {
+      "id": "US",
+      "strategy": "sticky",
+      "proxies": [
+        {
+          "id": "us-primary",
+          "url": "socks5://proxy.example.com:1080",
+          "username": "proxy-user",
+          "password": "proxy-password",
+          "priority": 100,
+          "disabled": false
+        }
+      ]
+    }
+  ]
 }
 ```
 
-- Credentials inherit the provider's proxy by default. Set a credential's `proxy` to override it, or to `null` to connect directly.
+- Set `providers[].proxy_group` to a group ID, or leave it unset/null for direct access. Credentials inherit by default; `providers[].credentials[].proxy_group` selects an independent group binding, and `null` explicitly selects direct access.
 - Include the host and port in the URL. Supply username and password together, or omit both for a proxy without authentication.
+- `random` chooses any healthy node uniformly, ignoring Priority. `sticky` does the same for its first assignment, then preserves the binding. `priority` chooses the highest Priority among healthy nodes and breaks ties randomly.
+- Inherited credentials share the provider's sticky binding. Credentials explicitly selecting a group have their own binding, even when selecting the same group. Bindings survive deployments, priority changes, and added nodes. Disabling, removing, or cooling a node releases its bindings; recovery does not switch them back.
+- Three proxy connection failures within one minute cool a node for five minutes. Successful connections reset its streak. All request types share proxy health, independently of provider/credential health. Target CONNECT refusals, HTTP errors, TLS errors, and client cancellation do not cool a proxy. Cooldowns expire passively and can also be cleared on the Proxies page.
+- A logical request may switch to one other healthy node before sending any upstream HTTP headers or body. This allowance is shared with configured HTTP retries and never renews the existing timeout budget. A temporary sticky fallback changes the permanent binding only after its original node becomes unavailable. Established streams and WebSockets retain their connection.
+- An empty or fully unavailable group, or an unavailable proxy state store, returns 503. Exhausted connection attempts return a connection error. Groups and nodes use stable IDs; group changes follow the existing draft/publish workflow, while live health reflects the published configuration.
 
 Use a proxy [reachable from Cloudflare Workers](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/). Proxy failures do not fall back to a direct connection.
+
+Inline provider/credential `proxy` fields are no longer accepted. Configurations without these fields require no data migration: `proxy_groups` defaults to an empty list, and providers without a `proxy_group` use direct access.
 
 ## Deploy to Cloudflare
 

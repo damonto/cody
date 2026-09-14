@@ -922,8 +922,9 @@ test("model catalogs honor key direct overrides and never bypass inherited proxi
     for (const override of [undefined, null]) {
       clearModelsCacheForTests();
       const config = modelConfig();
-      config.providers[0].proxy = { url: "socks5://proxy.test:1080" };
-      config.providers[0].credentials[0].proxy = override;
+      config.proxy_groups = [{ id: "US", strategy: "random", proxies: [] }];
+      config.providers[0].proxy_group = "US";
+      config.providers[0].credentials[0].proxy_group = override;
       const { env, calls } = healthEnvironment();
       const response = await handleModels(
         modelRequest(),
@@ -932,8 +933,8 @@ test("model catalogs honor key direct overrides and never bypass inherited proxi
         config.api_keys[0],
         "proxy-selection",
       );
-      assert.equal(response.status, override === null ? 200 : 502);
-      assert.equal(calls.failure, override === null ? 0 : 1);
+      assert.equal(response.status, override === null ? 200 : 503);
+      assert.equal(calls.failure, 0);
     }
     assert.equal(directCalls, 1);
   } finally {

@@ -12,6 +12,7 @@ import { PageErrorBoundary } from "@/components/error-boundary";
 const Overview = lazy(() => import("@/pages/overview"));
 const Requests = lazy(() => import("@/pages/requests"));
 const Providers = lazy(() => import("@/pages/providers"));
+const Proxies = lazy(() => import("@/pages/proxies"));
 const Clients = lazy(() => import("@/pages/clients"));
 const Pricing = lazy(() => import("@/pages/pricing"));
 const Routing = lazy(() => import("@/pages/routing"));
@@ -21,6 +22,7 @@ const pages = [
   ["overview", Overview],
   ["requests", Requests],
   ["providers", Providers],
+  ["proxies", Proxies],
   ["clients", Clients],
   ["pricing", Pricing],
   ["routing", Routing],

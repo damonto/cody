@@ -37,35 +37,71 @@ function validConfig() {
   };
 }
 
-test("provider and key SOCKS5 configuration preserves credentials and explicit direct overrides", () => {
+function proxyGroups() {
+  return [
+    {
+      id: "US",
+      strategy: "sticky",
+      proxies: [
+        {
+          id: "first",
+          url: "socks5://proxy.test:1080/",
+          username: "user",
+          password: " space sensitive ",
+          priority: 100,
+          disabled: false,
+        },
+        {
+          id: "second",
+          url: "socks5://second.test:1080",
+          username: "second",
+          password: "second-password",
+          priority: 50,
+          disabled: false,
+        },
+      ],
+    },
+    {
+      id: "UK",
+      strategy: "priority",
+      proxies: [
+        {
+          id: "first",
+          url: "socks5://uk.test:1080",
+          username: "uk",
+          password: "uk-password",
+          priority: 100,
+          disabled: false,
+        },
+      ],
+    },
+  ];
+}
+
+test("proxy groups validate connections and preserve inheritance and direct overrides", () => {
   const input = validConfig();
-  input.providers[0].proxy = {
-    url: "socks5://provider-proxy.test:1080/",
-    username: "user",
-    password: " space sensitive ",
-  };
-  input.providers[0].credentials[0].proxy = {
-    url: "socks5://key-proxy.test:1081",
-    username: "key-user",
-    password: "key-password",
-  };
+  input.proxy_groups = proxyGroups();
+  input.providers[0].proxy_group = "US";
   const parsed = parseConfig(input);
   assert.equal(
-    parsed.providers[0].proxy.url,
-    "socks5://provider-proxy.test:1080",
+    parsed.proxy_groups[0].proxies[0].url,
+    "socks5://proxy.test:1080",
   );
-  assert.equal(parsed.providers[0].proxy.password, " space sensitive ");
-  assert.equal(
-    parsed.providers[0].credentials[0].proxy.url,
-    "socks5://key-proxy.test:1081",
-  );
+  assert.equal(parsed.proxy_groups[0].proxies[0].password, " space sensitive ");
+  assert.equal(parsed.providers[0].credentials[0].proxy_group, undefined);
   assert.ok(upstreamSecretValues(parsed).includes(" space sensitive "));
-  assert.ok(upstreamSecretValues(parsed).includes("key-password"));
-  input.providers[0].credentials[0].proxy = null;
-  assert.equal(parseConfig(input).providers[0].credentials[0].proxy, null);
+  assert.ok(upstreamSecretValues(parsed).includes("uk-password"));
+  for (const reference of [null, "UK"]) {
+    input.providers[0].credentials[0].proxy_group = reference;
+    assert.equal(
+      parseConfig(input).providers[0].credentials[0].proxy_group,
+      reference,
+    );
+  }
+  assert.deepEqual(parseConfig(validConfig()).proxy_groups, []);
 });
 
-test("SOCKS5 configuration rejects other proxy protocols, embedded secrets and invalid authentication", () => {
+test("proxy groups reject invalid connections, identities, references and inline legacy proxies", () => {
   const invalid = [
     { url: "https://proxy.test:443" },
     { url: "http://proxy.test:8080" },
@@ -87,67 +123,57 @@ test("SOCKS5 configuration rejects other proxy protocols, embedded secrets and i
     { url: "socks5://proxy.test:1080", insecure: true },
   ];
   for (const proxy of invalid) {
-    for (const level of ["provider", "key"]) {
-      const input = validConfig();
-      (level === "provider"
-        ? input.providers[0]
-        : input.providers[0].credentials[0]
-      ).proxy = proxy;
-      assert.throws(() => parseConfig(input), ConfigError);
-    }
+    const input = validConfig();
+    input.proxy_groups = [
+      {
+        id: "US",
+        strategy: "random",
+        proxies: [{ id: "node", priority: 100, disabled: false, ...proxy }],
+      },
+    ];
+    assert.throws(() => parseConfig(input), ConfigError);
+  }
+  for (const mutate of [
+    (input) => input.proxy_groups.push(input.proxy_groups[0]),
+    (input) =>
+      input.proxy_groups[0].proxies.push(input.proxy_groups[0].proxies[0]),
+    (input) => (input.proxy_groups[0].strategy = "round_robin"),
+    (input) => (input.providers[0].proxy_group = "missing"),
+    (input) => (input.providers[0].credentials[0].proxy_group = "missing"),
+    (input) => (input.providers[0].proxy = { url: "socks5://old.test:1080" }),
+    (input) => (input.providers[0].credentials[0].proxy = null),
+  ]) {
+    const input = validConfig();
+    input.proxy_groups = proxyGroups();
+    mutate(input);
+    assert.throws(() => parseConfig(input), ConfigError);
   }
 });
 
-test("proxy passwords are masked and restored by provider and key IDs, including reordering and rotation", () => {
+test("proxy passwords are restored by group and node IDs after reordering and rotation", () => {
   const input = validConfig();
-  input.providers[0].proxy = {
-    url: "socks5://provider.test:1080",
-    username: "provider",
-    password: "provider-proxy-password",
-  };
-  input.providers[0].credentials[0].proxy = {
-    url: "socks5://key.test:1080",
-    username: "key",
-    password: "key-proxy-password",
-  };
-  input.providers[0].credentials.push({
-    ...input.providers[0].credentials[0],
-    id: "second-key",
-    auth: { type: "api_key", api_key: "another-upstream-key" },
-    proxy: {
-      url: "socks5://second.test:1080",
-      username: "second",
-      password: "second-proxy-password",
-    },
-  });
+  input.proxy_groups = proxyGroups();
   const masked = maskSecrets(input);
   assert.doesNotMatch(
     JSON.stringify(masked),
-    /provider-proxy-password|key-proxy-password|second-proxy-password/,
+    /space sensitive|second-password|uk-password/,
   );
-  assert.equal(masked.providers[0].proxy.password, SECRET_PLACEHOLDER);
-  masked.providers[0].credentials.reverse();
+  assert.equal(masked.proxy_groups[0].proxies[0].password, SECRET_PLACEHOLDER);
+  masked.proxy_groups.reverse();
+  masked.proxy_groups[1].proxies.reverse();
   const restored = restoreSecrets(masked, input);
+  assert.equal(restored.proxy_groups[0].proxies[0].password, "uk-password");
+  assert.equal(restored.proxy_groups[1].proxies[0].password, "second-password");
   assert.equal(
-    restored.providers[0].credentials[0].proxy.password,
-    "second-proxy-password",
+    restored.proxy_groups[1].proxies[1].password,
+    " space sensitive ",
   );
+  masked.proxy_groups[0].proxies[0].password = "rotated";
   assert.equal(
-    restored.providers[0].credentials[1].proxy.password,
-    "key-proxy-password",
+    restoreSecrets(masked, input).proxy_groups[0].proxies[0].password,
+    "rotated",
   );
-  assert.equal(restored.providers[0].proxy.password, "provider-proxy-password");
-  masked.providers[0].credentials[0].proxy.password = "rotated-password";
-  assert.equal(
-    restoreSecrets(masked, input).providers[0].credentials[0].proxy.password,
-    "rotated-password",
-  );
-  masked.providers[0].credentials[1].proxy = null;
-  assert.equal(
-    restoreSecrets(masked, input).providers[0].credentials[1].proxy,
-    null,
-  );
-  masked.providers[0].id = "new-provider";
+  masked.proxy_groups[1].id = "new-group";
   assert.throws(() => restoreSecrets(masked, input), /new credential/);
 });
 

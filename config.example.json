@@ -4,11 +4,6 @@
     {
       "id": "primary",
       "base_url": "https://primary.example.com/v1",
-      "proxy": {
-        "url": "socks5://proxy.example.com:1080",
-        "username": "proxy-user",
-        "password": "replace-with-proxy-password"
-      },
       "credentials": [
         {
           "id": "primary-key",
@@ -21,15 +16,13 @@
         },
         {
           "id": "backup-key",
-          "proxy": {
-            "url": "socks5://key-proxy.example.com:1080"
-          },
           "disabled": true,
           "priority": 50,
           "auth": {
             "type": "api_key",
             "api_key": "sk-upstream-primary-backup"
-          }
+          },
+          "proxy_group": "UK"
         }
       ],
       "disabled": false,
@@ -47,7 +40,8 @@
         "status_codes": [429],
         "delays_ms": [250, 500, 1000]
       },
-      "type": "ai_gateway"
+      "type": "ai_gateway",
+      "proxy_group": "US"
     },
     {
       "id": "secondary",
@@ -165,6 +159,34 @@
           }
         ]
       }
+    }
+  ],
+  "proxy_groups": [
+    {
+      "id": "US",
+      "strategy": "sticky",
+      "proxies": [
+        {
+          "id": "primary",
+          "url": "socks5://proxy.example.com:1080",
+          "username": "proxy-user",
+          "password": "replace-with-proxy-password",
+          "priority": 100,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "id": "UK",
+      "strategy": "priority",
+      "proxies": [
+        {
+          "id": "primary",
+          "url": "socks5://key-proxy.example.com:1080",
+          "priority": 100,
+          "disabled": false
+        }
+      ]
     }
   ]
 }
