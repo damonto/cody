@@ -1,5 +1,5 @@
-import { ServiceForm } from "@/features/services/service-form";
-import { removeService } from "@/features/services/mutations";
+import { ProviderForm } from "@/features/providers/provider-form";
+import { removeProvider } from "@/features/providers/mutations";
 import { useState } from "react";
 import { Plus, Server, Trash2 } from "lucide-react";
 import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
@@ -32,7 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-export default function Services() {
+export default function Providers() {
   const draft = useDraft();
   const save = useSaveDraft();
   const [editor, setEditor] = useState<{
@@ -50,30 +50,31 @@ export default function Services() {
     setEditor({ snapshot: structuredClone(draft.data), index });
   const referencedBy = remove
     ? config.api_keys
-        .filter((client) => client.services.includes(remove))
+        .filter((client) => client.providers.includes(remove))
         .map((client) => client.id)
     : [];
   return (
     <>
       <PageHeading
-        title="Services"
+        title="Providers"
         description="Manage upstream providers, real model names, and prioritized credentials."
       >
         <Button onClick={() => edit(-1)}>
           <Plus />
-          Add service
+          Add provider
         </Button>
       </PageHeading>
       <div className="grid gap-4 sm:grid-cols-3">
         {[
-          ["Configured services", config.services.length],
+          ["Configured providers", config.providers.length],
           [
-            "Enabled services",
-            config.services.filter((service) => !service.disabled).length,
+            "Enabled providers",
+            config.providers.filter((provider) => !provider.disabled).length,
           ],
           [
             "Upstream models",
-            new Set(config.services.flatMap((service) => service.models)).size,
+            new Set(config.providers.flatMap((provider) => provider.models))
+              .size,
           ],
         ].map(([title, count]) => (
           <Card key={title} className="shadow-none">
@@ -87,13 +88,13 @@ export default function Services() {
         ))}
       </div>
       <Card className="overflow-hidden py-0 shadow-none">
-        {!config.services.length ? (
+        {!config.providers.length ? (
           <Empty
             title="Add your first upstream"
             action={
               <Button onClick={() => edit(-1)}>
                 <Plus />
-                Add service
+                Add provider
               </Button>
             }
           >
@@ -101,11 +102,11 @@ export default function Services() {
           </Empty>
         ) : (
           <DataTable
-            data={config.services}
+            data={config.providers}
             columns={[
               {
-                id: "service",
-                header: "Service",
+                id: "provider",
+                header: "Provider",
                 cell: ({ row }) => (
                   <div className="flex items-center gap-3">
                     <span className="rounded-lg border p-2">
@@ -119,6 +120,11 @@ export default function Services() {
                     </div>
                   </div>
                 ),
+              },
+              {
+                id: "type",
+                header: "Type",
+                cell: () => <Badge variant="secondary">AI Gateway</Badge>,
               },
               {
                 id: "models",
@@ -143,10 +149,10 @@ export default function Services() {
                 ),
               },
               {
-                id: "keys",
-                header: "Keys",
+                id: "credentials",
+                header: "Credentials",
                 cell: ({ row }) =>
-                  `${row.original.keys.filter((key) => !key.disabled).length} / ${row.original.keys.length} enabled`,
+                  `${row.original.credentials.filter((key) => !key.disabled).length} / ${row.original.credentials.length} enabled`,
               },
               {
                 id: "priority",
@@ -172,8 +178,8 @@ export default function Services() {
                       size="sm"
                       onClick={() =>
                         edit(
-                          config.services.findIndex(
-                            (service) => service.id === row.original.id,
+                          config.providers.findIndex(
+                            (provider) => provider.id === row.original.id,
                           ),
                         )
                       }
@@ -184,7 +190,10 @@ export default function Services() {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Delete ${row.original.id}`}
-                      onClick={() => setRemove(row.original.id)}
+                      onClick={() => {
+                        save.reset();
+                        setRemove(row.original.id);
+                      }}
                     >
                       <Trash2 />
                     </Button>
@@ -196,9 +205,9 @@ export default function Services() {
         )}
       </Card>
       <p className="text-xs text-muted-foreground">
-        Routing selects the highest-priority available service, then its
-        highest-priority enabled key. Equal priorities follow configuration
-        order.
+        Routing selects the highest-priority available provider, then its
+        highest-priority enabled credential. Equal priorities follow
+        configuration order.
       </p>
       <Dialog
         open={editor !== null}
@@ -209,14 +218,14 @@ export default function Services() {
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>
-              {editor?.index === -1 ? "Add service" : "Configure service"}
+              {editor?.index === -1 ? "Add provider" : "Configure provider"}
             </DialogTitle>
             <DialogDescription>
               Save these changes to your draft, then publish when ready.
             </DialogDescription>
           </DialogHeader>
           {editor && (
-            <ServiceForm
+            <ProviderForm
               snapshot={editor.snapshot}
               index={editor.index}
               draftVersion={draft.data.version}
@@ -228,26 +237,30 @@ export default function Services() {
       <AlertDialog
         open={remove !== null}
         onOpenChange={(open) => {
-          if (!open) setRemove(null);
+          if (!open && !save.isPending) setRemove(null);
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {remove}?</AlertDialogTitle>
             <AlertDialogDescription>
-              The service and its pricing policies will be removed from the
+              The provider and its pricing policies will be removed from the
               draft.{" "}
               {referencedBy.length
                 ? `Update clients ${referencedBy.join(", ")} and any model routes before publishing.`
                 : "Check model routes for references before publishing."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {save.error && <ErrorNotice error={save.error} />}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={save.isPending}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
+              onClick={(event) => {
+                event.preventDefault();
                 if (!remove) return;
-                const next = removeService(config, remove);
+                const next = removeProvider(config, remove);
                 save.mutate(
                   { config: next, version: draft.data.version },
                   { onSuccess: () => setRemove(null) },

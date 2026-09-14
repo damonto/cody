@@ -43,7 +43,7 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-export async function dialSocks(address: {
+async function dialSocks(address: {
   hostname: string;
   port: number;
 }): Promise<SocksSocket> {

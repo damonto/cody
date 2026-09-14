@@ -42,7 +42,7 @@ for (const [name, base, local] of [
       }
       const draft = await requests[1].json();
       assert.equal(draft.version, 4);
-      assert.ok(draft.config.services.length > 0);
+      assert.ok(draft.config.providers.length > 0);
       assert.deepEqual(await requests[2].json(), { version: 5 });
     `;
     const { stdout } = await execute(

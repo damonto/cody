@@ -53,7 +53,7 @@ endpoint(aliases("health"), "health", ["GET"], async (r) =>
   handleHealthList(r.env, r.config, r.client, r.incomingUrl, r.requestLog),
 );
 endpoint(
-  aliases("health/:serviceId{[A-Za-z0-9._-]+}/:keyId{[A-Za-z0-9._-]+}"),
+  aliases("health/:providerId{[A-Za-z0-9._-]+}/:credentialId{[A-Za-z0-9._-]+}"),
   "health",
   ["DELETE"],
   async (r, c) =>
@@ -62,13 +62,13 @@ endpoint(
       r.config,
       r.client,
       r.incomingUrl,
-      c.req.param("serviceId")!,
-      c.req.param("keyId"),
+      c.req.param("providerId")!,
+      c.req.param("credentialId"),
       r.requestLog,
     ),
 );
 endpoint(
-  aliases("health/:serviceId{[A-Za-z0-9._-]+}"),
+  aliases("health/:providerId{[A-Za-z0-9._-]+}"),
   "health",
   ["DELETE"],
   async (r, c) =>
@@ -77,7 +77,7 @@ endpoint(
       r.config,
       r.client,
       r.incomingUrl,
-      c.req.param("serviceId")!,
+      c.req.param("providerId")!,
       undefined,
       r.requestLog,
     ),

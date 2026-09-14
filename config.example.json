@@ -1,6 +1,6 @@
 {
   "$schema": "./config.schema.json",
-  "services": [
+  "providers": [
     {
       "id": "primary",
       "base_url": "https://primary.example.com/v1",
@@ -9,21 +9,27 @@
         "username": "proxy-user",
         "password": "replace-with-proxy-password"
       },
-      "keys": [
+      "credentials": [
         {
           "id": "primary-key",
-          "api_key": "sk-upstream-primary",
           "disabled": false,
-          "priority": 100
+          "priority": 100,
+          "auth": {
+            "type": "api_key",
+            "api_key": "sk-upstream-primary"
+          }
         },
         {
           "id": "backup-key",
-          "api_key": "sk-upstream-primary-backup",
           "proxy": {
             "url": "socks5://key-proxy.example.com:1080"
           },
           "disabled": true,
-          "priority": 50
+          "priority": 50,
+          "auth": {
+            "type": "api_key",
+            "api_key": "sk-upstream-primary-backup"
+          }
         }
       ],
       "disabled": false,
@@ -40,17 +46,21 @@
       "retry": {
         "status_codes": [429],
         "delays_ms": [250, 500, 1000]
-      }
+      },
+      "type": "ai_gateway"
     },
     {
       "id": "secondary",
       "base_url": "https://secondary.example.com/v1",
-      "keys": [
+      "credentials": [
         {
           "id": "default-key",
-          "api_key": "sk-upstream-secondary",
           "disabled": false,
-          "priority": 100
+          "priority": 100,
+          "auth": {
+            "type": "api_key",
+            "api_key": "sk-upstream-secondary"
+          }
         }
       ],
       "disabled": false,
@@ -67,17 +77,21 @@
       "retry": {
         "status_codes": [429],
         "delays_ms": [1000]
-      }
+      },
+      "type": "ai_gateway"
     },
     {
       "id": "anthropic-gateway",
       "base_url": "https://anthropic.example.com/v1",
-      "keys": [
+      "credentials": [
         {
           "id": "anthropic-key",
-          "api_key": "sk-upstream-anthropic",
           "disabled": false,
-          "priority": 100
+          "priority": 100,
+          "auth": {
+            "type": "api_key",
+            "api_key": "sk-upstream-anthropic"
+          }
         }
       ],
       "disabled": false,
@@ -89,23 +103,24 @@
       "retry": {
         "status_codes": [429, 529],
         "delays_ms": [500, 1000]
-      }
+      },
+      "type": "ai_gateway"
     }
   ],
   "api_keys": [
     {
       "id": "client-a",
       "api_key": "sk-gateway-client-a",
-      "services": ["primary", "secondary", "anthropic-gateway"]
+      "providers": ["primary", "secondary", "anthropic-gateway"]
     },
     {
       "id": "client-b",
       "api_key": "sk-gateway-client-b",
-      "services": ["secondary"],
+      "providers": ["secondary"],
       "model_routes": {
         "gpt-5.6-sol": {
           "model": "grok-4.5",
-          "services": ["secondary"]
+          "providers": ["secondary"]
         }
       }
     }
@@ -116,7 +131,7 @@
     },
     "codex-auto-review": {
       "model": "gpt-4.1",
-      "services": ["primary"]
+      "providers": ["primary"]
     }
   },
   "web_search": {
@@ -128,7 +143,7 @@
   },
   "model_policies": [
     {
-      "service_id": "primary",
+      "provider_id": "primary",
       "model": "gpt-4.1",
       "context_window": 1000000,
       "pricing": {

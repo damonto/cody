@@ -16,15 +16,15 @@ export const reportQuerySchema = z
     from: reportTimestamp.optional(),
     to: reportTimestamp.optional(),
     time_zone: timeZoneSchema.optional(),
-    service_id: optionalFilter,
-    key_id: optionalFilter,
+    provider_id: optionalFilter,
+    credential_id: optionalFilter,
     client_id: optionalFilter,
     model: optionalFilter,
     currency: reportCurrency.optional(),
     cost_currency: reportCurrency.optional(),
     group_by: z
-      .enum(["service_id", "model", "client_id"])
-      .default("service_id"),
+      .enum(["provider_id", "model", "client_id"])
+      .default("provider_id"),
     sort_by: z.enum(["requests", "tokens", "cost"]).default("requests"),
     quality: z.enum(["missing_usage", "incomplete_pricing"]).optional(),
     outcome: z

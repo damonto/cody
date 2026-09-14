@@ -1,9 +1,11 @@
-import { recordKeyFailure, healthFailureScope } from "../health/health.ts";
-import { upstreamUrl } from "../http/http.ts";
+import {
+  recordCredentialFailure,
+  healthFailureScope,
+} from "../health/health.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
-import { createUpstreamFetch } from "../transport/index.ts";
+import { prepareProviderRequest } from "../../providers/index.ts";
 import { logError, errorMessage } from "../../shared/log.ts";
-import type { ModelServiceTarget } from "../routing/routing.ts";
+import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
 import {
   closeSocket,
@@ -54,36 +56,44 @@ export class UpstreamWebSocket {
 
   async connect(
     state: StoredWebSocketSession,
-    target: ModelServiceTarget,
+    target: ModelProviderTarget,
   ): ReturnType<typeof fetchWithConfiguredRetries> {
     const controller = new AbortController();
     this.controller = controller;
-    const headers = new Headers(state.forwarded_headers);
-    headers.set("authorization", `Bearer ${target.key.api_key}`);
-    headers.set("upgrade", "websocket");
     try {
+      const prepared = await prepareProviderRequest(
+        target.provider,
+        target.credential,
+        {
+          request: new Request(
+            `https://gateway.invalid/responses${state.incoming_search}`,
+            { headers: state.forwarded_headers, signal: controller.signal },
+          ),
+          endpoint: "responses",
+          transport: "websocket",
+        },
+      );
       return await fetchWithConfiguredRetries(
         () =>
-          new Request(
-            upstreamUrl(target.service, "responses", state.incoming_search),
-            {
-              method: "GET",
-              headers,
-              redirect: "manual",
-              signal: controller.signal,
-            },
-          ),
-        target.service.retry,
+          new Request(prepared.url, {
+            method: "GET",
+            headers: prepared.headers,
+            redirect: "manual",
+            signal: controller.signal,
+          }),
+        target.provider.retry,
         {
-          send: createUpstreamFetch(target.service, target.key),
+          send: prepared.send,
           wait: (delayMs) => abortableDelay(delayMs, controller.signal),
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
           onResponse: async (response) => {
-            if (healthFailureScope(response.status, "openai") === "key") {
-              await recordKeyFailure(
+            if (
+              healthFailureScope(response.status, "openai") === "credential"
+            ) {
+              await recordCredentialFailure(
                 this.env,
-                target.service.id,
-                target.key.id,
+                target.provider.id,
+                target.credential.id,
                 state.request_id,
               );
             }

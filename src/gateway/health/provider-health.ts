@@ -1,14 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 
-import { ServiceHealthState, type StoredServiceHealthState } from "./health.ts";
+import {
+  ProviderHealthState,
+  type StoredProviderHealthState,
+} from "./health.ts";
 import { configureLogging } from "../../shared/log.ts";
-import type { ServiceHealthSnapshot } from "../../config/types.ts";
+import type { ProviderHealthSnapshot } from "../../config/types.ts";
 
 const HEALTH_STORAGE_KEY = "health";
 
 function storedStatesEqual(
-  left: StoredServiceHealthState | undefined,
-  right: StoredServiceHealthState | null,
+  left: StoredProviderHealthState | undefined,
+  right: StoredProviderHealthState | null,
 ): boolean {
   if (left === undefined || right === null) {
     return left === undefined && right === null;
@@ -20,27 +23,27 @@ function storedStatesEqual(
   );
 }
 
-export class ServiceHealth extends DurableObject<Env> {
+export class ProviderHealth extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     configureLogging(this.env.LOG_LEVEL);
   }
 
   private async load(): Promise<{
-    health: ServiceHealthState;
-    stored: StoredServiceHealthState | undefined;
+    health: ProviderHealthState;
+    stored: StoredProviderHealthState | undefined;
   }> {
     const stored =
-      await this.ctx.storage.get<StoredServiceHealthState>(HEALTH_STORAGE_KEY);
+      await this.ctx.storage.get<StoredProviderHealthState>(HEALTH_STORAGE_KEY);
     return {
-      health: new ServiceHealthState(undefined, stored),
+      health: new ProviderHealthState(undefined, stored),
       stored,
     };
   }
 
   private async persist(
-    previous: StoredServiceHealthState | undefined,
-    next: StoredServiceHealthState | null,
+    previous: StoredProviderHealthState | undefined,
+    next: StoredProviderHealthState | null,
   ): Promise<void> {
     if (storedStatesEqual(previous, next)) {
       return;
@@ -52,35 +55,35 @@ export class ServiceHealth extends DurableObject<Env> {
     }
   }
 
-  async getStatus(): Promise<ServiceHealthSnapshot> {
+  async getStatus(): Promise<ProviderHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.getStatus();
     await this.persist(stored, health.getStoredState());
     return snapshot;
   }
 
-  async recordSuccess(): Promise<ServiceHealthSnapshot> {
+  async recordSuccess(): Promise<ProviderHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.recordSuccess();
     await this.persist(stored, health.getStoredState());
     return snapshot;
   }
 
-  async recordFailure(): Promise<ServiceHealthSnapshot> {
+  async recordFailure(): Promise<ProviderHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.recordFailure();
     await this.persist(stored, health.getStoredState());
     return snapshot;
   }
 
-  async recordImmediateFailure(): Promise<ServiceHealthSnapshot> {
+  async recordImmediateFailure(): Promise<ProviderHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.recordImmediateFailure();
     await this.persist(stored, health.getStoredState());
     return snapshot;
   }
 
-  async clear(): Promise<ServiceHealthSnapshot> {
+  async clear(): Promise<ProviderHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.clear();
     await this.persist(stored, health.getStoredState());

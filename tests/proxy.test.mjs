@@ -3,7 +3,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 
-import { ServiceHealthState } from "../src/gateway/health/health.ts";
+import { ProviderHealthState } from "../src/gateway/health/health.ts";
 import {
   anthropicErrorType,
   apiError,
@@ -20,19 +20,20 @@ import {
 } from "../src/gateway/http/proxy.ts";
 
 function inferenceFixture(retry) {
-  const service = {
+  const provider = {
+    type: "ai_gateway",
     id: "primary",
     base_url: "https://primary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "primary-key",
-        api_key: "service-secret-key",
+        auth: { type: "api_key", api_key: "provider-secret-key" },
         disabled: false,
         priority: 100,
       },
       {
         id: "backup-key",
-        api_key: "service-backup-key",
+        auth: { type: "api_key", api_key: "provider-backup-key" },
         disabled: false,
         priority: 50,
       },
@@ -49,7 +50,7 @@ function inferenceFixture(retry) {
   const affinities = new Map();
   const healthObject = (name) => {
     if (!healthObjects.has(name)) {
-      const state = new ServiceHealthState();
+      const state = new ProviderHealthState();
       healthObjects.set(name, {
         clear: async () => state.clear(),
         getStatus: async () => state.getStatus(),
@@ -72,10 +73,10 @@ function inferenceFixture(retry) {
   return {
     affinities,
     calls,
-    client: { id: "client", api_key: "client", services: [service.id] },
+    client: { id: "client", api_key: "client", providers: [provider.id] },
     config: {
-      services: [service],
-      api_keys: [{ id: "client", api_key: "client", services: [service.id] }],
+      providers: [provider],
+      api_keys: [{ id: "client", api_key: "client", providers: [provider.id] }],
       model_routes: {},
     },
     env: {
@@ -90,8 +91,10 @@ function inferenceFixture(retry) {
               selection !== undefined &&
               candidates.some(
                 (candidate) =>
-                  candidate.service_id === selection.service_id &&
-                  candidate.keys.some((key) => key.key_id === selection.key_id),
+                  candidate.provider_id === selection.provider_id &&
+                  candidate.credentials.some(
+                    (key) => key.credential_id === selection.credential_id,
+                  ),
               );
             if (isCandidate(stored)) {
               return { ...stored, updated_at: Date.now(), status: "hit" };
@@ -287,7 +290,7 @@ test("count_tokens binds to the same session as the matching message", () => {
 
 test("Responses bodies remain unchanged when image generation is routable", async () => {
   const fixture = inferenceFixture();
-  fixture.config.services[0].models.push("upstream-image-model");
+  fixture.config.providers[0].models.push("upstream-image-model");
   fixture.config.model_routes["gpt-image-2"] = {
     model: "upstream-image-model",
   };
@@ -369,7 +372,7 @@ test("Image API requests preserve the original JSON body when the model is uncha
 test("Image API requests route gpt-image-2 through its model route", async () => {
   const originalFetch = globalThis.fetch;
   const fixture = inferenceFixture();
-  fixture.config.services[0].models = ["upstream-image-model"];
+  fixture.config.providers[0].models = ["upstream-image-model"];
   fixture.config.model_routes = {
     "gpt-image-2": { model: "upstream-image-model" },
   };
@@ -404,7 +407,7 @@ test("Image API requests route gpt-image-2 through its model route", async () =>
 
 test("model routes rewrite only the model and invalidate body digests", async () => {
   const fixture = inferenceFixture();
-  fixture.config.services[0].models = ["upstream-model"];
+  fixture.config.providers[0].models = ["upstream-model"];
   fixture.config.model_routes = { "client-model": { model: "upstream-model" } };
   const originalFetch = globalThis.fetch;
   let captured;
@@ -492,8 +495,8 @@ test("a Claude Code conversation binds session affinity", async () => {
   // every Anthropic request resolved no session and skipped affinity entirely.
   assert.equal(fixture.affinities.size, 1);
   const binding = [...fixture.affinities.values()][0];
-  assert.equal(binding.service_id, "primary");
-  assert.equal(binding.key_id, "primary-key");
+  assert.equal(binding.provider_id, "primary");
+  assert.equal(binding.credential_id, "primary-key");
 });
 
 test("forwarding removes proxy metadata and client credentials", () => {
@@ -577,7 +580,7 @@ test("anthropicErrorType maps statuses to the documented Anthropic types", () =>
 test("apiError emits Anthropic types and keeps OpenAI codes", async () => {
   const anthropic = apiError("anthropic", 503, "cooling down", {
     type: "server_error",
-    code: "service_cooling_down",
+    code: "provider_cooling_down",
     requestId: "req-1",
   });
   assert.equal(anthropic.status, 503);
@@ -589,7 +592,7 @@ test("apiError emits Anthropic types and keeps OpenAI codes", async () => {
 
   const openai = apiError("openai", 503, "cooling down", {
     type: "server_error",
-    code: "service_cooling_down",
+    code: "provider_cooling_down",
     requestId: "req-1",
   });
   assert.deepEqual(await openai.json(), {
@@ -597,13 +600,13 @@ test("apiError emits Anthropic types and keeps OpenAI codes", async () => {
       message: "cooling down",
       type: "server_error",
       param: null,
-      code: "service_cooling_down",
+      code: "provider_cooling_down",
     },
   });
 });
 
 test("a Claude client catalog request still authenticates with a bearer token", () => {
-  // Regression: /v1/models fans out to every allowed service regardless of
+  // Regression: /v1/models fans out to every allowed provider regardless of
   // protocol, so mirroring only the client's x-api-key left OpenAI-compatible
   // upstreams unauthenticated and cooled their key health down.
   const request = new Request("https://gateway.example/v1/models", {
@@ -642,10 +645,10 @@ test("forwarding strips a client-supplied X-Real-IP", () => {
   assert.equal(headers.get("x-real-ip"), null);
 });
 
-test("client API keys are selected through the asynchronous secret comparison", async () => {
+test("client API credentials are selected through the asynchronous secret comparison", async () => {
   const entries = [
-    { id: "first-client", api_key: "first-key", services: ["first"] },
-    { id: "matching-client", api_key: "matching-key", services: ["second"] },
+    { id: "first-client", api_key: "first-key", providers: ["first"] },
+    { id: "matching-client", api_key: "matching-key", providers: ["second"] },
   ];
   const match = await findClientApiKey(
     new Request("https://gateway.example", {
@@ -664,10 +667,10 @@ test("client API keys are selected through the asynchronous secret comparison", 
   assert.equal(missing, undefined);
 });
 
-test("client API keys are selected from x-api-key as well as bearer tokens", async () => {
+test("client API credentials are selected from x-api-key as well as bearer tokens", async () => {
   const entries = [
-    { id: "first-client", api_key: "first-key", services: ["first"] },
-    { id: "claude-client", api_key: "claude-key", services: ["second"] },
+    { id: "first-client", api_key: "first-key", providers: ["first"] },
+    { id: "claude-client", api_key: "claude-key", providers: ["second"] },
   ];
   const match = await findClientApiKey(
     new Request("https://gateway.example/v1/messages", {
@@ -744,10 +747,10 @@ test("inference immediately cools the selected key on HTTP 402 or 403", async ()
   }
 });
 
-test("Anthropic inference cools the key on 401 and records service failure on 529", async () => {
+test("Anthropic inference cools the key on 401 and records provider failure on 529", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    for (const [status, expectedKeyFailures, expectedFailures] of [
+    for (const [status, expectedCredentialFailures, expectedFailures] of [
       [401, 1, 0],
       [529, 0, 1],
     ]) {
@@ -770,7 +773,7 @@ test("Anthropic inference cools the key on 401 and records service failure on 52
         `anthropic-health-${status}`,
       );
       assert.equal(response.status, status);
-      assert.equal(fixture.calls.keyFailure, expectedKeyFailures);
+      assert.equal(fixture.calls.keyFailure, expectedCredentialFailures);
       assert.equal(fixture.calls.failure, expectedFailures);
       assert.equal(fixture.calls.success, 0);
     }
@@ -780,9 +783,9 @@ test("Anthropic inference cools the key on 401 and records service failure on 52
 });
 
 test("health classification follows the request dialect, not the endpoint host", async () => {
-  // One service may serve both dialects, so the dialect comes from the request.
-  // 500 is an Anthropic service failure but not an OpenAI one; 400 is the
-  // reverse. The same service config is used for both rows.
+  // One provider may serve both dialects, so the dialect comes from the request.
+  // 500 is an Anthropic provider failure but not an OpenAI one; 400 is the
+  // reverse. The same provider config is used for both rows.
   const originalFetch = globalThis.fetch;
   try {
     for (const [path, upstreamPath, status, expectedFailures] of [
@@ -835,11 +838,11 @@ test("inference uses the selected key's proxy override and never bypasses a fail
       { url: "socks5://key-proxy.test:1081" },
     ]) {
       const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });
-      fixture.config.services[0].proxy = {
-        url: "socks5://service-proxy.test:1080",
+      fixture.config.providers[0].proxy = {
+        url: "socks5://provider-proxy.test:1080",
       };
-      fixture.config.services[0].keys[0].proxy = override;
-      fixture.config.services[0].keys[1].proxy = null;
+      fixture.config.providers[0].credentials[0].proxy = override;
+      fixture.config.providers[0].credentials[1].proxy = null;
       const response = await handleInference(
         inferenceRequest(),
         fixture.env,
@@ -897,8 +900,8 @@ test("a retrying 403 cools the key even when the same-key retry succeeds", async
     );
     assert.equal(response.status, 200);
     assert.deepEqual(authorizations, [
-      "Bearer service-secret-key",
-      "Bearer service-secret-key",
+      "Bearer provider-secret-key",
+      "Bearer provider-secret-key",
     ]);
     assert.equal(fixture.calls.keyFailure, 1);
     assert.equal(fixture.calls.success, 1);
@@ -937,8 +940,8 @@ test("a cooled key affects only the next request, which may select another key",
     assert.equal(first.status, 403);
     assert.equal(second.status, 200);
     assert.deepEqual(authorizations, [
-      "Bearer service-secret-key",
-      "Bearer service-backup-key",
+      "Bearer provider-secret-key",
+      "Bearer provider-backup-key",
     ]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -996,7 +999,7 @@ test("inference retries configured HTTP statuses with the same request", async (
     assert(requests.every((request) => request.method === "POST"));
     assert(
       requests.every(
-        (request) => request.authorization === "Bearer service-secret-key",
+        (request) => request.authorization === "Bearer provider-secret-key",
       ),
     );
     const expectedBody = JSON.stringify({ model: "model", input: "hello" });
@@ -1010,7 +1013,7 @@ test("inference retries configured HTTP statuses with the same request", async (
 
 test("inference uses the next configured key only after a manual configuration change", async () => {
   const fixture = inferenceFixture();
-  fixture.config.services[0].keys[0].disabled = true;
+  fixture.config.providers[0].credentials[0].disabled = true;
   const originalFetch = globalThis.fetch;
   let authorization;
   globalThis.fetch = async (input, init) => {
@@ -1028,7 +1031,7 @@ test("inference uses the next configured key only after a manual configuration c
       "responses",
     );
     assert.equal(response.status, 200);
-    assert.equal(authorization, "Bearer service-backup-key");
+    assert.equal(authorization, "Bearer provider-backup-key");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1053,13 +1056,13 @@ test("inference does not fall back to another key after an upstream response", a
       "responses",
     );
     assert.equal(response.status, 503);
-    assert.deepEqual(authorizations, ["Bearer service-secret-key"]);
+    assert.deepEqual(authorizations, ["Bearer provider-secret-key"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("inference does not retry HTTP 429 when the service has no retry policy", async () => {
+test("inference does not retry HTTP 429 when the provider has no retry policy", async () => {
   const fixture = inferenceFixture();
   const originalFetch = globalThis.fetch;
   const waits = [];
@@ -1090,7 +1093,7 @@ test("inference does not retry HTTP 429 when the service has no retry policy", a
   }
 });
 
-test("inference can retry a different status for a different service policy", async () => {
+test("inference can retry a different status for a different provider policy", async () => {
   const retry = {
     status_codes: [503],
     delays_ms: [100, 300],
@@ -1315,7 +1318,7 @@ test("metering records routing, retries, pricing and failures without a request 
   fixture.config.revision = 4;
   fixture.config.model_policies = [
     {
-      service_id: "primary",
+      provider_id: "primary",
       model: "model",
       context_window: 200000,
       pricing: {
@@ -1380,8 +1383,8 @@ test("metering records routing, retries, pricing and failures without a request 
     assert.equal(attempts, 2);
     assert.equal(event.requested_model, "alias");
     assert.equal(event.model, "model");
-    assert.equal(event.service_id, "primary");
-    assert.equal(event.key_id, "primary-key");
+    assert.equal(event.provider_id, "primary");
+    assert.equal(event.credential_id, "primary-key");
     assert.equal(event.attempts.length, 2);
     assert.equal(event.diagnostic_code, "upstream_error");
     assert.equal(event.billing.price_version, '[4,"primary","model"]');

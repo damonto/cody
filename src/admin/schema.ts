@@ -16,9 +16,9 @@ export const draftSchema = versionSchema.extend({
   config: maskedConfigurationSchema,
 });
 export const clientIdSchema = z.object({ id: identifierSchema });
-export const serviceKeyIdSchema = z.object({
+export const providerCredentialIdSchema = z.object({
   id: identifierSchema,
-  keyId: identifierSchema,
+  credentialId: identifierSchema,
 });
 export const apiKeySchema = clientSchema
   .pick({ api_key: true })
@@ -26,7 +26,7 @@ export const apiKeySchema = clientSchema
     message: "Invalid API credential",
   });
 export const priceHistoryQuerySchema = z.object({
-  service_id: z.string().min(1).max(256),
+  provider_id: z.string().min(1).max(256),
   model: z.string().min(1).max(256),
 });
 export const priceVersionQuerySchema = z.object({
@@ -45,8 +45,8 @@ export const healthListSchema = z.object({
   scope: z.enum(["inference", "catalog"]),
   data: z.array(
     z.object({
-      service_id: z.string(),
-      key_id: z.string().optional(),
+      provider_id: z.string(),
+      credential_id: z.string().optional(),
       failures: z.number(),
       cooling_until: z.number().nullable(),
     }),
@@ -57,8 +57,8 @@ export const sessionListSchema = z.object({
   data: z.array(
     z.object({
       session_id: z.string(),
-      service_id: z.string(),
-      key_id: z.string(),
+      provider_id: z.string(),
+      credential_id: z.string(),
       created_at: z.number(),
       updated_at: z.number(),
       expires_at: z.number(),

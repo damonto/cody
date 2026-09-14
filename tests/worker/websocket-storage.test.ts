@@ -82,7 +82,7 @@ test("session cleanup retains usage recovery while acknowledgements retain the f
     const now = Date.now();
     const store = new WebSocketStorage(state.storage, () => now);
     const session: StoredWebSocketSession = {
-      version: 1,
+      version: 2,
       phase: "awaiting_first_frame",
       request_id: "session-alarm",
       started_at: now,

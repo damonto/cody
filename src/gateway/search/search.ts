@@ -20,7 +20,7 @@ import {
 import { codexOutput, codexResults } from "./search-response.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 
-export const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
+const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
 
 export async function handleConfiguredWebSearch(
   request: Request,

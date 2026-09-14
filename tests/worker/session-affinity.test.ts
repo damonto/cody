@@ -9,23 +9,23 @@ import { expect, test } from "vitest";
 import {
   affinityObjectName,
   SESSION_AFFINITY_TTL_MS,
-  type AffinityServiceCandidate,
+  type AffinityProviderCandidate,
   type SessionAffinityResolution,
-} from "../../src/gateway/sessions/session-affinity.ts";
+} from "../../src/gateway/routing/affinity.ts";
 
-const candidates: AffinityServiceCandidate[] = [
+const candidates: AffinityProviderCandidate[] = [
   {
-    service_id: "first",
+    provider_id: "first",
     priority: 10,
-    keys: [
-      { key_id: "first-a", priority: 10 },
-      { key_id: "first-b", priority: 10 },
+    credentials: [
+      { credential_id: "first-a", priority: 10 },
+      { credential_id: "first-b", priority: 10 },
     ],
   },
   {
-    service_id: "second",
+    provider_id: "second",
     priority: 10,
-    keys: [{ key_id: "second-a", priority: 10 }],
+    credentials: [{ credential_id: "second-a", priority: 10 }],
   },
 ];
 
@@ -73,14 +73,14 @@ test("session affinity survives eviction and keeps the original target", async (
   const created = await stub.resolve(
     candidates,
     {
-      service_id: "second",
-      key_id: "second-a",
+      provider_id: "second",
+      credential_id: "second-a",
     },
     identity,
   );
   expect(created).toMatchObject({
-    service_id: "second",
-    key_id: "second-a",
+    provider_id: "second",
+    credential_id: "second-a",
     status: "created",
   });
 
@@ -88,14 +88,14 @@ test("session affinity survives eviction and keeps the original target", async (
   const hit = await stub.resolve(
     candidates,
     {
-      service_id: "first",
-      key_id: "first-a",
+      provider_id: "first",
+      credential_id: "first-a",
     },
     identity,
   );
   expect(hit).toMatchObject({
-    service_id: "second",
-    key_id: "second-a",
+    provider_id: "second",
+    credential_id: "second-a",
     status: "hit",
   });
 });
@@ -108,21 +108,21 @@ test("concurrent first resolutions atomically converge on one binding", async ()
   const [left, right] = await Promise.all([
     stub.resolve(
       candidates,
-      { service_id: "first", key_id: "first-a" },
+      { provider_id: "first", credential_id: "first-a" },
       identity,
     ),
     stub.resolve(
       candidates,
-      { service_id: "second", key_id: "second-a" },
+      { provider_id: "second", credential_id: "second-a" },
       identity,
     ),
   ]);
 
   expect(left).toBeDefined();
   expect(right).toBeDefined();
-  expect([left?.service_id, left?.key_id]).toEqual([
-    right?.service_id,
-    right?.key_id,
+  expect([left?.provider_id, left?.credential_id]).toEqual([
+    right?.provider_id,
+    right?.credential_id,
   ]);
   expect(new Set([left?.status, right?.status])).toEqual(
     new Set(["created", "hit"]),
@@ -140,30 +140,30 @@ test("context bindings survive eviction and keep their key despite priority chan
   }));
   const initial = await stub.resolve(
     supported,
-    { service_id: "first", key_id: "first-a" },
+    { provider_id: "first", credential_id: "first-a" },
     identity,
     { contextManagement: true },
   );
   await evictDurableObject(stub);
   const raised = supported.map((candidate) => ({
     ...candidate,
-    priority: candidate.service_id === "second" ? 100 : 10,
+    priority: candidate.provider_id === "second" ? 100 : 10,
   }));
   const hit = await stub.resolve(
     raised,
-    { service_id: "second", key_id: "second-a" },
+    { provider_id: "second", credential_id: "second-a" },
     identity,
   );
   expect(hit).toMatchObject({
     status: "hit",
     context_management: true,
-    service_id: "first",
-    key_id: "first-a",
+    provider_id: "first",
+    credential_id: "first-a",
     binding_id: initial?.binding_id,
   });
   const blocked = await stub.resolve(
     [raised[1]],
-    { service_id: "second", key_id: "second-a" },
+    { provider_id: "second", credential_id: "second-a" },
     identity,
   );
   expect(blocked?.status).toBe("blocked");
@@ -219,21 +219,21 @@ test("a removed target is rebound to the preferred current candidate", async () 
   );
   await stub.resolve(
     candidates,
-    { service_id: "first", key_id: "first-b" },
+    { provider_id: "first", credential_id: "first-b" },
     identity,
   );
 
   const rebound = await stub.resolve(
     [candidates[1]],
     {
-      service_id: "second",
-      key_id: "second-a",
+      provider_id: "second",
+      credential_id: "second-a",
     },
     identity,
   );
   expect(rebound).toMatchObject({
-    service_id: "second",
-    key_id: "second-a",
+    provider_id: "second",
+    credential_id: "second-a",
     status: "rebound",
   });
 });
@@ -247,7 +247,7 @@ test("new managed bindings are indexed and conditionally cleared", async () => {
   const created = requireResolution(
     await stub.resolve(
       candidates,
-      { service_id: "first", key_id: "first-a" },
+      { provider_id: "first", credential_id: "first-a" },
       {
         registry_name: registryName,
         session_digest: sessionDigest,
@@ -300,7 +300,7 @@ test("managed bindings can be cleared without an index entry", async () => {
   const created = requireResolution(
     await stub.resolve(
       candidates,
-      { service_id: "first", key_id: "first-a" },
+      { provider_id: "first", credential_id: "first-a" },
       registration,
     ),
   );
@@ -337,12 +337,12 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     await stub.resolve(
       [
         {
-          service_id: "lower",
+          provider_id: "lower",
           priority: 10,
-          keys: [{ key_id: "lower-key", priority: 10 }],
+          credentials: [{ credential_id: "lower-key", priority: 10 }],
         },
       ],
-      { service_id: "lower", key_id: "lower-key" },
+      { provider_id: "lower", credential_id: "lower-key" },
       registration,
     ),
   );
@@ -350,17 +350,17 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     await stub.resolve(
       [
         {
-          service_id: "lower",
+          provider_id: "lower",
           priority: 10,
-          keys: [{ key_id: "lower-key", priority: 10 }],
+          credentials: [{ credential_id: "lower-key", priority: 10 }],
         },
         {
-          service_id: "higher",
+          provider_id: "higher",
           priority: 100,
-          keys: [{ key_id: "higher-key", priority: 10 }],
+          credentials: [{ credential_id: "higher-key", priority: 10 }],
         },
       ],
-      { service_id: "higher", key_id: "higher-key" },
+      { provider_id: "higher", credential_id: "higher-key" },
       registration,
     ),
   );
@@ -380,8 +380,8 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     ),
   ).toBe(false);
   expect(await stub.getStatus()).toMatchObject({
-    service_id: "higher",
-    key_id: "higher-key",
+    provider_id: "higher",
+    credential_id: "higher-key",
     binding_id: upgraded.binding_id,
   });
   expect(
@@ -406,7 +406,7 @@ test("a stale equal-timestamp index entry is replaced by a newer generation", as
   const created = requireResolution(
     await stub.resolve(
       candidates,
-      { service_id: "first", key_id: "first-a" },
+      { provider_id: "first", credential_id: "first-a" },
       {
         registry_name: registryName,
         session_digest: sessionDigest,
@@ -444,7 +444,7 @@ test("a managed affinity alarm removes its index entry", async () => {
   );
   await stub.resolve(
     candidates,
-    { service_id: "first", key_id: "first-a" },
+    { provider_id: "first", credential_id: "first-a" },
     {
       registry_name: registryName,
       session_digest: sessionDigest,
@@ -473,7 +473,7 @@ test("the idle alarm deletes affinity after 30 days", async () => {
   );
   await stub.resolve(
     candidates,
-    { service_id: "first", key_id: "first-a" },
+    { provider_id: "first", credential_id: "first-a" },
     identity,
   );
 
@@ -500,21 +500,21 @@ test("unsupported unmanaged affinity records do not participate in routing", asy
   );
   await runInDurableObject(stub, async (_instance, state) => {
     await state.storage.put("affinity", {
-      service_id: "second",
-      key_id: "second-a",
+      provider_id: "second",
+      credential_id: "second-a",
       updated_at: Date.now(),
     });
   });
 
   const resolution = await stub.resolve(
     candidates,
-    { service_id: "first", key_id: "first-a" },
+    { provider_id: "first", credential_id: "first-a" },
     identity,
   );
 
   expect(resolution).toMatchObject({
-    service_id: "first",
-    key_id: "first-a",
+    provider_id: "first",
+    credential_id: "first-a",
     generation: 1,
     status: "created",
   });
@@ -527,8 +527,8 @@ test("unsupported generation-less managed records are replaced", async () => {
   );
   await runInDurableObject(stub, async (_instance, state) => {
     await state.storage.put("affinity", {
-      service_id: "second",
-      key_id: "second-a",
+      provider_id: "second",
+      credential_id: "second-a",
       updated_at: Date.now(),
       binding_id: "old-binding",
       created_at: Date.now(),
@@ -541,13 +541,13 @@ test("unsupported generation-less managed records are replaced", async () => {
 
   const resolution = await stub.resolve(
     candidates,
-    { service_id: "first", key_id: "first-a" },
+    { provider_id: "first", credential_id: "first-a" },
     identity,
   );
 
   expect(resolution).toMatchObject({
-    service_id: "first",
-    key_id: "first-a",
+    provider_id: "first",
+    credential_id: "first-a",
     generation: 1,
     status: "created",
   });

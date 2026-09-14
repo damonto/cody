@@ -16,7 +16,7 @@ const tier = (upper, input = "3", output = "15") => ({
   cache_read: "0.30",
 });
 const policy = {
-  service_id: "a",
+  provider_id: "a",
   model: "real-model",
   context_window: 1_000_000,
   pricing: {
@@ -29,7 +29,7 @@ const policy = {
 };
 
 const noWriteChargePolicy = {
-  service_id: "a",
+  provider_id: "a",
   model: "gemini-3.8-flash",
   pricing: {
     currency: "USD",
@@ -210,7 +210,7 @@ test("zero cache write prices do not hide missing, invalid, or explicit counters
   accumulator.add(raw);
   assert.equal(accumulator.snapshot().status, "partial");
   assert.equal(
-    accumulator.snapshot({ service_id: "a", model: "unpriced" }).status,
+    accumulator.snapshot({ provider_id: "a", model: "unpriced" }).status,
     "partial",
   );
   for (const value of [null, -1, "0", 0.5]) {
@@ -275,23 +275,23 @@ test("inferred cache writes do not alter cumulative usage or conceal contradicti
   assert.equal(invalid.snapshot(noWriteChargePolicy).status, "invalid");
 });
 
-test("policies are unique per service and real model, with sorted complete tiers", () => {
-  const services = [{ id: "a", models: ["real-model"] }];
-  assert.deepEqual(parseModelPolicies([policy], services), [policy]);
+test("policies are unique per provider and real model, with sorted complete tiers", () => {
+  const providers = [{ id: "a", models: ["real-model"] }];
+  assert.deepEqual(parseModelPolicies([policy], providers), [policy]);
   assert.throws(
-    () => parseModelPolicies([policy, policy], services),
+    () => parseModelPolicies([policy, policy], providers),
     /duplicates/,
   );
   assert.throws(
-    () => parseModelPolicies([{ ...policy, model: "client-alias" }], services),
+    () => parseModelPolicies([{ ...policy, model: "client-alias" }], providers),
     /real upstream models/,
   );
   const invalid = structuredClone(policy);
   invalid.pricing.tiers[1].up_to_input_tokens = 300000;
-  assert.throws(() => parseModelPolicies([invalid], services), /final tier/);
+  assert.throws(() => parseModelPolicies([invalid], providers), /final tier/);
   invalid.pricing.tiers = [tier(200000), tier(100000), tier(null)];
   assert.throws(
-    () => parseModelPolicies([invalid], services),
+    () => parseModelPolicies([invalid], providers),
     /increase strictly/,
   );
   assert.throws(

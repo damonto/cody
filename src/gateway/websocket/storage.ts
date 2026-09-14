@@ -1,5 +1,6 @@
 import { emptyCost } from "../../billing/calculate.ts";
 import type { UsageEvent } from "../../telemetry/types.ts";
+import { parseUsageEvent } from "../../telemetry/schema.ts";
 
 const SESSION_KEY = "session";
 const CHECKPOINT_PREFIX = "usage:";
@@ -17,7 +18,7 @@ export const LIVE_PHASES: readonly SessionPhase[] = [
 ];
 
 export interface StoredWebSocketSession {
-  version: 1;
+  version: 2;
   phase: SessionPhase;
   request_id: string;
   started_at: number;
@@ -27,8 +28,8 @@ export interface StoredWebSocketSession {
   client_api_key_digest: string;
   header_session_id?: string;
   current_session_id?: string;
-  selected_service_id?: string;
-  selected_key_id?: string;
+  selected_provider_id?: string;
+  selected_credential_id?: string;
   active_response: boolean;
   response_outcome_recorded: boolean;
   context_management?: boolean;
@@ -96,8 +97,25 @@ export class WebSocketStorage {
     });
   }
 
-  pendingUsage(): Promise<Map<string, UsageEvent>> {
-    return this.storage.list<UsageEvent>({ prefix: OUTBOX_PREFIX, limit: 64 });
+  async pendingUsage(): Promise<Map<string, UsageEvent>> {
+    const records = await this.storage.list<unknown>({
+      prefix: OUTBOX_PREFIX,
+      limit: 64,
+    });
+    const pending = new Map<string, UsageEvent>();
+    const ignored: string[] = [];
+    for (const [key, value] of records) {
+      const event = parseUsageEvent(value);
+      if (event === null) ignored.push(key);
+      else pending.set(key, event);
+    }
+    if (ignored.length > 0) {
+      await this.storage.transaction(async (transaction) => {
+        await transaction.delete(ignored);
+        await this.updateAlarm(transaction);
+      });
+    }
+    return pending;
   }
 
   acknowledgeUsage(requestId: string): Promise<void> {
@@ -109,11 +127,16 @@ export class WebSocketStorage {
 
   recoverUsage(): Promise<void> {
     return this.storage.transaction(async (transaction) => {
-      const pending = await transaction.list<UsageEvent>({
+      const pending = await transaction.list<unknown>({
         prefix: CHECKPOINT_PREFIX,
       });
       const now = this.now();
-      for (const [key, event] of pending) {
+      for (const [key, value] of pending) {
+        const event = parseUsageEvent(value);
+        if (event === null) {
+          await transaction.delete(key);
+          continue;
+        }
         const ended: UsageEvent =
           event.phase === "finished"
             ? event

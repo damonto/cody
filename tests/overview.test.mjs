@@ -158,10 +158,10 @@ test("request drilldowns freeze exact bounds and carry only relevant filters", (
   };
   const href = requestsHref(
     {
-      service_id: "a & b",
+      provider_id: "a & b",
       model: "real/model",
       client_id: "stable-client",
-      key_id: "key",
+      credential_id: "key",
       group_by: "client_id",
       cost_currency: "EUR",
     },
@@ -172,7 +172,7 @@ test("request drilldowns freeze exact bounds and carry only relevant filters", (
   assert.equal(query.get("period"), "custom");
   assert.equal(query.get("from"), "123");
   assert.equal(query.get("to"), "456");
-  assert.equal(query.get("service_id"), "a & b");
+  assert.equal(query.get("provider_id"), "a & b");
   assert.equal(query.get("model"), "real/model");
   assert.equal(query.get("client_id"), "stable-client");
   assert.equal(query.has("kind"), false);

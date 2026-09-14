@@ -26,9 +26,9 @@ export const AGGREGATE_FIELDS = [
   "first_text_samples",
 ] as const;
 
-export type AggregateField = (typeof AGGREGATE_FIELDS)[number];
+type AggregateField = (typeof AGGREGATE_FIELDS)[number];
 export type Aggregate = Record<AggregateField, number>;
-export interface CurrencyTotal {
+interface CurrencyTotal {
   cost_nano: number;
   unpriced_count: number;
   requests_count: number;

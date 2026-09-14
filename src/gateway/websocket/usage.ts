@@ -2,7 +2,7 @@ import { logWarn } from "../../shared/log.ts";
 import { RequestMeter, type UsageSink } from "../../telemetry/meter.ts";
 import type { UsageEvent } from "../../telemetry/types.ts";
 import { record } from "../../telemetry/usage.ts";
-import type { ModelServiceTarget } from "../routing/routing.ts";
+import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { CurrentRoutingContext } from "./routing.ts";
 import type { WebSocketStorage } from "./storage.ts";
 
@@ -53,15 +53,15 @@ export class WebSocketUsage {
   async select(
     meter: RequestMeter | undefined,
     context: CurrentRoutingContext,
-    target?: ModelServiceTarget,
+    target?: ModelProviderTarget,
   ): Promise<void> {
     if (!meter || !this.meters.has(meter)) return;
     meter.configure(context.config);
     meter.authenticate(context.client.id);
     if (target)
       meter.select({
-        serviceId: target.service.id,
-        keyId: target.key.id,
+        providerId: target.provider.id,
+        credentialId: target.credential.id,
         model: target.upstreamModel,
       });
     await this.storage.checkpoint(meter.checkpoint());

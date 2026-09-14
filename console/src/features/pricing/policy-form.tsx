@@ -32,19 +32,19 @@ import { PriceHistory } from "./price-history";
 
 export function PolicyForm({
   snapshot,
-  serviceId,
+  providerId,
   model,
 }: {
   snapshot: Draft;
-  serviceId: string;
+  providerId: string;
   model: string;
 }) {
   const save = useSaveDraft();
   const [trial, setTrial] = useState<ModelPolicy | null>(null);
   const [tab, setTab] = useState("rates");
   const initial: ModelPolicy = snapshot.config.model_policies?.find(
-    (entry) => entry.service_id === serviceId && entry.model === model,
-  ) ?? { service_id: serviceId, model };
+    (entry) => entry.provider_id === providerId && entry.model === model,
+  ) ?? { provider_id: providerId, model };
   const form = useAppForm({
     ...policyFormOptions,
     defaultValues: initial,
@@ -67,10 +67,10 @@ export function PolicyForm({
           <div>
             <CardTitle>{model}</CardTitle>
             <CardDescription className="mt-1.5">
-              {serviceId} · Prices per 1 million tokens
+              {providerId} · Prices per 1 million tokens
             </CardDescription>
           </div>
-          <Badge variant="outline">Service + model</Badge>
+          <Badge variant="outline">Provider + model</Badge>
         </div>
       </CardHeader>
       <CardContent>
@@ -184,7 +184,7 @@ export function PolicyForm({
           </TabsContent>
           <TabsContent value="history">
             <PriceHistory
-              serviceId={serviceId}
+              providerId={providerId}
               model={model}
               enabled={tab === "history"}
               timeZone={snapshot.config.reporting?.time_zone}

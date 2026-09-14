@@ -15,11 +15,11 @@ import {
   type Rollup,
   type SeriesRow,
 } from "./aggregates.ts";
-export { AGGREGATE_FIELDS } from "./aggregates.ts";
-export type { Aggregate, AggregateField, SeriesRow } from "./aggregates.ts";
+
+export type { SeriesRow } from "./aggregates.ts";
 export interface ReportFilters {
-  service_id?: string;
-  key_id?: string;
+  provider_id?: string;
+  credential_id?: string;
   client_id?: string;
   model?: string;
   currency?: string;
@@ -69,8 +69,8 @@ const AGGREGATE_EXPRESSIONS = {
   first_text_samples: "CASE WHEN NEW.first_text_ms IS NULL THEN 0 ELSE 1 END",
 } as const;
 const FILTER_FIELDS = [
-  "service_id",
-  "key_id",
+  "provider_id",
+  "credential_id",
   "client_id",
   "model",
   "currency",
@@ -103,7 +103,7 @@ export async function ingestUsage(
 ): Promise<void> {
   if (event.kind !== "inference") return;
   if (
-    event.schema_version !== 1 ||
+    event.schema_version !== 2 ||
     !["started", "finished"].includes(event.phase) ||
     typeof event.request_id !== "string" ||
     !event.request_id ||
@@ -121,8 +121,8 @@ export async function ingestUsage(
     "started_at",
     "finished_at",
     "client_id",
-    "service_id",
-    "key_id",
+    "provider_id",
+    "credential_id",
     "model",
     "kind",
     "currency",
@@ -150,8 +150,8 @@ export async function ingestUsage(
     event.started_at,
     event.finished_at,
     event.client_id,
-    event.service_id,
-    event.key_id,
+    event.provider_id,
+    event.credential_id,
     event.model,
     event.kind,
     event.billing.currency,
@@ -219,7 +219,7 @@ function reportSource(range: ReportRange, filters: ReportFilters) {
       `${AGGREGATE_EXPRESSIONS[field].replaceAll("NEW.", "")} AS ${field}`,
   ).join(", ");
   const queries = [
-    `SELECT hour, currency, service_id, key_id, client_id, model, kind, ${columns}
+    `SELECT hour, currency, provider_id, credential_id, client_id, model, kind, ${columns}
      FROM usage_hourly WHERE hour >= ? AND hour < ? ${filter.sql}`,
   ];
   const values: (string | number)[] = [fullStart, fullEnd, ...filter.values];
@@ -236,7 +236,7 @@ function reportSource(range: ReportRange, filters: ReportFilters) {
     if (from >= to) continue;
     queries.push(
       `SELECT (started_at / ${HOUR_MS}) * ${HOUR_MS} AS hour, currency,
-         service_id, key_id, client_id, model, kind, ${edgeExpressions}
+         provider_id, credential_id, client_id, model, kind, ${edgeExpressions}
        FROM requests WHERE finished_at IS NOT NULL
          AND started_at >= ? AND started_at < ? ${filter.sql}`,
     );
@@ -271,7 +271,7 @@ function rankQuery(
   presentation: ReportPresentation,
 ) {
   const source = reportSource(range, filters);
-  const dimension = presentation.group_by ?? "service_id";
+  const dimension = presentation.group_by ?? "provider_id";
   const metric = presentation.sort_by ?? "requests";
   const score =
     metric === "cost"
@@ -365,7 +365,7 @@ export async function summary(
           }
         : null,
     ranking: {
-      dimension: presentation.group_by ?? "service_id",
+      dimension: presentation.group_by ?? "provider_id",
       metric: presentation.sort_by ?? "requests",
       currency: presentation.cost_currency ?? defaultCurrency(total.currencies),
       ...ranking(rankResult.results as RankRow[], total),
@@ -378,17 +378,17 @@ export async function summary(
 export async function reportDimensions(
   db: D1Database,
   range: ReportRange,
-  serviceId?: string,
+  providerId?: string,
 ) {
-  const fields = ["service_id", "model", "client_id"] as const;
+  const fields = ["provider_id", "model", "client_id"] as const;
   const statements = fields.map((field) => {
-    const selected = field === "model" && serviceId ? [serviceId] : [];
-    const service = selected.length ? " AND service_id = ?" : "";
+    const selected = field === "model" && providerId ? [providerId] : [];
+    const provider = selected.length ? " AND provider_id = ?" : "";
     return db
       .prepare(
         `SELECT DISTINCT ${field} AS value FROM (
-        SELECT ${field} FROM usage_hourly WHERE kind = 'inference' AND hour >= ? AND hour < ? ${service}
-        UNION ALL SELECT ${field} FROM requests WHERE kind = 'inference' AND finished_at IS NULL AND started_at >= ? AND started_at < ? ${service}
+        SELECT ${field} FROM usage_hourly WHERE kind = 'inference' AND hour >= ? AND hour < ? ${provider}
+        UNION ALL SELECT ${field} FROM requests WHERE kind = 'inference' AND finished_at IS NULL AND started_at >= ? AND started_at < ? ${provider}
       ) WHERE ${field} <> '' ORDER BY value`,
       )
       .bind(
@@ -402,14 +402,14 @@ export async function reportDimensions(
   });
   const result = await db.batch<{ value: string }>(statements);
   return {
-    services: result[0].results.map((row) => row.value),
+    providers: result[0].results.map((row) => row.value),
     models: result[1].results.map((row) => row.value),
     clients: result[2].results.map((row) => row.value),
   };
 }
 
 function parseUsageEvent(json: string): UsageEvent {
-  // These rows contain UsageEvents serialized by ingestUsage. Version 1 rows
+  // These rows contain UsageEvents serialized by ingestUsage. Older rows
   // written before first-response metering omit the new field.
   const event = JSON.parse(json) as UsageEvent;
   event.first_response_ms = firstResponseLatency(event.first_response_ms);

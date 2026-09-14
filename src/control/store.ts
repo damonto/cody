@@ -30,7 +30,7 @@ export class ControlInputError extends Error {
 
 function initialConfig(): unknown {
   return {
-    services: [],
+    providers: [],
     api_keys: [],
     model_routes: {},
     web_search: { mode: "proxy" },
@@ -48,7 +48,7 @@ function entries(value: unknown): Record<string, unknown>[] {
     : [];
 }
 
-/** Preserve secrets by stable service/key/client IDs, never by array position. */
+/** Preserve secrets by stable provider/credential/client IDs, never by array position. */
 export function restoreSecrets(value: unknown, previous: unknown): unknown {
   const restored: unknown = structuredClone(value);
   const input = record(restored);
@@ -76,16 +76,23 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
     const proxy = record(entry.proxy);
     if (proxy) restore(proxy, record(existing?.proxy), "password");
   };
-  for (const service of entries(input.services)) {
-    const existing = entries(old?.services).find(
-      (item) => item.id === service.id,
+  for (const provider of entries(input.providers)) {
+    const existing = entries(old?.providers).find(
+      (item) => item.id === provider.id,
     );
-    restoreProxy(service, existing);
-    for (const credential of entries(service.keys)) {
-      const oldCredential = entries(existing?.keys).find(
+    if (existing && existing.type !== provider.type)
+      throw new ControlInputError(
+        "A provider's type cannot be changed; create a new provider",
+      );
+    restoreProxy(provider, existing);
+    for (const credential of entries(provider.credentials)) {
+      const oldCredential = entries(existing?.credentials).find(
         (item) => item.id === credential.id,
       );
-      restore(credential, oldCredential);
+      const auth = record(credential.auth);
+      const oldAuth = record(oldCredential?.auth);
+      if (auth)
+        restore(auth, auth.type === oldAuth?.type ? oldAuth : undefined);
       restoreProxy(credential, oldCredential);
     }
   }
@@ -248,12 +255,12 @@ export class ControlStore {
     const policies = (config.model_policies ?? []).map((policy) =>
       this.db
         .prepare(
-          "INSERT OR IGNORE INTO pricing_versions (id, revision, service_id, model, policy_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT OR IGNORE INTO pricing_versions (id, revision, provider_id, model, policy_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(
-          priceVersion(id, policy.service_id, policy.model),
+          priceVersion(id, policy.provider_id, policy.model),
           id,
-          policy.service_id,
+          policy.provider_id,
           policy.model,
           JSON.stringify(policy),
           now,

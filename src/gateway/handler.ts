@@ -156,8 +156,8 @@ export function gatewayHandler(
 
     requestLog.set({
       authentication: "accepted",
-      client_key_id: client.id,
-      allowed_services: [...client.services],
+      client_id: client.id,
+      allowed_providers: [...client.providers],
     });
 
     try {

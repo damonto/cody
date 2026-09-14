@@ -23,9 +23,9 @@ export const pricingRoutes = new Hono<AdminContext>()
   .get("/history", validate("query", priceHistoryQuerySchema), async (c) => {
     const query = c.req.valid("query");
     const result = await c.env.CODY_DB.prepare(
-      "SELECT id, revision, policy_json, created_at FROM pricing_versions WHERE service_id = ? AND model = ? ORDER BY revision DESC LIMIT 100",
+      "SELECT id, revision, policy_json, created_at FROM pricing_versions WHERE provider_id = ? AND model = ? ORDER BY revision DESC LIMIT 100",
     )
-      .bind(query.service_id, query.model)
+      .bind(query.provider_id, query.model)
       .all<PriceRow>();
     return c.json({ items: result.results.map(priceView) });
   })

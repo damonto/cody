@@ -6,28 +6,12 @@ import {
   resolveStoredAffinity,
   SESSION_AFFINITY_TTL_MS,
   type AffinitySelection,
-  type AffinityServiceCandidate,
+  type AffinityProviderCandidate,
   type SessionAffinityRecord,
   type SessionAffinityRegistration,
   type SessionAffinityResolution,
 } from "../routing/affinity.ts";
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
-
-export {
-  affinityObjectName,
-  chooseAffinityCandidate,
-  SESSION_AFFINITY_TTL_MS,
-} from "../routing/affinity.ts";
-export type {
-  AffinityKeyCandidate,
-  AffinityRandomSource,
-  AffinitySelection,
-  AffinityServiceCandidate,
-  SessionAffinityIdentity,
-  SessionAffinityRecord,
-  SessionAffinityRegistration,
-  SessionAffinityResolution,
-} from "../routing/affinity.ts";
 
 const AFFINITY_STORAGE_KEY = "affinity";
 const CONTEXT_OWNER_STORAGE_KEY = "context_owner";
@@ -47,9 +31,9 @@ interface ContextOwnerRecord {
   client_id: string;
 }
 
-export interface SessionAffinityResolveOptions {
+interface SessionAffinityResolveOptions {
   contextManagement?: boolean;
-  initialServiceIds?: readonly string[];
+  initialProviderIds?: readonly string[];
 }
 
 function validGeneration(value: unknown): value is number {
@@ -62,10 +46,10 @@ function validRecord(value: unknown): value is SessionAffinityRecord {
   }
   const record = value as Partial<SessionAffinityRecord>;
   return (
-    typeof record.service_id === "string" &&
-    record.service_id.trim() !== "" &&
-    typeof record.key_id === "string" &&
-    record.key_id.trim() !== "" &&
+    typeof record.provider_id === "string" &&
+    record.provider_id.trim() !== "" &&
+    typeof record.credential_id === "string" &&
+    record.credential_id.trim() !== "" &&
     typeof record.updated_at === "number" &&
     Number.isSafeInteger(record.updated_at) &&
     record.updated_at >= 0 &&
@@ -122,13 +106,13 @@ export class SessionAffinity extends DurableObject<Env> {
   }
 
   async resolve(
-    candidates: AffinityServiceCandidate[],
+    candidates: AffinityProviderCandidate[],
     preferred: AffinitySelection | undefined,
     registration: SessionAffinityRegistration,
     options: SessionAffinityResolveOptions = {},
   ): Promise<SessionAffinityResolution | undefined> {
     const contextManagement = options.contextManagement === true;
-    const initialServiceIds = options.initialServiceIds;
+    const initialProviderIds = options.initialProviderIds;
     if (contextManagement) {
       candidates = candidates.filter(
         (candidate) => candidate.supports_context_management,
@@ -151,12 +135,14 @@ export class SessionAffinity extends DurableObject<Env> {
           stored.updated_at + SESSION_AFFINITY_TTL_MS > now;
         if (storedActive) {
           if (stored.context_management || contextManagement) {
-            const service = candidates.find(
-              (candidate) => candidate.service_id === stored.service_id,
+            const provider = candidates.find(
+              (candidate) => candidate.provider_id === stored.provider_id,
             );
             if (
-              !service?.supports_context_management ||
-              !service.keys.some((key) => key.key_id === stored.key_id)
+              !provider?.supports_context_management ||
+              !provider.credentials.some(
+                (key) => key.credential_id === stored.credential_id,
+              )
             ) {
               return { resolution: { ...stored, status: "blocked" as const } };
             }
@@ -197,10 +183,10 @@ export class SessionAffinity extends DurableObject<Env> {
         }
 
         const initialCandidates =
-          initialServiceIds === undefined
+          initialProviderIds === undefined
             ? candidates
             : candidates.filter((candidate) =>
-                initialServiceIds.includes(candidate.service_id),
+                initialProviderIds.includes(candidate.provider_id),
               );
         const selected = affinitySelectionIsHighestPriority(
           preferred,

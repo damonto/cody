@@ -1,24 +1,26 @@
 import { discardBody, readBodyWithinLimit } from "../http/body.ts";
-import { createUpstreamFetch, type UpstreamFetch } from "../transport/index.ts";
+import type { UpstreamFetch } from "../transport/index.ts";
+import {
+  prepareProviderRequest,
+  providerSupportsEndpoint,
+} from "../../providers/index.ts";
 import {
   mapWithConcurrency,
-  SERVICE_FAN_OUT_CONCURRENCY,
+  PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   healthFailureScope,
-  recordKeyFailure,
-  recordServiceFailure,
-  recordServiceSuccess,
+  recordCredentialFailure,
+  recordProviderFailure,
+  recordProviderSuccess,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "../health/health.ts";
 import {
   apiError,
-  forwardRequestHeaders,
   jsonResponse,
   shouldStripRequestHeader,
-  upstreamUrl,
 } from "../http/http.ts";
 import {
   elapsedMs,
@@ -29,17 +31,17 @@ import {
 import codexCatalog from "./models.json" with { type: "json" };
 import { requestProtocol } from "../protocol.ts";
 import {
-  allowedServiceCandidates,
-  modelRoutesByService,
+  allowedProviderCandidates,
+  modelRoutesByProvider,
   selectAvailableCatalogTargetsWithDetails,
-  type RoutedService,
-  type ServiceTarget,
+  type RoutedProvider,
+  type ProviderTarget,
 } from "../routing/routing.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ModelRouteConfig,
-  ServiceConfig,
+  ProviderConfig,
 } from "../../config/types.ts";
 import {
   hasJsonUpstreamError,
@@ -47,11 +49,11 @@ import {
   upstreamResponseLogFields,
 } from "../http/upstream-log.ts";
 
-export const MODEL_CATALOG_TIMEOUT_MS = 3_000;
+const MODEL_CATALOG_TIMEOUT_MS = 3_000;
 export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
-export const MODEL_CATALOG_CONCURRENCY = SERVICE_FAN_OUT_CONCURRENCY;
-export const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
-export const MAX_MODELS_CACHE_TTL_SECONDS = 300;
+export const MODEL_CATALOG_CONCURRENCY = PROVIDER_FAN_OUT_CONCURRENCY;
+const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
+const MAX_MODELS_CACHE_TTL_SECONDS = 300;
 
 export type ModelsFormat = "openai" | "codex" | "anthropic";
 
@@ -62,8 +64,8 @@ interface UpstreamModel {
   raw: JsonObject;
 }
 
-interface ServiceModelsResult {
-  service: ServiceConfig;
+interface ProviderModelsResult {
+  provider: ProviderConfig;
   success: boolean;
   models: UpstreamModel[];
   upstream?: LogFields;
@@ -164,9 +166,7 @@ function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function parseUpstreamModels(
-  value: unknown,
-): UpstreamModel[] | undefined {
+function parseUpstreamModels(value: unknown): UpstreamModel[] | undefined {
   if (!isObject(value)) {
     return undefined;
   }
@@ -253,38 +253,41 @@ async function fetchCatalogResponse(
   }
 }
 
-async function fetchServiceModels(
+async function fetchProviderModels(
   request: Request,
   env: Env,
-  target: ServiceTarget,
+  target: ProviderTarget,
   requestId: string,
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
-): Promise<ServiceModelsResult> {
-  const { service, key } = target;
-  const incomingUrl = new URL(request.url);
-  const headers = forwardRequestHeaders(request, key.api_key);
+): Promise<ProviderModelsResult> {
+  const { provider, credential: key } = target;
   // /v1/models is dialect-neutral, so this resolves from the client's identity.
-  // A service may serve either dialect, so it cannot declare one.
+  // A provider may serve either dialect, so it cannot declare one.
   const protocol = requestProtocol(request, "models");
   const startedAt = performance.now();
 
   try {
+    const prepared = await prepareProviderRequest(provider, key, {
+      request,
+      endpoint: "models",
+      transport: "http",
+    });
     const result = await fetchCatalogResponse(
-      upstreamUrl(service, "models", incomingUrl.search),
+      prepared.url,
       {
         method: "GET",
-        headers,
+        headers: prepared.headers,
         redirect: "manual",
         signal: request.signal,
       },
-      createUpstreamFetch(service, key),
+      prepared.send,
     );
     const durationMs = elapsedMs(startedAt);
     if (!result.response.ok) {
       const upstream = {
-        service_id: service.id,
-        key_id: key.id,
+        provider_id: provider.id,
+        credential_id: key.id,
         outcome: "http_error",
         duration_ms: durationMs,
         ...upstreamErrorStatusFields(result.response),
@@ -297,19 +300,25 @@ async function fetchServiceModels(
         await discardBody(result.response.body);
       }
       const failureScope = healthFailureScope(result.response.status, protocol);
-      if (failureScope === "service") {
+      if (failureScope === "provider") {
         await scheduleHealthUpdate(
           context,
-          recordServiceFailure(env, service.id, requestId, "catalog"),
+          recordProviderFailure(env, provider.id, requestId, "catalog"),
         );
-      } else if (failureScope === "key") {
+      } else if (failureScope === "credential") {
         await scheduleHealthUpdate(
           context,
-          recordKeyFailure(env, service.id, key.id, requestId, "catalog"),
+          recordCredentialFailure(
+            env,
+            provider.id,
+            key.id,
+            requestId,
+            "catalog",
+          ),
         );
       }
       return {
-        service,
+        provider,
         success: false,
         models: [],
         upstream,
@@ -319,34 +328,34 @@ async function fetchServiceModels(
     const models = parseUpstreamModels(result.body);
     if (!models) {
       const upstream = {
-        service_id: service.id,
-        key_id: key.id,
+        provider_id: provider.id,
+        credential_id: key.id,
         outcome: "invalid_response",
         duration_ms: durationMs,
         ...upstreamErrorStatusFields(result.response),
       };
       await scheduleHealthUpdate(
         context,
-        recordServiceFailure(env, service.id, requestId, "catalog"),
+        recordProviderFailure(env, provider.id, requestId, "catalog"),
       );
-      return { service, success: false, models: [], upstream };
+      return { provider, success: false, models: [], upstream };
     }
     const filteredModels = models.filter((model) =>
-      service.models.includes(model.id),
+      provider.models.includes(model.id),
     );
     await scheduleHealthUpdate(
       context,
-      recordServiceSuccess(env, service.id, requestId, "catalog"),
+      recordProviderSuccess(env, provider.id, requestId, "catalog"),
     );
     return {
-      service,
+      provider,
       success: true,
       models: filteredModels,
     };
   } catch (error) {
     const upstream = {
-      service_id: service.id,
-      key_id: key.id,
+      provider_id: provider.id,
+      credential_id: key.id,
       outcome: request.signal.aborted ? "cancelled" : "exception",
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
@@ -354,10 +363,10 @@ async function fetchServiceModels(
     if (!request.signal.aborted) {
       await scheduleHealthUpdate(
         context,
-        recordServiceFailure(env, service.id, requestId, "catalog"),
+        recordProviderFailure(env, provider.id, requestId, "catalog"),
       );
     }
-    return { service, success: false, models: [], upstream };
+    return { provider, success: false, models: [], upstream };
   }
 }
 
@@ -370,18 +379,18 @@ function standardModel(raw: JsonObject, id: string): JsonObject {
 }
 
 function exposedClientModels(
-  service: ServiceConfig,
+  provider: ProviderConfig,
   upstreamModel: string,
   routes: Record<string, ModelRouteConfig>,
 ): string[] {
-  if (!service.models.includes(upstreamModel)) {
+  if (!provider.models.includes(upstreamModel)) {
     return [];
   }
   const ids = Object.hasOwn(routes, upstreamModel) ? [] : [upstreamModel];
   for (const [clientModel, route] of Object.entries(routes)) {
     if (
       route.model === upstreamModel &&
-      (route.services === undefined || route.services.includes(service.id))
+      (route.providers === undefined || route.providers.includes(provider.id))
     ) {
       ids.push(clientModel);
     }
@@ -390,8 +399,8 @@ function exposedClientModels(
 }
 
 export function aggregateStandardModels(
-  results: ServiceModelsResult[],
-  routesByService: Map<string, Record<string, ModelRouteConfig>>,
+  results: ProviderModelsResult[],
+  routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
 ): JsonObject[] {
   const merged = new Map<string, JsonObject>();
 
@@ -401,9 +410,9 @@ export function aggregateStandardModels(
     }
     for (const model of result.models) {
       const clientModels = exposedClientModels(
-        result.service,
+        result.provider,
         model.id,
-        routesByService.get(result.service.id) ?? {},
+        routesByProvider.get(result.provider.id) ?? {},
       );
       for (const clientModel of clientModels) {
         if (clientModel === "codex-auto-review") {
@@ -420,8 +429,8 @@ export function aggregateStandardModels(
 
 function codexModelIds(
   standardModels: JsonObject[],
-  results: ServiceModelsResult[],
-  routesByService: Map<string, Record<string, ModelRouteConfig>>,
+  results: ProviderModelsResult[],
+  routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
 ): Set<string> {
   const ids = new Set(
     standardModels
@@ -434,9 +443,9 @@ function codexModelIds(
     }
     for (const model of result.models) {
       for (const clientModel of exposedClientModels(
-        result.service,
+        result.provider,
         model.id,
-        routesByService.get(result.service.id) ?? {},
+        routesByProvider.get(result.provider.id) ?? {},
       )) {
         ids.add(clientModel);
       }
@@ -480,7 +489,7 @@ export function aggregateCodexModels(
     });
 }
 
-export function isCodexUserAgent(request: Request): boolean {
+function isCodexUserAgent(request: Request): boolean {
   return (
     request.headers.get("user-agent")?.toLowerCase().includes("codex") ?? false
   );
@@ -638,7 +647,7 @@ async function modelsCacheKey(
   format: ModelsFormat,
 ): Promise<string> {
   const url = new URL(request.url);
-  const serviceIds = [...client.services].sort().join(",");
+  const providerIds = [...client.providers].sort().join(",");
   const vary = [
     JSON.stringify(config),
     format,
@@ -646,7 +655,7 @@ async function modelsCacheKey(
       ? "models"
       : url.pathname,
     url.search,
-    serviceIds,
+    providerIds,
     client.id,
     requestHeaderVary(request),
   ].join("\u0000");
@@ -662,7 +671,7 @@ async function collectModels(
   env: Env,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
-  configuredTargets: RoutedService[],
+  configuredTargets: RoutedProvider[],
   format: ModelsFormat,
   requestId: string,
   context?: HealthExecutionContext,
@@ -674,28 +683,30 @@ async function collectModels(
   );
   const available = selection.targets;
   const routing = {
-    checked_available_services: available.map((entry) => entry.service.id),
-    selected_keys: available.map(({ service, key }) => ({
-      service_id: service.id,
-      key_id: key.id,
+    checked_available_providers: available.map((entry) => entry.provider.id),
+    selected_credentials: available.map(({ provider, credential: key }) => ({
+      provider_id: provider.id,
+      credential_id: key.id,
     })),
-    service_checks: selection.checks,
-    key_checks: selection.keyChecks,
+    provider_checks: selection.checks,
+    credential_checks: selection.credentialChecks,
   };
   requestLog?.mergeSection("routing", routing);
   if (
     selection.checks.some((entry) => entry.reason === "health_read_failed") ||
-    selection.keyChecks.some((entry) => entry.reason === "health_read_failed")
+    selection.credentialChecks.some(
+      (entry) => entry.reason === "health_read_failed",
+    )
   ) {
     requestLog?.warn();
   }
   if (available.length === 0) {
-    requestLog?.warn({ outcome: "service_cooling_down" });
+    requestLog?.warn({ outcome: "provider_cooling_down" });
     throw new ModelsRequestError(
       503,
-      "No healthy service is currently available",
+      "No healthy provider is currently available",
       "server_error",
-      "service_cooling_down",
+      "provider_cooling_down",
     );
   }
 
@@ -703,7 +714,7 @@ async function collectModels(
     available,
     MODEL_CATALOG_CONCURRENCY,
     (target) =>
-      fetchServiceModels(request, env, target, requestId, context, requestLog),
+      fetchProviderModels(request, env, target, requestId, context, requestLog),
   );
   const upstreamErrors = results.flatMap((result) =>
     !result.success && result.upstream ? [result.upstream] : [],
@@ -739,12 +750,12 @@ async function collectModels(
     );
   }
 
-  const routesByService = modelRoutesByService(config, client);
-  const standardModels = aggregateStandardModels(results, routesByService);
+  const routesByProvider = modelRoutesByProvider(config, client);
+  const standardModels = aggregateStandardModels(results, routesByProvider);
   const payload = modelsPayload(
     standardModels,
     results,
-    routesByService,
+    routesByProvider,
     format,
   );
   return {
@@ -755,21 +766,21 @@ async function collectModels(
 
 function modelsPayload(
   standardModels: JsonObject[],
-  results: ServiceModelsResult[],
-  routesByService: Map<string, Record<string, ModelRouteConfig>>,
+  results: ProviderModelsResult[],
+  routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
   format: ModelsFormat,
 ): JsonObject {
   switch (format) {
     case "codex":
       return {
         models: aggregateCodexModels(
-          codexModelIds(standardModels, results, routesByService),
+          codexModelIds(standardModels, results, routesByProvider),
           codexModelIds(
             [],
             results.filter(
-              ({ service }) => service.supports_context_management,
+              ({ provider }) => provider.supports_context_management,
             ),
-            routesByService,
+            routesByProvider,
           ),
         ),
       };
@@ -796,7 +807,9 @@ export async function handleModels(
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<Response> {
-  const configuredTargets = allowedServiceCandidates(config, client);
+  const configuredTargets = allowedProviderCandidates(config, client).filter(
+    ({ provider }) => providerSupportsEndpoint(provider, "models"),
+  );
   requestLog?.registerSensitiveValues([
     client.api_key,
     ...upstreamSecretValues(config),
@@ -805,7 +818,7 @@ export async function handleModels(
   const ttlMs = cacheTtlMs(env);
   requestLog?.set({
     routing: {
-      candidate_services: configuredTargets.map(({ service }) => service.id),
+      candidate_providers: configuredTargets.map(({ provider }) => provider.id),
     },
   });
   requestLog?.mergeSection("catalog", {

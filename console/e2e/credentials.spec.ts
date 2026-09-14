@@ -3,26 +3,26 @@ import { draftSchema } from "../../src/admin/schema";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import { draftFixture, mockApi } from "./fixtures";
 
-async function openService(page: Page) {
-  await page.goto("/console/services");
+async function openProvider(page: Page) {
+  await page.goto("/console/providers");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("tab", { name: "Upstream keys" }).click();
+  await dialog.getByRole("tab", { name: "Upstream credentials" }).click();
   return dialog;
 }
 
-test("saved service keys can be viewed without rotation and follow their IDs after removal", async ({
+test("saved provider credentials can be viewed without rotation and follow their IDs after removal", async ({
   page,
 }) => {
   const initial = draftFixture();
-  initial.config.services[0].keys.push({
+  initial.config.providers[0].credentials.push({
     id: "backup",
-    api_key: SECRET_PLACEHOLDER,
+    auth: { type: "api_key", api_key: SECRET_PLACEHOLDER },
     priority: 50,
     disabled: false,
   });
   const mock = await mockApi(page, initial);
-  const dialog = await openService(page);
+  const dialog = await openProvider(page);
   const inputs = dialog.getByLabel("API key", { exact: true });
   await expect(inputs.first()).toHaveValue("");
   await expect(inputs.first()).toHaveAttribute("type", "password");
@@ -31,14 +31,14 @@ test("saved service keys can be viewed without rotation and follow their IDs aft
     .first()
     .click();
   await expect(inputs.first()).toHaveValue(
-    mock.serviceKey("example-provider", "primary"),
+    mock.providerKey("example-provider", "primary"),
   );
   await dialog
     .getByRole("button", { name: "Show API key", exact: true })
     .last()
     .click();
   await expect(inputs.last()).toHaveValue(
-    mock.serviceKey("example-provider", "backup"),
+    mock.providerKey("example-provider", "backup"),
   );
   expect(mock.calls.some((call) => call.startsWith("PUT"))).toBe(false);
 
@@ -52,41 +52,41 @@ test("saved service keys can be viewed without rotation and follow their IDs aft
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
   await expect(inputs).toHaveValue(
-    mock.serviceKey("example-provider", "backup"),
+    mock.providerKey("example-provider", "backup"),
   );
   const saving = page.waitForRequest((request) => request.method() === "PUT");
-  await dialog.getByRole("button", { name: "Save service" }).click();
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   const submitted = draftSchema.parse((await saving).postDataJSON());
-  expect(submitted.config.services[0].keys).toEqual([
+  expect(submitted.config.providers[0].credentials).toEqual([
     {
       id: "backup",
-      api_key: SECRET_PLACEHOLDER,
+      auth: { type: "api_key", api_key: SECRET_PLACEHOLDER },
       priority: 50,
       disabled: false,
     },
   ]);
   await expect(dialog).toBeHidden();
-  await openService(page);
+  await openProvider(page);
   await expect(inputs).toHaveValue("");
   await dialog
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
   await expect(inputs).toHaveValue(
-    mock.serviceKey("example-provider", "backup"),
+    mock.providerKey("example-provider", "backup"),
   );
 });
 
-test("service key inputs show current manual values and newly added keys", async ({
+test("provider key inputs show current manual values and newly added credentials", async ({
   page,
 }) => {
   const mock = await mockApi(page);
-  const dialog = await openService(page);
+  const dialog = await openProvider(page);
   const inputs = dialog.getByLabel("API key", { exact: true });
   await dialog
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
   await expect(inputs).toHaveValue(
-    mock.serviceKey("example-provider", "primary"),
+    mock.providerKey("example-provider", "primary"),
   );
   await inputs.fill("manual-upstream-key");
   await dialog
@@ -97,7 +97,9 @@ test("service key inputs show current manual values and newly added keys", async
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
   await expect(inputs).toHaveValue("manual-upstream-key");
-  await dialog.getByRole("button", { name: "Add key", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Add credential", exact: true })
+    .click();
   await expect(inputs).toHaveCount(2);
   await expect(
     dialog.getByRole("button", { name: "Show API key", exact: true }),
@@ -109,30 +111,32 @@ test("service key inputs show current manual values and newly added keys", async
   await expect(inputs.last()).toHaveAttribute("type", "text");
   await expect(inputs.last()).toHaveValue("new-upstream-key");
   expect(mock.calls.filter((call) => call.includes("/reveal"))).toHaveLength(1);
-  await dialog.getByRole("button", { name: "Save service" }).click();
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(dialog).toBeHidden();
-  expect(mock.serviceKey("example-provider", "primary")).toBe(
+  expect(mock.providerKey("example-provider", "primary")).toBe(
     "manual-upstream-key",
   );
-  const added = mock.current().config.services[0].keys[1];
-  expect(mock.serviceKey("example-provider", added.id)).toBe(
+  const added = mock.current().config.providers[0].credentials[1];
+  expect(mock.providerKey("example-provider", added.id)).toBe(
     "new-upstream-key",
   );
 });
 
-test("a newer draft clears revealed service keys while preserving unsaved edits", async ({
+test("a newer draft clears revealed provider credentials while preserving unsaved edits", async ({
   page,
   context,
 }) => {
   await page.clock.install();
   const mock = await mockApi(page);
-  const dialog = await openService(page);
+  const dialog = await openProvider(page);
   const key = dialog.getByLabel("API key", { exact: true });
   await dialog
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
-  await expect(key).toHaveValue(mock.serviceKey("example-provider", "primary"));
-  await dialog.getByLabel("Key priority").fill("90");
+  await expect(key).toHaveValue(
+    mock.providerKey("example-provider", "primary"),
+  );
+  await dialog.getByLabel("Credential priority").fill("90");
   mock.current().version += 1;
   await page.clock.fastForward(31_000);
   await context.setOffline(true);
@@ -145,7 +149,7 @@ test("a newer draft clears revealed service keys while preserving unsaved edits"
     .toBeGreaterThan(1);
   await expect(key).toHaveValue("");
   await expect(key).toHaveAttribute("type", "password");
-  await expect(dialog.getByLabel("Key priority")).toHaveValue("90");
+  await expect(dialog.getByLabel("Credential priority")).toHaveValue("90");
   await dialog
     .getByRole("button", { name: "Show API key", exact: true })
     .click();
@@ -155,8 +159,46 @@ test("a newer draft clears revealed service keys while preserving unsaved edits"
   await expect(key).toHaveValue("");
 });
 
+test("credential rows keep identity while editing IDs and removing other rows", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  const dialog = await openProvider(page);
+  await dialog
+    .getByRole("button", { name: "Add credential", exact: true })
+    .click();
+  const id = dialog.getByLabel("Credential ID", { exact: true }).last();
+  await id.fill("");
+  await id.pressSequentially("replacement");
+  await expect(id).toHaveValue("replacement");
+  await expect(id).toBeFocused();
+  await dialog
+    .getByLabel("API key", { exact: true })
+    .last()
+    .fill("new-upstream-secret");
+  await dialog.getByLabel("Credential priority").last().fill("73");
+  await dialog
+    .getByRole("button", { name: "Remove credential 1", exact: true })
+    .click();
+  await expect(id).toHaveValue("replacement");
+  await expect(dialog.getByLabel("Credential priority")).toHaveValue("73");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(dialog).toBeHidden();
+  expect(mock.current().config.providers[0].credentials).toEqual([
+    {
+      id: "replacement",
+      auth: { type: "api_key", api_key: SECRET_PLACEHOLDER },
+      priority: 73,
+      disabled: false,
+    },
+  ]);
+  expect(mock.providerKey("example-provider", "replacement")).toBe(
+    "new-upstream-secret",
+  );
+});
+
 for (const mode of ["tavily", "exa"] as const) {
-  test(`${mode} search keys can be viewed, hidden, and saved without rotation`, async ({
+  test(`${mode} search credentials can be viewed, hidden, and saved without rotation`, async ({
     page,
   }) => {
     const initial = draftFixture();

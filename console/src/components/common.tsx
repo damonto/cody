@@ -12,7 +12,6 @@ import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -105,34 +104,7 @@ export function Empty({
     </div>
   );
 }
-export function Metric({
-  title,
-  value,
-  hint,
-  icon,
-}: {
-  title: string;
-  value: ReactNode;
-  hint: string;
-  icon: ReactNode;
-}) {
-  return (
-    <Card className="shadow-none">
-      <CardContent className="p-5">
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          {title}
-          <span className="rounded-md bg-muted p-1.5 [&>svg]:size-4">
-            {icon}
-          </span>
-        </div>
-        <div className="mt-4 text-3xl font-semibold tracking-tight tabular-nums">
-          {value}
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">{hint}</p>
-      </CardContent>
-    </Card>
-  );
-}
+
 export function Status({ value }: { value: string }) {
   return (
     <Badge

@@ -33,9 +33,9 @@ function routesFor(
   config: GatewayConfig,
   scope: string,
 ): Record<string, ModelRouteConfig> {
-  if (scope.startsWith("service:"))
+  if (scope.startsWith("provider:"))
     return (
-      config.services.find((service) => service.id === scope.slice(8))
+      config.providers.find((provider) => provider.id === scope.slice(8))
         ?.model_routes ?? {}
     );
   if (scope.startsWith("client:"))
@@ -50,11 +50,11 @@ function setRoutes(
   scope: string,
   routes: Record<string, ModelRouteConfig>,
 ) {
-  if (scope.startsWith("service:")) {
-    const service = config.services.find(
+  if (scope.startsWith("provider:")) {
+    const provider = config.providers.find(
       (entry) => entry.id === scope.slice(8),
     );
-    if (service) service.model_routes = routes;
+    if (provider) provider.model_routes = routes;
   } else if (scope.startsWith("client:")) {
     const client = config.api_keys.find((entry) => entry.id === scope.slice(7));
     if (client) client.model_routes = routes;
@@ -77,9 +77,9 @@ export default function Routing() {
   const config = draft.data.config;
   const choices = [
     { value: "global", label: "Global routes" },
-    ...config.services.map((service) => ({
-      value: `service:${service.id}`,
-      label: `Service · ${service.id}`,
+    ...config.providers.map((provider) => ({
+      value: `provider:${provider.id}`,
+      label: `Provider · ${provider.id}`,
     })),
     ...config.api_keys.map((client) => ({
       value: `client:${client.id}`,
@@ -99,7 +99,7 @@ export default function Routing() {
         description="Map client-facing model names to real upstream models."
       >
         <Button
-          disabled={!config.services.length}
+          disabled={!config.providers.length}
           onClick={() =>
             setEditor({
               snapshot: structuredClone(draft.data),
@@ -120,7 +120,7 @@ export default function Routing() {
           options={choices}
         />
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Badge variant="outline">Service</Badge>
+          <Badge variant="outline">Provider</Badge>
           <ArrowRight className="size-3" />
           <Badge variant="outline">Client</Badge>
           <ArrowRight className="size-3" />
@@ -159,14 +159,14 @@ export default function Routing() {
                 ),
               },
               {
-                id: "services",
-                header: "Service restriction",
+                id: "providers",
+                header: "Provider restriction",
                 cell: ({ row }) => (
                   <span className="text-sm text-muted-foreground">
-                    {selected.startsWith("service:")
+                    {selected.startsWith("provider:")
                       ? selected.slice(8)
-                      : (row.original.services?.join(", ") ??
-                        "Any permitted service")}
+                      : (row.original.providers?.join(", ") ??
+                        "Any permitted provider")}
                   </span>
                 ),
               },
@@ -214,13 +214,13 @@ export default function Routing() {
         ) : (
           <Empty title="No routes in this scope">
             Clients can use real model names directly. Add a route to introduce
-            an alias or pin the permitted upstream services.
+            an alias or pin the permitted upstream providers.
           </Empty>
         )}
       </Card>
       <p className="text-xs text-muted-foreground">
         Route restrictions are intersected with the authenticated client’s
-        allowed services.
+        allowed providers.
       </p>
       <Dialog
         open={editor !== null}
@@ -234,7 +234,7 @@ export default function Routing() {
               {editor?.alias ? "Edit model route" : "Add model route"}
             </DialogTitle>
             <DialogDescription>
-              Use only model names declared by the target upstream service.
+              Use only model names declared by the target upstream provider.
             </DialogDescription>
           </DialogHeader>
           {editor && <RouteForm {...editor} close={() => setEditor(null)} />}
@@ -256,23 +256,23 @@ function RouteForm({
 }) {
   const save = useSaveDraft();
   const existing = routesFor(snapshot.config, scope)[alias];
-  const availableServices = scope.startsWith("service:")
-    ? snapshot.config.services.filter((entry) => entry.id === scope.slice(8))
+  const availableProviders = scope.startsWith("provider:")
+    ? snapshot.config.providers.filter((entry) => entry.id === scope.slice(8))
     : scope.startsWith("client:")
-      ? snapshot.config.services.filter((entry) =>
+      ? snapshot.config.providers.filter((entry) =>
           snapshot.config.api_keys
             .find((client) => client.id === scope.slice(7))
-            ?.services.includes(entry.id),
+            ?.providers.includes(entry.id),
         )
-      : snapshot.config.services;
+      : snapshot.config.providers;
   const models = [
-    ...new Set(availableServices.flatMap((service) => service.models)),
+    ...new Set(availableProviders.flatMap((provider) => provider.models)),
   ];
   const form = useAppForm({
     defaultValues: {
       alias,
       model: existing?.model ?? models[0] ?? "",
-      services: existing?.services ?? [],
+      providers: existing?.providers ?? [],
     },
     validators: { onSubmit: routeFormSchema },
     onSubmit: async ({ value }) => {
@@ -285,8 +285,8 @@ function RouteForm({
       }
       routes[parsed.alias] = {
         model: parsed.model,
-        ...(!scope.startsWith("service:") && parsed.services.length
-          ? { services: parsed.services }
+        ...(!scope.startsWith("provider:") && parsed.providers.length
+          ? { providers: parsed.providers }
           : {}),
       };
       setRoutes(next, scope, routes);
@@ -324,44 +324,44 @@ function RouteForm({
               value={field.state.value}
               onChange={(value) => {
                 field.handleChange(value);
-                form.setFieldValue("services", []);
+                form.setFieldValue("providers", []);
               }}
               options={models.map((model) => ({ value: model, label: model }))}
             />
           </Field>
         )}
       </form.AppField>
-      {!scope.startsWith("service:") && (
+      {!scope.startsWith("provider:") && (
         <form.Subscribe selector={(state) => state.values.model}>
           {(model) => (
-            <form.AppField name="services">
+            <form.AppField name="providers">
               {(field) => (
                 <Field>
-                  <FieldLabel>Restrict to services</FieldLabel>
+                  <FieldLabel>Restrict to providers</FieldLabel>
                   <p className="text-xs text-muted-foreground">
-                    Leave all unchecked to allow any permitted service
+                    Leave all unchecked to allow any permitted provider
                     supporting this model.
                   </p>
-                  {availableServices
-                    .filter((service) => service.models.includes(model))
-                    .map((service) => (
+                  {availableProviders
+                    .filter((provider) => provider.models.includes(model))
+                    .map((provider) => (
                       <label
-                        key={service.id}
+                        key={provider.id}
                         className="flex items-center gap-3 rounded-lg border p-3 text-sm"
                       >
                         <Checkbox
-                          checked={field.state.value.includes(service.id)}
+                          checked={field.state.value.includes(provider.id)}
                           onCheckedChange={(checked) =>
                             field.handleChange(
                               checked === true
-                                ? [...field.state.value, service.id]
+                                ? [...field.state.value, provider.id]
                                 : field.state.value.filter(
-                                    (id) => id !== service.id,
+                                    (id) => id !== provider.id,
                                   ),
                             )
                           }
                         />
-                        {service.id}
+                        {provider.id}
                       </label>
                     ))}
                 </Field>

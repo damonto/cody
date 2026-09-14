@@ -21,11 +21,11 @@ export function parseReporting(value: unknown): ReportingConfig {
 
 export function parseModelPolicies(
   value: unknown,
-  services: readonly { id: string; models: string[] }[],
+  providers: readonly { id: string; models: string[] }[],
 ): ModelPolicy[] {
   return modelPoliciesSchema
     .superRefine((policies, context) =>
-      validateModelPolicyReferences(policies, services, context),
+      validateModelPolicyReferences(policies, providers, context),
     )
     .parse(value === undefined ? [] : value);
 }

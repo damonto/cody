@@ -43,7 +43,7 @@ export const priceTierSchema = z.strictObject({
   cache_write_1h: rateSchema.optional(),
 });
 
-export const pricingSchema = z.strictObject({
+const pricingSchema = z.strictObject({
   currency: z
     .string()
     .regex(/^[A-Z]{3}$/, "Use a three-letter uppercase currency code"),
@@ -76,7 +76,7 @@ export const pricingSchema = z.strictObject({
 });
 
 export const modelPolicySchema = z.strictObject({
-  service_id: z.string().trim().min(1),
+  provider_id: z.string().trim().min(1),
   model: z.string().trim().min(1),
   context_window: tokenCountSchema.positive().optional(),
   pricing: pricingSchema.optional(),
@@ -87,12 +87,12 @@ export const modelPoliciesSchema = z
   .superRefine((policies, context) => {
     const seen = new Set<string>();
     for (const [index, policy] of policies.entries()) {
-      const key = JSON.stringify([policy.service_id, policy.model]);
+      const key = JSON.stringify([policy.provider_id, policy.model]);
       if (seen.has(key))
         context.addIssue({
           code: "custom",
           path: [index],
-          message: "This duplicates a service/model policy",
+          message: "This duplicates a provider/model policy",
         });
       seen.add(key);
     }
@@ -100,19 +100,19 @@ export const modelPoliciesSchema = z
 
 export function validateModelPolicyReferences(
   policies: z.output<typeof modelPoliciesSchema>,
-  services: readonly { id: string; models: string[] }[],
+  providers: readonly { id: string; models: string[] }[],
   context: z.RefinementCtx,
 ): void {
   const models = new Map(
-    services.map((service) => [service.id, service.models]),
+    providers.map((provider) => [provider.id, provider.models]),
   );
   for (const [index, policy] of policies.entries()) {
-    if (!models.get(policy.service_id)?.includes(policy.model)) {
+    if (!models.get(policy.provider_id)?.includes(policy.model)) {
       context.addIssue({
         code: "custom",
         path: ["model_policies", index],
         message:
-          "must reference a declared service and one of its real upstream models",
+          "must reference a declared provider and one of its real upstream models",
       });
     }
   }

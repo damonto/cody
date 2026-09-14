@@ -1,6 +1,6 @@
 import {
   mapWithConcurrency,
-  SERVICE_FAN_OUT_CONCURRENCY,
+  PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import {
   affinityObjectNameFromDigests,
@@ -16,13 +16,13 @@ import type { RequestLogContext } from "../../shared/log.ts";
 import type { ClientApiKeyConfig } from "../../config/types.ts";
 import type { SessionAffinityIndexEntry } from "./session-affinity-index.ts";
 
-export const SESSION_LIST_DEFAULT_LIMIT = 100;
-export const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
+const SESSION_LIST_DEFAULT_LIMIT = 100;
+const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
 
 interface SessionBindingView {
   session_id: string;
-  service_id: string;
-  key_id: string;
+  provider_id: string;
+  credential_id: string;
   created_at: number;
   updated_at: number;
   expires_at: number;
@@ -125,17 +125,17 @@ function sessionView(
     typeof status.updated_at !== "number" ||
     !Number.isSafeInteger(status.updated_at) ||
     status.updated_at < 0 ||
-    typeof status.service_id !== "string" ||
-    status.service_id.length === 0 ||
-    typeof status.key_id !== "string" ||
-    status.key_id.length === 0
+    typeof status.provider_id !== "string" ||
+    status.provider_id.length === 0 ||
+    typeof status.credential_id !== "string" ||
+    status.credential_id.length === 0
   ) {
     return undefined;
   }
   return {
     session_id: entry.session_id,
-    service_id: status.service_id,
-    key_id: status.key_id,
+    provider_id: status.provider_id,
+    credential_id: status.credential_id,
     created_at: status.created_at,
     updated_at: status.updated_at,
     expires_at: status.updated_at + SESSION_AFFINITY_TTL_MS,
@@ -159,7 +159,7 @@ export async function handleSessionList(
   const page = await index.listPage(cursor, limit);
   const entries = await mapWithConcurrency(
     page.data,
-    SERVICE_FAN_OUT_CONCURRENCY,
+    PROVIDER_FAN_OUT_CONCURRENCY,
     async (entry) => {
       const status = await sessionAffinity(
         env,
@@ -248,7 +248,7 @@ export async function handleSessionClearAll(
     const page = await index.listPage(cursor, SESSION_LIST_MAX_LIMIT);
     const cleared = await mapWithConcurrency(
       page.data,
-      SERVICE_FAN_OUT_CONCURRENCY,
+      PROVIDER_FAN_OUT_CONCURRENCY,
       (entry) => clearIndexedEntry(env, registryName, entry),
     );
     deleted += cleared.filter(Boolean).length;

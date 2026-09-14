@@ -1,64 +1,67 @@
 import {
   chooseAffinityCandidate,
   sessionAffinityIdentity,
-  type AffinityRandomSource,
-  type AffinityServiceCandidate,
+  type AffinityProviderCandidate,
 } from "./affinity.ts";
 import {
   mapWithConcurrency,
-  SERVICE_FAN_OUT_CONCURRENCY,
+  PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import {
-  getKeyAvailability,
-  getServiceAvailability,
+  getCredentialAvailability,
+  getProviderAvailability,
   type HealthScope,
-  type ServiceAvailability,
+  type ProviderAvailability,
 } from "../health/health.ts";
 import { errorMessage } from "../../shared/log.ts";
-import { randomEntry } from "../../shared/random.ts";
+import { providerSupportsEndpoint } from "../../providers/index.ts";
+import type {
+  ProviderEndpoint,
+  ProviderTransport,
+} from "../../providers/types.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ModelRouteConfig,
-  ServiceApiKeyConfig,
-  ServiceConfig,
+  ProviderCredentialConfig,
+  ProviderConfig,
 } from "../../config/types.ts";
 
 export interface ModelRoute {
   requestedModel: string;
-  targets: ModelRoutedService[];
+  targets: ModelRoutedProvider[];
 }
 
-export interface RoutedService {
-  service: ServiceConfig;
-  keys: ServiceApiKeyConfig[];
+export interface RoutedProvider {
+  provider: ProviderConfig;
+  credentials: ProviderCredentialConfig[];
 }
 
-export interface ModelRoutedService extends RoutedService {
+interface ModelRoutedProvider extends RoutedProvider {
   upstreamModel: string;
   routeApplied: boolean;
 }
 
-export interface ServiceTarget {
-  service: ServiceConfig;
-  key: ServiceApiKeyConfig;
+export interface ProviderTarget {
+  provider: ProviderConfig;
+  credential: ProviderCredentialConfig;
 }
 
-export interface ModelServiceTarget extends ServiceTarget {
+export interface ModelProviderTarget extends ProviderTarget {
   upstreamModel: string;
   routeApplied: boolean;
 }
 
-export interface ServiceSelectionCheck extends ServiceAvailability {
-  service_id: string;
+interface ProviderSelectionCheck extends ProviderAvailability {
+  provider_id: string;
 }
 
-export interface KeySelectionCheck extends ServiceAvailability {
-  service_id: string;
-  key_id: string;
+interface CredentialSelectionCheck extends ProviderAvailability {
+  provider_id: string;
+  credential_id: string;
 }
 
-export interface SelectionAffinity {
+interface SelectionAffinity {
   status: "hit" | "created" | "rebound" | "failed" | "blocked" | "forbidden";
   error?: string;
   context_management?: boolean;
@@ -67,125 +70,128 @@ export interface SelectionAffinity {
 export interface TargetSelection {
   // Always present, possibly undefined: selection computes a target that may
   // not exist. `affinity` is genuinely absent when no session was involved.
-  target: ServiceTarget | undefined;
-  checks: ServiceSelectionCheck[];
-  keyChecks: KeySelectionCheck[];
+  target: ProviderTarget | undefined;
+  checks: ProviderSelectionCheck[];
+  credentialChecks: CredentialSelectionCheck[];
   affinity?: SelectionAffinity;
 }
 
-export interface ServiceSelection extends TargetSelection {
-  target: ModelServiceTarget | undefined;
+export interface ProviderSelection extends TargetSelection {
+  target: ModelProviderTarget | undefined;
 }
 
-export interface ServiceSelectionOptions {
+export interface ProviderSelectionOptions {
   scope?: HealthScope;
-  random?: AffinityRandomSource;
   contextManagement?: boolean;
-  initialServiceIds?: readonly string[];
+  initialProviderIds?: readonly string[];
   session?: {
     clientId: string;
     sessionId: string;
   };
 }
 
-export type RequiredServiceCapability =
+type RequiredProviderCapability =
   "supports_websocket" | "supports_web_search" | "supports_context_management";
 
 export interface ResolveModelRouteOptions {
-  requiredCapabilities?: readonly RequiredServiceCapability[];
+  requiredCapabilities?: readonly RequiredProviderCapability[];
+  endpoint?: ProviderEndpoint;
+  transport?: ProviderTransport;
 }
 
 export interface CatalogSelection {
-  targets: ServiceTarget[];
-  checks: ServiceSelectionCheck[];
-  keyChecks: KeySelectionCheck[];
+  targets: ProviderTarget[];
+  checks: ProviderSelectionCheck[];
+  credentialChecks: CredentialSelectionCheck[];
 }
 
-interface RouteAvailability<T extends RoutedService> {
+interface RouteAvailability<T extends RoutedProvider> {
   candidates: T[];
-  checks: ServiceSelectionCheck[];
-  keyChecks: KeySelectionCheck[];
+  checks: ProviderSelectionCheck[];
+  credentialChecks: CredentialSelectionCheck[];
 }
 
-export function modelRoutesForService(
+function modelRoutesForProvider(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
-  service: ServiceConfig,
+  provider: ProviderConfig,
 ): Record<string, ModelRouteConfig> {
   return {
     ...config.model_routes,
     ...client.model_routes,
-    ...service.model_routes,
+    ...provider.model_routes,
   };
 }
 
-export function modelRoutesByService(
+export function modelRoutesByProvider(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
 ): Map<string, Record<string, ModelRouteConfig>> {
-  const allowedServices = new Set(client.services);
+  const allowedProviders = new Set(client.providers);
   return new Map(
-    config.services
-      .filter((service) => allowedServices.has(service.id))
-      .map((service) => [
-        service.id,
-        modelRoutesForService(config, client, service),
+    config.providers
+      .filter((provider) => allowedProviders.has(provider.id))
+      .map((provider) => [
+        provider.id,
+        modelRoutesForProvider(config, client, provider),
       ]),
   );
 }
 
-export function selectServiceApiKey(
-  service: ServiceConfig,
-  random?: AffinityRandomSource,
-): ServiceApiKeyConfig | undefined {
-  const enabled = service.keys.filter((key) => !key.disabled);
+export function selectProviderCredential(
+  provider: ProviderConfig,
+): ProviderCredentialConfig | undefined {
+  const enabled = provider.credentials.filter(
+    (credential) => !credential.disabled,
+  );
   if (enabled.length === 0) {
     return undefined;
   }
-  const priority = Math.max(...enabled.map((key) => key.priority));
-  const tied = enabled.filter((key) => key.priority === priority);
-  return random === undefined ? tied[0] : randomEntry(tied, random);
+  const priority = Math.max(
+    ...enabled.map((credential) => credential.priority),
+  );
+  return enabled.find((credential) => credential.priority === priority);
 }
 
-export function serviceSupportsModel(
-  service: ServiceConfig,
+function providerSupportsModel(
+  provider: ProviderConfig,
   upstreamModel: string,
 ): boolean {
-  return service.models.includes(upstreamModel);
+  return provider.models.includes(upstreamModel);
 }
 
-function routeAllowsService(
+function routeAllowsProvider(
   route: ModelRouteConfig | undefined,
-  serviceId: string,
+  providerId: string,
 ): boolean {
-  return route?.services === undefined || route.services.includes(serviceId);
+  return route?.providers === undefined || route.providers.includes(providerId);
 }
 
-function routedService(service: ServiceConfig): RoutedService | undefined {
-  const keys = service.keys.filter((key) => !key.disabled);
-  return keys.length > 0 ? { service, keys } : undefined;
+function routedProvider(provider: ProviderConfig): RoutedProvider | undefined {
+  const credentials = provider.credentials.filter((key) => !key.disabled);
+  return credentials.length > 0 ? { provider, credentials } : undefined;
 }
 
-function sortRoutedServices<T extends RoutedService>(
+function sortRoutedProviders<T extends RoutedProvider>(
   targets: T[],
   config: GatewayConfig,
 ): T[] {
   const order = new Map(
-    config.services.map((service, index) => [service.id, index]),
+    config.providers.map((provider, index) => [provider.id, index]),
   );
-  const serviceOrder = (serviceId: string): number => {
-    const index = order.get(serviceId);
+  const providerOrder = (providerId: string): number => {
+    const index = order.get(providerId);
     if (index === undefined) {
       throw new Error(
-        `routed service ${serviceId} is missing from configuration`,
+        `routed provider ${providerId} is missing from configuration`,
       );
     }
     return index;
   };
   return [...targets].sort(
     (left, right) =>
-      right.service.priority - left.service.priority ||
-      serviceOrder(left.service.id) - serviceOrder(right.service.id),
+      right.provider.priority - left.provider.priority ||
+      providerOrder(left.provider.id) - providerOrder(right.provider.id),
   );
 }
 
@@ -195,35 +201,41 @@ export function resolveModelRoute(
   requestedModel: string,
   options: ResolveModelRouteOptions = {},
 ): ModelRoute {
-  const allowedServices = new Set(client.services);
-  const targets = config.services.flatMap<ModelRoutedService>((service) => {
+  const allowedProviders = new Set(client.providers);
+  const targets = config.providers.flatMap<ModelRoutedProvider>((provider) => {
     if (
-      service.disabled ||
-      !allowedServices.has(service.id) ||
-      options.requiredCapabilities?.some((capability) => !service[capability])
+      provider.disabled ||
+      !allowedProviders.has(provider.id) ||
+      (options.endpoint !== undefined &&
+        !providerSupportsEndpoint(
+          provider,
+          options.endpoint,
+          options.transport,
+        )) ||
+      options.requiredCapabilities?.some((capability) => !provider[capability])
     ) {
       return [];
     }
-    const modelRoutes = modelRoutesForService(config, client, service);
-    const serviceRouteApplied = Object.hasOwn(modelRoutes, requestedModel);
-    const configuredRoute = serviceRouteApplied
+    const modelRoutes = modelRoutesForProvider(config, client, provider);
+    const providerRouteApplied = Object.hasOwn(modelRoutes, requestedModel);
+    const configuredRoute = providerRouteApplied
       ? modelRoutes[requestedModel]
       : undefined;
     const upstreamModel = configuredRoute?.model ?? requestedModel;
     if (
-      !routeAllowsService(configuredRoute, service.id) ||
-      !serviceSupportsModel(service, upstreamModel)
+      !routeAllowsProvider(configuredRoute, provider.id) ||
+      !providerSupportsModel(provider, upstreamModel)
     ) {
       return [];
     }
-    const target = routedService(service);
+    const target = routedProvider(provider);
     return target
-      ? [{ ...target, upstreamModel, routeApplied: serviceRouteApplied }]
+      ? [{ ...target, upstreamModel, routeApplied: providerRouteApplied }]
       : [];
   });
   return {
     requestedModel,
-    targets: sortRoutedServices(targets, config),
+    targets: sortRoutedProviders(targets, config),
   };
 }
 
@@ -239,116 +251,121 @@ export function modelIsAvailableForClient(
   );
 }
 
-export function allowedServiceCandidates(
+export function allowedProviderCandidates(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
-): RoutedService[] {
-  const allowed = new Set(client.services);
-  const targets = config.services.flatMap((service) => {
-    if (service.disabled || !allowed.has(service.id)) {
+): RoutedProvider[] {
+  const allowed = new Set(client.providers);
+  const targets = config.providers.flatMap((provider) => {
+    if (provider.disabled || !allowed.has(provider.id)) {
       return [];
     }
-    const target = routedService(service);
+    const target = routedProvider(provider);
     return target ? [target] : [];
   });
-  return sortRoutedServices(targets, config);
+  return sortRoutedProviders(targets, config);
 }
 
-async function evaluateAvailability<T extends RoutedService>(
+async function evaluateAvailability<T extends RoutedProvider>(
   env: Env,
-  routedServices: T[],
+  routedProviders: T[],
   scope: HealthScope,
 ): Promise<RouteAvailability<T>> {
   const checks = await mapWithConcurrency(
-    routedServices,
-    SERVICE_FAN_OUT_CONCURRENCY,
-    async ({ service }): Promise<ServiceSelectionCheck> => ({
-      service_id: service.id,
-      ...(await getServiceAvailability(env, service.id, scope)),
+    routedProviders,
+    PROVIDER_FAN_OUT_CONCURRENCY,
+    async ({ provider }): Promise<ProviderSelectionCheck> => ({
+      provider_id: provider.id,
+      ...(await getProviderAvailability(env, provider.id, scope)),
     }),
   );
-  const availableServiceIds = new Set(
-    checks.filter((check) => check.available).map((check) => check.service_id),
+  const availableProviderIds = new Set(
+    checks.filter((check) => check.available).map((check) => check.provider_id),
   );
-  const keyDescriptors = routedServices.flatMap(({ service, keys }) =>
-    availableServiceIds.has(service.id)
-      ? keys.map((key) => ({ service, key }))
+  const keyDescriptors = routedProviders.flatMap(({ provider, credentials }) =>
+    availableProviderIds.has(provider.id)
+      ? credentials.map((key) => ({ provider, credential: key }))
       : [],
   );
-  const keyChecks = await mapWithConcurrency(
+  const credentialChecks = await mapWithConcurrency(
     keyDescriptors,
-    SERVICE_FAN_OUT_CONCURRENCY,
-    async ({ service, key }): Promise<KeySelectionCheck> => ({
-      service_id: service.id,
-      key_id: key.id,
-      ...(await getKeyAvailability(env, service.id, key.id, scope)),
+    PROVIDER_FAN_OUT_CONCURRENCY,
+    async ({
+      provider,
+      credential: key,
+    }): Promise<CredentialSelectionCheck> => ({
+      provider_id: provider.id,
+      credential_id: key.id,
+      ...(await getCredentialAvailability(env, provider.id, key.id, scope)),
     }),
   );
-  const availableKeyIds = new Set(
-    keyChecks
+  const availableCredentialIds = new Set(
+    credentialChecks
       .filter((check) => check.available)
-      .map((check) => `${check.service_id}\u0000${check.key_id}`),
+      .map((check) => `${check.provider_id}\u0000${check.credential_id}`),
   );
-  const candidates = routedServices.flatMap<T>((routed) => {
-    const { service, keys } = routed;
-    if (!availableServiceIds.has(service.id)) {
+  const candidates = routedProviders.flatMap<T>((routed) => {
+    const { provider, credentials } = routed;
+    if (!availableProviderIds.has(provider.id)) {
       return [];
     }
-    const availableKeys = keys.filter((key) =>
-      availableKeyIds.has(`${service.id}\u0000${key.id}`),
+    const availableKeys = credentials.filter((key) =>
+      availableCredentialIds.has(`${provider.id}\u0000${key.id}`),
     );
-    return availableKeys.length > 0 ? [{ ...routed, keys: availableKeys }] : [];
+    return availableKeys.length > 0
+      ? [{ ...routed, credentials: availableKeys }]
+      : [];
   });
-  return { candidates, checks, keyChecks };
+  return { candidates, checks, credentialChecks };
 }
 
 function affinityCandidates(
-  candidates: RoutedService[],
-): AffinityServiceCandidate[] {
-  return candidates.map(({ service, keys }) => ({
-    service_id: service.id,
-    priority: service.priority,
-    supports_context_management: service.supports_context_management,
-    keys: keys.map((key) => ({
-      key_id: key.id,
-      priority: key.priority,
+  candidates: RoutedProvider[],
+): AffinityProviderCandidate[] {
+  return candidates.map(({ provider, credentials }) => ({
+    provider_id: provider.id,
+    priority: provider.priority,
+    supports_context_management: provider.supports_context_management,
+    credentials: credentials.map((credential) => ({
+      credential_id: credential.id,
+      priority: credential.priority,
     })),
   }));
 }
 
 function targetByIds(
-  candidates: RoutedService[],
-  serviceId: string,
-  keyId: string,
-): ServiceTarget | undefined {
-  const candidate = candidates.find(({ service }) => service.id === serviceId);
-  const key = candidate?.keys.find((entry) => entry.id === keyId);
-  return candidate && key
+  candidates: RoutedProvider[],
+  providerId: string,
+  credentialId: string,
+): ProviderTarget | undefined {
+  const candidate = candidates.find(
+    ({ provider }) => provider.id === providerId,
+  );
+  const credential = candidate?.credentials.find(
+    (entry) => entry.id === credentialId,
+  );
+  return candidate && credential
     ? {
-        service: candidate.service,
-        key,
+        provider: candidate.provider,
+        credential,
       }
     : undefined;
 }
 
-function selectRandomTarget(
-  candidates: RoutedService[],
-  random?: AffinityRandomSource,
-): ServiceTarget | undefined {
-  const selected = chooseAffinityCandidate(
-    affinityCandidates(candidates),
-    random,
-  );
+function selectTarget(
+  candidates: RoutedProvider[],
+): ProviderTarget | undefined {
+  const selected = chooseAffinityCandidate(affinityCandidates(candidates));
   return selected
-    ? targetByIds(candidates, selected.service_id, selected.key_id)
+    ? targetByIds(candidates, selected.provider_id, selected.credential_id)
     : undefined;
 }
 
-export async function selectAvailableServiceWithDetails(
+export async function selectAvailableProviderWithDetails(
   env: Env,
   route: ModelRoute,
-  options: ServiceSelectionOptions = {},
-): Promise<ServiceSelection> {
+  options: ProviderSelectionOptions = {},
+): Promise<ProviderSelection> {
   const selection = await selectAvailableTargetWithDetails(
     env,
     route.targets,
@@ -357,7 +374,7 @@ export async function selectAvailableServiceWithDetails(
   const target = selection.target;
   const routed =
     target &&
-    route.targets.find(({ service }) => service.id === target.service.id);
+    route.targets.find(({ provider }) => provider.id === target.provider.id);
   return {
     ...selection,
     target:
@@ -373,22 +390,22 @@ export async function selectAvailableServiceWithDetails(
 
 export async function selectAvailableTargetWithDetails(
   env: Env,
-  services: RoutedService[],
-  options: ServiceSelectionOptions = {},
+  providers: RoutedProvider[],
+  options: ProviderSelectionOptions = {},
 ): Promise<TargetSelection> {
   const contextManagement = options.contextManagement === true;
   const availability = await evaluateAvailability(
     env,
     contextManagement
-      ? services.filter(({ service }) => service.supports_context_management)
-      : services,
+      ? providers.filter(({ provider }) => provider.supports_context_management)
+      : providers,
     options.scope ?? "inference",
   );
   if (availability.candidates.length === 0) {
     return {
       target: undefined,
       checks: availability.checks,
-      keyChecks: availability.keyChecks,
+      credentialChecks: availability.credentialChecks,
     };
   }
 
@@ -396,13 +413,13 @@ export async function selectAvailableTargetWithDetails(
     return {
       target: undefined,
       checks: availability.checks,
-      keyChecks: availability.keyChecks,
+      credentialChecks: availability.credentialChecks,
       affinity: { status: "blocked" },
     };
   }
   if (options.session) {
     const candidates = affinityCandidates(availability.candidates);
-    const preferred = chooseAffinityCandidate(candidates, options.random);
+    const preferred = chooseAffinityCandidate(candidates);
     try {
       const identity = await sessionAffinityIdentity(
         options.session.clientId,
@@ -412,9 +429,9 @@ export async function selectAvailableTargetWithDetails(
         identity.object_name,
       ).resolve(candidates, preferred, identity, {
         contextManagement,
-        ...(options.initialServiceIds === undefined
+        ...(options.initialProviderIds === undefined
           ? {}
-          : { initialServiceIds: options.initialServiceIds }),
+          : { initialProviderIds: options.initialProviderIds }),
       });
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
@@ -423,7 +440,7 @@ export async function selectAvailableTargetWithDetails(
         return {
           target: undefined,
           checks: availability.checks,
-          keyChecks: availability.keyChecks,
+          credentialChecks: availability.credentialChecks,
           affinity: { status: "blocked" },
         };
       }
@@ -436,15 +453,15 @@ export async function selectAvailableTargetWithDetails(
           return {
             target: undefined,
             checks: availability.checks,
-            keyChecks: availability.keyChecks,
+            credentialChecks: availability.credentialChecks,
             affinity: { status: "forbidden" },
           };
         }
       }
       const target = targetByIds(
         availability.candidates,
-        resolution.service_id,
-        resolution.key_id,
+        resolution.provider_id,
+        resolution.credential_id,
       );
       if (!target) {
         throw new Error("session affinity returned an unavailable candidate");
@@ -452,7 +469,7 @@ export async function selectAvailableTargetWithDetails(
       return {
         target,
         checks: availability.checks,
-        keyChecks: availability.keyChecks,
+        credentialChecks: availability.credentialChecks,
         affinity: {
           status: resolution.status,
           ...(resolution.context_management
@@ -464,62 +481,69 @@ export async function selectAvailableTargetWithDetails(
       return {
         target: undefined,
         checks: availability.checks,
-        keyChecks: availability.keyChecks,
+        credentialChecks: availability.credentialChecks,
         affinity: { status: "failed", error: errorMessage(error) },
       };
     }
   }
 
   return {
-    target: selectRandomTarget(availability.candidates, options.random),
+    target: selectTarget(availability.candidates),
     checks: availability.checks,
-    keyChecks: availability.keyChecks,
+    credentialChecks: availability.credentialChecks,
   };
 }
 
-export async function selectAvailableService(
+export async function selectAvailableProvider(
   env: Env,
   route: ModelRoute,
-): Promise<ServiceConfig | undefined> {
-  return (await selectAvailableServiceWithDetails(env, route)).target?.service;
+): Promise<ProviderConfig | undefined> {
+  return (await selectAvailableProviderWithDetails(env, route)).target
+    ?.provider;
 }
 
 export async function selectAvailableCatalogTargetsWithDetails(
   env: Env,
-  routedServices: RoutedService[],
-  random?: AffinityRandomSource,
+  routedProviders: RoutedProvider[],
 ): Promise<CatalogSelection> {
   const availability = await evaluateAvailability(
     env,
-    routedServices,
+    routedProviders,
     "catalog",
   );
-  const targets = availability.candidates.flatMap(({ service, keys }) => {
-    const key = selectServiceApiKey({ ...service, keys }, random);
-    return key ? [{ service, key }] : [];
-  });
+  const targets = availability.candidates.flatMap(
+    ({ provider, credentials }) => {
+      const credential = selectProviderCredential({ ...provider, credentials });
+      return credential ? [{ provider, credential }] : [];
+    },
+  );
   return {
     targets,
     checks: availability.checks,
-    keyChecks: availability.keyChecks,
+    credentialChecks: availability.credentialChecks,
   };
 }
 
 export async function targetIsAvailableForRoute(
   env: Env,
   route: ModelRoute,
-  target: ModelServiceTarget,
+  target: ModelProviderTarget,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
   const routed = route.targets.find(
-    ({ service }) => service.id === target.service.id,
+    ({ provider }) => provider.id === target.provider.id,
   );
-  if (!routed?.keys.some((key) => key.id === target.key.id)) {
+  if (!routed?.credentials.some((key) => key.id === target.credential.id)) {
     return false;
   }
-  const [serviceAvailability, keyAvailability] = await Promise.all([
-    getServiceAvailability(env, target.service.id, scope),
-    getKeyAvailability(env, target.service.id, target.key.id, scope),
+  const [providerAvailability, credentialAvailability] = await Promise.all([
+    getProviderAvailability(env, target.provider.id, scope),
+    getCredentialAvailability(
+      env,
+      target.provider.id,
+      target.credential.id,
+      scope,
+    ),
   ]);
-  return serviceAvailability.available && keyAvailability.available;
+  return providerAvailability.available && credentialAvailability.available;
 }

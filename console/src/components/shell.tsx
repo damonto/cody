@@ -79,7 +79,7 @@ const navigation = [
   {
     title: "Configure",
     items: [
-      { path: "/services", title: "Services", icon: Server },
+      { path: "/providers", title: "Providers", icon: Server },
       { path: "/clients", title: "Client keys", icon: KeyRound },
       { path: "/routing", title: "Model routes", icon: GitBranch },
       { path: "/pricing", title: "Model pricing", icon: CircleDollarSign },

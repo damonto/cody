@@ -1,10 +1,14 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const issuers = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+type AdminEnv = Pick<
+  Env,
+  "ADMIN_LOCAL_DEV" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD"
+>;
 
 export async function authenticateAdmin(
   request: Request,
-  env: Env,
+  env: AdminEnv,
 ): Promise<string | null> {
   const host = new URL(request.url).hostname;
   if (

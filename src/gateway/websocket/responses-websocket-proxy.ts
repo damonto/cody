@@ -36,9 +36,9 @@ import {
 import { UpstreamAttemptTimeoutError } from "../http/proxy.ts";
 import {
   resolveModelRoute,
-  selectAvailableServiceWithDetails,
+  selectAvailableProviderWithDetails,
   type ModelRoute,
-  type ModelServiceTarget,
+  type ModelProviderTarget,
 } from "../routing/routing.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import {
@@ -130,7 +130,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       this.ctx,
     );
     if (this.env.USAGE_QUEUE) {
-      // The runtime owns constructor initialization and resets the object on failure.
+      // Only local storage work runs under the constructor's input gate.
       void this.ctx.blockConcurrencyWhile(async () => {
         await this.storage.recoverUsage();
         this.ctx.waitUntil(this.usage.flush());
@@ -155,7 +155,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const forwardedHeaders = forwardableWebSocketHeaders(request);
     const headerSessionId = nonBlankString(request.headers.get("session-id"));
     const state: StoredWebSocketSession = {
-      version: 1,
+      version: 2,
       phase: "awaiting_first_frame",
       request_id: requestId,
       started_at: Date.now(),
@@ -257,10 +257,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       phase: state.phase,
       active_response: state.active_response,
       duration_ms: Math.max(0, Date.now() - state.started_at),
-      ...(state.selected_service_id && state.selected_key_id
+      ...(state.selected_provider_id && state.selected_credential_id
         ? {
-            service_id: state.selected_service_id,
-            key_id: state.selected_key_id,
+            provider_id: state.selected_provider_id,
+            credential_id: state.selected_credential_id,
           }
         : {}),
     };
@@ -386,7 +386,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       await this.health.inactive();
       // Codex frame status, as above.
       const keyFailure =
-        status !== undefined && healthFailureScope(status, "openai") === "key";
+        status !== undefined &&
+        healthFailureScope(status, "openai") === "credential";
       await this.closeAll(
         1011,
         keyFailure
@@ -432,7 +433,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     originalMessage: string,
     frame: ResponseCreateFrame,
     route: ModelRoute,
-    target: ModelServiceTarget,
+    target: ModelProviderTarget,
     sessionId: string | undefined,
     contextManagement: boolean,
   ): Promise<void> {
@@ -440,8 +441,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       ...state,
       phase: "connecting",
       ...(sessionId ? { current_session_id: sessionId } : {}),
-      selected_service_id: target.service.id,
-      selected_key_id: target.key.id,
+      selected_provider_id: target.provider.id,
+      selected_credential_id: target.credential.id,
       ...(contextManagement ? { context_management: true } : {}),
     }));
     if (!connecting) {
@@ -479,8 +480,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           : "websocket.upstream_unavailable",
         {
           request_id: current.request_id,
-          service_id: target.service.id,
-          key_id: target.key.id,
+          provider_id: target.provider.id,
+          credential_id: target.credential.id,
           attempts: result.attempts,
           error: errorMessage(result.error),
         },
@@ -498,7 +499,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const response = result.response;
     const socket = response.webSocket;
     if (response.status !== 101 || !socket) {
-      if (healthFailureScope(response.status, "openai") === "service") {
+      if (healthFailureScope(response.status, "openai") === "provider") {
         await this.health.fail();
       }
       const body = await upstreamErrorText(response);
@@ -513,8 +514,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       );
       logWarn("websocket.upgrade_rejected", {
         request_id: current.request_id,
-        service_id: target.service.id,
-        key_id: target.key.id,
+        provider_id: target.provider.id,
+        credential_id: target.credential.id,
         status: response.status,
         attempts: result.attempts,
       });
@@ -533,8 +534,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       await this.health.fail();
       logWarn("websocket.upstream_accept.failed", {
         request_id: current.request_id,
-        service_id: target.service.id,
-        key_id: target.key.id,
+        provider_id: target.provider.id,
+        credential_id: target.credential.id,
         error: errorMessage(error),
       });
       await this.closeAll(
@@ -571,8 +572,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
     logInfo("websocket.connected", {
       request_id: opened.next.request_id,
-      service_id: target.service.id,
-      key_id: target.key.id,
+      provider_id: target.provider.id,
+      credential_id: target.credential.id,
       model: bounded(target.upstreamModel, 160),
       model_rewritten: frame.model !== target.upstreamModel,
       attempts: result.attempts,
@@ -672,6 +673,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       routingContext.client,
       frame.model,
       {
+        endpoint: "responses",
+        transport: "websocket",
         requiredCapabilities: [
           "supports_websocket",
           ...(contextManagement
@@ -693,7 +696,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       return;
     }
 
-    const selection = await selectAvailableServiceWithDetails(
+    const selection = await selectAvailableProviderWithDetails(
       this.env,
       route,
       sessionId
@@ -719,7 +722,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       );
       await this.closeAll(
         1013,
-        "no healthy upstream service",
+        "no healthy upstream provider",
         "no_healthy_upstream",
       );
       return;
@@ -799,6 +802,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           routingContext.client,
           frame.model,
           {
+            endpoint: "responses",
+            transport: "websocket",
             requiredCapabilities: [
               "supports_websocket",
               ...(contextManagement
@@ -823,7 +828,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
             this.clientSocket(),
             gatewayErrorEvent(
               503,
-              "The bound upstream service or key is no longer available; reconnect the WebSocket",
+              "The bound upstream provider or key is no longer available; reconnect the WebSocket",
               "websocket_reconnect_required",
             ),
           );
@@ -870,7 +875,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
             this.clientSocket(),
             gatewayErrorEvent(
               503,
-              "The bound upstream service or key is no longer available; reconnect the WebSocket",
+              "The bound upstream provider or key is no longer available; reconnect the WebSocket",
               "websocket_reconnect_required",
             ),
           );

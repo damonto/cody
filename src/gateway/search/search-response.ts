@@ -1,7 +1,7 @@
 import type { NormalizedSearchResult } from "./providers/index.ts";
 import type { SearchQuery } from "./search-request.ts";
 
-export const MAX_SEARCH_OUTPUT_CHARS = 32 * 1024;
+const MAX_SEARCH_OUTPUT_CHARS = 32 * 1024;
 
 export function codexResults(
   results: NormalizedSearchResult[],

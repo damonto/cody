@@ -1,4 +1,4 @@
-export const SERVICE_FAN_OUT_CONCURRENCY = 6;
+export const PROVIDER_FAN_OUT_CONCURRENCY = 6;
 
 export async function mapWithConcurrency<T, Result>(
   items: readonly T[],

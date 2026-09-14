@@ -16,7 +16,7 @@ function client(): ClientApiKeyConfig {
   return {
     id: crypto.randomUUID(),
     api_key: crypto.randomUUID(),
-    services: [],
+    providers: [],
   };
 }
 
@@ -27,8 +27,8 @@ async function seed(
 ) {
   const registry = await affinityRegistryName(client.id);
   const record: SessionAffinityRecord = {
-    service_id: "service",
-    key_id: "key",
+    provider_id: "provider",
+    credential_id: "key",
     registry_name: registry,
     session_digest: digestPrefix.repeat(64),
     session_id: `session-${digestPrefix}`,
@@ -68,7 +68,7 @@ async function list(
   );
   expect(response.status).toBe(200);
   return response.json<{
-    data: { session_id: string; service_id: string }[];
+    data: { session_id: string; provider_id: string }[];
     next_cursor: string | null;
   }>();
 }
@@ -101,7 +101,7 @@ test("credential rotation preserves the client's session registry", async () => 
   await seed(owner, "1");
   owner.api_key = crypto.randomUUID();
   expect(await list(owner, 1)).toMatchObject({
-    data: [{ session_id: "session-1", service_id: "service" }],
+    data: [{ session_id: "session-1", provider_id: "provider" }],
     next_cursor: null,
   });
 });

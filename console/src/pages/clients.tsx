@@ -70,7 +70,7 @@ export default function Clients() {
         ? {
             id: "",
             api_key: createClientKey(),
-            services: snapshot.config.services.map((service) => service.id),
+            providers: snapshot.config.providers.map((provider) => provider.id),
           }
         : snapshot.config.api_keys[index];
     setEditor({ snapshot, index, initial });
@@ -79,11 +79,11 @@ export default function Clients() {
     <>
       <PageHeading
         title="Client keys"
-        description="Issue gateway credentials and choose which upstream services each client may use."
+        description="Issue gateway credentials and choose which upstream providers each client may use."
       >
         <Button
           onClick={() => edit(-1)}
-          disabled={!draft.data.config.services.length}
+          disabled={!draft.data.config.providers.length}
         >
           <Plus />
           Create client
@@ -117,11 +117,11 @@ export default function Clients() {
                 ),
               },
               {
-                id: "services",
-                header: "Allowed services",
+                id: "providers",
+                header: "Allowed providers",
                 cell: ({ row }) => (
                   <div className="flex flex-wrap gap-1">
-                    {row.original.services.map((id) => (
+                    {row.original.providers.map((id) => (
                       <Badge
                         key={id}
                         variant="secondary"
@@ -172,9 +172,9 @@ export default function Clients() {
           />
         ) : (
           <Empty title="Give your first client access">
-            {draft.data.config.services.length
-              ? "Create a client credential and select its allowed services."
-              : "Add an upstream service first, then create a client key."}
+            {draft.data.config.providers.length
+              ? "Create a client credential and select its allowed providers."
+              : "Add an upstream provider first, then create a client key."}
           </Empty>
         )}
       </Card>
@@ -194,8 +194,8 @@ export default function Clients() {
               {editor?.index === -1 ? "Create client" : "Edit client"}
             </DialogTitle>
             <DialogDescription>
-              New and rotated keys take effect after publication. Copy saved
-              keys from the client list.
+              New and rotated credentials take effect after publication. Copy
+              saved credentials from the client list.
             </DialogDescription>
           </DialogHeader>
           {editor && (
@@ -305,27 +305,29 @@ function ClientForm({
           />
         )}
       </form.AppField>
-      <form.AppField name="services">
+      <form.AppField name="providers">
         {(field) => (
           <Field>
-            <FieldLabel>Allowed services</FieldLabel>
+            <FieldLabel>Allowed providers</FieldLabel>
             <div className="grid gap-2 sm:grid-cols-2">
-              {snapshot.config.services.map((service) => (
+              {snapshot.config.providers.map((provider) => (
                 <label
-                  key={service.id}
+                  key={provider.id}
                   className="flex items-center gap-3 rounded-lg border p-3 text-sm"
                 >
                   <Checkbox
-                    checked={field.state.value.includes(service.id)}
+                    checked={field.state.value.includes(provider.id)}
                     onCheckedChange={(checked) =>
                       field.handleChange(
                         checked === true
-                          ? [...field.state.value, service.id]
-                          : field.state.value.filter((id) => id !== service.id),
+                          ? [...field.state.value, provider.id]
+                          : field.state.value.filter(
+                              (id) => id !== provider.id,
+                            ),
                       )
                     }
                   />
-                  {service.id}
+                  {provider.id}
                 </label>
               ))}
             </div>

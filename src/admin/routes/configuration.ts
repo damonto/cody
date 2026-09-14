@@ -8,7 +8,7 @@ import {
   clientIdSchema,
   draftSchema,
   rollbackSchema,
-  serviceKeyIdSchema,
+  providerCredentialIdSchema,
   versionSchema,
 } from "../schema.ts";
 import { validate } from "../validation.ts";
@@ -70,17 +70,21 @@ export const configurationRoutes = new Hono<AdminContext>()
     },
   )
   .post(
-    "/services/:id/keys/:keyId/reveal",
-    validate("param", serviceKeyIdSchema),
+    "/providers/:id/credentials/:credentialId/reveal",
+    validate("param", providerCredentialIdSchema),
     validate("json", versionSchema),
     async (c) => {
-      const { id, keyId } = c.req.valid("param");
+      const { id, credentialId } = c.req.valid("param");
       const config = await credentialDraft(c.env, c.req.valid("json").version);
-      const service = config.services.find((entry) => entry.id === id);
-      const key = service?.keys.find((entry) => entry.id === keyId);
+      const provider = config.providers.find((entry) => entry.id === id);
+      const key = provider?.credentials.find(
+        (entry) => entry.id === credentialId,
+      );
       if (!key)
-        throw new HTTPException(404, { message: "Service key does not exist" });
-      return c.json(apiKeySchema.parse({ api_key: key.api_key }));
+        throw new HTTPException(404, {
+          message: "Provider key does not exist",
+        });
+      return c.json(apiKeySchema.parse({ api_key: key.auth.api_key }));
     },
   )
   .post("/web-search/reveal", validate("json", versionSchema), async (c) => {

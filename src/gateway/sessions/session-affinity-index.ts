@@ -13,7 +13,7 @@ export interface SessionAffinityIndexEntry {
   generation: number;
 }
 
-export interface SessionAffinityIndexPage {
+interface SessionAffinityIndexPage {
   data: SessionAffinityIndexEntry[];
   next_cursor: string | null;
 }

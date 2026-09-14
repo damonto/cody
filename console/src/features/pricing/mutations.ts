@@ -10,7 +10,7 @@ export function updatePolicy(
     model_policies: [
       ...(config.model_policies ?? []).filter(
         (entry) =>
-          entry.service_id !== policy.service_id ||
+          entry.provider_id !== policy.provider_id ||
           entry.model !== policy.model,
       ),
       policy,

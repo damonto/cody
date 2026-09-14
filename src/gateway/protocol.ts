@@ -21,7 +21,7 @@ export function isContextManagementPath(
   return CONTEXT_MANAGEMENT_PATHS.some((endpoint) => endpoint === path);
 }
 
-/** Inference paths the gateway forwards, relative to a service's base URL. */
+/** Inference paths the gateway forwards, relative to a provider's base URL. */
 export type InferencePath =
   | "responses"
   | "responses/compact"
@@ -69,9 +69,9 @@ function isClaudeUserAgent(request: Request): boolean {
 }
 
 /**
- * Resolves the dialect a request is speaking. One upstream service may serve
+ * Resolves the dialect a request is speaking. One upstream provider may serve
  * either dialect, so this is always derived from the request and never declared
- * per service.
+ * per provider.
  *
  * Signals, strongest first:
  *   1. `anthropic-version`, which only Anthropic clients send.

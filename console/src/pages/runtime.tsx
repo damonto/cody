@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 type ClearAction =
-  | { kind: "health"; serviceId: string; keyId?: string }
+  | { kind: "health"; providerId: string; credentialId?: string }
   | { kind: "session"; sessionId: string };
 export default function Runtime() {
   const [selected, setSelected] = useState("");
@@ -89,11 +89,11 @@ export default function Runtime() {
           }),
         );
       }
-      const param = { id: action.serviceId };
-      if (action.keyId)
+      const param = { id: action.providerId };
+      if (action.credentialId)
         return read(
-          rpc.runtime.health[":id"][":key"].$delete({
-            param: { ...param, key: action.keyId },
+          rpc.runtime.health[":id"][":credentialId"].$delete({
+            param: { ...param, credentialId: action.credentialId },
             query,
           }),
         );
@@ -133,7 +133,8 @@ export default function Runtime() {
       ) : !clientId ? (
         <Card>
           <Empty title="Publish a client configuration first">
-            Runtime operations use the currently published services and clients.
+            Runtime operations use the currently published providers and
+            clients.
           </Empty>
         </Card>
       ) : (
@@ -187,15 +188,15 @@ export default function Runtime() {
                     data={health.data.data}
                     columns={[
                       {
-                        id: "service",
-                        header: "Service",
-                        cell: ({ row }) => row.original.service_id,
+                        id: "provider",
+                        header: "Provider",
+                        cell: ({ row }) => row.original.provider_id,
                       },
                       {
-                        id: "key",
-                        header: "Key",
+                        id: "credential",
+                        header: "Credential",
                         cell: ({ row }) =>
-                          row.original.key_id ?? "Service-wide",
+                          row.original.credential_id ?? "Provider-wide",
                       },
                       {
                         id: "failures",
@@ -219,12 +220,12 @@ export default function Runtime() {
                               setConfirmation({
                                 action: {
                                   kind: "health",
-                                  serviceId: row.original.service_id,
-                                  keyId: row.original.key_id,
+                                  providerId: row.original.provider_id,
+                                  credentialId: row.original.credential_id,
                                 },
                                 title: "Clear this cooldown?",
                                 description:
-                                  "The selected service or key becomes eligible for traffic again. Its next requests will determine its health.",
+                                  "The selected provider or credential becomes eligible for traffic again. Its next requests will determine its health.",
                               })
                             }
                           >
@@ -267,12 +268,12 @@ export default function Runtime() {
                       },
                       {
                         id: "route",
-                        header: "Service / key",
+                        header: "Provider / credential",
                         cell: ({ row }) => (
                           <div>
-                            {row.original.service_id}
+                            {row.original.provider_id}
                             <p className="text-xs text-muted-foreground">
-                              {row.original.key_id}
+                              {row.original.credential_id}
                             </p>
                           </div>
                         ),
@@ -348,7 +349,7 @@ export default function Runtime() {
               <CardTitle>Health scopes are independent</CardTitle>
               <CardDescription>
                 Catalog failures do not change inference routing. Requests are
-                retried only under a service’s explicit retry policy.
+                retried only under a provider’s explicit retry policy.
               </CardDescription>
             </CardHeader>
           </Card>

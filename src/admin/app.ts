@@ -9,7 +9,7 @@ import { pricingRoutes } from "./routes/pricing.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { runtimeRoutes } from "./routes/runtime.ts";
 
-export const adminApi = new Hono<AdminContext>()
+const adminApi = new Hono<AdminContext>()
   .use(
     "*",
     bodyLimit({

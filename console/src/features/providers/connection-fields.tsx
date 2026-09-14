@@ -1,12 +1,13 @@
 import { withForm } from "@/lib/form";
-import { serviceFormOptions } from "./form-options";
+import { providerFormOptions } from "./form-options";
 import { TabsContent } from "@/components/ui/tabs";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 export const ConnectionFields = withForm({
-  ...serviceFormOptions,
+  ...providerFormOptions,
   props: { index: -1, close: () => {} },
   render: function ConnectionFields({ form, index, close }) {
     return (
@@ -15,11 +16,15 @@ export const ConnectionFields = withForm({
         forceMount
         className="space-y-5 data-[state=inactive]:hidden"
       >
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-muted-foreground">Provider type</span>
+          <Badge variant="secondary">AI Gateway</Badge>
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <form.AppField name="id">
             {(field) => (
               <field.TextField
-                label="Service ID"
+                label="Provider ID"
                 readOnly={index !== -1}
                 hint="Stable identifier used by routes, clients, and historical records."
               />
@@ -49,7 +54,7 @@ export const ConnectionFields = withForm({
           )}
         </form.AppField>
         <form.AppField name="disabled">
-          {(field) => <field.ToggleField inverse label="Service enabled" />}
+          {(field) => <field.ToggleField inverse label="Provider enabled" />}
         </form.AppField>
         <Button asChild variant="link" className="px-0">
           <Link to="/pricing" onClick={close}>

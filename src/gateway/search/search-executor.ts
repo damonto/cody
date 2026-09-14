@@ -16,7 +16,7 @@ import type { WebSearchProviderConfig } from "../../config/types.ts";
 export const MAX_SEARCH_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const MAX_SEARCH_BATCH_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const SEARCH_PROVIDER_CONCURRENCY = 2;
-export const SEARCH_PROVIDER_TIMEOUT_MS = 15_000;
+const SEARCH_PROVIDER_TIMEOUT_MS = 15_000;
 
 export class ProviderHttpError extends Error {
   constructor(readonly status: number) {
@@ -39,7 +39,7 @@ export class ProviderNetworkError extends Error {
   }
 }
 
-export class ProviderTimeoutError extends ProviderNetworkError {
+class ProviderTimeoutError extends ProviderNetworkError {
   constructor(
     readonly timeoutMs: number,
     options?: ErrorOptions,
@@ -49,14 +49,14 @@ export class ProviderTimeoutError extends ProviderNetworkError {
   }
 }
 
-export class ProviderResponseTooLargeError extends ProviderProtocolError {
+class ProviderResponseTooLargeError extends ProviderProtocolError {
   constructor(readonly maxBytes: number) {
     super(`web search provider response exceeds the ${maxBytes}-byte limit`);
     this.name = "ProviderResponseTooLargeError";
   }
 }
 
-export class SearchBatchBudgetExceededError extends ProviderProtocolError {
+class SearchBatchBudgetExceededError extends ProviderProtocolError {
   constructor(readonly maxBytes: number) {
     super(
       `web search provider batch exceeds the ${maxBytes}-byte response budget`,

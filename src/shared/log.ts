@@ -6,7 +6,7 @@ export interface LogExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-export const MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES = 32 * 1024;
+const MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES = 32 * 1024;
 
 const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
   info: 1,
@@ -16,6 +16,9 @@ const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
 const REDACTED = "[REDACTED]";
 const SENSITIVE_FIELD =
   /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials)(?:$|[_-])/i;
+// Routing identifiers and availability checks are diagnostics, not auth material.
+const CREDENTIAL_DIAGNOSTIC_FIELD =
+  /^(?:selected_)?credential_ids?$|^credential_checks$|^selected_credentials$/i;
 
 // Redaction patterns are applied in order of specificity: structured context
 // (JSON key-value, URL query, auth header) first, then bare key patterns as
@@ -25,7 +28,7 @@ const QUERY_SECRET_PATTERN =
   /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization)\s*=)[^&#\s]+/gi;
 const ASSIGNMENT_SECRET_PATTERN =
   /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
-// Catch-all for bare OpenAI-format keys not already redacted by the patterns above.
+// Catch-all for bare OpenAI-format credentials not already redacted by the patterns above.
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 
 // This isolate-local setting is refreshed from env at the start of every request.
@@ -43,10 +46,6 @@ export function configureLogging(value: unknown): LogLevel {
           normalized === "off"
         ? normalized
         : "info";
-  return currentLogLevel;
-}
-
-export function getLogLevel(): LogLevel {
   return currentLogLevel;
 }
 
@@ -74,7 +73,7 @@ function redactTextWithSensitiveValues(
   return redacted;
 }
 
-export function redactText(value: string): string {
+function redactText(value: string): string {
   return redactTextWithSensitiveValues(value, []);
 }
 
@@ -84,7 +83,11 @@ function sanitizeValue(
   seen: WeakSet<object>,
   sensitiveValues: readonly string[],
 ): unknown {
-  if (key && SENSITIVE_FIELD.test(key)) {
+  if (
+    key &&
+    SENSITIVE_FIELD.test(key) &&
+    !CREDENTIAL_DIAGNOSTIC_FIELD.test(key)
+  ) {
     return REDACTED;
   }
   if (typeof value === "string") {
@@ -365,9 +368,4 @@ export function errorMessage(error: unknown): string {
     }
   }
   return bounded(redactText(message));
-}
-
-export function requestUserAgent(request: Request): string | undefined {
-  const value = request.headers.get("user-agent");
-  return value ? bounded(value, 160) : undefined;
 }

@@ -1,4 +1,4 @@
-import type { ClientApiKeyConfig, ServiceConfig } from "../../config/types.ts";
+import type { ClientApiKeyConfig, ProviderConfig } from "../../config/types.ts";
 import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -117,7 +117,7 @@ export function anthropicErrorType(status: number): AnthropicErrorType {
   }
 }
 
-export function anthropicError(
+function anthropicError(
   status: number,
   message: string,
   requestId?: string,
@@ -300,18 +300,18 @@ export async function findClientApiKeyByDigest(
 }
 
 export function upstreamUrl(
-  service: ServiceConfig,
+  provider: ProviderConfig,
   path: string,
   search = "",
 ): string {
-  const base = service.base_url.replace(/\/+$/, "");
+  const base = provider.base_url.replace(/\/+$/, "");
   const suffix = path.replace(/^\/+/, "");
   return `${base}/${suffix}${search}`;
 }
 
 export function forwardRequestHeaders(
   request: Request,
-  serviceApiKey: string,
+  providerApiKey: string,
 ): Headers {
   const headers = new Headers();
   const connectionHeaders = new Set(
@@ -328,19 +328,19 @@ export function forwardRequestHeaders(
       headers.set(name, value);
     }
   });
-  // Upstream services authenticate with a bearer token regardless of which
+  // Upstream providers authenticate with a bearer token regardless of which
   // credential header the client used, so the gateway always sends one. The
   // client's own `x-api-key` is dropped by shouldStripRequestHeader.
-  headers.set("authorization", `Bearer ${serviceApiKey}`);
+  headers.set("authorization", `Bearer ${providerApiKey}`);
   return headers;
 }
 
 export function forwardWebSocketHeaders(
   request: Request,
-  serviceApiKey: string,
+  providerApiKey: string,
 ): Headers {
   const headers = forwardableWebSocketHeaders(request);
-  headers.set("authorization", `Bearer ${serviceApiKey}`);
+  headers.set("authorization", `Bearer ${providerApiKey}`);
   headers.set("upgrade", "websocket");
   return headers;
 }

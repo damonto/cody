@@ -12,14 +12,15 @@ import {
 function fixture(mode) {
   return {
     config: {
-      services: [
+      providers: [
         {
+          type: "ai_gateway",
           id: "inference",
           base_url: "https://inference.example/v1",
-          keys: [
+          credentials: [
             {
               id: "inference-key",
-              api_key: "inference-secret",
+              auth: { type: "api_key", api_key: "inference-secret" },
               disabled: false,
               priority: 100,
             },
@@ -32,7 +33,7 @@ function fixture(mode) {
         },
       ],
       api_keys: [
-        { id: "client", api_key: "client-key", services: ["inference"] },
+        { id: "client", api_key: "client-key", providers: ["inference"] },
       ],
       model_routes: { "client-model": { model: "upstream-model" } },
       web_search: {
@@ -42,7 +43,7 @@ function fixture(mode) {
         max_results: 3,
       },
     },
-    client: { id: "client", api_key: "client-key", services: ["inference"] },
+    client: { id: "client", api_key: "client-key", providers: ["inference"] },
   };
 }
 
@@ -683,7 +684,7 @@ test("adapter enforces a total response budget across the query batch", async ()
   }
 });
 
-test("adapter returns non-JSON provider errors without calling an inference service", async () => {
+test("adapter returns non-JSON provider errors without calling an inference provider", async () => {
   const { config, client } = fixture("tavily");
   const originalFetch = globalThis.fetch;
   const urls = [];

@@ -244,8 +244,8 @@ test.each(["responses", "messages"] as const)(
     meter.authenticate("client");
     meter.requestedModel("alias");
     meter.select({
-      serviceId: "provider",
-      keyId: "primary",
+      providerId: "provider",
+      credentialId: "primary",
       model: "real-model",
     });
     const selected = meter.checkpoint();

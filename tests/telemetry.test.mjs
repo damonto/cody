@@ -20,7 +20,7 @@ function fixture(protocol = "openai", websocket = false) {
     revision: 7,
     model_policies: [
       {
-        service_id: "a",
+        provider_id: "a",
         model: "real",
         context_window: 1_000_000,
         pricing: {
@@ -40,7 +40,7 @@ function fixture(protocol = "openai", websocket = false) {
   });
   meter.authenticate("client");
   meter.requestedModel("alias");
-  meter.select({ serviceId: "a", keyId: "key", model: "real" });
+  meter.select({ providerId: "a", credentialId: "key", model: "real" });
   return {
     meter,
     events,
@@ -659,7 +659,7 @@ for (const transport of ["http", "sse", "websocket"]) {
       revision: 7,
       model_policies: [
         {
-          service_id: "a",
+          provider_id: "a",
           model: "gemini-3.8-flash",
           context_window: 1_000_000,
           pricing: {
@@ -686,7 +686,11 @@ for (const transport of ["http", "sse", "websocket"]) {
     };
     meter.configure(config);
     meter.authenticate("client");
-    meter.select({ serviceId: "a", keyId: "key", model: "gemini-3.8-flash" });
+    meter.select({
+      providerId: "a",
+      credentialId: "key",
+      model: "gemini-3.8-flash",
+    });
     config.model_policies[0].pricing.tiers[0].cache_write = "0.9375";
     meter.recordAttempts([
       { attempt: 1, status: 503, duration_ms: 30, usage: previous },

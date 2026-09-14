@@ -1,10 +1,12 @@
 import {
+  applyD1Migrations,
   createExecutionContext,
   evictDurableObject,
   waitOnExecutionContext,
+  type D1Migration,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { sessionAffinityIdentity } from "../../src/gateway/routing/affinity.ts";
 import {
   clearConfigCacheForTests,
@@ -12,21 +14,32 @@ import {
 } from "../../src/config/store.ts";
 import { MAX_CONTEXT_MANAGEMENT_BODY_BYTES } from "../../src/gateway/sessions/context-management.ts";
 import {
-  getServiceAvailability,
-  recordServiceFailure,
+  getProviderAvailability,
+  recordProviderFailure,
 } from "../../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
 import { clearModelsCacheForTests } from "../../src/gateway/catalog/models.ts";
 import { CONTEXT_MANAGEMENT_PATHS } from "../../src/gateway/protocol.ts";
 import type { GatewayConfig } from "../../src/config/types.ts";
 
+beforeAll(async () => {
+  const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
+  await applyD1Migrations(bindings.CODY_DB, bindings.TEST_MIGRATIONS);
+});
+
 function config(): GatewayConfig {
   const suffix = crypto.randomUUID();
-  const services = ["primary", "secondary"].map((name, index) => ({
+  const providers = ["primary", "secondary"].map((name, index) => ({
+    type: "ai_gateway",
     id: `${name}-${suffix}`,
     base_url: `https://${name}.example/v1`,
-    keys: [
-      { id: "key", api_key: `${name}-secret`, priority: 100, disabled: false },
+    credentials: [
+      {
+        id: "key",
+        auth: { type: "api_key", api_key: `${name}-secret` },
+        priority: 100,
+        disabled: false,
+      },
     ],
     models: ["upstream-astra"],
     priority: 100 - index,
@@ -35,17 +48,17 @@ function config(): GatewayConfig {
     supports_context_management: true,
   }));
   return parseConfig({
-    services,
+    providers,
     api_keys: [
       {
         id: `client-${suffix}`,
         api_key: "client-secret",
-        services: services.map(({ id }) => id),
+        providers: providers.map(({ id }) => id),
       },
       {
         id: `other-${suffix}`,
         api_key: "other-secret",
-        services: services.map(({ id }) => id),
+        providers: providers.map(({ id }) => id),
       },
     ],
     model_routes: { "gpt-6-astra": { model: "upstream-astra" } },
@@ -184,8 +197,8 @@ test("native endpoints enforce opt-in, authentication, methods and the path whit
   expect(
     (await call(settings, "/alpha/notes/v2/delete_file", body)).status,
   ).toBe(404);
-  settings.services.forEach((service) => {
-    service.supports_context_management = false;
+  settings.providers.forEach((provider) => {
+    provider.supports_context_management = false;
   });
   expect((await call(settings, path, body)).status).toBe(404);
   expect(fetch).not.toHaveBeenCalled();
@@ -193,10 +206,10 @@ test("native endpoints enforce opt-in, authentication, methods and the path whit
 
 test("native context calls use the pinned key's explicit direct proxy override", async () => {
   const settings = config();
-  settings.services[0].proxy = {
+  settings.providers[0].proxy = {
     url: "socks5://unreachable-proxy.invalid:1080",
   };
-  settings.services[0].keys[0].proxy = null;
+  settings.providers[0].credentials[0].proxy = null;
   const fetch = vi.fn(
     async () => new Response("encrypted-output", { status: 200 }),
   );
@@ -241,7 +254,7 @@ test("invalid identities and oversized native bodies are rejected before contact
 
 test("a first thread hint pins subsequent inference and notes across priority changes and eviction", async () => {
   const settings = config();
-  settings.services[0].supports_context_management = false;
+  settings.providers[0].supports_context_management = false;
   const session = crypto.randomUUID();
   const captured: Request[] = [];
   vi.stubGlobal(
@@ -262,14 +275,14 @@ test("a first thread hint pins subsequent inference and notes across priority ch
   const stub = env.SESSION_AFFINITY.getByName(identity.object_name);
   const original = await stub.getStatus();
   expect(original).toMatchObject({
-    service_id: settings.services[1].id,
+    provider_id: settings.providers[1].id,
     context_management: true,
   });
   await evictDurableObject(stub);
-  settings.services[0].supports_context_management = true;
-  settings.services[1].keys.push({
+  settings.providers[0].supports_context_management = true;
+  settings.providers[1].credentials.push({
     id: "new-key",
-    api_key: "new-secret",
+    auth: { type: "api_key", api_key: "new-secret" },
     priority: 200,
     disabled: false,
   });
@@ -306,8 +319,8 @@ test("a first thread hint pins subsequent inference and notes across priority ch
 
 test("ordinary sessions retain their binding when enabling context management after credential rotation", async () => {
   const settings = config();
-  for (const service of settings.services) {
-    service.supports_context_management = false;
+  for (const provider of settings.providers) {
+    provider.supports_context_management = false;
   }
   const session = crypto.randomUUID();
   const hosts: string[] = [];
@@ -330,10 +343,10 @@ test("ordinary sessions retain their binding when enabling context management af
   const original = await affinity.getStatus();
 
   settings.api_keys[0].api_key = "rotated-client-secret";
-  for (const service of settings.services) {
-    service.supports_context_management = true;
+  for (const provider of settings.providers) {
+    provider.supports_context_management = true;
   }
-  settings.services[1].priority = 200;
+  settings.providers[1].priority = 200;
   expect(
     (
       await call(
@@ -353,13 +366,13 @@ test("ordinary sessions retain their binding when enabling context management af
   expect(hosts).toEqual(["primary.example", "primary.example"]);
 });
 
-test("disabled bound keys or capabilities never switch a context session to another target", async () => {
+test("disabled bound credentials or capabilities never switch a context session to another target", async () => {
   const settings = config();
   const session = crypto.randomUUID();
   const fetch = vi.fn(async () => Response.json({ text: "ok" }));
   vi.stubGlobal("fetch", fetch);
   await call(settings, "/responses", inferencePayload(session));
-  settings.services[0].keys[0].disabled = true;
+  settings.providers[0].credentials[0].disabled = true;
   expect(
     (await call(settings, "/alpha/notes/v2/read_file", toolPayload(session)))
       .status,
@@ -367,13 +380,13 @@ test("disabled bound keys or capabilities never switch a context session to anot
   expect(
     (await call(settings, "/responses", inferencePayload(session))).status,
   ).toBe(503);
-  settings.services[0].keys[0].disabled = false;
-  settings.services[0].supports_context_management = false;
+  settings.providers[0].credentials[0].disabled = false;
+  settings.providers[0].supports_context_management = false;
   expect(
     (await call(settings, "/responses", inferencePayload(session))).status,
   ).toBe(503);
   expect(fetch).toHaveBeenCalledTimes(1);
-  settings.services[0].supports_context_management = true;
+  settings.providers[0].supports_context_management = true;
   expect(
     (await call(settings, "/alpha/notes/v2/read_file", toolPayload(session)))
       .status,
@@ -389,8 +402,8 @@ test("capability removal cannot bypass an existing context binding through ordin
     (await call(settings, "/responses", inferencePayload(session))).status,
   ).toBe(200);
 
-  for (const service of settings.services) {
-    service.supports_context_management = false;
+  for (const provider of settings.providers) {
+    provider.supports_context_management = false;
   }
   const revoked = await call(
     settings,
@@ -402,8 +415,8 @@ test("capability removal cannot bypass an existing context binding through ordin
     error: { code: "context_session_unavailable" },
   });
 
-  settings.services[0].supports_context_management = true;
-  settings.model_routes["gpt-6-astra"].services = [settings.services[1].id];
+  settings.providers[0].supports_context_management = true;
+  settings.model_routes["gpt-6-astra"].providers = [settings.providers[1].id];
   expect(
     (await call(settings, "/responses", inferencePayload(session, false)))
       .status,
@@ -434,9 +447,9 @@ test("context requests fail closed when the affinity store is unavailable", asyn
   expect(fetch).not.toHaveBeenCalled();
 });
 
-test("native bootstrap honors Astra route restrictions before selecting a service", async () => {
+test("native bootstrap honors Astra route restrictions before selecting a provider", async () => {
   const settings = config();
-  settings.model_routes["gpt-6-astra"].services = [settings.services[1].id];
+  settings.model_routes["gpt-6-astra"].providers = [settings.providers[1].id];
   const session = crypto.randomUUID();
   const hosts: string[] = [];
   vi.stubGlobal(
@@ -487,10 +500,10 @@ test("context inference rejects conflicting wire identities and requires a sessi
 
 test("native calls never replay writes or alter inference failure streaks", async () => {
   const settings = config();
-  settings.services[0].retry = { status_codes: [503], delays_ms: [0, 0] };
+  settings.providers[0].retry = { status_codes: [503], delays_ms: [0, 0] };
   const session = crypto.randomUUID();
-  await recordServiceFailure(env, settings.services[0].id, "seed");
-  const before = await getServiceAvailability(env, settings.services[0].id);
+  await recordProviderFailure(env, settings.providers[0].id, "seed");
+  const before = await getProviderAvailability(env, settings.providers[0].id);
   const fetch = vi.fn(
     async () => new Response("upstream error", { status: 503 }),
   );
@@ -505,12 +518,12 @@ test("native calls never replay writes or alter inference failure streaks", asyn
     ).status,
   ).toBe(503);
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(await getServiceAvailability(env, settings.services[0].id)).toEqual(
+  expect(await getProviderAvailability(env, settings.providers[0].id)).toEqual(
     before,
   );
   fetch.mockImplementation(async () => new Response("ok"));
   await call(settings, "/alpha/notes/v2/read_file", toolPayload(session));
-  expect(await getServiceAvailability(env, settings.services[0].id)).toEqual(
+  expect(await getProviderAvailability(env, settings.providers[0].id)).toEqual(
     before,
   );
 });
@@ -558,12 +571,12 @@ test("context bindings use the stable client id across credential rotation", asy
       return Response.json({ text: "ok" });
     }),
   );
-  settings.services[0].supports_context_management = false;
+  settings.providers[0].supports_context_management = false;
   expect(
     (await call(settings, "/alpha/notes/v2/thread_hint", toolPayload(session)))
       .status,
   ).toBe(200);
-  settings.services[0].supports_context_management = true;
+  settings.providers[0].supports_context_management = true;
   settings.api_keys[0].api_key = "rotated-client-secret";
   expect(
     (
@@ -711,8 +724,8 @@ test("ownership release rejects ambiguous query values and bulk release", async 
 
 test("requests without a session bypass affinity but session requests fail closed", async () => {
   const settings = config();
-  for (const service of settings.services) {
-    service.supports_context_management = false;
+  for (const provider of settings.providers) {
+    provider.supports_context_management = false;
   }
   const fetch = vi.fn(async () => Response.json({ output: [] }));
   vi.stubGlobal("fetch", fetch);
@@ -758,8 +771,8 @@ test("conflicting context identities are rejected before creating a binding", as
 
 test("astra catalog defaults follow accessible capable model routes without changing other clients", async () => {
   const settings = config();
-  settings.api_keys[1].services = [settings.services[1].id];
-  settings.services[1].supports_context_management = false;
+  settings.api_keys[1].providers = [settings.providers[1].id];
+  settings.providers[1].supports_context_management = false;
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => Response.json({ data: [{ id: "upstream-astra" }] })),
@@ -793,7 +806,7 @@ test("astra catalog defaults follow accessible capable model routes without chan
     enabled: false,
     use_history_notes_extension: false,
   });
-  settings.model_routes["gpt-6-astra"].services = [settings.services[1].id];
+  settings.model_routes["gpt-6-astra"].providers = [settings.providers[1].id];
   const restricted = await call(settings, "/v1/models", undefined, {
     "user-agent": "codex",
   });

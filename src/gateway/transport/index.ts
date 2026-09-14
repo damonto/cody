@@ -1,6 +1,6 @@
 import type {
-  ServiceApiKeyConfig,
-  ServiceConfig,
+  ProviderCredentialConfig,
+  ProviderConfig,
   SocksProxyConfig,
 } from "../../config/types.ts";
 import { openSocksTunnel, type SocksDial } from "./socks.ts";
@@ -17,17 +17,17 @@ export interface SocksFetchOptions {
 }
 
 export function effectiveProxy(
-  service: Pick<ServiceConfig, "proxy">,
-  key: Pick<ServiceApiKeyConfig, "proxy">,
+  provider: Pick<ProviderConfig, "proxy">,
+  key: Pick<ProviderCredentialConfig, "proxy">,
 ): SocksProxyConfig | undefined {
-  return (key.proxy === undefined ? service.proxy : key.proxy) ?? undefined;
+  return (key.proxy === undefined ? provider.proxy : key.proxy) ?? undefined;
 }
 
 export function createUpstreamFetch(
-  service: ServiceConfig,
-  key: ServiceApiKeyConfig,
+  provider: ProviderConfig,
+  credential: ProviderCredentialConfig,
 ): UpstreamFetch {
-  const proxy = effectiveProxy(service, key);
+  const proxy = effectiveProxy(provider, credential);
   return proxy
     ? (request) => socksFetch(request, proxy)
     : (request) => fetch(request);

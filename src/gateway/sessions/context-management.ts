@@ -1,13 +1,16 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { parseContextManagementSession } from "./context-management-protocol.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
-import { apiError, forwardRequestHeaders, upstreamUrl } from "../http/http.ts";
+import { apiError } from "../http/http.ts";
 import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { requestProtocol, type ContextManagementPath } from "../protocol.ts";
 import { fetchWithConfiguredRetries } from "../http/proxy.ts";
-import { createUpstreamFetch } from "../transport/index.ts";
 import {
-  allowedServiceCandidates,
+  prepareProviderRequest,
+  providerSupportsEndpoint,
+} from "../../providers/index.ts";
+import {
+  allowedProviderCandidates,
   resolveModelRoute,
   selectAvailableTargetWithDetails,
 } from "../routing/routing.ts";
@@ -29,8 +32,8 @@ export async function handleContextManagement(
     client.api_key,
     ...upstreamSecretValues(config),
   ]);
-  const candidates = allowedServiceCandidates(config, client).filter(
-    ({ service }) => service.supports_context_management,
+  const candidates = allowedProviderCandidates(config, client).filter(
+    ({ provider }) => providerSupportsEndpoint(provider, path),
   );
   if (candidates.length === 0) {
     return apiError(
@@ -74,20 +77,20 @@ export async function handleContextManagement(
     contextManagement: true,
     // The first hint precedes inference and carries no model. Bootstrap using
     // Astra's effective routes; existing sessions retain their original target.
-    initialServiceIds: resolveModelRoute(config, client, "gpt-6-astra", {
+    initialProviderIds: resolveModelRoute(config, client, "gpt-6-astra", {
       requiredCapabilities: ["supports_context_management"],
-    }).targets.map(({ service }) => service.id),
+    }).targets.map(({ provider }) => provider.id),
     session: { clientId: client.id, sessionId },
   });
   const target = selection.target;
   requestLog?.set({
     routing: {
-      candidate_services: candidates.map(({ service }) => service.id),
+      candidate_providers: candidates.map(({ provider }) => provider.id),
       affinity: selection.affinity,
       ...(target
         ? {
-            selected_service: target.service.id,
-            selected_key_id: target.key.id,
+            selected_provider: target.provider.id,
+            selected_credential_id: target.credential.id,
           }
         : {}),
     },
@@ -110,7 +113,16 @@ export async function handleContextManagement(
     );
   }
 
-  const headers = forwardRequestHeaders(request, target.key.api_key);
+  const prepared = await prepareProviderRequest(
+    target.provider,
+    target.credential,
+    {
+      request,
+      endpoint: path,
+      transport: "http",
+    },
+  );
+  const { headers } = prepared;
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -118,20 +130,17 @@ export async function handleContextManagement(
   // not update inference health, including on successful recovery reads.
   const result = await fetchWithConfiguredRetries(
     () =>
-      new Request(
-        upstreamUrl(target.service, path, new URL(request.url).search),
-        {
-          method: "POST",
-          headers,
-          body,
-          redirect: "manual",
-          signal: request.signal,
-        },
-      ),
+      new Request(prepared.url, {
+        method: "POST",
+        headers,
+        body,
+        redirect: "manual",
+        signal: request.signal,
+      }),
     undefined,
     {
       attemptTimeoutMs: 35_000,
-      send: createUpstreamFetch(target.service, target.key),
+      send: prepared.send,
     },
   );
   requestLog?.set({
@@ -139,8 +148,8 @@ export async function handleContextManagement(
       ? "success"
       : "context_management_upstream_error",
     upstream: {
-      service_id: target.service.id,
-      key_id: target.key.id,
+      provider_id: target.provider.id,
+      credential_id: target.credential.id,
       attempts: result.attempts,
     },
   });

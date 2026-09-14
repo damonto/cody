@@ -48,7 +48,7 @@ export function SocksProxyField({ inherit = false }: { inherit?: boolean }) {
         </SelectTrigger>
         <SelectContent>
           {inherit && (
-            <SelectItem value="inherit">Use service proxy</SelectItem>
+            <SelectItem value="inherit">Use provider proxy</SelectItem>
           )}
           <SelectItem value="direct">Direct connection</SelectItem>
           <SelectItem value="socks5">SOCKS5</SelectItem>
@@ -56,8 +56,8 @@ export function SocksProxyField({ inherit = false }: { inherit?: boolean }) {
       </Select>
       <FieldDescription>
         {inherit
-          ? "This key can override the service proxy or connect directly."
-          : "Used by service keys that inherit this setting."}
+          ? "This key can override the provider proxy or connect directly."
+          : "Used by provider credentials that inherit this setting."}
       </FieldDescription>
       {proxy && (
         <div className="space-y-3 rounded-lg border p-3">

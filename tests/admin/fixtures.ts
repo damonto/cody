@@ -4,14 +4,15 @@ import type { UsageEvent } from "../../src/telemetry/types.ts";
 
 export function config(): GatewayConfig {
   return {
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "provider",
         base_url: "https://upstream.example/v1",
-        keys: [
+        credentials: [
           {
             id: "primary",
-            api_key: "test-upstream-secret",
+            auth: { type: "api_key", api_key: "test-upstream-secret" },
             priority: 100,
             disabled: false,
           },
@@ -25,14 +26,14 @@ export function config(): GatewayConfig {
       },
     ],
     api_keys: [
-      { id: "client", api_key: "test-client-secret", services: ["provider"] },
+      { id: "client", api_key: "test-client-secret", providers: ["provider"] },
     ],
     model_routes: { alias: { model: "real-model" } },
     web_search: { mode: "proxy" },
     reporting: { time_zone: "Asia/Shanghai", retention_days: 120 },
     model_policies: [
       {
-        service_id: "provider",
+        provider_id: "provider",
         model: "real-model",
         context_window: 1_000_000,
         pricing: {
@@ -68,8 +69,8 @@ export function usage(id: string, at: number, currency = "USD"): UsageEvent {
   meter.authenticate("client");
   meter.requestedModel("alias");
   meter.select({
-    serviceId: "provider",
-    keyId: "primary",
+    providerId: "provider",
+    credentialId: "primary",
     model: "real-model",
   });
   meter.recordAttempts([{ attempt: 1, status: 200, duration_ms: 100 }]);

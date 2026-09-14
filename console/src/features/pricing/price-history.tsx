@@ -5,22 +5,22 @@ import { date, number } from "@/lib/format";
 import { DataTable, Empty, ErrorNotice, Loading } from "@/components/common";
 
 export function PriceHistory({
-  serviceId,
+  providerId,
   model,
   enabled,
   timeZone,
 }: {
-  serviceId: string;
+  providerId: string;
   model: string;
   enabled: boolean;
   timeZone?: string;
 }) {
   const history = useQuery({
-    queryKey: ["price-history", serviceId, model],
+    queryKey: ["price-history", providerId, model],
     queryFn: ({ signal }) =>
       read(
         rpc.pricing.history.$get(
-          { query: { service_id: serviceId, model } },
+          { query: { provider_id: providerId, model } },
           { init: { signal } },
         ),
       ),

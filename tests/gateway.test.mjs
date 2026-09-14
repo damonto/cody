@@ -9,9 +9,9 @@ import {
 import { clearConfigCacheForTests } from "../src/config/store.ts";
 import {
   FAILURE_THRESHOLD,
-  keyIsAvailable,
-  ServiceHealthState,
-  serviceIsAvailable,
+  credentialIsAvailable,
+  ProviderHealthState,
+  providerIsAvailable,
 } from "../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../src/gateway/app.ts";
 import { clearModelsCacheForTests } from "../src/gateway/catalog/models.ts";
@@ -19,20 +19,21 @@ import { CONTEXT_MANAGEMENT_PATHS } from "../src/gateway/protocol.ts";
 
 function gatewayConfig() {
   return {
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "primary",
         base_url: "https://primary.example/v1",
-        keys: [
+        credentials: [
           {
             id: "primary-key",
-            api_key: "upstream-key",
+            auth: { type: "api_key", api_key: "upstream-key" },
             disabled: false,
             priority: 100,
           },
           {
             id: "backup-key",
-            api_key: "upstream-backup-key",
+            auth: { type: "api_key", api_key: "upstream-backup-key" },
             disabled: true,
             priority: 50,
           },
@@ -45,11 +46,11 @@ function gatewayConfig() {
       },
     ],
     api_keys: [
-      { id: "gateway-client", api_key: "client-key", services: ["primary"] },
+      { id: "gateway-client", api_key: "client-key", providers: ["primary"] },
     ],
     model_routes: {
       "gpt-5.6-sol": { model: "grok-4.5" },
-      "codex-auto-review": { model: "review-model", services: ["primary"] },
+      "codex-auto-review": { model: "review-model", providers: ["primary"] },
     },
   };
 }
@@ -89,7 +90,7 @@ function testEnv(config) {
     HEALTH: {
       getByName: (name) => {
         if (!healthObjects.has(name)) {
-          healthObjects.set(name, new ServiceHealthState());
+          healthObjects.set(name, new ProviderHealthState());
         }
         return healthObjects.get(name);
       },
@@ -564,17 +565,18 @@ test("Worker forwards alpha search and responses compact aliases with response f
   );
 });
 
-test("alpha search skips higher-priority services without web search support", async () => {
+test("alpha search skips higher-priority providers without web search support", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services[0].supports_web_search = false;
-  config.services.push({
+  config.providers[0].supports_web_search = false;
+  config.providers.push({
+    type: "ai_gateway",
     id: "search",
     base_url: "https://search.example/v1",
-    keys: [
+    credentials: [
       {
         id: "search-key",
-        api_key: "search-upstream-key",
+        auth: { type: "api_key", api_key: "search-upstream-key" },
         disabled: false,
         priority: 100,
       },
@@ -585,7 +587,7 @@ test("alpha search skips higher-priority services without web search support", a
     supports_web_search: true,
     models: ["grok-4.5"],
   });
-  config.api_keys[0].services.push("search");
+  config.api_keys[0].providers.push("search");
   const originalFetch = globalThis.fetch;
   let captured;
   globalThis.fetch = async (input, init) => {
@@ -621,10 +623,10 @@ test("alpha search skips higher-priority services without web search support", a
   });
 });
 
-test("alpha search does not forward when no service declares web search support", async () => {
+test("alpha search does not forward when no provider declares web search support", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services[0].supports_web_search = false;
+  config.providers[0].supports_web_search = false;
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -716,13 +718,14 @@ test("new HTTP forwarding endpoints accept POST only", async () => {
 test("session-id header and client metadata share the same persistent binding", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services.push({
+  config.providers.push({
+    type: "ai_gateway",
     id: "peer",
     base_url: "https://peer.example/v1",
-    keys: [
+    credentials: [
       {
         id: "peer-key",
-        api_key: "peer-upstream-key",
+        auth: { type: "api_key", api_key: "peer-upstream-key" },
         disabled: false,
         priority: 100,
       },
@@ -731,7 +734,7 @@ test("session-id header and client metadata share the same persistent binding", 
     priority: 100,
     models: ["grok-4.5"],
   });
-  config.api_keys[0].services.push("peer");
+  config.api_keys[0].providers.push("peer");
   const originalFetch = globalThis.fetch;
   const targets = [];
   globalThis.fetch = async (input, init) => {
@@ -786,8 +789,8 @@ test("session-id header and client metadata share the same persistent binding", 
 test("Worker proxies Codex image generation and edits through model routing", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services[0].models.push("gpt-image-2");
-  config.services[0].retry = { status_codes: [429], delays_ms: [0] };
+  config.providers[0].models.push("gpt-image-2");
+  config.providers[0].retry = { status_codes: [429], delays_ms: [0] };
   config.model_routes["image-client"] = { model: "gpt-image-2" };
   const originalFetch = globalThis.fetch;
   const captured = [];
@@ -900,7 +903,7 @@ test("Worker proxies Codex image generation and edits through model routing", as
   ]);
 });
 
-test("Image API requests reject unavailable models before contacting an upstream service", async () => {
+test("Image API requests reject unavailable models before contacting an upstream provider", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
   let calls = 0;
@@ -967,13 +970,13 @@ test("gateway logs correlate a request without logging credentials or body conte
   assert.equal(entry.path, "/v1/responses");
   assert.equal(entry.response_status, 200);
   assert.equal(entry.outcome, "success");
-  assert.equal(entry.client_key_id, "gateway-client");
-  assert.deepEqual(entry.routing.candidate_services, ["primary"]);
-  assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
-  assert.equal(entry.routing.selected_service, "primary");
-  assert.equal(entry.routing.selected_key_id, "primary-key");
-  assert.equal(entry.upstream.service_id, "primary");
-  assert.equal(entry.upstream.key_id, "primary-key");
+  assert.equal(entry.client_id, "gateway-client");
+  assert.deepEqual(entry.routing.candidate_providers, ["primary"]);
+  assert.deepEqual(entry.routing.checked_available_providers, ["primary"]);
+  assert.equal(entry.routing.selected_provider, "primary");
+  assert.equal(entry.routing.selected_credential_id, "primary-key");
+  assert.equal(entry.upstream.provider_id, "primary");
+  assert.equal(entry.upstream.credential_id, "primary-key");
   assert.equal(entry.upstream.status, 200);
   assert.equal(entry.upstream.attempts.length, 1);
   assert(!captured.lines.some((line) => line.includes("client-key")));
@@ -994,13 +997,13 @@ test("gateway logs route application independently from model rewriting", async 
       modelRewritten: true,
     },
     {
-      name: "self-route with a service constraint",
+      name: "self-route with a provider constraint",
       model: "review-model",
       configure: () => {
         const config = gatewayConfig();
         config.model_routes["review-model"] = {
           model: "review-model",
-          services: ["primary"],
+          providers: ["primary"],
         };
         return config;
       },
@@ -1045,7 +1048,7 @@ test("gateway logs route application independently from model rewriting", async 
   }
 });
 
-test("gateway applies per-key model routes and keeps other keys on global routes", async () => {
+test("gateway applies per-key model routes and keeps other credentials on global routes", async () => {
   const originalFetch = globalThis.fetch;
   const upstreamBodies = [];
   globalThis.fetch = async (input, init) => {
@@ -1058,15 +1061,15 @@ test("gateway applies per-key model routes and keeps other keys on global routes
     {
       id: "gateway-client",
       api_key: "client-key",
-      services: ["primary"],
+      providers: ["primary"],
       model_routes: {
-        "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+        "gpt-5.6-sol": { model: "review-model", providers: ["primary"] },
       },
     },
     {
       id: "gateway-client-other",
       api_key: "other-client-key",
-      services: ["primary"],
+      providers: ["primary"],
     },
   ];
 
@@ -1109,7 +1112,7 @@ test("gateway applies per-key model routes and keeps other keys on global routes
   }
 });
 
-test("gateway applies service model routes over per-key and global routes", async () => {
+test("gateway applies provider model routes over per-key and global routes", async () => {
   const originalFetch = globalThis.fetch;
   const upstreamBodies = [];
   globalThis.fetch = async (input, init) => {
@@ -1118,7 +1121,7 @@ test("gateway applies service model routes over per-key and global routes", asyn
     return new Response("ok", { status: 200 });
   };
   const config = gatewayConfig();
-  config.services[0].model_routes = {
+  config.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "review-model" },
   };
   config.api_keys[0].model_routes = {
@@ -1149,7 +1152,7 @@ test("gateway applies service model routes over per-key and global routes", asyn
   }
 });
 
-test("gateway rewrites by the selected service route when services differ", async () => {
+test("gateway rewrites by the selected provider route when providers differ", async () => {
   const originalFetch = globalThis.fetch;
   const upstreamBodies = [];
   const upstreamUrls = [];
@@ -1160,13 +1163,14 @@ test("gateway rewrites by the selected service route when services differ", asyn
     return new Response("ok", { status: 200 });
   };
   const config = gatewayConfig();
-  config.services.push({
+  config.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-secret",
+        auth: { type: "api_key", api_key: "secondary-secret" },
         disabled: false,
         priority: 100,
       },
@@ -1177,11 +1181,11 @@ test("gateway rewrites by the selected service route when services differ", asyn
     supports_web_search: true,
     models: ["grok-4.5", "review-model"],
   });
-  config.api_keys[0].services = ["primary", "secondary"];
+  config.api_keys[0].providers = ["primary", "secondary"];
   config.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+    "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
   };
-  config.services[0].model_routes = {
+  config.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "review-model" },
   };
 
@@ -1210,7 +1214,7 @@ test("gateway rewrites by the selected service route when services differ", asyn
 test("gateway summarizes configured retries in the single request log", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services[0].retry = { status_codes: [429], delays_ms: [0, 0] };
+  config.providers[0].retry = { status_codes: [429], delays_ms: [0, 0] };
   const originalFetch = globalThis.fetch;
   let attempts = 0;
   globalThis.fetch = async () => {
@@ -1446,13 +1450,13 @@ test("model catalog fan-out is summarized in one request log", async () => {
   assert.equal(captured.entries.length, 1);
   const [entry] = captured.entries;
   assert.equal(entry.event, "request.summary");
-  assert.equal(entry.client_key_id, "gateway-client");
-  assert.deepEqual(entry.routing.candidate_services, ["primary"]);
-  assert.deepEqual(entry.routing.selected_keys, [
-    { service_id: "primary", key_id: "primary-key" },
+  assert.equal(entry.client_id, "gateway-client");
+  assert.deepEqual(entry.routing.candidate_providers, ["primary"]);
+  assert.deepEqual(entry.routing.selected_credentials, [
+    { provider_id: "primary", credential_id: "primary-key" },
   ]);
-  assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
-  assert.equal(entry.routing.key_checks[0].key_id, "primary-key");
+  assert.deepEqual(entry.routing.checked_available_providers, ["primary"]);
+  assert.equal(entry.routing.credential_checks[0].credential_id, "primary-key");
   assert.equal(entry.catalog.cache, "miss");
   assert.equal(Object.hasOwn(entry.catalog, "upstream_errors"), false);
   assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
@@ -1462,13 +1466,14 @@ test("partial model catalog failures remain visible at warn level", async () => 
   clearConfigCacheForTests();
   clearModelsCacheForTests();
   const config = gatewayConfig();
-  config.services.push({
+  config.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -1477,7 +1482,7 @@ test("partial model catalog failures remain visible at warn level", async () => 
     priority: 50,
     models: ["grok-4.5"],
   });
-  config.api_keys[0].services.push("secondary");
+  config.api_keys[0].providers.push("secondary");
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -1521,7 +1526,7 @@ test("partial model catalog failures remain visible at warn level", async () => 
   assert.equal(entry.event, "request.summary");
   assert.equal(entry.outcome, "partial_success");
   assert.equal(entry.response_status, 200);
-  assert.equal(entry.catalog.upstream_errors[0].key_id, "primary-key");
+  assert.equal(entry.catalog.upstream_errors[0].credential_id, "primary-key");
   assert.deepEqual(entry.catalog.upstream_errors[0].error_json, {
     error: { code: "primary_unavailable" },
   });
@@ -1532,13 +1537,14 @@ test("model catalog logs JSON upstream errors within one request budget", async 
   clearModelsCacheForTests();
   const config = gatewayConfig();
   for (let index = 1; index < 3; index += 1) {
-    config.services.push({
-      id: `service-${index}`,
-      base_url: `https://service-${index}.example/v1`,
-      keys: [
+    config.providers.push({
+      type: "ai_gateway",
+      id: `provider-${index}`,
+      base_url: `https://provider-${index}.example/v1`,
+      credentials: [
         {
-          id: `service-key-${index}`,
-          api_key: `upstream-${index}`,
+          id: `provider-key-${index}`,
+          auth: { type: "api_key", api_key: `upstream-${index}` },
           disabled: false,
           priority: 100 - index,
         },
@@ -1547,7 +1553,7 @@ test("model catalog logs JSON upstream errors within one request budget", async 
       priority: 100 - index,
       models: ["grok-4.5"],
     });
-    config.api_keys[0].services.push(`service-${index}`);
+    config.api_keys[0].providers.push(`provider-${index}`);
   }
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -1555,7 +1561,7 @@ test("model catalog logs JSON upstream errors within one request budget", async 
     return Response.json(
       {
         error: {
-          service: new URL(request.url).hostname,
+          provider: new URL(request.url).hostname,
           detail: "x".repeat(20 * 1024),
         },
       },
@@ -1725,18 +1731,19 @@ test("concurrent model catalog misses do not share request-scoped I/O", async ()
   }
 });
 
-test("disabled services are skipped for inference and model aggregation", async () => {
+test("disabled providers are skipped for inference and model aggregation", async () => {
   clearConfigCacheForTests();
   clearModelsCacheForTests();
   const config = gatewayConfig();
-  config.services[0].disabled = true;
-  config.services.push({
+  config.providers[0].disabled = true;
+  config.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -1745,7 +1752,7 @@ test("disabled services are skipped for inference and model aggregation", async 
     priority: 50,
     models: ["grok-4.5"],
   });
-  config.api_keys[0].services.push("secondary");
+  config.api_keys[0].providers.push("secondary");
 
   const originalFetch = globalThis.fetch;
   const upstreamUrls = [];
@@ -1800,16 +1807,17 @@ test("disabled services are skipped for inference and model aggregation", async 
   }
 });
 
-test("an upstream error is returned without retrying another service", async () => {
+test("an upstream error is returned without retrying another provider", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services.push({
+  config.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -1818,7 +1826,7 @@ test("an upstream error is returned without retrying another service", async () 
     priority: 50,
     models: ["grok-4.5"],
   });
-  config.api_keys[0].services.push("secondary");
+  config.api_keys[0].providers.push("secondary");
 
   const originalFetch = globalThis.fetch;
   const upstreamUrls = [];
@@ -1982,16 +1990,17 @@ test("non-JSON upstream errors log only the status without buffering the body", 
   assert.equal(Object.hasOwn(entry.upstream, "error_body_bytes"), false);
 });
 
-test("an authenticated client can list and clear health only for allowed services", async () => {
+test("an authenticated client can list and clear health only for allowed providers", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services.push({
+  config.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -2010,7 +2019,7 @@ test("an authenticated client can list and clear health only for allowed service
   env.HEALTH.getByName(
     "key:primary:primary-key:catalog",
   ).recordImmediateFailure();
-  assert.equal(await serviceIsAvailable(env, "primary"), false);
+  assert.equal(await providerIsAvailable(env, "primary"), false);
 
   const cooling = env.HEALTH.getByName("primary").getStatus();
   const list = await worker.fetch(
@@ -2025,10 +2034,10 @@ test("an authenticated client can list and clear health only for allowed service
     object: "list",
     scope: "inference",
     data: [
-      { service_id: "primary", ...cooling },
+      { provider_id: "primary", ...cooling },
       {
-        service_id: "primary",
-        key_id: "primary-key",
+        provider_id: "primary",
+        credential_id: "primary-key",
         ...env.HEALTH.getByName("key:primary:primary-key").getStatus(),
       },
     ],
@@ -2046,10 +2055,10 @@ test("an authenticated client can list and clear health only for allowed service
     object: "list",
     scope: "catalog",
     data: [
-      { service_id: "primary", ...catalogCooling },
+      { provider_id: "primary", ...catalogCooling },
       {
-        service_id: "primary",
-        key_id: "primary-key",
+        provider_id: "primary",
+        credential_id: "primary-key",
         ...env.HEALTH.getByName("key:primary:primary-key:catalog").getStatus(),
       },
     ],
@@ -2068,10 +2077,10 @@ test("an authenticated client can list and clear health only for allowed service
   );
   assert.equal(catalogKeyResponse.status, 200);
   assert.equal(
-    await keyIsAvailable(env, "primary", "primary-key", "catalog"),
+    await credentialIsAvailable(env, "primary", "primary-key", "catalog"),
     true,
   );
-  assert.equal(await serviceIsAvailable(env, "primary", "catalog"), false);
+  assert.equal(await providerIsAvailable(env, "primary", "catalog"), false);
 
   const keyResponse = await worker.fetch(
     new Request("https://gateway.example/v1/health/primary/primary-key", {
@@ -2083,14 +2092,17 @@ test("an authenticated client can list and clear health only for allowed service
   );
   assert.equal(keyResponse.status, 200);
   assert.deepEqual(await keyResponse.json(), {
-    service_id: "primary",
-    key_id: "primary-key",
+    provider_id: "primary",
+    credential_id: "primary-key",
     scope: "inference",
     failures: 0,
     cooling_until: null,
   });
-  assert.equal(await keyIsAvailable(env, "primary", "primary-key"), true);
-  assert.equal(await serviceIsAvailable(env, "primary"), false);
+  assert.equal(
+    await credentialIsAvailable(env, "primary", "primary-key"),
+    true,
+  );
+  assert.equal(await providerIsAvailable(env, "primary"), false);
 
   const response = await worker.fetch(
     new Request("https://gateway.example/v1/health/primary", {
@@ -2102,12 +2114,12 @@ test("an authenticated client can list and clear health only for allowed service
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
-    service_id: "primary",
+    provider_id: "primary",
     scope: "inference",
     failures: 0,
     cooling_until: null,
   });
-  assert.equal(await serviceIsAvailable(env, "primary"), true);
+  assert.equal(await providerIsAvailable(env, "primary"), true);
 
   const empty = await worker.fetch(
     new Request("https://gateway.example/health", {
@@ -2169,7 +2181,7 @@ test("authenticated clients can page, inspect, and delete only their session bin
   config.api_keys.push({
     id: "other-client",
     api_key: "other-client-key",
-    services: ["primary"],
+    providers: ["primary"],
   });
   const env = testEnv(config);
   const originalFetch = globalThis.fetch;
@@ -2214,8 +2226,8 @@ test("authenticated clients can page, inspect, and delete only their session bin
   assert.equal(firstPayload.data.length, 2);
   assert.equal(typeof firstPayload.next_cursor, "string");
   for (const binding of firstPayload.data) {
-    assert.equal(binding.service_id, "primary");
-    assert.equal(binding.key_id, "primary-key");
+    assert.equal(binding.provider_id, "primary");
+    assert.equal(binding.credential_id, "primary-key");
     assert.equal(typeof binding.created_at, "number");
     assert.equal(typeof binding.updated_at, "number");
     assert.equal(
@@ -2336,7 +2348,7 @@ test("authenticated clients can page, inspect, and delete only their session bin
 test("ordinary and context sessions share a registry across capability changes", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.services[0].supports_context_management = false;
+  config.providers[0].supports_context_management = false;
   config.model_routes["gpt-6-astra"] = { model: "grok-4.5" };
   const env = testEnv(config);
   const originalFetch = globalThis.fetch;
@@ -2358,7 +2370,7 @@ test("ordinary and context sessions share a registry across capability changes",
     );
     assert.equal(ordinary.status, 200);
 
-    config.services[0].supports_context_management = true;
+    config.providers[0].supports_context_management = true;
     clearConfigCacheForTests();
     const native = await worker.fetch(
       new Request("https://gateway.example/alpha/notes/v2/thread_hint", {

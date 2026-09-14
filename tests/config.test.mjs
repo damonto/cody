@@ -11,14 +11,15 @@ import { upstreamSecretValues } from "../src/gateway/routing/credentials.ts";
 
 function validConfig() {
   return {
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "primary",
         base_url: "https://primary.example/v1/",
-        keys: [
+        credentials: [
           {
             id: "primary-key",
-            api_key: "upstream-key",
+            auth: { type: "api_key", api_key: "upstream-key" },
             disabled: false,
             priority: 100,
           },
@@ -28,40 +29,40 @@ function validConfig() {
         models: ["grok-4.5", "review-model"],
       },
     ],
-    api_keys: [{ id: "client", api_key: "client-key", services: ["primary"] }],
+    api_keys: [{ id: "client", api_key: "client-key", providers: ["primary"] }],
     model_routes: {
       "gpt-5.6-sol": { model: "grok-4.5" },
-      "codex-auto-review": { model: "review-model", services: ["primary"] },
+      "codex-auto-review": { model: "review-model", providers: ["primary"] },
     },
   };
 }
 
-test("service and key SOCKS5 configuration preserves credentials and explicit direct overrides", () => {
+test("provider and key SOCKS5 configuration preserves credentials and explicit direct overrides", () => {
   const input = validConfig();
-  input.services[0].proxy = {
-    url: "socks5://service-proxy.test:1080/",
+  input.providers[0].proxy = {
+    url: "socks5://provider-proxy.test:1080/",
     username: "user",
     password: " space sensitive ",
   };
-  input.services[0].keys[0].proxy = {
+  input.providers[0].credentials[0].proxy = {
     url: "socks5://key-proxy.test:1081",
     username: "key-user",
     password: "key-password",
   };
   const parsed = parseConfig(input);
   assert.equal(
-    parsed.services[0].proxy.url,
-    "socks5://service-proxy.test:1080",
+    parsed.providers[0].proxy.url,
+    "socks5://provider-proxy.test:1080",
   );
-  assert.equal(parsed.services[0].proxy.password, " space sensitive ");
+  assert.equal(parsed.providers[0].proxy.password, " space sensitive ");
   assert.equal(
-    parsed.services[0].keys[0].proxy.url,
+    parsed.providers[0].credentials[0].proxy.url,
     "socks5://key-proxy.test:1081",
   );
   assert.ok(upstreamSecretValues(parsed).includes(" space sensitive "));
   assert.ok(upstreamSecretValues(parsed).includes("key-password"));
-  input.services[0].keys[0].proxy = null;
-  assert.equal(parseConfig(input).services[0].keys[0].proxy, null);
+  input.providers[0].credentials[0].proxy = null;
+  assert.equal(parseConfig(input).providers[0].credentials[0].proxy, null);
 });
 
 test("SOCKS5 configuration rejects other proxy protocols, embedded secrets and invalid authentication", () => {
@@ -86,33 +87,33 @@ test("SOCKS5 configuration rejects other proxy protocols, embedded secrets and i
     { url: "socks5://proxy.test:1080", insecure: true },
   ];
   for (const proxy of invalid) {
-    for (const level of ["service", "key"]) {
+    for (const level of ["provider", "key"]) {
       const input = validConfig();
-      (level === "service"
-        ? input.services[0]
-        : input.services[0].keys[0]
+      (level === "provider"
+        ? input.providers[0]
+        : input.providers[0].credentials[0]
       ).proxy = proxy;
       assert.throws(() => parseConfig(input), ConfigError);
     }
   }
 });
 
-test("proxy passwords are masked and restored by service and key IDs, including reordering and rotation", () => {
+test("proxy passwords are masked and restored by provider and key IDs, including reordering and rotation", () => {
   const input = validConfig();
-  input.services[0].proxy = {
-    url: "socks5://service.test:1080",
-    username: "service",
-    password: "service-proxy-password",
+  input.providers[0].proxy = {
+    url: "socks5://provider.test:1080",
+    username: "provider",
+    password: "provider-proxy-password",
   };
-  input.services[0].keys[0].proxy = {
+  input.providers[0].credentials[0].proxy = {
     url: "socks5://key.test:1080",
     username: "key",
     password: "key-proxy-password",
   };
-  input.services[0].keys.push({
-    ...input.services[0].keys[0],
+  input.providers[0].credentials.push({
+    ...input.providers[0].credentials[0],
     id: "second-key",
-    api_key: "another-upstream-key",
+    auth: { type: "api_key", api_key: "another-upstream-key" },
     proxy: {
       url: "socks5://second.test:1080",
       username: "second",
@@ -122,57 +123,60 @@ test("proxy passwords are masked and restored by service and key IDs, including 
   const masked = maskSecrets(input);
   assert.doesNotMatch(
     JSON.stringify(masked),
-    /service-proxy-password|key-proxy-password|second-proxy-password/,
+    /provider-proxy-password|key-proxy-password|second-proxy-password/,
   );
-  assert.equal(masked.services[0].proxy.password, SECRET_PLACEHOLDER);
-  masked.services[0].keys.reverse();
+  assert.equal(masked.providers[0].proxy.password, SECRET_PLACEHOLDER);
+  masked.providers[0].credentials.reverse();
   const restored = restoreSecrets(masked, input);
   assert.equal(
-    restored.services[0].keys[0].proxy.password,
+    restored.providers[0].credentials[0].proxy.password,
     "second-proxy-password",
   );
   assert.equal(
-    restored.services[0].keys[1].proxy.password,
+    restored.providers[0].credentials[1].proxy.password,
     "key-proxy-password",
   );
-  assert.equal(restored.services[0].proxy.password, "service-proxy-password");
-  masked.services[0].keys[0].proxy.password = "rotated-password";
+  assert.equal(restored.providers[0].proxy.password, "provider-proxy-password");
+  masked.providers[0].credentials[0].proxy.password = "rotated-password";
   assert.equal(
-    restoreSecrets(masked, input).services[0].keys[0].proxy.password,
+    restoreSecrets(masked, input).providers[0].credentials[0].proxy.password,
     "rotated-password",
   );
-  masked.services[0].keys[1].proxy = null;
-  assert.equal(restoreSecrets(masked, input).services[0].keys[1].proxy, null);
-  masked.services[0].id = "new-service";
+  masked.providers[0].credentials[1].proxy = null;
+  assert.equal(
+    restoreSecrets(masked, input).providers[0].credentials[1].proxy,
+    null,
+  );
+  masked.providers[0].id = "new-provider";
   assert.throws(() => restoreSecrets(masked, input), /new credential/);
 });
 
 test("parseConfig normalizes and validates a complete configuration", () => {
   const config = parseConfig(validConfig());
-  assert.equal(config.services[0].base_url, "https://primary.example/v1");
-  assert.equal(config.services[0].disabled, false);
-  assert.equal(config.services[0].supports_websocket, false);
-  assert.equal(config.services[0].supports_web_search, false);
-  assert.equal(config.services[0].supports_context_management, false);
-  assert.deepEqual(config.services[0].keys, [
+  assert.equal(config.providers[0].base_url, "https://primary.example/v1");
+  assert.equal(config.providers[0].disabled, false);
+  assert.equal(config.providers[0].supports_websocket, false);
+  assert.equal(config.providers[0].supports_web_search, false);
+  assert.equal(config.providers[0].supports_context_management, false);
+  assert.deepEqual(config.providers[0].credentials, [
     {
       id: "primary-key",
-      api_key: "upstream-key",
+      auth: { type: "api_key", api_key: "upstream-key" },
       disabled: false,
       priority: 100,
     },
   ]);
-  assert.equal(config.services[0].retry, undefined);
-  assert.equal(Object.hasOwn(config.services[0], "retry"), false);
+  assert.equal(config.providers[0].retry, undefined);
+  assert.equal(Object.hasOwn(config.providers[0], "retry"), false);
   assert.deepEqual(config.api_keys[0], {
     id: "client",
     api_key: "client-key",
-    services: ["primary"],
+    providers: ["primary"],
   });
   assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
   assert.deepEqual(config.model_routes["codex-auto-review"], {
     model: "review-model",
-    services: ["primary"],
+    providers: ["primary"],
   });
   assert.deepEqual(config.web_search, { mode: "proxy" });
 });
@@ -239,103 +243,103 @@ test("parseConfig validates explicit web search settings", () => {
   }
 });
 
-test("parseConfig accepts explicit service capability flags", () => {
+test("parseConfig accepts explicit provider capability flags", () => {
   const input = validConfig();
-  input.services[0].supports_websocket = true;
-  input.services[0].supports_web_search = false;
-  input.services[0].supports_context_management = true;
+  input.providers[0].supports_websocket = true;
+  input.providers[0].supports_web_search = false;
+  input.providers[0].supports_context_management = true;
 
   const config = parseConfig(input);
-  assert.equal(config.services[0].supports_websocket, true);
-  assert.equal(config.services[0].supports_context_management, true);
-  assert.equal(config.services[0].supports_web_search, false);
+  assert.equal(config.providers[0].supports_websocket, true);
+  assert.equal(config.providers[0].supports_context_management, true);
+  assert.equal(config.providers[0].supports_web_search, false);
 });
 
-test("parseConfig rejects a service protocol field", () => {
-  // A service may serve either dialect, so the dialect is derived per request
+test("parseConfig rejects a provider protocol field", () => {
+  // A provider may serve either dialect, so the dialect is derived per request
   // and cannot be declared here.
   const input = validConfig();
-  input.services[0].protocol = "anthropic";
+  input.providers[0].protocol = "anthropic";
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "services[0].protocol is not supported",
+      error.message === "providers[0].protocol is not supported",
   );
 });
 
-test("parseConfig rejects non-boolean service capability flags", () => {
+test("parseConfig rejects non-boolean provider capability flags", () => {
   for (const field of [
     "supports_websocket",
     "supports_web_search",
     "supports_context_management",
   ]) {
     const input = validConfig();
-    input.services[0][field] = "true";
+    input.providers[0][field] = "true";
     assert.throws(
       () => parseConfig(input),
       (error) =>
         error instanceof ConfigError &&
-        error.message === `services[0].${field} must be a boolean`,
+        error.message === `providers[0].${field} must be a boolean`,
     );
   }
 });
 
-test("parseConfig accepts multiple service keys in configuration order", () => {
+test("parseConfig accepts multiple provider credentials in configuration order", () => {
   const input = validConfig();
-  input.services[0].keys.push({
+  input.providers[0].credentials.push({
     id: "backup-key",
-    api_key: "backup-upstream-key",
+    auth: { type: "api_key", api_key: "backup-upstream-key" },
     disabled: true,
     priority: 50,
   });
 
   const config = parseConfig(input);
   assert.deepEqual(
-    config.services[0].keys.map((key) => key.id),
+    config.providers[0].credentials.map((key) => key.id),
     ["primary-key", "backup-key"],
   );
 });
 
-test("parseConfig requires a non-empty service keys array", () => {
-  for (const keys of [undefined, []]) {
+test("parseConfig requires a non-empty provider credentials array", () => {
+  for (const credentials of [undefined, []]) {
     const input = validConfig();
-    if (keys === undefined) {
-      delete input.services[0].keys;
+    if (credentials === undefined) {
+      delete input.providers[0].credentials;
     } else {
-      input.services[0].keys = keys;
+      input.providers[0].credentials = credentials;
     }
     assert.throws(
       () => parseConfig(input),
       (error) =>
         error instanceof ConfigError &&
-        error.message === "services[0].keys must be a non-empty array",
+        error.message === "providers[0].credentials must be a non-empty array",
     );
   }
 });
 
-test("parseConfig validates service key fields and identifiers", () => {
+test("parseConfig validates provider key fields and identifiers", () => {
   const cases = [
     [
-      "services[0].keys[0].id contains unsupported characters",
+      "providers[0].credentials[0].id contains unsupported characters",
       (key) => {
         key.id = "bad key";
       },
     ],
     [
-      "services[0].keys[0].api_key must be a non-empty string",
+      "providers[0].credentials[0].auth.api_key must be a non-empty string",
       (key) => {
-        key.api_key = "";
+        key.auth.api_key = "";
       },
     ],
     [
-      "services[0].keys[0].disabled must be a boolean",
+      "providers[0].credentials[0].disabled must be a boolean",
       (key) => {
         key.disabled = "false";
       },
     ],
     [
-      "services[0].keys[0].priority must be an integer",
+      "providers[0].credentials[0].priority must be an integer",
       (key) => {
         key.priority = 1.5;
       },
@@ -344,7 +348,7 @@ test("parseConfig validates service key fields and identifiers", () => {
 
   for (const [message, mutate] of cases) {
     const input = validConfig();
-    mutate(input.services[0].keys[0]);
+    mutate(input.providers[0].credentials[0]);
     assert.throws(
       () => parseConfig(input),
       (error) => error instanceof ConfigError && error.message === message,
@@ -352,46 +356,46 @@ test("parseConfig validates service key fields and identifiers", () => {
   }
 });
 
-test("parseConfig requires service key ids to be unique within a service", () => {
+test("parseConfig requires provider key ids to be unique within a provider", () => {
   const input = validConfig();
-  input.services[0].keys.push({
-    ...input.services[0].keys[0],
-    api_key: "another-upstream-key",
+  input.providers[0].credentials.push({
+    ...input.providers[0].credentials[0],
+    auth: { type: "api_key", api_key: "another-upstream-key" },
   });
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "services[0].keys.id values must be unique",
+      error.message === "providers[0].credentials.id values must be unique",
   );
 });
 
-test("parseConfig rejects the removed service api_key field", () => {
+test("parseConfig rejects the removed provider api_key field", () => {
   const input = validConfig();
-  input.services[0].api_key = "legacy-upstream-key";
+  input.providers[0].api_key = "legacy-upstream-key";
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "services[0].api_key is not supported",
+      error.message === "providers[0].api_key is not supported",
   );
 });
 
 test("parseConfig rejects the removed inject_claude_code_identity field", () => {
   const input = validConfig();
-  input.services[0].inject_claude_code_identity = true;
+  input.providers[0].inject_claude_code_identity = true;
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "services[0].inject_claude_code_identity is not supported",
+        "providers[0].inject_claude_code_identity is not supported",
   );
 });
 
 test("parseConfig allows codex-auto-review as the configured upstream model", () => {
   const input = validConfig();
-  input.services[0].models = ["grok-4.5", "codex-auto-review"];
+  input.providers[0].models = ["grok-4.5", "codex-auto-review"];
   input.model_routes["codex-auto-review"].model = "codex-auto-review";
 
   const config = parseConfig(input);
@@ -401,51 +405,51 @@ test("parseConfig allows codex-auto-review as the configured upstream model", ()
   );
 });
 
-test("parseConfig enables retries only when a service configures them", () => {
+test("parseConfig enables retries only when a provider configures them", () => {
   const input = validConfig();
-  input.services[0].retry = {
+  input.providers[0].retry = {
     status_codes: [429, 503],
     delays_ms: [250, 500, 1000],
   };
 
   const config = parseConfig(input);
-  assert.deepEqual(config.services[0].retry, input.services[0].retry);
+  assert.deepEqual(config.providers[0].retry, input.providers[0].retry);
 });
 
 test("parseConfig accepts empty retry arrays to disable an explicit policy", () => {
   const input = validConfig();
-  input.services[0].retry = { status_codes: [], delays_ms: [] };
+  input.providers[0].retry = { status_codes: [], delays_ms: [] };
   const config = parseConfig(input);
-  assert.deepEqual(config.services[0].retry, input.services[0].retry);
+  assert.deepEqual(config.providers[0].retry, input.providers[0].retry);
 });
 
 test("parseConfig rejects invalid retry policies", () => {
   const cases = [
     [
-      "services[0].retry.status_codes[0] must be between 400 and 599",
+      "providers[0].retry.status_codes[0] must be between 400 and 599",
       { status_codes: [399], delays_ms: [100] },
     ],
     [
-      "services[0].retry.status_codes must not contain duplicates",
+      "providers[0].retry.status_codes must not contain duplicates",
       { status_codes: [429, 429], delays_ms: [100] },
     ],
     [
-      "services[0].retry.delays_ms[0] must be between 0 and 60000",
+      "providers[0].retry.delays_ms[0] must be between 0 and 60000",
       { status_codes: [429], delays_ms: [-1] },
     ],
     [
-      "services[0].retry.delays_ms must contain at most 10 items",
+      "providers[0].retry.delays_ms must contain at most 10 items",
       { status_codes: [429], delays_ms: Array.from({ length: 11 }, () => 0) },
     ],
     [
-      "services[0].retry.status_codes and services[0].retry.delays_ms must both be empty or both be non-empty",
+      "providers[0].retry.status_codes and providers[0].retry.delays_ms must both be empty or both be non-empty",
       { status_codes: [429], delays_ms: [] },
     ],
   ];
 
   for (const [message, retry] of cases) {
     const input = validConfig();
-    input.services[0].retry = retry;
+    input.providers[0].retry = retry;
     assert.throws(
       () => parseConfig(input),
       (error) => error instanceof ConfigError && error.message === message,
@@ -453,25 +457,25 @@ test("parseConfig rejects invalid retry policies", () => {
   }
 });
 
-test("parseConfig requires services to explicitly declare disabled", () => {
+test("parseConfig requires providers to explicitly declare disabled", () => {
   const input = validConfig();
-  delete input.services[0].disabled;
+  delete input.providers[0].disabled;
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "services[0].disabled must be a boolean",
+      error.message === "providers[0].disabled must be a boolean",
   );
 });
 
 test("parseConfig rejects a non-boolean disabled value", () => {
   const input = validConfig();
-  input.services[0].disabled = "false";
+  input.providers[0].disabled = "false";
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "services[0].disabled must be a boolean",
+      error.message === "providers[0].disabled must be a boolean",
   );
 });
 
@@ -493,7 +497,7 @@ test("parseConfig rejects the removed legacy routing fields", () => {
   );
 
   const autoReview = validConfig();
-  autoReview.codex_auto_review = { service: "primary", model: "review-model" };
+  autoReview.codex_auto_review = { provider: "primary", model: "review-model" };
   assert.throws(
     () => parseConfig(autoReview),
     (error) =>
@@ -502,7 +506,7 @@ test("parseConfig rejects the removed legacy routing fields", () => {
   );
 });
 
-test("parseConfig rejects routes that no service can run", () => {
+test("parseConfig rejects routes that no provider can run", () => {
   const input = validConfig();
   input.model_routes["gpt-5.6-sol"].model = "missing-model";
   assert.throws(
@@ -510,20 +514,20 @@ test("parseConfig rejects routes that no service can run", () => {
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "model_routes.gpt-5.6-sol.model targets missing-model, which no service supports",
+        "model_routes.gpt-5.6-sol.model targets missing-model, which no provider supports",
   );
 });
 
-test("parseConfig requires services to list the real route target", () => {
+test("parseConfig requires providers to list the real route target", () => {
   const input = validConfig();
-  input.services[0].models = ["gpt-5.6-sol", "review-model"];
+  input.providers[0].models = ["gpt-5.6-sol", "review-model"];
   assert.throws(() => parseConfig(input), ConfigError);
 });
 
 test("parseConfig allows a route to constrain a real model name", () => {
   const input = validConfig();
   input.model_routes = {
-    "grok-4.5": { model: "grok-4.5", services: ["primary"] },
+    "grok-4.5": { model: "grok-4.5", providers: ["primary"] },
   };
   assert.doesNotThrow(() => parseConfig(input));
 });
@@ -531,60 +535,60 @@ test("parseConfig allows a route to constrain a real model name", () => {
 test("parseConfig accepts per-key model routes alongside global routes", () => {
   const input = validConfig();
   input.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+    "gpt-5.6-sol": { model: "review-model", providers: ["primary"] },
   };
 
   const config = parseConfig(input);
   assert.equal(Object.hasOwn(config.api_keys[0], "model_routes"), true);
   assert.deepEqual(config.api_keys[0].model_routes, {
-    "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+    "gpt-5.6-sol": { model: "review-model", providers: ["primary"] },
   });
   assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
 });
 
-test("parseConfig accepts service model routes without a services field", () => {
+test("parseConfig accepts provider model routes without a providers field", () => {
   const input = validConfig();
-  input.services[0].model_routes = {
+  input.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "review-model" },
   };
 
   const config = parseConfig(input);
-  assert.equal(Object.hasOwn(config.services[0], "model_routes"), true);
-  assert.deepEqual(config.services[0].model_routes, {
+  assert.equal(Object.hasOwn(config.providers[0], "model_routes"), true);
+  assert.deepEqual(config.providers[0].model_routes, {
     "gpt-5.6-sol": { model: "review-model" },
   });
 });
 
-test("parseConfig omits the service model_routes field when absent or empty", () => {
+test("parseConfig omits the provider model_routes field when absent or empty", () => {
   for (const modelRoutes of [undefined, {}]) {
     const input = validConfig();
     if (modelRoutes === undefined) {
-      delete input.services[0].model_routes;
+      delete input.providers[0].model_routes;
     } else {
-      input.services[0].model_routes = modelRoutes;
+      input.providers[0].model_routes = modelRoutes;
     }
     const config = parseConfig(input);
-    assert.equal(Object.hasOwn(config.services[0], "model_routes"), false);
+    assert.equal(Object.hasOwn(config.providers[0], "model_routes"), false);
   }
 });
 
-test("parseConfig rejects service route services constraints", () => {
+test("parseConfig rejects provider route providers constraints", () => {
   const input = validConfig();
-  input.services[0].model_routes = {
-    "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+  input.providers[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model", providers: ["primary"] },
   };
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "services[0].model_routes.gpt-5.6-sol.services is not supported",
+        "providers[0].model_routes.gpt-5.6-sol.providers is not supported",
   );
 });
 
-test("parseConfig requires service routes to list models the service supports", () => {
+test("parseConfig requires provider routes to list models the provider supports", () => {
   const input = validConfig();
-  input.services[0].model_routes = {
+  input.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "missing-model" },
   };
   assert.throws(
@@ -592,13 +596,13 @@ test("parseConfig requires service routes to list models the service supports", 
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "services[0].model_routes.gpt-5.6-sol.model missing-model is not listed by service primary",
+        "providers[0].model_routes.gpt-5.6-sol.model missing-model is not listed by provider primary",
   );
 });
 
-test("parseConfig rejects duplicate normalized service route models", () => {
+test("parseConfig rejects duplicate normalized provider route models", () => {
   const input = validConfig();
-  input.services[0].model_routes = {
+  input.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "review-model" },
     "gpt-5.6-sol ": { model: "review-model" },
   };
@@ -607,7 +611,7 @@ test("parseConfig rejects duplicate normalized service route models", () => {
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "services[0].model_routes contains duplicate normalized model gpt-5.6-sol",
+        "providers[0].model_routes contains duplicate normalized model gpt-5.6-sol",
   );
 });
 
@@ -624,27 +628,28 @@ test("parseConfig omits the per-key model_routes field when absent or empty", ()
   }
 });
 
-test("parseConfig validates per-key route targets and services", () => {
+test("parseConfig validates per-key route targets and providers", () => {
   const unknown = validConfig();
   unknown.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", services: ["missing"] },
+    "gpt-5.6-sol": { model: "grok-4.5", providers: ["missing"] },
   };
   assert.throws(
     () => parseConfig(unknown),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "api_keys[0].model_routes.gpt-5.6-sol.services references unknown service missing",
+        "api_keys[0].model_routes.gpt-5.6-sol.providers references unknown provider missing",
   );
 
   const unsupported = validConfig();
-  unsupported.services.push({
+  unsupported.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -654,18 +659,18 @@ test("parseConfig validates per-key route targets and services", () => {
     models: ["review-model"],
   });
   unsupported.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+    "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
   };
   assert.throws(
     () => parseConfig(unsupported),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "api_keys[0].model_routes.gpt-5.6-sol.model grok-4.5 is not listed by service secondary",
+        "api_keys[0].model_routes.gpt-5.6-sol.model grok-4.5 is not listed by provider secondary",
   );
 });
 
-test("parseConfig rejects per-key routes that no service can run", () => {
+test("parseConfig rejects per-key routes that no provider can run", () => {
   const input = validConfig();
   input.api_keys[0].model_routes = {
     "gpt-5.6-sol": { model: "missing-model" },
@@ -675,7 +680,7 @@ test("parseConfig rejects per-key routes that no service can run", () => {
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "api_keys[0].model_routes.gpt-5.6-sol.model targets missing-model, which no service supports",
+        "api_keys[0].model_routes.gpt-5.6-sol.model targets missing-model, which no provider supports",
   );
 });
 
@@ -692,10 +697,10 @@ test("parseConfig rejects invalid per-key route fields and constraints", () => {
         "api_keys[0].model_routes.gpt-5.6-sol.extra is not supported",
   );
 
-  for (const services of [[], ["primary", "primary"]]) {
+  for (const providers of [[], ["primary", "primary"]]) {
     const input = validConfig();
     input.api_keys[0].model_routes = {
-      "gpt-5.6-sol": { model: "grok-4.5", services },
+      "gpt-5.6-sol": { model: "grok-4.5", providers },
     };
     assert.throws(
       () => parseConfig(input),
@@ -716,25 +721,26 @@ test("parseConfig rejects invalid per-key route fields and constraints", () => {
   );
 });
 
-test("parseConfig rejects unknown or incompatible route services", () => {
+test("parseConfig rejects unknown or incompatible route providers", () => {
   const unknown = validConfig();
-  unknown.model_routes["gpt-5.6-sol"].services = ["missing"];
+  unknown.model_routes["gpt-5.6-sol"].providers = ["missing"];
   assert.throws(
     () => parseConfig(unknown),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "model_routes.gpt-5.6-sol.services references unknown service missing",
+        "model_routes.gpt-5.6-sol.providers references unknown provider missing",
   );
 
   const unsupported = validConfig();
-  unsupported.services.push({
+  unsupported.providers.push({
+    type: "ai_gateway",
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [
+    credentials: [
       {
         id: "secondary-key",
-        api_key: "secondary-key",
+        auth: { type: "api_key", api_key: "secondary-key" },
         disabled: false,
         priority: 50,
       },
@@ -743,27 +749,27 @@ test("parseConfig rejects unknown or incompatible route services", () => {
     priority: 50,
     models: ["review-model"],
   });
-  unsupported.model_routes["gpt-5.6-sol"].services = ["secondary"];
+  unsupported.model_routes["gpt-5.6-sol"].providers = ["secondary"];
   assert.throws(
     () => parseConfig(unsupported),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "model_routes.gpt-5.6-sol.model grok-4.5 is not listed by service secondary",
+        "model_routes.gpt-5.6-sol.model grok-4.5 is not listed by provider secondary",
   );
 });
 
-test("parseConfig rejects empty or duplicate route service constraints", () => {
-  for (const services of [[], ["primary", "primary"]]) {
+test("parseConfig rejects empty or duplicate route provider constraints", () => {
+  for (const providers of [[], ["primary", "primary"]]) {
     const input = validConfig();
-    input.model_routes["gpt-5.6-sol"].services = services;
+    input.model_routes["gpt-5.6-sol"].providers = providers;
     assert.throws(() => parseConfig(input), ConfigError);
   }
 });
 
-test("parseConfig rejects API keys that reference unknown services", () => {
+test("parseConfig rejects API credentials that reference unknown providers", () => {
   const input = validConfig();
-  input.api_keys[0].services = ["missing"];
+  input.api_keys[0].providers = ["missing"];
   assert.throws(() => parseConfig(input), ConfigError);
 });
 
@@ -820,23 +826,23 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
       },
     ],
     [
-      "services[0].extra is not supported",
+      "providers[0].extra is not supported",
       (input) => {
-        input.services[0].extra = true;
+        input.providers[0].extra = true;
       },
     ],
     [
-      "services[0].model_routes.gpt-5.6-sol.extra is not supported",
+      "providers[0].model_routes.gpt-5.6-sol.extra is not supported",
       (input) => {
-        input.services[0].model_routes = {
+        input.providers[0].model_routes = {
           "gpt-5.6-sol": { model: "review-model", extra: true },
         };
       },
     ],
     [
-      "services[0].retry.extra is not supported",
+      "providers[0].retry.extra is not supported",
       (input) => {
-        input.services[0].retry = {
+        input.providers[0].retry = {
           status_codes: [429],
           delays_ms: [250],
           extra: true,
@@ -844,9 +850,9 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
       },
     ],
     [
-      "services[0].keys[0].extra is not supported",
+      "providers[0].credentials[0].extra is not supported",
       (input) => {
-        input.services[0].keys[0].extra = true;
+        input.providers[0].credentials[0].extra = true;
       },
     ],
     [

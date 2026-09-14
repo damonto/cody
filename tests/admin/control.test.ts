@@ -18,7 +18,7 @@ import {
 } from "../../src/config/store.ts";
 import {
   listCoolingHealth,
-  recordKeyFailure,
+  recordCredentialFailure,
 } from "../../src/gateway/health/health.ts";
 import { authenticateAdmin, safeAdminMutation } from "../../src/admin/auth.ts";
 import { ControlStore, SECRET_PLACEHOLDER } from "../../src/control/store.ts";
@@ -123,16 +123,16 @@ test("encrypted drafts mask secrets, rotate by stable IDs, and reject stale writ
   const next = structuredClone(saved.config) as unknown as ReturnType<
     typeof config
   >;
-  next.services[0].priority = 200;
+  next.providers[0].priority = 200;
   await control().save(next, 1, "tester");
   expect(
-    ((await control().rawDraft()) as ReturnType<typeof config>).services[0]
-      .keys[0].api_key,
+    ((await control().rawDraft()) as ReturnType<typeof config>).providers[0]
+      .credentials[0].auth.api_key,
   ).toBe("test-upstream-secret");
   await expect(control().save(next, 1, "stale-editor")).rejects.toThrow(
     "draft changed",
   );
-  next.services[0].keys[0].id = "renamed";
+  next.providers[0].credentials[0].id = "renamed";
   await expect(control().save(next, 2, "tester")).rejects.toThrow(
     "new credential",
   );
@@ -154,31 +154,33 @@ test("AES-GCM authenticates payloads and key material", async () => {
   await expect(encryptConfig({}, "invalid-key")).rejects.toThrow("32-byte key");
 });
 
-test("service and key proxy passwords stay encrypted and survive masked draft edits", async () => {
+test("provider and key proxy passwords stay encrypted and survive masked draft edits", async () => {
   const input = parseConfig(config());
-  input.services[0].proxy = {
-    url: "socks5://service.test:1080",
-    username: "service-user",
-    password: "service-proxy-secret",
+  input.providers[0].proxy = {
+    url: "socks5://provider.test:1080",
+    username: "provider-user",
+    password: "provider-proxy-secret",
   };
-  input.services[0].keys[0].proxy = {
+  input.providers[0].credentials[0].proxy = {
     url: "socks5://key.test:1081",
     username: "key-user",
     password: "key-proxy-secret",
   };
   const saved = await control().save(input, 0, "tester");
-  expect(saved.config.services[0].proxy?.password).toBe(SECRET_PLACEHOLDER);
-  expect(saved.config.services[0].keys[0].proxy?.password).toBe(
+  expect(saved.config.providers[0].proxy?.password).toBe(SECRET_PLACEHOLDER);
+  expect(saved.config.providers[0].credentials[0].proxy?.password).toBe(
     SECRET_PLACEHOLDER,
   );
-  expect(JSON.stringify(saved)).not.toContain("service-proxy-secret");
+  expect(JSON.stringify(saved)).not.toContain("provider-proxy-secret");
   expect(JSON.stringify(saved)).not.toContain("key-proxy-secret");
   expect((await control().state()).draft_payload).not.toContain("proxy-secret");
-  saved.config.services[0].priority += 1;
+  saved.config.providers[0].priority += 1;
   await control().save(saved.config, 1, "tester");
   const restored = parseConfig(await control().rawDraft());
-  expect(restored.services[0].proxy?.password).toBe("service-proxy-secret");
-  expect(restored.services[0].keys[0].proxy?.password).toBe("key-proxy-secret");
+  expect(restored.providers[0].proxy?.password).toBe("provider-proxy-secret");
+  expect(restored.providers[0].credentials[0].proxy?.password).toBe(
+    "key-proxy-secret",
+  );
 });
 
 test("an audit insert failure rolls back the draft and its version", async () => {
@@ -307,16 +309,16 @@ test("pending publication recovers after eviction without publishing a partial d
         "gateway-config",
         "json",
       )
-    )?.services,
-  ).toEqual(config().services);
+    )?.providers,
+  ).toEqual(config().providers);
 });
 
 test("structurally invalid drafts are rejected; incomplete references cannot be published", async () => {
   await expect(
-    control().save({ services: "invalid", api_keys: [] }, 0, "tester"),
+    control().save({ providers: "invalid", api_keys: [] }, 0, "tester"),
   ).rejects.toThrow();
   const input = config();
-  input.api_keys[0].services = ["missing"];
+  input.api_keys[0].providers = ["missing"];
   const saved = await control().save(input, 0, "tester");
   expect(saved.valid).toBe(false);
   const reply = JSON.parse(
@@ -370,7 +372,7 @@ test("selection updates pending routing and terminal transition adds one aggrega
     ...event,
     phase: "started",
     sequence: 0,
-    service_id: "",
+    provider_id: "",
     model: "",
     finished_at: null,
     outcome: "pending",
@@ -381,17 +383,17 @@ test("selection updates pending routing and terminal transition adds one aggrega
   await ingestUsage(bindings.CODY_DB, {
     ...start,
     sequence: 1,
-    service_id: event.service_id,
+    provider_id: event.provider_id,
     model: event.model,
   });
   const window = range(event.started_at - 1, Date.now());
   expect(
-    (await summary(bindings.CODY_DB, window, { service_id: "provider" }))
+    (await summary(bindings.CODY_DB, window, { provider_id: "provider" }))
       .pending,
   ).toBe(1);
   await ingestUsage(bindings.CODY_DB, event);
   const totals = await summary(bindings.CODY_DB, window, {
-    service_id: "provider",
+    provider_id: "provider",
   });
   expect(totals.pending).toBe(0);
   expect(totals.totals.requests_count).toBe(1);
@@ -423,7 +425,7 @@ test("reports combine full hours with precise boundaries and never sum currencie
   expect(
     (
       await summary(bindings.CODY_DB, range(base, base + 86400000), {
-        service_id: "other",
+        provider_id: "other",
       })
     ).totals.requests_count,
   ).toBe(0);
@@ -437,12 +439,12 @@ test("total reports include older history and preserve costs after request reten
   for (const event of [
     historical,
     recent,
-    { ...usage("other-service", now - 60_000), service_id: "other" },
+    { ...usage("other-provider", now - 60_000), provider_id: "other" },
     usage("future", now + 60_000),
   ]) {
     await ingestUsage(bindings.CODY_DB, event);
   }
-  const query = "period=total&service_id=provider&time_zone=UTC";
+  const query = "period=total&provider_id=provider&time_zone=UTC";
   const response = await call(`/console/api/summary?${query}`);
   expect(response.status).toBe(200);
   const before = (await response.json()) as Awaited<ReturnType<typeof summary>>;
@@ -690,7 +692,7 @@ test("admin API enforces local scope, Access authentication, same-origin writes,
   ).toBe(409);
 });
 
-test("client keys can be read individually from the current draft without changing credentials", async () => {
+test("client credentials can be read individually from the current draft without changing credentials", async () => {
   const published = await publishConfig();
   const input = config();
   const rotated = `sk-cody-${"a1".repeat(32)}`;
@@ -698,7 +700,7 @@ test("client keys can be read individually from the current draft without changi
   input.api_keys.unshift({
     id: "other-client",
     api_key: "custom-client-key",
-    services: ["provider"],
+    providers: ["provider"],
   });
   const saved = await control().save(input, published.version, "tester");
   const before = await control().state();
@@ -818,9 +820,9 @@ test("client key reads require administrator authentication and same-origin JSON
   ).toBe(415);
 });
 
-test("client key reads work in an unpublished draft with unresolved service references", async () => {
+test("client key reads work in an unpublished draft with unresolved provider references", async () => {
   const input = config();
-  input.api_keys[0].services = ["missing"];
+  input.api_keys[0].providers = ["missing"];
   const saved = await control().save(input, 0, "tester");
   expect(saved.valid).toBe(false);
   expect(saved.published_revision).toBeNull();
@@ -870,15 +872,15 @@ test("client key reads fail closed on invalid or unreadable stored credentials",
 });
 
 for (const mode of ["tavily", "exa"] as const) {
-  test(`service and ${mode} keys can be viewed without changing the draft`, async () => {
+  test(`provider and ${mode} credentials can be viewed without changing the draft`, async () => {
     const input = config();
-    input.services.push({
-      ...input.services[0],
+    input.providers.push({
+      ...input.providers[0],
       id: "other-provider",
-      keys: [
+      credentials: [
         {
           id: "primary",
-          api_key: "other-upstream-key",
+          auth: { type: "api_key", api_key: "other-upstream-key" },
           priority: 100,
           disabled: false,
         },
@@ -893,8 +895,14 @@ for (const mode of ["tavily", "exa"] as const) {
     const saved = await control().save(input, 0, "tester");
     const before = await control().state();
     for (const [path, api_key] of [
-      ["/services/provider/keys/primary/reveal", "test-upstream-secret"],
-      ["/services/other-provider/keys/primary/reveal", "other-upstream-key"],
+      [
+        "/providers/provider/credentials/primary/reveal",
+        "test-upstream-secret",
+      ],
+      [
+        "/providers/other-provider/credentials/primary/reveal",
+        "other-upstream-key",
+      ],
       ["/web-search/reveal", "test-search-key"],
     ]) {
       const response = await call(`/console/api/config${path}`, "POST", {
@@ -909,7 +917,9 @@ for (const mode of ["tavily", "exa"] as const) {
       await (await call("/console/api/config")).json(),
     );
     expect(
-      draft.config.services.map((service) => service.keys[0].api_key),
+      draft.config.providers.map(
+        (provider) => provider.credentials[0].auth.api_key,
+      ),
     ).toEqual([SECRET_PLACEHOLDER, SECRET_PLACEHOLDER]);
     expect(draft.config.web_search).toMatchObject({
       api_key: SECRET_PLACEHOLDER,
@@ -920,13 +930,13 @@ for (const mode of ["tavily", "exa"] as const) {
     });
     expect(unchanged.status).toBe(200);
     const raw = parseConfig(await control().rawDraft());
-    expect(raw.services).toEqual(input.services);
+    expect(raw.providers).toEqual(input.providers);
     expect(raw.web_search).toEqual(input.web_search);
   });
 }
 
 for (const path of [
-  "/console/api/config/services/provider/keys/primary/reveal",
+  "/console/api/config/providers/provider/credentials/primary/reveal",
   "/console/api/config/web-search/reveal",
 ]) {
   test(`credential access validates authentication, origin, and draft version: ${path}`, async () => {
@@ -984,11 +994,11 @@ for (const path of [
   });
 }
 
-test("service and search key reads reject missing or invalid credential targets", async () => {
+test("provider and search key reads reject missing or invalid credential targets", async () => {
   await control().save(config(), 0, "tester");
   for (const path of [
-    "/services/missing/keys/primary/reveal",
-    "/services/provider/keys/missing/reveal",
+    "/providers/missing/credentials/primary/reveal",
+    "/providers/provider/credentials/missing/reveal",
     "/web-search/reveal",
   ]) {
     expect(
@@ -998,7 +1008,7 @@ test("service and search key reads reject missing or invalid credential targets"
   expect(
     (
       await call(
-        "/console/api/config/services/provider/keys/invalid%20id/reveal",
+        "/console/api/config/providers/provider/credentials/invalid%20id/reveal",
         "POST",
         { version: 1 },
       )
@@ -1006,7 +1016,7 @@ test("service and search key reads reject missing or invalid credential targets"
   ).toBe(400);
 });
 
-for (const target of ["service", "search"]) {
+for (const target of ["provider", "search"]) {
   test(`${target} key reads reject a stored placeholder and unreadable ciphertext`, async () => {
     const input = config();
     input.web_search = {
@@ -1018,11 +1028,11 @@ for (const target of ["service", "search"]) {
     await control().save(input, 0, "tester");
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const path =
-      target === "service"
-        ? "/console/api/config/services/provider/keys/primary/reveal"
+      target === "provider"
+        ? "/console/api/config/providers/provider/credentials/primary/reveal"
         : "/console/api/config/web-search/reveal";
-    if (target === "service")
-      input.services[0].keys[0].api_key = SECRET_PLACEHOLDER;
+    if (target === "provider")
+      input.providers[0].credentials[0].auth.api_key = SECRET_PLACEHOLDER;
     else input.web_search.api_key = SECRET_PLACEHOLDER;
     await bindings.CODY_DB.prepare(
       "UPDATE control_state SET draft_payload = ? WHERE id = 1",
@@ -1047,11 +1057,11 @@ test("invalid persisted output is a server error without leaking its values", as
   await publishConfig();
   const privateValue = "private-invalid-policy-value";
   await bindings.CODY_DB.prepare("UPDATE pricing_versions SET policy_json = ?")
-    .bind(JSON.stringify({ service_id: privateValue }))
+    .bind(JSON.stringify({ provider_id: privateValue }))
     .run();
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const response = await call(
-    "/console/api/pricing/history?service_id=provider&model=real-model",
+    "/console/api/pricing/history?provider_id=provider&model=real-model",
   );
   expect(response.status).toBe(500);
   const body = await response.text();
@@ -1084,9 +1094,15 @@ test("pricing preview rejects contradictory counts and runtime uses published cl
     },
   });
   expect(preview.status).toBe(200);
-  await recordKeyFailure(bindings, "provider", "primary", undefined, "catalog");
+  await recordCredentialFailure(
+    bindings,
+    "provider",
+    "primary",
+    undefined,
+    "catalog",
+  );
   expect(
-    await listCoolingHealth(bindings, config().services, "catalog"),
+    await listCoolingHealth(bindings, config().providers, "catalog"),
   ).toHaveLength(1);
   const runtime = await call(
     "/console/api/runtime/health/provider/primary?client_id=client&scope=catalog",
@@ -1095,7 +1111,7 @@ test("pricing preview rejects contradictory counts and runtime uses published cl
   expect(runtime.status).toBe(200);
   expect(await runtime.json()).toEqual({ ok: true });
   expect(
-    await listCoolingHealth(bindings, config().services, "catalog"),
+    await listCoolingHealth(bindings, config().providers, "catalog"),
   ).toEqual([]);
   expect(
     await bindings.CODY_DB.prepare(
@@ -1294,7 +1310,7 @@ test("validated RPC drafts accept repeated secret placeholders and never echo in
   input.api_keys.push({
     id: "second",
     api_key: "another-client-secret",
-    services: ["provider"],
+    providers: ["provider"],
   });
   const saved = await call("/console/api/config", "PUT", {
     version: 0,
@@ -1314,7 +1330,7 @@ test("validated RPC drafts accept repeated secret placeholders and never echo in
     config: draft.config,
   });
   expect(again.status).toBe(200);
-  input.services[0].base_url = "";
+  input.providers[0].base_url = "";
   const invalid = await call("/console/api/config", "PUT", {
     version: 2,
     config: input,

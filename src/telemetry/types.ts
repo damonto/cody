@@ -14,7 +14,7 @@ export interface AttemptRecord {
 }
 
 export interface UsageEvent {
-  schema_version: 1;
+  schema_version: 2;
   sequence: 0 | 1 | 2;
   phase: "started" | "finished";
   request_id: string;
@@ -23,8 +23,8 @@ export interface UsageEvent {
   started_at: number;
   finished_at: number | null;
   client_id: string;
-  service_id: string;
-  key_id: string;
+  provider_id: string;
+  credential_id: string;
   model: string;
   requested_model: string;
   reported_model: string;

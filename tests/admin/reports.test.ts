@@ -166,7 +166,7 @@ test("overview totals, ranking and currency series share exact request boundarie
       base + minute * 60_000,
       index === 2 ? "EUR" : "USD",
     );
-    event.service_id = index === 2 ? "retired-service" : "provider";
+    event.provider_id = index === 2 ? "retired-provider" : "provider";
     await ingestUsage(bindings.CODY_DB, event);
     await ingestUsage(bindings.CODY_DB, event);
   }
@@ -235,7 +235,7 @@ test("report queries read hourly aggregates without scanning interior request de
      INSERT INTO requests (
        request_id, event_sequence, started_at, finished_at, endpoint, protocol,
        transport, kind, outcome, usage_status, billing_status, event_json,
-       service_id, model, client_id
+       provider_id, model, client_id
      )
      SELECT 'volume-' || n, 2, ?, ?, 'responses', 'openai', 'http', 'inference',
        'success', 'reported', 'complete', '{}', 'provider', 'real-model', 'client'
@@ -264,8 +264,8 @@ test("report queries read hourly aggregates without scanning interior request de
   );
   for (const filters of [
     {},
-    { service_id: "provider" },
-    { service_id: "provider", model: "real-model" },
+    { provider_id: "provider" },
+    { provider_id: "provider", model: "real-model" },
     { client_id: "client" },
   ] as const) {
     rowsRead = 0;
@@ -285,24 +285,24 @@ test("report queries read hourly aggregates without scanning interior request de
 
 test("ranking uses the selected currency, preserves Other, and supports all three dimensions", async () => {
   const at = now - HOUR_MS;
-  for (let service = 0; service < 7; service++) {
-    for (let index = 0; index <= service; index++) {
-      const event = usage("source-" + service + "-" + index, at);
-      event.service_id = "service-" + service;
-      event.model = "model-" + (service % 2);
-      event.client_id = "client-" + (service % 3);
-      event.billing.total_nano = service === 0 ? 10e9 : 1e9;
+  for (let provider = 0; provider < 7; provider++) {
+    for (let index = 0; index <= provider; index++) {
+      const event = usage("source-" + provider + "-" + index, at);
+      event.provider_id = "provider-" + provider;
+      event.model = "model-" + (provider % 2);
+      event.client_id = "client-" + (provider % 3);
+      event.billing.total_nano = provider === 0 ? 10e9 : 1e9;
       await ingestUsage(bindings.CODY_DB, event);
     }
   }
-  for (const [service, cost] of [
+  for (const [provider, cost] of [
     [0, 2e9],
     [6, 100e9],
   ]) {
-    const event = usage("eur-" + service, at, "EUR");
-    event.service_id = "service-" + service;
-    event.model = "model-" + (service % 2);
-    event.client_id = "client-" + (service % 3);
+    const event = usage("eur-" + provider, at, "EUR");
+    event.provider_id = "provider-" + provider;
+    event.model = "model-" + (provider % 2);
+    event.client_id = "client-" + (provider % 3);
     event.billing.total_nano = cost;
     await ingestUsage(bindings.CODY_DB, event);
   }
@@ -321,8 +321,8 @@ test("ranking uses the selected currency, preserves Other, and supports all thre
   );
   expect(usd.totals.requests_count).toBe(30);
   expect(eur.totals).toEqual(usd.totals);
-  expect(usd.ranking.items[0].value).toBe("service-0");
-  expect(eur.ranking.items[0].value).toBe("service-6");
+  expect(usd.ranking.items[0].value).toBe("provider-0");
+  expect(eur.ranking.items[0].value).toBe("provider-6");
   expect(usd.ranking.items).toHaveLength(5);
   expect(usd.ranking.other?.totals.requests_count).toBe(5);
   for (const report of [usd, eur]) {
@@ -364,7 +364,7 @@ test("ranking uses the selected currency, preserves Other, and supports all thre
 test("previous periods keep the same filters and exclude the unused part of the previous day", async () => {
   const current = reportRange("day", "UTC", now);
   const previousStart = current.from - DAY_MS;
-  for (const [id, at, service] of [
+  for (const [id, at, provider] of [
     ["current", current.from + HOUR_MS, "provider"],
     ["previous", previousStart + HOUR_MS, "provider"],
     ["previous-other", previousStart + HOUR_MS, "other"],
@@ -372,11 +372,11 @@ test("previous periods keep the same filters and exclude the unused part of the 
   ] as const) {
     await ingestUsage(bindings.CODY_DB, {
       ...usage(id, at),
-      service_id: service,
+      provider_id: provider,
     });
   }
   const result = await summary(bindings.CODY_DB, current, {
-    service_id: "provider",
+    provider_id: "provider",
   });
   expect(result.totals.requests_count).toBe(1);
   expect(result.previous?.totals.requests_count).toBe(1);
@@ -389,7 +389,7 @@ test("historic sources and costs survive request retention", async () => {
   const at = Math.floor((now - 200 * DAY_MS) / HOUR_MS) * HOUR_MS;
   await ingestUsage(bindings.CODY_DB, {
     ...usage("old-source", at),
-    service_id: "deleted-provider",
+    provider_id: "deleted-provider",
     client_id: "retired-client",
   });
   await cleanupRequests(bindings.CODY_DB, 120);
@@ -400,7 +400,7 @@ test("historic sources and costs survive request retention", async () => {
   expect(result.previous).toBeNull();
   expect(result.bucket_ms).toBe(7 * DAY_MS);
   const dimensions = await reportDimensions(bindings.CODY_DB, range);
-  expect(dimensions.services).toContain("deleted-provider");
+  expect(dimensions.providers).toContain("deleted-provider");
   expect(dimensions.clients).toContain("retired-client");
   expect(
     (await requestList(bindings.CODY_DB, range, {}, { limit: 10 })).items,
@@ -427,7 +427,7 @@ test("quality drilldowns include only completed requests matching the same dimen
     const result = await requestList(
       bindings.CODY_DB,
       range,
-      { service_id: "provider", client_id: "client" },
+      { provider_id: "provider", client_id: "client" },
       { limit: 50, quality },
     );
     expect(result.items.map((item) => item.request_id)).toEqual(["partial"]);
@@ -455,12 +455,12 @@ test("report APIs validate ranges and expose historical boundary limitations", a
   expect(data.previous).toBeNull();
   await ingestUsage(bindings.CODY_DB, {
     ...usage("historic-option", now - HOUR_MS),
-    service_id: "historic-service",
+    provider_id: "historic-provider",
   });
   const options = await call("period=day", "report-options");
   expect(options.status).toBe(200);
   expect(await options.json()).toMatchObject({
-    services: ["historic-service"],
+    providers: ["historic-provider"],
     models: ["real-model"],
     clients: ["client"],
   });

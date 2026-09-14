@@ -9,7 +9,7 @@ export const emptyTier = (): PriceTier => ({
   cache_write: "",
   cache_read: "",
 });
-const defaultPolicy: ModelPolicy = { service_id: "", model: "" };
+const defaultPolicy: ModelPolicy = { provider_id: "", model: "" };
 export const policyFormOptions = formOptions({
   defaultValues: defaultPolicy,
   validators: { onBlur: modelPolicySchema, onSubmit: modelPolicySchema },

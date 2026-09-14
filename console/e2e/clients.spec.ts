@@ -29,7 +29,7 @@ async function clipboard(page: Page) {
 const copied = (page: Page) =>
   page.evaluate(() => navigator.clipboard.readText());
 
-test("saved client keys stay hidden until requested and can be copied while hidden", async ({
+test("saved client credentials stay hidden until requested and can be copied while hidden", async ({
   page,
 }) => {
   const mock = await mockApi(page);
@@ -88,7 +88,7 @@ test("viewing in the editor preserves the saved credential placeholder without a
   await expect(key).toHaveAttribute("type", "password");
 });
 
-test("new keys use the sk-cody prefix and remain available after saving and reloading", async ({
+test("new credentials use the sk-cody prefix and remain available after saving and reloading", async ({
   page,
 }) => {
   const mock = await mockApi(page);
@@ -158,7 +158,7 @@ test("manual key edits survive visibility toggles and copy from the list after s
   await expect.poll(() => copied(page)).toBe("my-custom-key");
 });
 
-test("failed reads keep keys hidden, report the server error, and allow retry", async ({
+test("failed reads keep credentials hidden, report the server error, and allow retry", async ({
   page,
 }) => {
   const mock = await mockApi(page);
@@ -254,9 +254,9 @@ test("leaving the client list cancels a pending copy and ignores the late key", 
     "aria-busy",
     "true",
   );
-  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await page.getByRole("link", { name: "Providers", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Services", exact: true }),
+    page.getByRole("heading", { name: "Providers", exact: true }),
   ).toBeVisible();
   await pending.fulfill({ json: { api_key: "outdated-key" } });
   await page.getByRole("link", { name: "Client keys", exact: true }).click();
@@ -315,7 +315,7 @@ test("late key responses are ignored after hiding, editing, or closing the edito
   await expect(key).toHaveAttribute("type", "password");
 });
 
-test("a refreshed draft hides keys without discarding unsaved form edits", async ({
+test("a refreshed draft hides credentials without discarding unsaved form edits", async ({
   page,
   context,
 }) => {

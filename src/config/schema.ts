@@ -24,7 +24,7 @@ const integer = z
   .number({ error: "must be an integer" })
   .int({ error: "must be an integer" });
 const boolean = z.boolean({ error: "must be a boolean" });
-export const baseUrlSchema = z
+const baseUrlSchema = z
   .url("must be an absolute http(s) URL")
   .trim()
   .regex(/^https?:\/\//, "must use http or https")
@@ -46,9 +46,9 @@ const names = z
   .meta({ uniqueItems: true });
 export const routeSchema = z.strictObject({
   model: nameSchema,
-  services: names.optional(),
+  providers: names.optional(),
 });
-export const serviceRouteSchema = z.strictObject({ model: nameSchema });
+const providerRouteSchema = z.strictObject({ model: nameSchema });
 
 function routes<T extends z.ZodType>(route: T) {
   return z
@@ -167,22 +167,29 @@ export const socksProxySchema = z
   });
 const proxySchema = socksProxySchema.nullable().optional();
 
+const credentialAuthSchema = z.discriminatedUnion(
+  "type",
+  [z.strictObject({ type: z.literal("api_key"), api_key: secretSchema })],
+  { error: "must use a supported authentication type (api_key)" },
+);
+
 export const credentialSchema = z.strictObject({
   id: identifierSchema,
-  api_key: secretSchema,
+  auth: credentialAuthSchema,
   priority: integer,
   disabled: boolean,
   proxy: proxySchema,
 });
-export const serviceSchema = z.strictObject({
+export const aiGatewayProviderSchema = z.strictObject({
+  type: z.literal("ai_gateway"),
   id: identifierSchema,
   base_url: baseUrlSchema,
   proxy: proxySchema,
-  keys: z
+  credentials: z
     .array(credentialSchema, { error: "must be a non-empty array" })
     .min(1, "must be a non-empty array")
-    .superRefine((keys, context) => {
-      if (!unique(keys.map((key) => key.id)))
+    .superRefine((credentials, context) => {
+      if (!unique(credentials.map((key) => key.id)))
         context.addIssue({
           code: "custom",
           path: ["id"],
@@ -196,12 +203,17 @@ export const serviceSchema = z.strictObject({
   supports_web_search: boolean.default(false),
   supports_context_management: boolean.default(false),
   retry: retrySchema.optional(),
-  model_routes: routes(serviceRouteSchema).optional(),
+  model_routes: routes(providerRouteSchema).optional(),
 });
+export const providerSchema = z.discriminatedUnion(
+  "type",
+  [aiGatewayProviderSchema],
+  { error: "must use a supported provider type (ai_gateway)" },
+);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
   api_key: secretSchema,
-  services: names,
+  providers: names,
   model_routes: routes(routeSchema).optional(),
 });
 
@@ -232,7 +244,7 @@ export const searchSchema = z.discriminatedUnion(
 
 const shape = z.strictObject({
   $schema: z.string({ error: "must be a string" }).optional(),
-  services: z.array(serviceSchema, { error: "must be a non-empty array" }),
+  providers: z.array(providerSchema, { error: "must be a non-empty array" }),
   api_keys: z.array(clientSchema, { error: "must be a non-empty array" }),
   model_routes: routes(routeSchema).default({}),
   web_search: searchSchema.default({ mode: "proxy" }),
@@ -244,7 +256,7 @@ type Configuration = z.output<typeof shape>;
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [path, values] of [
-    [["services", "id"], config.services.map((service) => service.id)],
+    [["providers", "id"], config.providers.map((provider) => provider.id)],
     [["api_keys", "id"], config.api_keys.map((client) => client.id)],
     [["api_keys", "api_key"], config.api_keys.map((client) => client.api_key)],
   ] as const) {
@@ -258,10 +270,12 @@ function validateIdentities(config: Configuration, context: z.RefinementCtx) {
 }
 
 function validateReferences(config: Configuration, context: z.RefinementCtx) {
-  const services = new Map(
-    config.services.map((service) => [service.id, service]),
+  const providers = new Map(
+    config.providers.map((provider) => [provider.id, provider]),
   );
-  const models = new Set(config.services.flatMap((service) => service.models));
+  const models = new Set(
+    config.providers.flatMap((provider) => provider.models),
+  );
   const issue = (path: (string | number)[], message: string) =>
     context.addIssue({ code: "custom", path, message });
   const validateRoute = (
@@ -271,25 +285,25 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
     if (!models.has(route.model))
       issue(
         [...path, "model"],
-        `targets ${route.model}, which no service supports`,
+        `targets ${route.model}, which no provider supports`,
       );
-    for (const id of route.services ?? []) {
-      const service = services.get(id);
-      if (!service)
-        issue([...path, "services"], `references unknown service ${id}`);
-      else if (!service.models.includes(route.model))
+    for (const id of route.providers ?? []) {
+      const provider = providers.get(id);
+      if (!provider)
+        issue([...path, "providers"], `references unknown provider ${id}`);
+      else if (!provider.models.includes(route.model))
         issue(
           [...path, "model"],
-          `${route.model} is not listed by service ${id}`,
+          `${route.model} is not listed by provider ${id}`,
         );
     }
   };
   for (const [index, client] of config.api_keys.entries()) {
-    for (const id of client.services) {
-      if (!services.has(id))
+    for (const id of client.providers) {
+      if (!providers.has(id))
         issue(
-          ["api_keys", index, "services"],
-          `references unknown service ${id}`,
+          ["api_keys", index, "providers"],
+          `references unknown provider ${id}`,
         );
     }
     for (const [alias, route] of Object.entries(client.model_routes ?? {}))
@@ -297,24 +311,24 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
   }
   for (const [alias, route] of Object.entries(config.model_routes))
     validateRoute(route, ["model_routes", alias]);
-  for (const [index, service] of config.services.entries()) {
-    for (const [alias, route] of Object.entries(service.model_routes ?? {})) {
-      if (!service.models.includes(route.model))
+  for (const [index, provider] of config.providers.entries()) {
+    for (const [alias, route] of Object.entries(provider.model_routes ?? {})) {
+      if (!provider.models.includes(route.model))
         issue(
-          ["services", index, "model_routes", alias, "model"],
-          `${route.model} is not listed by service ${service.id}`,
+          ["providers", index, "model_routes", alias, "model"],
+          `${route.model} is not listed by provider ${provider.id}`,
         );
     }
   }
   validateModelPolicyReferences(
     config.model_policies ?? [],
-    config.services,
+    config.providers,
     context,
   );
 }
 
 function normalize({ $schema: _schema, ...config }: Configuration) {
-  for (const item of [...config.services, ...config.api_keys]) {
+  for (const item of [...config.providers, ...config.api_keys]) {
     if (item.model_routes && !Object.keys(item.model_routes).length)
       delete item.model_routes;
   }
@@ -329,7 +343,7 @@ export const draftConfigurationSchema = shape
 export const maskedConfigurationSchema = shape.transform(normalize);
 export const configurationSchema = shape
   .extend({
-    services: shape.shape.services.min(1, "must be a non-empty array"),
+    providers: shape.shape.providers.min(1, "must be a non-empty array"),
     api_keys: shape.shape.api_keys.min(1, "must be a non-empty array"),
   })
   .superRefine(validateIdentities)

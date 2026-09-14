@@ -184,8 +184,8 @@ export function requestsHref(
 ): string {
   const query = new URLSearchParams();
   for (const name of [
-    "service_id",
-    "key_id",
+    "provider_id",
+    "credential_id",
     "client_id",
     "model",
     "currency",

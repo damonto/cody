@@ -11,7 +11,7 @@ import {
   X509CertificateGenerator,
 } from "@peculiar/x509";
 
-export async function certificates(
+async function certificates(
   hostname = "upstream.test",
   sanHostname = hostname,
 ) {
@@ -74,7 +74,7 @@ async function listen(server) {
   return server.address().port;
 }
 
-export function nodeDial({ hostname, port }) {
+function nodeDial({ hostname, port }) {
   const socket = connect({ host: hostname, port });
   const opened = once(socket, "connect");
   const closed = new Promise((resolve) => socket.once("close", resolve));

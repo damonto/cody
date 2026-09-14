@@ -3,12 +3,12 @@ import type { CostBreakdown, ModelPolicy, TokenUsage } from "./types.ts";
 
 export function priceVersion(
   revision: number | undefined,
-  service: string,
+  provider: string,
   model: string,
 ): string | null {
   return revision === undefined
     ? null
-    : JSON.stringify([revision, service, model]);
+    : JSON.stringify([revision, provider, model]);
 }
 
 // Prices are decimal currency units per million tokens. Monetary results are

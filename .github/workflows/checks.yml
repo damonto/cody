@@ -35,6 +35,8 @@ jobs:
 
       - run: npm run config:validate -- config.example.json
 
+      - run: npm run config:schema:check
+
       - run: npx wrangler deploy --dry-run
         env:
           WRANGLER_SEND_METRICS: "false"

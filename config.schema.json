@@ -5,193 +5,223 @@
   "type": "object",
   "properties": {
     "$schema": { "type": "string" },
-    "services": {
+    "providers": {
       "minItems": 1,
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "^[A-Za-z0-9._-]+$"
-          },
-          "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
-          "proxy": {
-            "anyOf": [
-              {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "const": "ai_gateway" },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              },
+              "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
+              "proxy": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "pattern": "^socks5:\\/\\/"
+                      },
+                      "username": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      },
+                      "password": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      }
+                    },
+                    "required": ["url"],
+                    "additionalProperties": false,
+                    "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+                    "anyOf": [
+                      { "required": ["username", "password"] },
+                      {
+                        "not": {
+                          "anyOf": [
+                            { "required": ["username"] },
+                            { "required": ["password"] }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  { "type": "null" }
+                ]
+              },
+              "credentials": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9._-]+$"
+                    },
+                    "auth": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": { "type": "string", "const": "api_key" },
+                            "api_key": { "type": "string", "minLength": 1 }
+                          },
+                          "required": ["type", "api_key"],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "priority": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "disabled": { "type": "boolean" },
+                    "proxy": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "maxLength": 2048,
+                              "pattern": "^socks5:\\/\\/"
+                            },
+                            "username": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            },
+                            "password": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            }
+                          },
+                          "required": ["url"],
+                          "additionalProperties": false,
+                          "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
+                          "anyOf": [
+                            { "required": ["username", "password"] },
+                            {
+                              "not": {
+                                "anyOf": [
+                                  { "required": ["username"] },
+                                  { "required": ["password"] }
+                                ]
+                              }
+                            }
+                          ]
+                        },
+                        { "type": "null" }
+                      ]
+                    }
+                  },
+                  "required": ["id", "auth", "priority", "disabled"],
+                  "additionalProperties": false
+                }
+              },
+              "models": {
+                "minItems": 1,
+                "type": "array",
+                "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "uniqueItems": true
+              },
+              "disabled": { "type": "boolean" },
+              "priority": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "supports_websocket": { "default": false, "type": "boolean" },
+              "supports_web_search": { "default": false, "type": "boolean" },
+              "supports_context_management": {
+                "default": false,
+                "type": "boolean"
+              },
+              "retry": {
                 "type": "object",
                 "properties": {
-                  "url": {
-                    "type": "string",
-                    "maxLength": 2048,
-                    "pattern": "^socks5:\\/\\/"
+                  "status_codes": {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "uniqueItems": true
                   },
-                  "username": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 255
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 255
+                  "delays_ms": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 60000
+                    }
                   }
                 },
-                "required": ["url"],
+                "required": ["status_codes", "delays_ms"],
                 "additionalProperties": false,
-                "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
                 "anyOf": [
-                  { "required": ["username", "password"] },
                   {
-                    "not": {
-                      "anyOf": [
-                        { "required": ["username"] },
-                        { "required": ["password"] }
-                      ]
+                    "properties": {
+                      "status_codes": { "maxItems": 0 },
+                      "delays_ms": { "maxItems": 0 }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "status_codes": { "minItems": 1 },
+                      "delays_ms": { "minItems": 1 }
                     }
                   }
                 ]
               },
-              { "type": "null" }
-            ]
-          },
-          "keys": {
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256,
-                  "pattern": "^[A-Za-z0-9._-]+$"
-                },
-                "api_key": { "type": "string", "minLength": 1 },
-                "priority": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                "disabled": { "type": "boolean" },
-                "proxy": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "url": {
-                          "type": "string",
-                          "maxLength": 2048,
-                          "pattern": "^socks5:\\/\\/"
-                        },
-                        "username": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 255
-                        },
-                        "password": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 255
-                        }
-                      },
-                      "required": ["url"],
-                      "additionalProperties": false,
-                      "description": "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
-                      "anyOf": [
-                        { "required": ["username", "password"] },
-                        {
-                          "not": {
-                            "anyOf": [
-                              { "required": ["username"] },
-                              { "required": ["password"] }
-                            ]
-                          }
-                        }
-                      ]
-                    },
-                    { "type": "null" }
-                  ]
+              "model_routes": {
+                "type": "object",
+                "propertyNames": { "type": "string", "pattern": "\\S" },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": ["model"],
+                  "additionalProperties": false
                 }
-              },
-              "required": ["id", "api_key", "priority", "disabled"],
-              "additionalProperties": false
-            }
-          },
-          "models": {
-            "minItems": 1,
-            "type": "array",
-            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
-            "uniqueItems": true
-          },
-          "disabled": { "type": "boolean" },
-          "priority": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
-          },
-          "supports_websocket": { "default": false, "type": "boolean" },
-          "supports_web_search": { "default": false, "type": "boolean" },
-          "supports_context_management": {
-            "default": false,
-            "type": "boolean"
-          },
-          "retry": {
-            "type": "object",
-            "properties": {
-              "status_codes": {
-                "maxItems": 20,
-                "type": "array",
-                "items": { "type": "integer", "minimum": 400, "maximum": 599 },
-                "uniqueItems": true
-              },
-              "delays_ms": {
-                "maxItems": 10,
-                "type": "array",
-                "items": { "type": "integer", "minimum": 0, "maximum": 60000 }
               }
             },
-            "required": ["status_codes", "delays_ms"],
-            "additionalProperties": false,
-            "anyOf": [
-              {
-                "properties": {
-                  "status_codes": { "maxItems": 0 },
-                  "delays_ms": { "maxItems": 0 }
-                }
-              },
-              {
-                "properties": {
-                  "status_codes": { "minItems": 1 },
-                  "delays_ms": { "minItems": 1 }
-                }
-              }
-            ]
-          },
-          "model_routes": {
-            "type": "object",
-            "propertyNames": { "type": "string", "pattern": "\\S" },
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "model": { "type": "string", "minLength": 1, "maxLength": 256 }
-              },
-              "required": ["model"],
-              "additionalProperties": false
-            }
+            "required": [
+              "type",
+              "id",
+              "base_url",
+              "credentials",
+              "models",
+              "disabled",
+              "priority"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "id",
-          "base_url",
-          "keys",
-          "models",
-          "disabled",
-          "priority"
-        ],
-        "additionalProperties": false
+        ]
       }
     },
     "api_keys": {
@@ -207,7 +237,7 @@
             "pattern": "^[A-Za-z0-9._-]+$"
           },
           "api_key": { "type": "string", "minLength": 1 },
-          "services": {
+          "providers": {
             "minItems": 1,
             "type": "array",
             "items": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -220,7 +250,7 @@
               "type": "object",
               "properties": {
                 "model": { "type": "string", "minLength": 1, "maxLength": 256 },
-                "services": {
+                "providers": {
                   "minItems": 1,
                   "type": "array",
                   "items": {
@@ -236,7 +266,7 @@
             }
           }
         },
-        "required": ["id", "api_key", "services"],
+        "required": ["id", "api_key", "providers"],
         "additionalProperties": false
       }
     },
@@ -247,7 +277,7 @@
         "type": "object",
         "properties": {
           "model": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "services": {
+          "providers": {
             "minItems": 1,
             "type": "array",
             "items": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -305,7 +335,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "service_id": { "type": "string", "minLength": 1 },
+          "provider_id": { "type": "string", "minLength": 1 },
           "model": { "type": "string", "minLength": 1 },
           "context_window": {
             "type": "integer",
@@ -373,7 +403,7 @@
             "additionalProperties": false
           }
         },
-        "required": ["service_id", "model"],
+        "required": ["provider_id", "model"],
         "additionalProperties": false
       }
     },
@@ -392,6 +422,6 @@
       "maximum": 9007199254740991
     }
   },
-  "required": ["services", "api_keys"],
+  "required": ["providers", "api_keys"],
   "additionalProperties": false
 }

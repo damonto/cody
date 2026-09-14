@@ -5,26 +5,27 @@ import { resolveStoredAffinity } from "../src/gateway/routing/affinity.ts";
 import { parseConfig } from "../src/config/store.ts";
 import {
   FAILURE_THRESHOLD,
-  ServiceHealthState,
+  ProviderHealthState,
 } from "../src/gateway/health/health.ts";
 import {
-  allowedServiceCandidates,
+  allowedProviderCandidates,
   resolveModelRoute,
   selectAvailableCatalogTargetsWithDetails,
-  selectAvailableService,
-  selectAvailableServiceWithDetails,
-  selectServiceApiKey,
+  selectAvailableProvider,
+  selectAvailableProviderWithDetails,
+  selectProviderCredential,
 } from "../src/gateway/routing/routing.ts";
 
 const config = parseConfig({
-  services: [
+  providers: [
     {
+      type: "ai_gateway",
       id: "secondary",
       base_url: "https://secondary.example/v1",
-      keys: [
+      credentials: [
         {
           id: "secondary-key",
-          api_key: "two",
+          auth: { type: "api_key", api_key: "two" },
           disabled: false,
           priority: 10,
         },
@@ -34,18 +35,19 @@ const config = parseConfig({
       models: ["grok-4.5", "review-model"],
     },
     {
+      type: "ai_gateway",
       id: "primary",
       base_url: "https://primary.example/v1",
-      keys: [
+      credentials: [
         {
           id: "primary-backup",
-          api_key: "one-backup",
+          auth: { type: "api_key", api_key: "one-backup" },
           disabled: false,
           priority: 10,
         },
         {
           id: "primary-key",
-          api_key: "one",
+          auth: { type: "api_key", api_key: "one" },
           disabled: false,
           priority: 100,
         },
@@ -56,11 +58,11 @@ const config = parseConfig({
     },
   ],
   api_keys: [
-    { id: "client", api_key: "client", services: ["secondary", "primary"] },
+    { id: "client", api_key: "client", providers: ["secondary", "primary"] },
   ],
   model_routes: {
     "gpt-5.6-sol": { model: "grok-4.5" },
-    "codex-auto-review": { model: "review-model", services: ["secondary"] },
+    "codex-auto-review": { model: "review-model", providers: ["secondary"] },
   },
 });
 const client = config.api_keys[0];
@@ -70,7 +72,7 @@ function routingEnvironment() {
   const affinities = new Map();
   const healthObject = (name) => {
     if (!healthObjects.has(name)) {
-      healthObjects.set(name, new ServiceHealthState());
+      healthObjects.set(name, new ProviderHealthState());
     }
     return healthObjects.get(name);
   };
@@ -88,7 +90,6 @@ function routingEnvironment() {
                 stored,
                 candidates,
                 preferred,
-                () => 0,
               );
               if (!decision.selection) {
                 affinities.delete(name);
@@ -116,40 +117,50 @@ function routingEnvironment() {
   };
 }
 
-test("service keys are selected by priority", () => {
-  assert.equal(selectServiceApiKey(config.services[1]).id, "primary-key");
+test("provider credentials are selected by priority", () => {
+  assert.equal(selectProviderCredential(config.providers[1]).id, "primary-key");
 });
 
-test("disabled service keys are skipped", () => {
-  const service = {
-    ...config.services[1],
-    keys: config.services[1].keys.map((key) => ({
+test("disabled provider credentials are skipped", () => {
+  const provider = {
+    ...config.providers[1],
+    credentials: config.providers[1].credentials.map((key) => ({
       ...key,
       disabled: key.id === "primary-key",
     })),
   };
-  assert.equal(selectServiceApiKey(service).id, "primary-backup");
+  assert.equal(selectProviderCredential(provider).id, "primary-backup");
 });
 
-test("equal service key priorities are selected from the full tie group", () => {
-  const service = {
-    ...config.services[1],
-    keys: config.services[1].keys.map((key) => ({ ...key, priority: 50 })),
+test("equal credential priorities follow configuration order", () => {
+  const provider = {
+    ...config.providers[1],
+    credentials: config.providers[1].credentials.map((key) => ({
+      ...key,
+      priority: 50,
+    })),
   };
-  assert.equal(selectServiceApiKey(service).id, "primary-backup");
-  assert.equal(selectServiceApiKey(service, () => 0).id, "primary-backup");
-  assert.equal(selectServiceApiKey(service, () => 0.999999).id, "primary-key");
+  assert.equal(selectProviderCredential(provider).id, "primary-backup");
+  assert.equal(
+    selectProviderCredential({
+      ...provider,
+      credentials: provider.credentials.toReversed(),
+    }).id,
+    "primary-key",
+  );
 });
 
-test("unconstrained routes resolve globally and services remain priority ordered", () => {
+test("unconstrained routes resolve globally and providers remain priority ordered", () => {
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
   assert.deepEqual(
-    route.targets.map(({ service, keys, upstreamModel, routeApplied }) => [
-      service.id,
-      keys.map((key) => key.id),
-      upstreamModel,
-      routeApplied,
-    ]),
+    route.targets.map(
+      ({ provider, credentials, upstreamModel, routeApplied }) => [
+        provider.id,
+        credentials.map((key) => key.id),
+        upstreamModel,
+        routeApplied,
+      ],
+    ),
     [
       ["primary", ["primary-backup", "primary-key"], "grok-4.5", true],
       ["secondary", ["secondary-key"], "grok-4.5", true],
@@ -171,36 +182,37 @@ test("an unconfigured upstream model is not marked as a route", () => {
   );
 });
 
-test("route service constraints override global service priority", () => {
+test("route provider constraints override global provider priority", () => {
   const route = resolveModelRoute(config, client, "codex-auto-review");
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [["secondary", "review-model"]],
   );
 });
 
-test("route service constraints are intersected with client service access", () => {
+test("route provider constraints are intersected with client provider access", () => {
   const route = resolveModelRoute(
     config,
-    { id: "limited", api_key: "limited", services: ["primary"] },
+    { id: "limited", api_key: "limited", providers: ["primary"] },
     "codex-auto-review",
   );
   assert.deepEqual(route.targets, []);
 });
 
-test("required capabilities filter services before routing selection", () => {
+test("required capabilities filter providers before routing selection", () => {
   const capabilityConfig = parseConfig({
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "unsupported",
         base_url: "https://unsupported.example/v1",
-        keys: [
+        credentials: [
           {
             id: "unsupported-key",
-            api_key: "unsupported",
+            auth: { type: "api_key", api_key: "unsupported" },
             disabled: false,
             priority: 10,
           },
@@ -212,12 +224,13 @@ test("required capabilities filter services before routing selection", () => {
         models: ["model"],
       },
       {
+        type: "ai_gateway",
         id: "supported",
         base_url: "https://supported.example/v1",
-        keys: [
+        credentials: [
           {
             id: "supported-key",
-            api_key: "supported",
+            auth: { type: "api_key", api_key: "supported" },
             disabled: false,
             priority: 10,
           },
@@ -233,7 +246,7 @@ test("required capabilities filter services before routing selection", () => {
       {
         id: "client",
         api_key: "client",
-        services: ["unsupported", "supported"],
+        providers: ["unsupported", "supported"],
       },
     ],
     model_routes: {},
@@ -242,20 +255,20 @@ test("required capabilities filter services before routing selection", () => {
 
   assert.deepEqual(
     resolveModelRoute(capabilityConfig, capabilityClient, "model").targets.map(
-      ({ service }) => service.id,
+      ({ provider }) => provider.id,
     ),
     ["unsupported", "supported"],
   );
   assert.deepEqual(
     resolveModelRoute(capabilityConfig, capabilityClient, "model", {
       requiredCapabilities: ["supports_web_search"],
-    }).targets.map(({ service }) => service.id),
+    }).targets.map(({ provider }) => provider.id),
     ["supported"],
   );
   assert.deepEqual(
     resolveModelRoute(capabilityConfig, capabilityClient, "model", {
       requiredCapabilities: ["supports_websocket"],
-    }).targets.map(({ service }) => service.id),
+    }).targets.map(({ provider }) => provider.id),
     ["supported"],
   );
 });
@@ -266,15 +279,15 @@ test("a route can constrain a real upstream model name", () => {
       ...config,
       model_routes: {
         ...config.model_routes,
-        "grok-4.5": { model: "grok-4.5", services: ["secondary"] },
+        "grok-4.5": { model: "grok-4.5", providers: ["secondary"] },
       },
     },
     client,
     "grok-4.5",
   );
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [["secondary", "grok-4.5"]],
@@ -289,9 +302,9 @@ test("per-key routes override global routes for the same model", () => {
         {
           id: "client",
           api_key: "client",
-          services: ["primary", "secondary"],
+          providers: ["primary", "secondary"],
           model_routes: {
-            "gpt-5.6-sol": { model: "review-model", services: ["secondary"] },
+            "gpt-5.6-sol": { model: "review-model", providers: ["secondary"] },
           },
         },
       ],
@@ -299,16 +312,16 @@ test("per-key routes override global routes for the same model", () => {
     {
       id: "client",
       api_key: "client",
-      services: ["primary", "secondary"],
+      providers: ["primary", "secondary"],
       model_routes: {
-        "gpt-5.6-sol": { model: "review-model", services: ["secondary"] },
+        "gpt-5.6-sol": { model: "review-model", providers: ["secondary"] },
       },
     },
     "gpt-5.6-sol",
   );
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [["secondary", "review-model"]],
@@ -319,15 +332,15 @@ test("per-key routes leave unconfigured models on the global routes", () => {
   const keyClient = {
     id: "client",
     api_key: "client",
-    services: ["primary", "secondary"],
+    providers: ["primary", "secondary"],
     model_routes: {
-      "codex-auto-review": { model: "review-model", services: ["primary"] },
+      "codex-auto-review": { model: "review-model", providers: ["primary"] },
     },
   };
   const routed = resolveModelRoute(config, keyClient, "gpt-5.6-sol");
   assert.deepEqual(
-    routed.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    routed.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [
@@ -341,12 +354,12 @@ test("per-key routes apply only to the configured client", () => {
   const otherClient = {
     id: "other",
     api_key: "other",
-    services: ["primary", "secondary"],
+    providers: ["primary", "secondary"],
   };
   const routed = resolveModelRoute(config, otherClient, "gpt-5.6-sol");
   assert.deepEqual(
-    routed.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    routed.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [
@@ -356,34 +369,34 @@ test("per-key routes apply only to the configured client", () => {
   );
 });
 
-test("per-key route services are intersected with client service access", () => {
+test("per-key route providers are intersected with client provider access", () => {
   const keyClient = {
     id: "limited",
     api_key: "limited",
-    services: ["primary"],
+    providers: ["primary"],
     model_routes: {
-      "gpt-5.6-sol": { model: "review-model", services: ["secondary"] },
+      "gpt-5.6-sol": { model: "review-model", providers: ["secondary"] },
     },
   };
   const route = resolveModelRoute(config, keyClient, "gpt-5.6-sol");
   assert.deepEqual(route.targets, []);
 });
 
-test("service routes override per-key and global routes per service", () => {
-  const serviceRoutes = {
+test("provider routes override per-key and global routes per provider", () => {
+  const providerRoutes = {
     ...config,
-    services: config.services.map((service) => ({
-      ...service,
+    providers: config.providers.map((provider) => ({
+      ...provider,
       model_routes:
-        service.id === "primary"
+        provider.id === "primary"
           ? { "gpt-5.6-sol": { model: "review-model" } }
           : { "gpt-5.6-sol": { model: "grok-4.5" } },
     })),
   };
-  const route = resolveModelRoute(serviceRoutes, client, "gpt-5.6-sol");
+  const route = resolveModelRoute(providerRoutes, client, "gpt-5.6-sol");
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [
@@ -393,13 +406,13 @@ test("service routes override per-key and global routes per service", () => {
   );
 });
 
-test("service routes override lower layers even when the lower route constrains services", () => {
-  const serviceRoutes = {
+test("provider routes override lower layers even when the lower route constrains providers", () => {
+  const providerRoutes = {
     ...config,
-    services: config.services.map((service) => ({
-      ...service,
+    providers: config.providers.map((provider) => ({
+      ...provider,
       model_routes:
-        service.id === "primary"
+        provider.id === "primary"
           ? { "gpt-5.6-sol": { model: "review-model" } }
           : undefined,
     })),
@@ -407,15 +420,15 @@ test("service routes override lower layers even when the lower route constrains 
   const keyClient = {
     id: "client",
     api_key: "client",
-    services: ["primary", "secondary"],
+    providers: ["primary", "secondary"],
     model_routes: {
-      "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+      "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
     },
   };
-  const route = resolveModelRoute(serviceRoutes, keyClient, "gpt-5.6-sol");
+  const route = resolveModelRoute(providerRoutes, keyClient, "gpt-5.6-sol");
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [
@@ -425,14 +438,14 @@ test("service routes override lower layers even when the lower route constrains 
   );
 });
 
-test("a service route can hide a model from that service only", () => {
+test("a provider route can hide a model from that provider only", () => {
   const route = resolveModelRoute(
     {
       ...config,
-      services: config.services.map((service) => ({
-        ...service,
+      providers: config.providers.map((provider) => ({
+        ...provider,
         model_routes:
-          service.id === "primary"
+          provider.id === "primary"
             ? { "grok-4.5": { model: "review-model" } }
             : undefined,
       })),
@@ -441,8 +454,8 @@ test("a service route can hide a model from that service only", () => {
     "grok-4.5",
   );
   assert.deepEqual(
-    route.targets.map(({ service, upstreamModel }) => [
-      service.id,
+    route.targets.map(({ provider, upstreamModel }) => [
+      provider.id,
       upstreamModel,
     ]),
     [
@@ -452,22 +465,22 @@ test("a service route can hide a model from that service only", () => {
   );
 });
 
-test("disabled services are excluded before priority and health selection", async () => {
+test("disabled providers are excluded before priority and health selection", async () => {
   const disabledConfig = {
     ...config,
-    services: config.services.map((service) => ({
-      ...service,
-      disabled: service.id === "primary",
+    providers: config.providers.map((provider) => ({
+      ...provider,
+      disabled: provider.id === "primary",
     })),
   };
   const route = resolveModelRoute(disabledConfig, client, "gpt-5.6-sol");
   assert.deepEqual(
-    route.targets.map(({ service }) => service.id),
+    route.targets.map(({ provider }) => provider.id),
     ["secondary"],
   );
 
   let healthChecks = 0;
-  const selected = await selectAvailableService(
+  const selected = await selectAvailableProvider(
     {
       HEALTH: {
         getByName: () => ({
@@ -484,48 +497,48 @@ test("disabled services are excluded before priority and health selection", asyn
   assert.equal(healthChecks, 2);
 });
 
-test("a disabled route-constrained service is unavailable", () => {
+test("a disabled route-constrained provider is unavailable", () => {
   const disabledConfig = {
     ...config,
-    services: config.services.map((service) => ({
-      ...service,
-      disabled: service.id === "secondary",
+    providers: config.providers.map((provider) => ({
+      ...provider,
+      disabled: provider.id === "secondary",
     })),
   };
   const route = resolveModelRoute(disabledConfig, client, "codex-auto-review");
   assert.deepEqual(route.targets, []);
 });
 
-test("a service without enabled keys is excluded from routing", () => {
+test("a provider without enabled credentials is excluded from routing", () => {
   const noPrimaryKeys = {
     ...config,
-    services: config.services.map((service) => ({
-      ...service,
-      keys:
-        service.id === "primary"
-          ? service.keys.map((key) => ({ ...key, disabled: true }))
-          : service.keys,
+    providers: config.providers.map((provider) => ({
+      ...provider,
+      credentials:
+        provider.id === "primary"
+          ? provider.credentials.map((key) => ({ ...key, disabled: true }))
+          : provider.credentials,
     })),
   };
   const route = resolveModelRoute(noPrimaryKeys, client, "gpt-5.6-sol");
   assert.deepEqual(
-    route.targets.map(({ service }) => service.id),
+    route.targets.map(({ provider }) => provider.id),
     ["secondary"],
   );
 });
 
-test("a cooling primary service is skipped for the next priority", async () => {
-  const primary = new ServiceHealthState();
-  const secondary = new ServiceHealthState();
+test("a cooling primary provider is skipped for the next priority", async () => {
+  const primary = new ProviderHealthState();
+  const secondary = new ProviderHealthState();
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     primary.recordFailure();
   }
   const objects = new Map([
     ["primary", primary],
     ["secondary", secondary],
-    ["key:primary:primary-backup", new ServiceHealthState()],
-    ["key:primary:primary-key", new ServiceHealthState()],
-    ["key:secondary:secondary-key", new ServiceHealthState()],
+    ["key:primary:primary-backup", new ProviderHealthState()],
+    ["key:primary:primary-key", new ProviderHealthState()],
+    ["key:secondary:secondary-key", new ProviderHealthState()],
   ]);
   const env = {
     HEALTH: {
@@ -533,298 +546,49 @@ test("a cooling primary service is skipped for the next priority", async () => {
     },
   };
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const selected = await selectAvailableService(env, route);
+  const selected = await selectAvailableProvider(env, route);
   assert.equal(selected.id, "secondary");
 });
 
-test("service-first and key-second random selection use independent tie boundaries", async () => {
+test("equal provider and credential priorities follow their configuration order", async () => {
   const equalConfig = parseConfig({
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "first",
         base_url: "https://first.example/v1",
-        keys: [
-          { id: "first-a", api_key: "a", disabled: false, priority: 10 },
-          { id: "first-b", api_key: "b", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 50,
-        models: ["model"],
-      },
-      {
-        id: "second",
-        base_url: "https://second.example/v1",
-        keys: [
-          { id: "second-a", api_key: "c", disabled: false, priority: 10 },
-          { id: "second-b", api_key: "d", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 50,
-        models: ["model"],
-      },
-    ],
-    api_keys: [
-      { id: "client", api_key: "client", services: ["first", "second"] },
-    ],
-    model_routes: {},
-  });
-  const route = resolveModelRoute(
-    equalConfig,
-    equalConfig.api_keys[0],
-    "model",
-  );
-  const { env } = routingEnvironment();
-
-  const defaultSelection = await selectAvailableServiceWithDetails(env, route);
-  assert.equal(defaultSelection.target.service.id, "first");
-  assert.equal(defaultSelection.target.key.id, "first-a");
-
-  const values = [0.999999, 0];
-  const selection = await selectAvailableServiceWithDetails(env, route, {
-    random: () => values.shift(),
-  });
-  assert.equal(selection.target.service.id, "second");
-  assert.equal(selection.target.key.id, "second-a");
-
-  const opposite = [0, 0.999999];
-  const secondSelection = await selectAvailableServiceWithDetails(env, route, {
-    random: () => opposite.shift(),
-  });
-  assert.equal(secondSelection.target.service.id, "first");
-  assert.equal(secondSelection.target.key.id, "first-b");
-});
-
-test("a cooling key is skipped without cooling its service", async () => {
-  const { env, healthObject } = routingEnvironment();
-  healthObject("key:primary:primary-key").recordImmediateFailure();
-  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const selection = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-  });
-
-  assert.equal(selection.target.service.id, "primary");
-  assert.equal(selection.target.key.id, "primary-backup");
-  assert.equal(
-    selection.keyChecks.find((check) => check.key_id === "primary-key")
-      .available,
-    false,
-  );
-});
-
-test("a service with no available keys falls back to the next service priority", async () => {
-  const { env, healthObject } = routingEnvironment();
-  healthObject("key:primary:primary-key").recordImmediateFailure();
-  healthObject("key:primary:primary-backup").recordImmediateFailure();
-  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const selection = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-  });
-
-  assert.equal(selection.target.service.id, "secondary");
-  assert.equal(selection.target.key.id, "secondary-key");
-});
-
-test("catalog selection uses catalog health and randomizes only tied keys per service", async () => {
-  const catalogConfig = parseConfig({
-    services: [
-      {
-        id: "catalog",
-        base_url: "https://catalog.example/v1",
-        keys: [
-          { id: "catalog-a", api_key: "a", disabled: false, priority: 10 },
-          { id: "catalog-b", api_key: "b", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 10,
-        models: ["model"],
-      },
-    ],
-    api_keys: [{ id: "client", api_key: "client", services: ["catalog"] }],
-    model_routes: {},
-  });
-  const { env, healthObject } = routingEnvironment();
-  healthObject("key:catalog:catalog-b").recordImmediateFailure();
-  const candidates = allowedServiceCandidates(
-    catalogConfig,
-    catalogConfig.api_keys[0],
-  );
-
-  const first = await selectAvailableCatalogTargetsWithDetails(
-    env,
-    candidates,
-    () => 0.999999,
-  );
-  assert.equal(first.targets[0].key.id, "catalog-b");
-
-  healthObject("key:catalog:catalog-b:catalog").recordImmediateFailure();
-  const second = await selectAvailableCatalogTargetsWithDetails(
-    env,
-    candidates,
-    () => 0.999999,
-  );
-  assert.equal(second.targets[0].key.id, "catalog-a");
-});
-
-test("session affinity is stable, client-isolated, and rebinds after key cooldown", async () => {
-  const equalConfig = parseConfig({
-    services: [
-      {
-        id: "first",
-        base_url: "https://first.example/v1",
-        keys: [
-          { id: "first-a", api_key: "a", disabled: false, priority: 10 },
-          { id: "first-b", api_key: "b", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 50,
-        models: ["model"],
-      },
-      {
-        id: "second",
-        base_url: "https://second.example/v1",
-        keys: [
-          { id: "second-a", api_key: "c", disabled: false, priority: 10 },
-          { id: "second-b", api_key: "d", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 50,
-        models: ["model"],
-      },
-    ],
-    api_keys: [
-      { id: "client-a", api_key: "client-a", services: ["first", "second"] },
-    ],
-    model_routes: {},
-  });
-  const route = resolveModelRoute(
-    equalConfig,
-    equalConfig.api_keys[0],
-    "model",
-  );
-  const { env, healthObject } = routingEnvironment();
-  const firstRandom = [0.999999, 0.999999];
-  const first = await selectAvailableServiceWithDetails(env, route, {
-    random: () => firstRandom.shift(),
-    session: { clientId: "client-a", sessionId: "session" },
-  });
-  assert.deepEqual(
-    [first.target.service.id, first.target.key.id, first.affinity.status],
-    ["second", "second-b", "created"],
-  );
-
-  const repeated = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session: { clientId: "client-a", sessionId: "session" },
-  });
-  assert.deepEqual(
-    [
-      repeated.target.service.id,
-      repeated.target.key.id,
-      repeated.affinity.status,
-    ],
-    ["second", "second-b", "hit"],
-  );
-
-  const otherClient = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session: { clientId: "client-b", sessionId: "session" },
-  });
-  assert.deepEqual(
-    [otherClient.target.service.id, otherClient.target.key.id],
-    ["first", "first-a"],
-  );
-
-  healthObject("key:second:second-b").recordImmediateFailure();
-  const rebound = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session: { clientId: "client-a", sessionId: "session" },
-  });
-  assert.deepEqual(
-    [rebound.target.service.id, rebound.target.key.id, rebound.affinity.status],
-    ["first", "first-a", "rebound"],
-  );
-});
-
-test("session affinity upgrades when a higher-priority service recovers", async () => {
-  const { env, healthObject } = routingEnvironment();
-  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
-    healthObject("primary").recordFailure();
-  }
-  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const session = { clientId: "client", sessionId: "service-upgrade" };
-  const initial = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session,
-  });
-  assert.deepEqual(
-    [initial.target.service.id, initial.affinity.status],
-    ["secondary", "created"],
-  );
-
-  healthObject("primary").clear();
-  const upgraded = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session,
-  });
-  assert.deepEqual(
-    [
-      upgraded.target.service.id,
-      upgraded.target.key.id,
-      upgraded.affinity.status,
-    ],
-    ["primary", "primary-key", "rebound"],
-  );
-});
-
-test("session affinity upgrades a key only inside its current top-priority service", async () => {
-  const { env, healthObject } = routingEnvironment();
-  healthObject("key:primary:primary-key").recordImmediateFailure();
-  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const session = { clientId: "client", sessionId: "key-upgrade" };
-  const initial = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session,
-  });
-  assert.deepEqual(
-    [initial.target.service.id, initial.target.key.id, initial.affinity.status],
-    ["primary", "primary-backup", "created"],
-  );
-
-  healthObject("key:primary:primary-key").clear();
-  const upgraded = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
-    session,
-  });
-  assert.deepEqual(
-    [
-      upgraded.target.service.id,
-      upgraded.target.key.id,
-      upgraded.affinity.status,
-    ],
-    ["primary", "primary-key", "rebound"],
-  );
-});
-
-test("equal service and key priorities do not churn an existing affinity", async () => {
-  const equalConfig = parseConfig({
-    services: [
-      {
-        id: "first",
-        base_url: "https://first.example/v1",
-        keys: [
-          { id: "first-key", api_key: "first", disabled: false, priority: 10 },
-        ],
-        disabled: false,
-        priority: 50,
-        models: ["model"],
-      },
-      {
-        id: "second",
-        base_url: "https://second.example/v1",
-        keys: [
+        credentials: [
           {
-            id: "second-key",
-            api_key: "second",
+            id: "first-a",
+            auth: { type: "api_key", api_key: "a" },
+            disabled: false,
+            priority: 10,
+          },
+          {
+            id: "first-b",
+            auth: { type: "api_key", api_key: "b" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+      {
+        type: "ai_gateway",
+        id: "second",
+        base_url: "https://second.example/v1",
+        credentials: [
+          {
+            id: "second-a",
+            auth: { type: "api_key", api_key: "c" },
+            disabled: false,
+            priority: 10,
+          },
+          {
+            id: "second-b",
+            auth: { type: "api_key", api_key: "d" },
             disabled: false,
             priority: 10,
           },
@@ -835,7 +599,333 @@ test("equal service and key priorities do not churn an existing affinity", async
       },
     ],
     api_keys: [
-      { id: "client", api_key: "client", services: ["first", "second"] },
+      { id: "client", api_key: "client", providers: ["first", "second"] },
+    ],
+    model_routes: {},
+  });
+  const route = resolveModelRoute(
+    equalConfig,
+    equalConfig.api_keys[0],
+    "model",
+  );
+  const { env } = routingEnvironment();
+
+  const defaultSelection = await selectAvailableProviderWithDetails(env, route);
+  assert.equal(defaultSelection.target.provider.id, "first");
+  assert.equal(defaultSelection.target.credential.id, "first-a");
+
+  const reversedProviders = {
+    ...equalConfig,
+    providers: equalConfig.providers.toReversed(),
+  };
+  const selection = await selectAvailableProviderWithDetails(
+    env,
+    resolveModelRoute(reversedProviders, equalConfig.api_keys[0], "model"),
+  );
+  assert.equal(selection.target.provider.id, "second");
+  assert.equal(selection.target.credential.id, "second-a");
+
+  const reversedCredentials = {
+    ...equalConfig,
+    providers: equalConfig.providers.map((provider) => ({
+      ...provider,
+      credentials: provider.credentials.toReversed(),
+    })),
+  };
+  const secondSelection = await selectAvailableProviderWithDetails(
+    env,
+    resolveModelRoute(reversedCredentials, equalConfig.api_keys[0], "model"),
+  );
+  assert.equal(secondSelection.target.provider.id, "first");
+  assert.equal(secondSelection.target.credential.id, "first-b");
+});
+
+test("a cooling key is skipped without cooling its provider", async () => {
+  const { env, healthObject } = routingEnvironment();
+  healthObject("key:primary:primary-key").recordImmediateFailure();
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const selection = await selectAvailableProviderWithDetails(env, route);
+
+  assert.equal(selection.target.provider.id, "primary");
+  assert.equal(selection.target.credential.id, "primary-backup");
+  assert.equal(
+    selection.credentialChecks.find(
+      (check) => check.credential_id === "primary-key",
+    ).available,
+    false,
+  );
+});
+
+test("a provider with no available credentials falls back to the next provider priority", async () => {
+  const { env, healthObject } = routingEnvironment();
+  healthObject("key:primary:primary-key").recordImmediateFailure();
+  healthObject("key:primary:primary-backup").recordImmediateFailure();
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const selection = await selectAvailableProviderWithDetails(env, route);
+
+  assert.equal(selection.target.provider.id, "secondary");
+  assert.equal(selection.target.credential.id, "secondary-key");
+});
+
+test("catalog selection uses catalog health and credential configuration order", async () => {
+  const catalogConfig = parseConfig({
+    providers: [
+      {
+        type: "ai_gateway",
+        id: "catalog",
+        base_url: "https://catalog.example/v1",
+        credentials: [
+          {
+            id: "catalog-a",
+            auth: { type: "api_key", api_key: "a" },
+            disabled: false,
+            priority: 10,
+          },
+          {
+            id: "catalog-b",
+            auth: { type: "api_key", api_key: "b" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 10,
+        models: ["model"],
+      },
+    ],
+    api_keys: [{ id: "client", api_key: "client", providers: ["catalog"] }],
+    model_routes: {},
+  });
+  const { env, healthObject } = routingEnvironment();
+  healthObject("key:catalog:catalog-a").recordImmediateFailure();
+  const candidates = allowedProviderCandidates(
+    catalogConfig,
+    catalogConfig.api_keys[0],
+  );
+
+  const first = await selectAvailableCatalogTargetsWithDetails(env, candidates);
+  assert.equal(first.targets[0].credential.id, "catalog-a");
+
+  healthObject("key:catalog:catalog-a:catalog").recordImmediateFailure();
+  const second = await selectAvailableCatalogTargetsWithDetails(
+    env,
+    candidates,
+  );
+  assert.equal(second.targets[0].credential.id, "catalog-b");
+});
+
+test("session affinity is stable, client-isolated, and rebinds after key cooldown", async () => {
+  const equalConfig = parseConfig({
+    providers: [
+      {
+        type: "ai_gateway",
+        id: "first",
+        base_url: "https://first.example/v1",
+        credentials: [
+          {
+            id: "first-a",
+            auth: { type: "api_key", api_key: "a" },
+            disabled: false,
+            priority: 10,
+          },
+          {
+            id: "first-b",
+            auth: { type: "api_key", api_key: "b" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+      {
+        type: "ai_gateway",
+        id: "second",
+        base_url: "https://second.example/v1",
+        credentials: [
+          {
+            id: "second-a",
+            auth: { type: "api_key", api_key: "c" },
+            disabled: false,
+            priority: 10,
+          },
+          {
+            id: "second-b",
+            auth: { type: "api_key", api_key: "d" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+    ],
+    api_keys: [
+      { id: "client-a", api_key: "client-a", providers: ["first", "second"] },
+    ],
+    model_routes: {},
+  });
+  const route = resolveModelRoute(
+    equalConfig,
+    equalConfig.api_keys[0],
+    "model",
+  );
+  const { env, healthObject } = routingEnvironment();
+  const initialConfig = {
+    ...equalConfig,
+    providers: equalConfig.providers.toReversed().map((provider) => ({
+      ...provider,
+      credentials: provider.credentials.toReversed(),
+    })),
+  };
+  const first = await selectAvailableProviderWithDetails(
+    env,
+    resolveModelRoute(initialConfig, equalConfig.api_keys[0], "model"),
+    { session: { clientId: "client-a", sessionId: "session" } },
+  );
+  assert.deepEqual(
+    [
+      first.target.provider.id,
+      first.target.credential.id,
+      first.affinity.status,
+    ],
+    ["second", "second-b", "created"],
+  );
+
+  const repeated = await selectAvailableProviderWithDetails(env, route, {
+    session: { clientId: "client-a", sessionId: "session" },
+  });
+  assert.deepEqual(
+    [
+      repeated.target.provider.id,
+      repeated.target.credential.id,
+      repeated.affinity.status,
+    ],
+    ["second", "second-b", "hit"],
+  );
+
+  const otherClient = await selectAvailableProviderWithDetails(env, route, {
+    session: { clientId: "client-b", sessionId: "session" },
+  });
+  assert.deepEqual(
+    [otherClient.target.provider.id, otherClient.target.credential.id],
+    ["first", "first-a"],
+  );
+
+  healthObject("key:second:second-b").recordImmediateFailure();
+  const rebound = await selectAvailableProviderWithDetails(env, route, {
+    session: { clientId: "client-a", sessionId: "session" },
+  });
+  assert.deepEqual(
+    [
+      rebound.target.provider.id,
+      rebound.target.credential.id,
+      rebound.affinity.status,
+    ],
+    ["first", "first-a", "rebound"],
+  );
+});
+
+test("session affinity upgrades when a higher-priority provider recovers", async () => {
+  const { env, healthObject } = routingEnvironment();
+  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
+    healthObject("primary").recordFailure();
+  }
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const session = { clientId: "client", sessionId: "provider-upgrade" };
+  const initial = await selectAvailableProviderWithDetails(env, route, {
+    session,
+  });
+  assert.deepEqual(
+    [initial.target.provider.id, initial.affinity.status],
+    ["secondary", "created"],
+  );
+
+  healthObject("primary").clear();
+  const upgraded = await selectAvailableProviderWithDetails(env, route, {
+    session,
+  });
+  assert.deepEqual(
+    [
+      upgraded.target.provider.id,
+      upgraded.target.credential.id,
+      upgraded.affinity.status,
+    ],
+    ["primary", "primary-key", "rebound"],
+  );
+});
+
+test("session affinity upgrades a key only inside its current top-priority provider", async () => {
+  const { env, healthObject } = routingEnvironment();
+  healthObject("key:primary:primary-key").recordImmediateFailure();
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const session = { clientId: "client", sessionId: "key-upgrade" };
+  const initial = await selectAvailableProviderWithDetails(env, route, {
+    session,
+  });
+  assert.deepEqual(
+    [
+      initial.target.provider.id,
+      initial.target.credential.id,
+      initial.affinity.status,
+    ],
+    ["primary", "primary-backup", "created"],
+  );
+
+  healthObject("key:primary:primary-key").clear();
+  const upgraded = await selectAvailableProviderWithDetails(env, route, {
+    session,
+  });
+  assert.deepEqual(
+    [
+      upgraded.target.provider.id,
+      upgraded.target.credential.id,
+      upgraded.affinity.status,
+    ],
+    ["primary", "primary-key", "rebound"],
+  );
+});
+
+test("equal provider and key priorities do not churn an existing affinity", async () => {
+  const equalConfig = parseConfig({
+    providers: [
+      {
+        type: "ai_gateway",
+        id: "first",
+        base_url: "https://first.example/v1",
+        credentials: [
+          {
+            id: "first-key",
+            auth: { type: "api_key", api_key: "first" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+      {
+        type: "ai_gateway",
+        id: "second",
+        base_url: "https://second.example/v1",
+        credentials: [
+          {
+            id: "second-key",
+            auth: { type: "api_key", api_key: "second" },
+            disabled: false,
+            priority: 10,
+          },
+        ],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+    ],
+    api_keys: [
+      { id: "client", api_key: "client", providers: ["first", "second"] },
     ],
     model_routes: {},
   });
@@ -846,30 +936,40 @@ test("equal service and key priorities do not churn an existing affinity", async
     "model",
   );
   const session = { clientId: "client", sessionId: "equal-priority" };
-  const initial = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0.999999,
-    session,
-  });
-  assert.equal(initial.target.service.id, "second");
+  const initialConfig = {
+    ...equalConfig,
+    providers: equalConfig.providers.toReversed(),
+  };
+  const initial = await selectAvailableProviderWithDetails(
+    env,
+    resolveModelRoute(initialConfig, equalConfig.api_keys[0], "model"),
+    { session },
+  );
+  assert.equal(initial.target.provider.id, "second");
 
-  const repeated = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
+  const repeated = await selectAvailableProviderWithDetails(env, route, {
     session,
   });
   assert.deepEqual(
-    [repeated.target.service.id, repeated.affinity.status],
+    [repeated.target.provider.id, repeated.affinity.status],
     ["second", "hit"],
   );
 });
 
-test("session affinity rebinds after a required service capability is removed", async () => {
+test("session affinity rebinds after a required provider capability is removed", async () => {
   const capabilityConfig = parseConfig({
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "first",
         base_url: "https://first.example/v1",
-        keys: [
-          { id: "first-key", api_key: "first", disabled: false, priority: 10 },
+        credentials: [
+          {
+            id: "first-key",
+            auth: { type: "api_key", api_key: "first" },
+            disabled: false,
+            priority: 10,
+          },
         ],
         disabled: false,
         priority: 50,
@@ -878,12 +978,13 @@ test("session affinity rebinds after a required service capability is removed", 
         models: ["model"],
       },
       {
+        type: "ai_gateway",
         id: "second",
         base_url: "https://second.example/v1",
-        keys: [
+        credentials: [
           {
             id: "second-key",
-            api_key: "second",
+            auth: { type: "api_key", api_key: "second" },
             disabled: false,
             priority: 10,
           },
@@ -896,89 +997,86 @@ test("session affinity rebinds after a required service capability is removed", 
       },
     ],
     api_keys: [
-      { id: "client", api_key: "client", services: ["first", "second"] },
+      { id: "client", api_key: "client", providers: ["first", "second"] },
     ],
     model_routes: {},
   });
   const { env } = routingEnvironment();
   const session = { clientId: "client", sessionId: "capability-change" };
-  const initial = await selectAvailableServiceWithDetails(
+  const initial = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(capabilityConfig, capabilityConfig.api_keys[0], "model", {
       requiredCapabilities: ["supports_web_search"],
     }),
-    { random: () => 0, session },
+    { session },
   );
   assert.deepEqual(
-    [initial.target.service.id, initial.affinity.status],
+    [initial.target.provider.id, initial.affinity.status],
     ["first", "created"],
   );
 
   const updatedConfig = {
     ...capabilityConfig,
-    services: capabilityConfig.services.map((service) =>
-      service.id === "first"
-        ? { ...service, supports_web_search: false }
-        : service,
+    providers: capabilityConfig.providers.map((provider) =>
+      provider.id === "first"
+        ? { ...provider, supports_web_search: false }
+        : provider,
     ),
   };
-  const rebound = await selectAvailableServiceWithDetails(
+  const rebound = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(updatedConfig, capabilityConfig.api_keys[0], "model", {
       requiredCapabilities: ["supports_web_search"],
     }),
-    { random: () => 0, session },
+    { session },
   );
   assert.deepEqual(
-    [rebound.target.service.id, rebound.affinity.status],
+    [rebound.target.provider.id, rebound.affinity.status],
     ["second", "rebound"],
   );
 });
 
-test("session affinity rebinds for every configuration, permission, model, and service invalidation", async () => {
+test("session affinity rebinds for every configuration, permission, model, and provider invalidation", async () => {
   const { env, healthObject } = routingEnvironment();
   const initialRoute = resolveModelRoute(config, client, "gpt-5.6-sol");
-  const initial = await selectAvailableServiceWithDetails(env, initialRoute, {
-    random: () => 0,
+  const initial = await selectAvailableProviderWithDetails(env, initialRoute, {
     session: { clientId: "client", sessionId: "reconfigure" },
   });
-  assert.equal(initial.target.service.id, "primary");
+  assert.equal(initial.target.provider.id, "primary");
 
   const disabledConfig = {
     ...config,
-    services: config.services.map((service) =>
-      service.id === "primary" ? { ...service, disabled: true } : service,
+    providers: config.providers.map((provider) =>
+      provider.id === "primary" ? { ...provider, disabled: true } : provider,
     ),
   };
-  const rebound = await selectAvailableServiceWithDetails(
+  const rebound = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(disabledConfig, client, "gpt-5.6-sol"),
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
-    [rebound.target.service.id, rebound.affinity.status],
+    [rebound.target.provider.id, rebound.affinity.status],
     ["secondary", "rebound"],
   );
 
   const permissionRoute = resolveModelRoute(
     config,
-    { id: "client", api_key: "client", services: ["primary"] },
+    { id: "client", api_key: "client", providers: ["primary"] },
     "gpt-5.6-sol",
   );
-  const permissionSelection = await selectAvailableServiceWithDetails(
+  const permissionSelection = await selectAvailableProviderWithDetails(
     env,
     permissionRoute,
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
     [
-      permissionSelection.target.service.id,
+      permissionSelection.target.provider.id,
       permissionSelection.affinity.status,
     ],
     ["primary", "rebound"],
@@ -986,40 +1084,38 @@ test("session affinity rebinds for every configuration, permission, model, and s
 
   const removedConfig = {
     ...config,
-    services: config.services.filter((service) => service.id !== "primary"),
+    providers: config.providers.filter((provider) => provider.id !== "primary"),
   };
-  const removedSelection = await selectAvailableServiceWithDetails(
+  const removedSelection = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(removedConfig, client, "gpt-5.6-sol"),
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
-    [removedSelection.target.service.id, removedSelection.affinity.status],
+    [removedSelection.target.provider.id, removedSelection.affinity.status],
     ["secondary", "rebound"],
   );
 
   const unsupportedConfig = {
     ...config,
-    services: config.services.map((service) =>
-      service.id === "secondary"
-        ? { ...service, models: ["other-model"] }
-        : service,
+    providers: config.providers.map((provider) =>
+      provider.id === "secondary"
+        ? { ...provider, models: ["other-model"] }
+        : provider,
     ),
   };
-  const unsupportedSelection = await selectAvailableServiceWithDetails(
+  const unsupportedSelection = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(unsupportedConfig, client, "gpt-5.6-sol"),
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
     [
-      unsupportedSelection.target.service.id,
+      unsupportedSelection.target.provider.id,
       unsupportedSelection.affinity.status,
     ],
     ["primary", "rebound"],
@@ -1027,30 +1123,29 @@ test("session affinity rebinds for every configuration, permission, model, and s
 
   const disabledKeyConfig = {
     ...config,
-    services: config.services.map((service) =>
-      service.id === "primary"
+    providers: config.providers.map((provider) =>
+      provider.id === "primary"
         ? {
-            ...service,
-            keys: service.keys.map((key) =>
+            ...provider,
+            credentials: provider.credentials.map((key) =>
               key.id === "primary-key" ? { ...key, disabled: true } : key,
             ),
           }
-        : service,
+        : provider,
     ),
   };
-  const disabledKeySelection = await selectAvailableServiceWithDetails(
+  const disabledCredentialSelection = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(disabledKeyConfig, client, "gpt-5.6-sol"),
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
     [
-      disabledKeySelection.target.service.id,
-      disabledKeySelection.target.key.id,
-      disabledKeySelection.affinity.status,
+      disabledCredentialSelection.target.provider.id,
+      disabledCredentialSelection.target.credential.id,
+      disabledCredentialSelection.affinity.status,
     ],
     ["primary", "primary-backup", "rebound"],
   );
@@ -1058,16 +1153,15 @@ test("session affinity rebinds for every configuration, permission, model, and s
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     healthObject("primary").recordFailure();
   }
-  const coolingSelection = await selectAvailableServiceWithDetails(
+  const coolingSelection = await selectAvailableProviderWithDetails(
     env,
     resolveModelRoute(config, client, "gpt-5.6-sol"),
     {
-      random: () => 0,
       session: { clientId: "client", sessionId: "reconfigure" },
     },
   );
   assert.deepEqual(
-    [coolingSelection.target.service.id, coolingSelection.affinity.status],
+    [coolingSelection.target.provider.id, coolingSelection.affinity.status],
     ["secondary", "rebound"],
   );
 });
@@ -1078,8 +1172,7 @@ test("affinity read failures prevent session requests from changing targets", as
   env.SESSION_AFFINITY.getByName = () => {
     throw new Error("affinity unavailable");
   };
-  const selection = await selectAvailableServiceWithDetails(env, route, {
-    random: () => 0,
+  const selection = await selectAvailableProviderWithDetails(env, route, {
     session: { clientId: "client", sessionId: "session" },
   });
 
@@ -1087,17 +1180,18 @@ test("affinity read failures prevent session requests from changing targets", as
   assert.equal(selection.affinity.status, "failed");
 });
 
-test("a model route requires the real upstream model in the service list", () => {
+test("a model route requires the real upstream model in the provider list", () => {
   assert.throws(() =>
     parseConfig({
-      services: [
+      providers: [
         {
+          type: "ai_gateway",
           id: "alias-only",
           base_url: "https://alias.example/v1",
-          keys: [
+          credentials: [
             {
               id: "alias-key",
-              api_key: "alias-key",
+              auth: { type: "api_key", api_key: "alias-key" },
               disabled: false,
               priority: 1,
             },
@@ -1111,14 +1205,14 @@ test("a model route requires the real upstream model in the service list", () =>
         {
           id: "alias-client",
           api_key: "alias-client",
-          services: ["alias-only"],
+          providers: ["alias-only"],
         },
       ],
       model_routes: {
         "gpt-5.6-sol": { model: "grok-4.5" },
         "codex-auto-review": {
           model: "review-model",
-          services: ["alias-only"],
+          providers: ["alias-only"],
         },
       },
     }),

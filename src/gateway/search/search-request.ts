@@ -1,7 +1,7 @@
 import { isRecord, nonBlankString } from "./providers/shared.ts";
 
-export const MAX_SEARCH_QUERIES = 4;
-export const MAX_RECENCY_DAYS = 3650;
+const MAX_SEARCH_QUERIES = 4;
+const MAX_RECENCY_DAYS = 3650;
 
 const SUPPORTED_COMMANDS = new Set(["search_query", "response_length"]);
 const SUPPORTED_SETTINGS = new Set([
@@ -14,7 +14,7 @@ const SUPPORTED_QUERY_FIELDS = new Set(["q", "recency", "domains"]);
 const ALLOWED_CALLERS = new Set(["direct", "shell", "code_interpreter"]);
 const RESPONSE_LENGTHS = new Set(["short", "medium", "long"]);
 
-export type SearchResponseLength = "short" | "medium" | "long";
+type SearchResponseLength = "short" | "medium" | "long";
 
 export interface SearchQuery {
   q: string;

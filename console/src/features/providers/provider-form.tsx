@@ -1,16 +1,21 @@
+import { useState } from "react";
 import { useAppForm } from "@/lib/form";
 import { useSaveDraft, type Draft } from "@/lib/api";
-import { serviceFormSchema } from "../../../../src/shared/forms";
 import { ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { newService, serviceFormOptions } from "./form-options";
-import { updateService } from "./mutations";
+import {
+  newProvider,
+  providerEditorSchema,
+  providerFormOptions,
+  providerFormValues,
+} from "./form-options";
+import { updateProvider } from "./mutations";
 import { ConnectionFields } from "./connection-fields";
 import { CredentialFields } from "./credential-fields";
 import { CapabilityFields } from "./capability-fields";
 
-export function ServiceForm({
+export function ProviderForm({
   snapshot,
   index,
   draftVersion,
@@ -22,26 +27,33 @@ export function ServiceForm({
   close: () => void;
 }) {
   const save = useSaveDraft();
-  const current = index === -1 ? newService() : snapshot.config.services[index];
+  const [current] = useState(() => {
+    if (index === -1) return newProvider();
+    const provider = snapshot.config.providers[index];
+    if (!provider)
+      throw new Error("Provider is missing from the editing snapshot");
+    return providerFormValues(provider);
+  });
   const form = useAppForm({
-    ...serviceFormOptions,
+    ...providerFormOptions,
     defaultValues: current,
     onSubmit: async ({ value }) => {
       if (
-        snapshot.config.services.some(
-          (service, position) => position !== index && service.id === value.id,
+        snapshot.config.providers.some(
+          (provider, position) =>
+            position !== index && provider.id === value.id,
         )
       ) {
         form.setFieldMeta("id", (meta) => ({
           ...meta,
-          errorMap: { onSubmit: "A service with this ID already exists" },
+          errorMap: { onSubmit: "A provider with this ID already exists" },
         }));
         return;
       }
-      const next = updateService(
+      const next = updateProvider(
         snapshot.config,
         index,
-        serviceFormSchema.parse(value),
+        providerEditorSchema.parse(value),
       );
       try {
         await save.mutateAsync({ config: next, version: snapshot.version });
@@ -62,13 +74,13 @@ export function ServiceForm({
       <Tabs defaultValue="connection">
         <TabsList className="w-full">
           <TabsTrigger value="connection">Connection</TabsTrigger>
-          <TabsTrigger value="keys">Upstream keys</TabsTrigger>
+          <TabsTrigger value="credentials">Upstream credentials</TabsTrigger>
           <TabsTrigger value="routing">Capabilities & retry</TabsTrigger>
         </TabsList>
         <ConnectionFields form={form} index={index} close={close} />
         <CredentialFields
           form={form}
-          serviceId={current.id}
+          providerId={current.id}
           version={snapshot.version}
           draftVersion={draftVersion}
         />
@@ -90,7 +102,7 @@ export function ServiceForm({
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting}>
-                Save service
+                Save provider
               </Button>
             </div>
           </>

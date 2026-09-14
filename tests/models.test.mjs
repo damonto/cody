@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  keyIsAvailable,
-  ServiceHealthState,
+  credentialIsAvailable,
+  ProviderHealthState,
 } from "../src/gateway/health/health.ts";
 import {
   aggregateCodexModels,
@@ -17,7 +17,7 @@ import {
 
 const results = [
   {
-    service: { id: "primary", models: ["grok-4.5"] },
+    provider: { id: "primary", models: ["grok-4.5"] },
     success: true,
     models: [
       {
@@ -39,13 +39,13 @@ test("standard aggregation adds a route without hiding the upstream model", () =
   );
 });
 
-test("standard aggregation honors route service constraints", () => {
+test("standard aggregation honors route provider constraints", () => {
   const models = aggregateStandardModels(
     results,
     new Map([
       [
         "primary",
-        { "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] } },
+        { "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] } },
       ],
     ]),
   );
@@ -55,9 +55,9 @@ test("standard aggregation honors route service constraints", () => {
   );
 });
 
-test("a self-route hides a model supplied only by disallowed services", () => {
+test("a self-route hides a model supplied only by disallowed providers", () => {
   const routes = {
-    "grok-4.5": { model: "grok-4.5", services: ["secondary"] },
+    "grok-4.5": { model: "grok-4.5", providers: ["secondary"] },
   };
   assert.deepEqual(
     aggregateStandardModels(results, new Map([["primary", routes]])),
@@ -67,7 +67,7 @@ test("a self-route hides a model supplied only by disallowed services", () => {
   const secondaryResults = [
     {
       ...results[0],
-      service: { id: "secondary", models: ["grok-4.5"] },
+      provider: { id: "secondary", models: ["grok-4.5"] },
     },
   ];
   assert.deepEqual(
@@ -79,10 +79,10 @@ test("a self-route hides a model supplied only by disallowed services", () => {
   );
 });
 
-test("standard aggregation resolves routes per service", () => {
+test("standard aggregation resolves routes per provider", () => {
   const primaryResults = [
     {
-      service: { id: "primary", models: ["review-model", "grok-4.5"] },
+      provider: { id: "primary", models: ["review-model", "grok-4.5"] },
       success: true,
       models: [
         {
@@ -96,7 +96,7 @@ test("standard aggregation resolves routes per service", () => {
       ],
     },
     {
-      service: { id: "secondary", models: ["grok-4.5"] },
+      provider: { id: "secondary", models: ["grok-4.5"] },
       success: true,
       models: [
         {
@@ -169,7 +169,7 @@ test("Anthropic clients receive the Anthropic model-list shape", async () => {
 test("Anthropic model entries carry the ModelInfo fields Claude requires", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  config.services[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  config.providers[0].models = ["grok-4.6", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -241,7 +241,7 @@ test("synthesized Anthropic entries carry client fields and do not guess context
   const config = modelConfig();
   // grok-4.6 has supports_reasoning_summaries in the catalog, which used to be
   // misread as support for the three Anthropic context-management betas.
-  config.services[0].models = ["grok-4.6"];
+  config.providers[0].models = ["grok-4.6"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -283,7 +283,7 @@ test("synthesized Anthropic entries carry client fields and do not guess context
 test("a real Anthropic ModelInfo upstream is passed through unchanged", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  config.services[0].models = ["claude-opus-5"];
+  config.providers[0].models = ["claude-opus-5"];
   const client = config.api_keys[0];
   const upstreamEntry = {
     id: "claude-opus-5",
@@ -399,7 +399,7 @@ test("only models with a 1M context window advertise the 1M flags", async () => 
   clearModelsCacheForTests();
   const config = modelConfig();
   // grok-4.6 has a 1M context window in the catalog; gpt-5.6-sol has 872k.
-  config.services[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  config.providers[0].models = ["grok-4.6", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -490,16 +490,16 @@ test("model catalogs reflect each client's per-key model routes", async () => {
     {
       id: "client-a",
       api_key: "client-a",
-      services: ["service-0"],
+      providers: ["provider-0"],
       model_routes: {
         "per-key-alias": { model: "model" },
-        "global-alias": { model: "model", services: ["service-0"] },
+        "global-alias": { model: "model", providers: ["provider-0"] },
       },
     },
     {
       id: "client-b",
       api_key: "client-b",
-      services: ["service-0"],
+      providers: ["provider-0"],
     },
   ];
   config.model_routes = {
@@ -550,14 +550,14 @@ test("model catalogs reflect each client's per-key model routes", async () => {
   }
 });
 
-test("model catalogs reflect service model routes over per-key and global routes", async () => {
+test("model catalogs reflect provider model routes over per-key and global routes", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
   config.api_keys = [
     {
       id: "client-a",
       api_key: "client-a",
-      services: ["service-0"],
+      providers: ["provider-0"],
       model_routes: {
         "per-key-alias": { model: "model" },
         "client-alias": { model: "model" },
@@ -568,8 +568,8 @@ test("model catalogs reflect service model routes over per-key and global routes
     "global-alias": { model: "model" },
     "client-alias": { model: "model" },
   };
-  config.services[0].model_routes = {
-    "service-alias": { model: "model" },
+  config.providers[0].model_routes = {
+    "provider-alias": { model: "model" },
     "client-alias": { model: "model" },
   };
   const originalFetch = globalThis.fetch;
@@ -598,7 +598,7 @@ test("model catalogs reflect service model routes over per-key and global routes
         "global-alias",
         "client-alias",
         "per-key-alias",
-        "service-alias",
+        "provider-alias",
       ],
     );
   } finally {
@@ -606,39 +606,40 @@ test("model catalogs reflect service model routes over per-key and global routes
   }
 });
 
-function modelConfig(serviceCount = 1) {
-  const services = Array.from({ length: serviceCount }, (_, index) => ({
-    id: `service-${index}`,
-    base_url: `https://service-${index}.example/v1`,
-    keys: [
+function modelConfig(providerCount = 1) {
+  const providers = Array.from({ length: providerCount }, (_, index) => ({
+    type: "ai_gateway",
+    id: `provider-${index}`,
+    base_url: `https://provider-${index}.example/v1`,
+    credentials: [
       {
         id: `primary-key-${index}`,
-        api_key: `upstream-${index}`,
+        auth: { type: "api_key", api_key: `upstream-${index}` },
         disabled: false,
         priority: 100,
       },
       {
         id: `backup-key-${index}`,
-        api_key: `upstream-backup-${index}`,
+        auth: { type: "api_key", api_key: `upstream-backup-${index}` },
         disabled: false,
         priority: 50,
       },
     ],
     disabled: false,
-    priority: serviceCount - index,
+    priority: providerCount - index,
     models: ["model"],
   }));
   return {
-    services,
+    providers,
     api_keys: [
       {
         id: "client",
         api_key: "client",
-        services: services.map((service) => service.id),
+        providers: providers.map((provider) => provider.id),
       },
     ],
     model_routes: {
-      "codex-auto-review": { model: "model", services: [services[0].id] },
+      "codex-auto-review": { model: "model", providers: [providers[0].id] },
     },
   };
 }
@@ -648,7 +649,7 @@ function healthEnvironment() {
   const objects = new Map();
   const getByName = (name) => {
     if (!objects.has(name)) {
-      const state = new ServiceHealthState();
+      const state = new ProviderHealthState();
       objects.set(name, {
         clear: async () => state.clear(),
         getStatus: async () => state.getStatus(),
@@ -808,11 +809,21 @@ test("HTTP 403 model catalog responses cool only the selected catalog key", asyn
     assert.equal(calls.keyFailure, 1);
     assert.equal(calls.failure, 0);
     assert.equal(
-      await keyIsAvailable(env, "service-0", "primary-key-0", "catalog"),
+      await credentialIsAvailable(
+        env,
+        "provider-0",
+        "primary-key-0",
+        "catalog",
+      ),
       false,
     );
     assert.equal(
-      await keyIsAvailable(env, "service-0", "primary-key-0", "inference"),
+      await credentialIsAvailable(
+        env,
+        "provider-0",
+        "primary-key-0",
+        "inference",
+      ),
       true,
     );
   } finally {
@@ -911,8 +922,8 @@ test("model catalogs honor key direct overrides and never bypass inherited proxi
     for (const override of [undefined, null]) {
       clearModelsCacheForTests();
       const config = modelConfig();
-      config.services[0].proxy = { url: "socks5://proxy.test:1080" };
-      config.services[0].keys[0].proxy = override;
+      config.providers[0].proxy = { url: "socks5://proxy.test:1080" };
+      config.providers[0].credentials[0].proxy = override;
       const { env, calls } = healthEnvironment();
       const response = await handleModels(
         modelRequest(),
@@ -964,10 +975,10 @@ test("model catalog fan-out is bounded", async () => {
   }
 });
 
-test("model catalogs use one selected key per service", async () => {
+test("model catalogs use one selected key per provider", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  config.services[0].keys[0].disabled = true;
+  config.providers[0].credentials[0].disabled = true;
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   const authorizations = [];
@@ -993,13 +1004,15 @@ test("model catalogs use one selected key per service", async () => {
   }
 });
 
-test("model catalogs skip services without an enabled key", async () => {
+test("model catalogs skip providers without an enabled key", async () => {
   clearModelsCacheForTests();
   const config = modelConfig(2);
-  config.services[0].keys = config.services[0].keys.map((key) => ({
-    ...key,
-    disabled: true,
-  }));
+  config.providers[0].credentials = config.providers[0].credentials.map(
+    (key) => ({
+      ...key,
+      disabled: true,
+    }),
+  );
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   const urls = [];
@@ -1019,7 +1032,7 @@ test("model catalogs skip services without an enabled key", async () => {
       "test",
     );
     assert.equal(response.status, 200);
-    assert.deepEqual(urls, ["https://service-1.example/v1/models"]);
+    assert.deepEqual(urls, ["https://provider-1.example/v1/models"]);
   } finally {
     globalThis.fetch = originalFetch;
   }

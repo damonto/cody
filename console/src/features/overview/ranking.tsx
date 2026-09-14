@@ -63,7 +63,7 @@ export function SourceRanking({
           >
             {(
               [
-                ["service_id", "Services"],
+                ["provider_id", "Providers"],
                 ["model", "Models"],
                 ["client_id", "Clients"],
               ] as const

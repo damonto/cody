@@ -15,6 +15,13 @@
   "ignorePatterns": ["node_modules/**", ".wrangler/**", "refs/**"],
   "overrides": [
     {
+      "files": ["src/providers/**/*.ts"],
+      "rules": {
+        "curly": ["error", "all"],
+        "typescript/no-non-null-assertion": "error"
+      }
+    },
+    {
       "files": ["src/gateway/transport/**/*.ts"],
       "rules": {
         "curly": ["error", "all"],

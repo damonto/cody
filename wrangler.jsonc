@@ -72,7 +72,7 @@
     "bindings": [
       {
         "name": "HEALTH",
-        "class_name": "ServiceHealth",
+        "class_name": "ProviderHealth",
       },
       {
         "name": "SESSION_AFFINITY",
@@ -120,6 +120,10 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["ConfigPublisher"],
+    },
+    {
+      "tag": "v7",
+      "renamed_classes": [{ "from": "ServiceHealth", "to": "ProviderHealth" }],
     },
   ],
   "triggers": {

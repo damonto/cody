@@ -22,12 +22,18 @@ export function draftFixture(): Draft {
     validation_error: null,
     actor: "admin@example.test",
     config: {
-      services: [
+      providers: [
         {
+          type: "ai_gateway",
           id: "example-provider",
           base_url: "https://upstream.example/v1",
-          keys: [
-            { id: "primary", api_key: secret, priority: 100, disabled: false },
+          credentials: [
+            {
+              id: "primary",
+              auth: { type: "api_key", api_key: secret },
+              priority: 100,
+              disabled: false,
+            },
           ],
           priority: 100,
           disabled: false,
@@ -41,7 +47,7 @@ export function draftFixture(): Draft {
         {
           id: "example-client",
           api_key: secret,
-          services: ["example-provider"],
+          providers: ["example-provider"],
         },
       ],
       model_routes: {},
@@ -49,7 +55,7 @@ export function draftFixture(): Draft {
       reporting: { time_zone: "UTC", retention_days: 120 },
       model_policies: [
         {
-          service_id: "example-provider",
+          provider_id: "example-provider",
           model: "example-model",
           context_window: 1000000,
           pricing: {
@@ -80,9 +86,12 @@ function maskKeys(config: Draft["config"]): Draft["config"] {
   return {
     ...config,
     api_keys: config.api_keys.map((client) => ({ ...client, api_key: secret })),
-    services: config.services.map((service) => ({
-      ...service,
-      keys: service.keys.map((key) => ({ ...key, api_key: secret })),
+    providers: config.providers.map((provider) => ({
+      ...provider,
+      credentials: provider.credentials.map((key) => ({
+        ...key,
+        auth: { type: "api_key", api_key: secret },
+      })),
     })),
     web_search:
       config.web_search.mode === "proxy"
@@ -106,13 +115,13 @@ export async function mockApi(page: Page, initial = draftFixture()) {
       client.api_key === secret ? `test-key-${client.id}` : client.api_key,
     ]),
   );
-  let serviceKeys = new Map(
-    draft.config.services.flatMap((service) =>
-      service.keys.map((key): [string, string] => [
-        `${service.id}:${key.id}`,
-        key.api_key === secret
-          ? `test-key-${service.id}-${key.id}`
-          : key.api_key,
+  let providerKeys = new Map(
+    draft.config.providers.flatMap((provider) =>
+      provider.credentials.map((key): [string, string] => [
+        `${provider.id}:${key.id}`,
+        key.auth.api_key === secret
+          ? `test-key-${provider.id}-${key.id}`
+          : key.auth.api_key,
       ]),
     ),
   );
@@ -126,10 +135,10 @@ export async function mockApi(page: Page, initial = draftFixture()) {
   function clientKey(id: string): string {
     return requiredKey(clientKeys.get(id), `Client ${id}`);
   }
-  function serviceKey(id: string, keyId: string): string {
+  function providerKey(id: string, credentialId: string): string {
     return requiredKey(
-      serviceKeys.get(`${id}:${keyId}`),
-      `Service ${id}/${keyId}`,
+      providerKeys.get(`${id}:${credentialId}`),
+      `Provider ${id}/${credentialId}`,
     );
   }
   function searchKey(): string {
@@ -145,8 +154,8 @@ export async function mockApi(page: Page, initial = draftFixture()) {
     const clientReveal = url.pathname.match(
       /^\/console\/api\/config\/clients\/([^/]+)\/reveal$/,
     );
-    const serviceReveal = url.pathname.match(
-      /^\/console\/api\/config\/services\/([^/]+)\/keys\/([^/]+)\/reveal$/,
+    const providerReveal = url.pathname.match(
+      /^\/console\/api\/config\/providers\/([^/]+)\/credentials\/([^/]+)\/reveal$/,
     );
     const searchReveal =
       url.pathname === "/console/api/config/web-search/reveal";
@@ -162,13 +171,13 @@ export async function mockApi(page: Page, initial = draftFixture()) {
             return [client.id, value];
           }),
         );
-        serviceKeys = new Map(
-          input.config.services.flatMap((service) =>
-            service.keys.map((key): [string, string] => [
-              `${service.id}:${key.id}`,
-              key.api_key === secret
-                ? serviceKey(service.id, key.id)
-                : key.api_key,
+        providerKeys = new Map(
+          input.config.providers.flatMap((provider) =>
+            provider.credentials.map((key): [string, string] => [
+              `${provider.id}:${key.id}`,
+              key.auth.api_key === secret
+                ? providerKey(provider.id, key.id)
+                : key.auth.api_key,
             ]),
           ),
         );
@@ -187,7 +196,7 @@ export async function mockApi(page: Page, initial = draftFixture()) {
       }
       response = draft;
     } else if (
-      (clientReveal || serviceReveal || searchReveal) &&
+      (clientReveal || providerReveal || searchReveal) &&
       request.method() === "POST"
     ) {
       expect(request.headers()["x-cody-admin"]).toBe("1");
@@ -201,9 +210,9 @@ export async function mockApi(page: Page, initial = draftFixture()) {
       }
       const api_key = clientReveal
         ? clientKeys.get(decodeURIComponent(clientReveal[1]))
-        : serviceReveal
-          ? serviceKeys.get(
-              `${decodeURIComponent(serviceReveal[1])}:${decodeURIComponent(serviceReveal[2])}`,
+        : providerReveal
+          ? providerKeys.get(
+              `${decodeURIComponent(providerReveal[1])}:${decodeURIComponent(providerReveal[2])}`,
             )
           : searchApiKey;
       if (!api_key) {
@@ -212,8 +221,8 @@ export async function mockApi(page: Page, initial = draftFixture()) {
           json: {
             error: clientReveal
               ? "Client does not exist"
-              : serviceReveal
-                ? "Service key does not exist"
+              : providerReveal
+                ? "Provider key does not exist"
                 : "No search provider key is configured",
           },
         });
@@ -282,8 +291,8 @@ export async function mockApi(page: Page, initial = draftFixture()) {
       } satisfies Summary;
     } else if (url.pathname === "/console/api/report-options") {
       response = {
-        services: draft.config.services.map((service) => service.id),
-        models: draft.config.services.flatMap((service) => service.models),
+        providers: draft.config.providers.map((provider) => provider.id),
+        models: draft.config.providers.flatMap((provider) => provider.models),
         clients: draft.config.api_keys.map((client) => client.id),
         time_zone: "UTC",
       };
@@ -314,7 +323,7 @@ export async function mockApi(page: Page, initial = draftFixture()) {
   return {
     current: () => draft,
     clientKey,
-    serviceKey,
+    providerKey,
     searchKey,
     calls,
   };

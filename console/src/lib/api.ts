@@ -69,16 +69,16 @@ export async function revealClientKey(
     ),
   );
 }
-export async function revealServiceKey(
+export async function revealProviderCredential(
   id: string,
-  keyId: string,
+  credentialId: string,
   version: number,
   signal: AbortSignal,
 ): Promise<string> {
   return apiKey(
     await read(
-      rpc.config.services[":id"].keys[":keyId"].reveal.$post(
-        { param: { id, keyId }, json: { version } },
+      rpc.config.providers[":id"].credentials[":credentialId"].reveal.$post(
+        { param: { id, credentialId }, json: { version } },
         { init: { signal } },
       ),
     ),
@@ -98,13 +98,9 @@ export async function revealSearchKey(
   );
 }
 export type Draft = InferResponseType<typeof rpc.config.$get, 200>;
-export type Revision = InferResponseType<
-  typeof rpc.config.versions.$get,
-  200
->["items"][number];
+
 export type Summary = InferResponseType<typeof rpc.summary.$get, 200>;
 export type Aggregate = Summary["totals"];
-export type RequestPage = InferResponseType<typeof rpc.requests.$get, 200>;
 
 export const draftOptions = queryOptions({
   queryKey: ["config"],

@@ -100,7 +100,7 @@ function memoryProxy(
   };
 }
 
-test("key proxies replace service proxies; null explicitly selects direct access", async () => {
+test("key proxies replace provider proxies; null explicitly selects direct access", async () => {
   const override = { url: "socks5://key.example:1081" };
   assert.equal(effectiveProxy({ proxy }, {}), proxy);
   assert.equal(effectiveProxy({ proxy }, { proxy: override }), override);
@@ -500,7 +500,7 @@ test("authentication rejection is not downgraded or retried", async () => {
   }
 });
 
-test("only the service's configured HTTP retry policy opens another SOCKS connection", async () => {
+test("only the provider's configured HTTP retry policy opens another SOCKS connection", async () => {
   const fixtures = [];
   const result = await fetchWithConfiguredRetries(
     () =>

@@ -29,7 +29,7 @@ export function useReportFilters() {
         else next.delete(key);
       }
       next.delete("cursor");
-      if ("service_id" in changes && !("model" in changes))
+      if ("provider_id" in changes && !("model" in changes))
         next.delete("model");
       if ("period" in changes && changes.period !== "custom") {
         next.delete("from");

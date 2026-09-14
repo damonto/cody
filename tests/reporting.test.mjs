@@ -97,7 +97,7 @@ test("report queries reject incomplete, reversed, excessive and invalid ranges",
     { period: "custom", from: "NaN", to: "100" },
     { period: "custom", from: "-1", to: "100" },
     { period: "day", from: "1", to: "100" },
-    { group_by: "service_id; DROP TABLE requests" },
+    { group_by: "provider_id; DROP TABLE requests" },
     { sort_by: "anything" },
   ])
     assert.equal(reportQuerySchema.safeParse(query).success, false);

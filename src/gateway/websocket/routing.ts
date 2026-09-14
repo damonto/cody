@@ -5,10 +5,10 @@ import {
   contextManagementSessionMatches,
 } from "../sessions/context-management-protocol.ts";
 import {
-  selectAvailableServiceWithDetails,
+  selectAvailableProviderWithDetails,
   targetIsAvailableForRoute,
   type ModelRoute,
-  type ModelServiceTarget,
+  type ModelProviderTarget,
 } from "../routing/routing.ts";
 import {
   gatewayErrorEvent,
@@ -24,15 +24,17 @@ export interface CurrentRoutingContext {
 export function targetFromRoute(
   route: ModelRoute,
   state: StoredWebSocketSession,
-): ModelServiceTarget | undefined {
+): ModelProviderTarget | undefined {
   const routed = route.targets.find(
-    ({ service }) => service.id === state.selected_service_id,
+    ({ provider }) => provider.id === state.selected_provider_id,
   );
-  const key = routed?.keys.find((entry) => entry.id === state.selected_key_id);
+  const key = routed?.credentials.find(
+    (entry) => entry.id === state.selected_credential_id,
+  );
   return routed && key
     ? {
-        service: routed.service,
-        key,
+        provider: routed.provider,
+        credential: key,
         upstreamModel: routed.upstreamModel,
         routeApplied: routed.routeApplied,
       }
@@ -85,7 +87,7 @@ export async function validateCurrentTarget(
       contextManagement: false,
     };
   }
-  const selection = await selectAvailableServiceWithDetails(env, route, {
+  const selection = await selectAvailableProviderWithDetails(env, route, {
     contextManagement,
     session: { clientId: client.id, sessionId },
   });
@@ -101,14 +103,14 @@ export async function validateCurrentTarget(
   }
   return {
     valid:
-      selection.target?.service.id === selectedTarget.service.id &&
-      selection.target.key.id === selectedTarget.key.id,
+      selection.target?.provider.id === selectedTarget.provider.id &&
+      selection.target.credential.id === selectedTarget.credential.id,
     contextManagement: selection.affinity?.context_management === true,
   };
 }
 
 export function unavailableTargetError(
-  selection: Awaited<ReturnType<typeof selectAvailableServiceWithDetails>>,
+  selection: Awaited<ReturnType<typeof selectAvailableProviderWithDetails>>,
   model: string,
 ): string {
   switch (selection.affinity?.status) {
@@ -133,8 +135,8 @@ export function unavailableTargetError(
     default:
       return gatewayErrorEvent(
         503,
-        `No healthy service is currently available for model ${model}`,
-        "service_cooling_down",
+        `No healthy provider is currently available for model ${model}`,
+        "provider_cooling_down",
       );
   }
 }

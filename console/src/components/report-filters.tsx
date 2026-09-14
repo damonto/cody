@@ -33,7 +33,7 @@ export function ReportFilters({
     from: values.from,
     to: values.to,
     time_zone: values.time_zone,
-    service_id: values.service_id,
+    provider_id: values.provider_id,
   };
   const options = useQuery({
     queryKey: ["report-options", query],
@@ -97,12 +97,12 @@ export function ReportFilters({
       </div>
       <div className="flex flex-wrap gap-2">
         <Choice
-          label="Filter by service"
-          value={values.service_id ?? ""}
-          onChange={(value) => change("service_id", value)}
+          label="Filter by provider"
+          value={values.provider_id ?? ""}
+          onChange={(value) => change("provider_id", value)}
           options={[
-            { value: "", label: "All services" },
-            ...choices(options.data?.services, values.service_id),
+            { value: "", label: "All providers" },
+            ...choices(options.data?.providers, values.provider_id),
           ]}
         />
         <Choice

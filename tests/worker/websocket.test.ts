@@ -43,20 +43,21 @@ interface UpstreamPair {
 
 function gatewayConfig(): GatewayConfig {
   return {
-    services: [
+    providers: [
       {
+        type: "ai_gateway",
         id: "primary",
         base_url: "https://primary.example/v1",
-        keys: [
+        credentials: [
           {
             id: "primary-key",
-            api_key: "primary-secret",
+            auth: { type: "api_key", api_key: "primary-secret" },
             disabled: false,
             priority: 100,
           },
           {
             id: "backup-key",
-            api_key: "backup-secret",
+            auth: { type: "api_key", api_key: "backup-secret" },
             disabled: false,
             priority: 50,
           },
@@ -70,7 +71,7 @@ function gatewayConfig(): GatewayConfig {
       },
     ],
     api_keys: [
-      { id: "client", api_key: "client-secret", services: ["primary"] },
+      { id: "client", api_key: "client-secret", providers: ["primary"] },
     ],
     web_search: { mode: "proxy" },
     model_routes: {
@@ -362,14 +363,14 @@ beforeEach(async () => {
 test("a native thread hint and subsequent WebSocket windows share the same context binding", async () => {
   const config = gatewayConfig();
   config.model_routes["gpt-6-astra"] = { model: "upstream-model" };
-  config.services.push({
-    ...config.services[0],
+  config.providers.push({
+    ...config.providers[0],
     id: "context",
     base_url: "https://context.example/v1",
     priority: 50,
     supports_context_management: true,
   });
-  config.api_keys[0].services.push("context");
+  config.api_keys[0].providers.push("context");
   await putConfig(config);
   const upstream = upstreamPair();
   const captured: Request[] = [];
@@ -400,7 +401,7 @@ test("a native thread hint and subsequent WebSocket windows share the same conte
   );
   expect(hint.status).toBe(200);
   await waitOnExecutionContext(hintContext);
-  config.services[0].supports_context_management = true;
+  config.providers[0].supports_context_management = true;
   await putConfig(config);
   const { socket, proxy } = await openGatewaySocket();
   const frame = {
@@ -456,7 +457,7 @@ test("a native thread hint and subsequent WebSocket windows share the same conte
 test("an existing WebSocket adopts a context binding created by a native request", async () => {
   const config = gatewayConfig();
   config.model_routes["gpt-6-astra"] = { model: "upstream-model" };
-  config.services[0].supports_context_management = false;
+  config.providers[0].supports_context_management = false;
   await putConfig(config);
   const upstream = upstreamPair();
   vi.stubGlobal(
@@ -479,7 +480,7 @@ test("an existing WebSocket adopts a context binding created by a native request
   );
   await first;
 
-  config.services[0].supports_context_management = true;
+  config.providers[0].supports_context_management = true;
   await putConfig(config);
   const hintContext = createExecutionContext();
   const hint = await worker.fetch(
@@ -518,16 +519,16 @@ test("an existing WebSocket adopts a context binding created by a native request
 
 test("context WebSockets require both capabilities and recheck the bound capability on later frames", async () => {
   const config = gatewayConfig();
-  config.services[0].supports_context_management = true;
-  config.services[0].supports_websocket = false;
-  config.services.push({
-    ...config.services[0],
+  config.providers[0].supports_context_management = true;
+  config.providers[0].supports_websocket = false;
+  config.providers.push({
+    ...config.providers[0],
     id: "context-ws",
     base_url: "https://context-ws.example/v1",
     priority: 50,
     supports_websocket: true,
   });
-  config.api_keys[0].services.push("context-ws");
+  config.api_keys[0].providers.push("context-ws");
   await putConfig(config);
   const upstream = upstreamPair();
   const fetch = vi.fn(async (request: Request) => {
@@ -551,7 +552,7 @@ test("context WebSockets require both capabilities and recheck the bound capabil
     }),
   );
   await first;
-  config.services[1].supports_context_management = false;
+  config.providers[1].supports_context_management = false;
   await putConfig(config);
   const error = nextMessage(socket);
   const closed = nextClose(socket);
@@ -571,7 +572,7 @@ test("context WebSockets require both capabilities and recheck the bound capabil
 
 test("context WebSockets reject ingestion without a session identity", async () => {
   const config = gatewayConfig();
-  config.services[0].supports_context_management = true;
+  config.providers[0].supports_context_management = true;
   await putConfig(config);
   const fetch = vi.fn();
   vi.stubGlobal("fetch", fetch);
@@ -598,7 +599,7 @@ test("context WebSockets reject ingestion without a session identity", async () 
 
 test("context WebSockets reject a frame session conflicting with the handshake header", async () => {
   const config = gatewayConfig();
-  config.services[0].supports_context_management = true;
+  config.providers[0].supports_context_management = true;
   await putConfig(config);
   const fetch = vi.fn();
   vi.stubGlobal("fetch", fetch);
@@ -731,9 +732,9 @@ test("responses WebSocket applies per-client model routes over the global routes
     {
       id: "per-key-client",
       api_key: "per-key-client-secret",
-      services: ["primary"],
+      providers: ["primary"],
       model_routes: {
-        "client-model": { model: "other-model", services: ["primary"] },
+        "client-model": { model: "other-model", providers: ["primary"] },
       },
     },
   ];
@@ -770,9 +771,9 @@ test("responses WebSocket applies per-client model routes over the global routes
   await upstreamClosed;
 });
 
-test("responses WebSocket applies service model routes over per-client and global routes", async () => {
+test("responses WebSocket applies provider model routes over per-client and global routes", async () => {
   const config = gatewayConfig();
-  config.services[0].model_routes = {
+  config.providers[0].model_routes = {
     "client-model": { model: "other-model" },
   };
   config.api_keys[0].model_routes = {
@@ -817,16 +818,17 @@ test("responses WebSocket applies service model routes over per-client and globa
   await upstreamClosed;
 });
 
-test("responses WebSocket skips higher-priority services without WebSocket support", async () => {
+test("responses WebSocket skips higher-priority providers without WebSocket support", async () => {
   const config = gatewayConfig();
-  config.services[0].supports_websocket = false;
-  config.services.push({
+  config.providers[0].supports_websocket = false;
+  config.providers.push({
+    type: "ai_gateway",
     id: "websocket",
     base_url: "https://websocket.example/v1",
-    keys: [
+    credentials: [
       {
         id: "websocket-key",
-        api_key: "websocket-secret",
+        auth: { type: "api_key", api_key: "websocket-secret" },
         disabled: false,
         priority: 100,
       },
@@ -838,7 +840,7 @@ test("responses WebSocket skips higher-priority services without WebSocket suppo
     supports_context_management: false,
     models: ["upstream-model"],
   });
-  config.api_keys[0].services.push("websocket");
+  config.api_keys[0].providers.push("websocket");
   await putConfig(config);
   const upstream = upstreamPair();
   let capturedRequest: Request | undefined;
@@ -868,9 +870,9 @@ test("responses WebSocket skips higher-priority services without WebSocket suppo
   await upstreamClosed;
 });
 
-test("responses WebSocket does not connect when no service declares WebSocket support", async () => {
+test("responses WebSocket does not connect when no provider declares WebSocket support", async () => {
   const config = gatewayConfig();
-  config.services[0].supports_websocket = false;
+  config.providers[0].supports_websocket = false;
   await putConfig(config);
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
@@ -1194,7 +1196,7 @@ test("an upstream WebSocket handshake times out after 10 seconds", async () => {
 
 test("a retrying 403 handshake cools the key, keeps the same key for retry, then rebinds on reconnect", async () => {
   const config = gatewayConfig();
-  config.services[0].retry = { status_codes: [403], delays_ms: [0] };
+  config.providers[0].retry = { status_codes: [403], delays_ms: [0] };
   await putConfig(config);
   const retryUpstream = upstreamPair();
   const reboundUpstream = upstreamPair();
@@ -1259,7 +1261,7 @@ test("a retrying 403 handshake cools the key, keeps the same key for retry, then
   await secondUpstreamClosed;
 });
 
-test("a final upstream handshake rejection is forwarded and records service health", async () => {
+test("a final upstream handshake rejection is forwarded and records provider health", async () => {
   await putConfig(gatewayConfig());
   vi.stubGlobal(
     "fetch",
@@ -1393,7 +1395,7 @@ test("every upstream error frame is forwarded before the connection closes", asy
   await upstreamClosed;
 });
 
-test("an unexpected upstream close propagates and records a service failure", async () => {
+test("an unexpected upstream close propagates and records a provider failure", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
   vi.stubGlobal(
@@ -1414,7 +1416,7 @@ test("an unexpected upstream close propagates and records a service failure", as
   expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(1);
 });
 
-test("an upstream close while connecting records a service failure", async () => {
+test("an upstream close while connecting records a provider failure", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
   vi.stubGlobal(
@@ -1450,14 +1452,15 @@ test("an upstream close while connecting records a service failure", async () =>
 
 test("a later response.create that requires another target closes and rebinds on reconnect", async () => {
   const config = gatewayConfig();
-  config.services = [
+  config.providers = [
     {
+      type: "ai_gateway",
       id: "first",
       base_url: "https://first.example/v1",
-      keys: [
+      credentials: [
         {
           id: "first-key",
-          api_key: "first-secret",
+          auth: { type: "api_key", api_key: "first-secret" },
           disabled: false,
           priority: 100,
         },
@@ -1470,12 +1473,13 @@ test("a later response.create that requires another target closes and rebinds on
       models: ["model-a"],
     },
     {
+      type: "ai_gateway",
       id: "second",
       base_url: "https://second.example/v1",
-      keys: [
+      credentials: [
         {
           id: "second-key",
-          api_key: "second-secret",
+          auth: { type: "api_key", api_key: "second-secret" },
           disabled: false,
           priority: 100,
         },
@@ -1488,7 +1492,7 @@ test("a later response.create that requires another target closes and rebinds on
       models: ["model-b"],
     },
   ];
-  config.api_keys[0].services = ["first", "second"];
+  config.api_keys[0].providers = ["first", "second"];
   config.model_routes = {
     "client-a": { model: "model-a" },
     "client-b": { model: "model-b" },
@@ -1551,16 +1555,17 @@ test("a later response.create that requires another target closes and rebinds on
   await secondUpstreamClosed;
 });
 
-test("a recovered higher-priority service changes affinity and requires WebSocket reconnect", async () => {
+test("a recovered higher-priority provider changes affinity and requires WebSocket reconnect", async () => {
   const config = gatewayConfig();
-  config.services = [
+  config.providers = [
     {
+      type: "ai_gateway",
       id: "higher",
       base_url: "https://higher.example/v1",
-      keys: [
+      credentials: [
         {
           id: "higher-key",
-          api_key: "higher-secret",
+          auth: { type: "api_key", api_key: "higher-secret" },
           disabled: false,
           priority: 10,
         },
@@ -1573,12 +1578,13 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
       models: ["upstream-model"],
     },
     {
+      type: "ai_gateway",
       id: "lower",
       base_url: "https://lower.example/v1",
-      keys: [
+      credentials: [
         {
           id: "lower-key",
-          api_key: "lower-secret",
+          auth: { type: "api_key", api_key: "lower-secret" },
           disabled: false,
           priority: 100,
         },
@@ -1591,7 +1597,7 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
       models: ["upstream-model"],
     },
   ];
-  config.api_keys[0].services = ["higher", "lower"];
+  config.api_keys[0].providers = ["higher", "lower"];
   await putConfig(config);
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     await env.HEALTH.getByName("higher").recordFailure();
@@ -1671,7 +1677,7 @@ test("a later response.create reloads configuration and closes when WebSocket su
   await sendUpstream(upstream, JSON.stringify({ type: "response.completed" }));
   await completed;
 
-  config.services[0].supports_websocket = false;
+  config.providers[0].supports_websocket = false;
   await putConfig(config);
 
   const reconnectError = nextMessage(socket);
@@ -1716,7 +1722,7 @@ test("a later response.create reauthenticates the client against current configu
     {
       id: "replacement-client",
       api_key: "replacement-client",
-      services: ["primary"],
+      providers: ["primary"],
     },
   ];
   await putConfig(config);
@@ -1841,7 +1847,7 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
   config.revision = 12;
   config.model_policies = ["upstream-model", "other-model"].map(
     (model, index) => ({
-      service_id: "primary",
+      provider_id: "primary",
       model,
       context_window: 1000000,
       pricing: {

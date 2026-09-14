@@ -6,9 +6,9 @@ import { CONSOLE_PATH } from "./admin/paths.ts";
 import { DEFAULT_REPORTING } from "./billing/config.ts";
 import { ControlStore } from "./control/store.ts";
 import { cleanupRequests, ingestUsage } from "./reporting/store.ts";
-import type { UsageEvent } from "./telemetry/types.ts";
+import { parseUsageEvent } from "./telemetry/schema.ts";
 
-export { ServiceHealth } from "./gateway/health/service-health.ts";
+export { ProviderHealth } from "./gateway/health/provider-health.ts";
 export { SessionAffinity } from "./gateway/sessions/session-affinity.ts";
 export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
 export { ResponsesWebSocketProxy } from "./gateway/websocket/responses-websocket-proxy.ts";
@@ -28,10 +28,13 @@ export const app = new Hono<{ Bindings: Env }>()
 
 export default {
   fetch: app.fetch,
-  async queue(batch: MessageBatch<UsageEvent>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        await ingestUsage(env.CODY_DB, message.body);
+        const event = parseUsageEvent(message.body);
+        if (event !== null) {
+          await ingestUsage(env.CODY_DB, event);
+        }
         message.ack();
       } catch {
         console.warn({
@@ -59,4 +62,4 @@ export default {
       config?.reporting?.retention_days ?? DEFAULT_REPORTING.retention_days,
     );
   },
-} satisfies ExportedHandler<Env, UsageEvent>;
+} satisfies ExportedHandler<Env>;

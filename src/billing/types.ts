@@ -20,9 +20,9 @@ export const USAGE_FIELDS = [
   "reasoning_tokens",
 ] as const;
 
-export type UsageField = (typeof USAGE_FIELDS)[number];
+type UsageField = (typeof USAGE_FIELDS)[number];
 export type TokenUsage = Record<UsageField, number | null>;
-export type UsageStatus = "reported" | "partial" | "missing" | "invalid";
+type UsageStatus = "reported" | "partial" | "missing" | "invalid";
 
 export interface NormalizedUsage {
   tokens: TokenUsage;

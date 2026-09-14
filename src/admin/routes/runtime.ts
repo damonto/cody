@@ -89,11 +89,14 @@ export const runtimeRoutes = new Hono<AdminContext>()
   .get("/health", validate("query", runtimeQuerySchema), async (c) =>
     c.json(healthListSchema.parse(await (await call(c, "health")).json())),
   )
-  .delete("/health/:id/:key", validate("query", runtimeQuerySchema), (c) =>
-    clear(
-      c,
-      `health/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("key"))}`,
-    ),
+  .delete(
+    "/health/:id/:credentialId",
+    validate("query", runtimeQuerySchema),
+    (c) =>
+      clear(
+        c,
+        `health/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("credentialId"))}`,
+      ),
   )
   .delete("/health/:id", validate("query", runtimeQuerySchema), (c) =>
     clear(c, `health/${encodeURIComponent(c.req.param("id"))}`),

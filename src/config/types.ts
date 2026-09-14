@@ -1,32 +1,34 @@
 import type { z } from "zod";
 import type {
+  aiGatewayProviderSchema,
   clientSchema,
   configurationSchema,
   credentialSchema,
-  draftConfigurationSchema,
   retrySchema,
   routeSchema,
   searchSchema,
-  serviceRouteSchema,
-  serviceSchema,
+  providerSchema,
   socksProxySchema,
 } from "./schema.ts";
 export type SocksProxyConfig = z.output<typeof socksProxySchema>;
-export type ServiceRetryConfig = z.output<typeof retrySchema>;
-export type ServiceApiKeyConfig = z.output<typeof credentialSchema>;
-export type ServiceModelRouteConfig = z.output<typeof serviceRouteSchema>;
-export type ServiceConfig = z.output<typeof serviceSchema>;
+export type ProviderRetryConfig = z.output<typeof retrySchema>;
+export type ProviderCredentialConfig = z.output<typeof credentialSchema>;
+
+export type ProviderConfig = z.output<typeof providerSchema>;
+export type AiGatewayProviderConfig = z.output<typeof aiGatewayProviderSchema>;
+export type ProviderType = ProviderConfig["type"];
+export type CredentialAuth = ProviderCredentialConfig["auth"];
 export type ClientApiKeyConfig = z.output<typeof clientSchema>;
 export type ModelRouteConfig = z.output<typeof routeSchema>;
-export type WebSearchConfig = z.output<typeof searchSchema>;
+type WebSearchConfig = z.output<typeof searchSchema>;
 export type WebSearchMode = WebSearchConfig["mode"];
 export type WebSearchProviderConfig = Exclude<
   WebSearchConfig,
   { mode: "proxy" }
 >;
 export type GatewayConfig = z.output<typeof configurationSchema>;
-export type DraftConfig = z.output<typeof draftConfigurationSchema>;
-export interface ServiceHealthSnapshot {
+
+export interface ProviderHealthSnapshot {
   failures: number;
   cooling_until: number | null;
 }

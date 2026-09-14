@@ -1,23 +1,21 @@
-import { randomEntry, type RandomSource } from "../../shared/random.ts";
-
 export const SESSION_AFFINITY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE = 1000;
 
-export interface AffinityKeyCandidate {
-  key_id: string;
+interface AffinityCredentialCandidate {
+  credential_id: string;
   priority: number;
 }
 
-export interface AffinityServiceCandidate {
-  service_id: string;
+export interface AffinityProviderCandidate {
+  provider_id: string;
   priority: number;
-  keys: AffinityKeyCandidate[];
+  credentials: AffinityCredentialCandidate[];
   supports_context_management?: boolean;
 }
 
 export interface SessionAffinityRecord {
-  service_id: string;
-  key_id: string;
+  provider_id: string;
+  credential_id: string;
   updated_at: number;
   binding_id: string;
   created_at: number;
@@ -34,8 +32,8 @@ export interface SessionAffinityResolution extends SessionAffinityRecord {
 }
 
 export interface AffinitySelection {
-  service_id: string;
-  key_id: string;
+  provider_id: string;
+  credential_id: string;
 }
 
 export interface SessionAffinityRegistration {
@@ -55,146 +53,142 @@ export interface StoredAffinityDecision {
   status: "hit" | "rebound";
 }
 
-export type AffinityRandomSource = RandomSource;
-
 export function chooseAffinityCandidate(
-  candidates: AffinityServiceCandidate[],
-  random?: AffinityRandomSource,
+  candidates: AffinityProviderCandidate[],
 ): AffinitySelection | undefined {
-  const usableServices = candidates.filter(
-    (candidate) => candidate.keys.length > 0,
+  const usableProviders = candidates.filter(
+    (candidate) => candidate.credentials.length > 0,
   );
-  if (usableServices.length === 0) {
+  if (usableProviders.length === 0) {
     return undefined;
   }
-  const servicePriority = Math.max(
-    ...usableServices.map((candidate) => candidate.priority),
+  const providerPriority = Math.max(
+    ...usableProviders.map((candidate) => candidate.priority),
   );
-  const tiedServices = usableServices.filter(
-    (candidate) => candidate.priority === servicePriority,
+  const provider = usableProviders.find(
+    (candidate) => candidate.priority === providerPriority,
   );
-  const service =
-    random === undefined ? tiedServices[0] : randomEntry(tiedServices, random);
-  if (!service) {
+  if (!provider) {
     return undefined;
   }
-  const keyPriority = Math.max(...service.keys.map((key) => key.priority));
-  const tiedKeys = service.keys.filter(
-    (candidate) => candidate.priority === keyPriority,
+  const credentialPriority = Math.max(
+    ...provider.credentials.map((credential) => credential.priority),
   );
-  const key =
-    random === undefined ? tiedKeys[0] : randomEntry(tiedKeys, random);
-  return key
-    ? { service_id: service.service_id, key_id: key.key_id }
+  const credential = provider.credentials.find(
+    (candidate) => candidate.priority === credentialPriority,
+  );
+  return credential
+    ? {
+        provider_id: provider.provider_id,
+        credential_id: credential.credential_id,
+      }
     : undefined;
 }
 
 export function affinitySelectionIsHighestPriority(
   selection: AffinitySelection | undefined,
-  candidates: AffinityServiceCandidate[],
+  candidates: AffinityProviderCandidate[],
 ): selection is AffinitySelection {
   if (!selection) {
     return false;
   }
-  const service = candidates.find(
+  const provider = candidates.find(
     (candidate) =>
-      candidate.service_id === selection.service_id &&
-      candidate.keys.length > 0,
+      candidate.provider_id === selection.provider_id &&
+      candidate.credentials.length > 0,
   );
-  if (!service) {
+  if (!provider) {
     return false;
   }
-  const highestServicePriority = Math.max(
+  const highestProviderPriority = Math.max(
     ...candidates
-      .filter((candidate) => candidate.keys.length > 0)
+      .filter((candidate) => candidate.credentials.length > 0)
       .map((candidate) => candidate.priority),
   );
-  if (service.priority !== highestServicePriority) {
+  if (provider.priority !== highestProviderPriority) {
     return false;
   }
-  const key = service.keys.find(
-    (candidate) => candidate.key_id === selection.key_id,
+  const credential = provider.credentials.find(
+    (candidate) => candidate.credential_id === selection.credential_id,
   );
-  if (!key) {
+  if (!credential) {
     return false;
   }
-  const highestKeyPriority = Math.max(
-    ...service.keys.map((candidate) => candidate.priority),
+  const highestCredentialPriority = Math.max(
+    ...provider.credentials.map((candidate) => candidate.priority),
   );
-  return key.priority === highestKeyPriority;
+  return credential.priority === highestCredentialPriority;
 }
 
-function choosePreferredOrRandom(
-  candidates: AffinityServiceCandidate[],
+function choosePreferredCandidate(
+  candidates: AffinityProviderCandidate[],
   preferred: AffinitySelection | undefined,
-  random: AffinityRandomSource | undefined,
 ): AffinitySelection | undefined {
   return affinitySelectionIsHighestPriority(preferred, candidates)
     ? preferred
-    : chooseAffinityCandidate(candidates, random);
+    : chooseAffinityCandidate(candidates);
 }
 
-function choosePreferredOrRandomWithinService(
-  service: AffinityServiceCandidate,
+function choosePreferredCredential(
+  provider: AffinityProviderCandidate,
   preferred: AffinitySelection | undefined,
-  random: AffinityRandomSource | undefined,
 ): AffinitySelection | undefined {
-  const highestKeyPriority = Math.max(
-    ...service.keys.map((candidate) => candidate.priority),
+  const highestCredentialPriority = Math.max(
+    ...provider.credentials.map((candidate) => candidate.priority),
   );
-  const preferredKey =
-    preferred?.service_id === service.service_id
-      ? service.keys.find((candidate) => candidate.key_id === preferred.key_id)
+  const preferredCredential =
+    preferred?.provider_id === provider.provider_id
+      ? provider.credentials.find(
+          (candidate) => candidate.credential_id === preferred.credential_id,
+        )
       : undefined;
-  return preferredKey?.priority === highestKeyPriority
+  return preferredCredential?.priority === highestCredentialPriority
     ? preferred
-    : chooseAffinityCandidate([service], random);
+    : chooseAffinityCandidate([provider]);
 }
 
 export function resolveStoredAffinity(
   record: SessionAffinityRecord,
-  candidates: AffinityServiceCandidate[],
+  candidates: AffinityProviderCandidate[],
   preferred?: AffinitySelection,
-  random?: AffinityRandomSource,
 ): StoredAffinityDecision {
   const fallback = (): AffinitySelection | undefined =>
-    choosePreferredOrRandom(candidates, preferred, random);
-  const service = candidates.find(
-    (candidate) => candidate.service_id === record.service_id,
+    choosePreferredCandidate(candidates, preferred);
+  const provider = candidates.find(
+    (candidate) => candidate.provider_id === record.provider_id,
   );
-  const key = service?.keys.find(
-    (candidate) => candidate.key_id === record.key_id,
+  const credential = provider?.credentials.find(
+    (candidate) => candidate.credential_id === record.credential_id,
   );
-  if (!service || !key) {
+  if (!provider || !credential) {
     return { selection: fallback(), status: "rebound" };
   }
 
-  const usableServices = candidates.filter(
-    (candidate) => candidate.keys.length > 0,
+  const usableProviders = candidates.filter(
+    (candidate) => candidate.credentials.length > 0,
   );
-  const highestServicePriority = Math.max(
-    ...usableServices.map((candidate) => candidate.priority),
+  const highestProviderPriority = Math.max(
+    ...usableProviders.map((candidate) => candidate.priority),
   );
-  if (service.priority < highestServicePriority) {
+  if (provider.priority < highestProviderPriority) {
     return { selection: fallback(), status: "rebound" };
   }
 
-  const highestKeyPriority = Math.max(
-    ...service.keys.map((candidate) => candidate.priority),
+  const highestCredentialPriority = Math.max(
+    ...provider.credentials.map((candidate) => candidate.priority),
   );
-  if (key.priority < highestKeyPriority) {
+  if (credential.priority < highestCredentialPriority) {
     return {
-      selection: choosePreferredOrRandomWithinService(
-        service,
-        preferred,
-        random,
-      ),
+      selection: choosePreferredCredential(provider, preferred),
       status: "rebound",
     };
   }
 
   return {
-    selection: { service_id: record.service_id, key_id: record.key_id },
+    selection: {
+      provider_id: record.provider_id,
+      credential_id: record.credential_id,
+    },
     status: "hit",
   };
 }
@@ -220,7 +214,7 @@ export function affinityRegistryName(clientId: string): Promise<string> {
   return sha256Hex(clientId);
 }
 
-export function affinitySessionDigest(sessionId: string): Promise<string> {
+function affinitySessionDigest(sessionId: string): Promise<string> {
   return sha256Hex(sessionId);
 }
 

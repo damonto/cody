@@ -27,8 +27,7 @@
     "config:schema": "node --import tsx scripts/generate-config-schema.mjs",
     "config:schema:check": "npm run config:schema -- --check",
     "config:put": "node --import tsx scripts/upload-config.mjs",
-    "test:e2e": "playwright test --config console/playwright.config.ts",
-    "pretest:e2e": "npm run build:web",
+    "test:e2e": "npm run test:e2e --workspace @cody/console --",
     "deploy:check": "npm run deploy -- --dry-run",
     "pretest:worker": "npm run build:web"
   },

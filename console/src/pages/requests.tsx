@@ -71,11 +71,11 @@ export default function Requests() {
       },
       {
         id: "route",
-        header: "Service / model",
+        header: "Provider / model",
         cell: ({ row }) => (
           <div className="max-w-52">
             <p className="truncate font-medium">
-              {row.original.service_id || "Unrouted"}
+              {row.original.provider_id || "Unrouted"}
             </p>
             <p
               className="truncate text-xs text-muted-foreground"
@@ -407,7 +407,7 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
             tierIndex={item.billing.tier_index}
           />
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            Prices are snapshotted per service and model. Editing prices does
+            Prices are snapshotted per provider and model. Editing prices does
             not recalculate historical requests. Each retry is priced
             separately; the request total includes known attempt costs.
           </p>
@@ -416,8 +416,8 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
           <Details
             rows={[
               ["Client", item.client_id || "—"],
-              ["Service", item.service_id || "—"],
-              ["Upstream key ID", item.key_id || "—"],
+              ["Provider", item.provider_id || "—"],
+              ["Upstream credential ID", item.credential_id || "—"],
               ["Requested model", item.requested_model || "—"],
               ["Routed model", item.model || "—"],
               ["Reported model", item.reported_model || "—"],

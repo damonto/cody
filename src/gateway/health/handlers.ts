@@ -1,6 +1,6 @@
 import {
-  clearKeyHealth,
-  clearServiceHealth,
+  clearCredentialHealth,
+  clearProviderHealth,
   listCoolingHealth,
   type HealthScope,
 } from "./health.ts";
@@ -37,19 +37,26 @@ export async function handleHealthList(
     });
     return invalidHealthScope();
   }
-  const allowed = new Set(client.services);
-  const services = config.services.filter((service) => allowed.has(service.id));
-  const data = await listCoolingHealth(env, services, scope);
+  const allowed = new Set(client.providers);
+  const providers = config.providers.filter((provider) =>
+    allowed.has(provider.id),
+  );
+  const data = await listCoolingHealth(env, providers, scope);
   requestLog.set({
     health: {
       action: "list",
       scope,
-      cooling_services: data
-        .filter((entry) => !("key_id" in entry))
-        .map((entry) => entry.service_id),
+      cooling_providers: data
+        .filter((entry) => !("credential_id" in entry))
+        .map((entry) => entry.provider_id),
       cooling_keys: data.flatMap((entry) =>
-        "key_id" in entry
-          ? [{ service_id: entry.service_id, key_id: entry.key_id }]
+        "credential_id" in entry
+          ? [
+              {
+                provider_id: entry.provider_id,
+                credential_id: entry.credential_id,
+              },
+            ]
           : [],
       ),
     },
@@ -66,31 +73,38 @@ export async function handleHealthClear(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
-  serviceId: string,
-  keyId: string | undefined,
+  providerId: string,
+  credentialId: string | undefined,
   requestLog: RequestLogContext,
 ): Promise<Response> {
-  const service = config.services.find((entry) => entry.id === serviceId);
-  if (!service || !client.services.includes(serviceId)) {
+  const provider = config.providers.find((entry) => entry.id === providerId);
+  if (!provider || !client.providers.includes(providerId)) {
     requestLog.warn({
-      outcome: "service_not_found",
-      health: { action: "clear", service_id: serviceId },
+      outcome: "provider_not_found",
+      health: { action: "clear", provider_id: providerId },
     });
     return openAiError(
       404,
-      `Service ${serviceId} is not available for this API key`,
+      `Provider ${providerId} is not available for this API key`,
       "invalid_request_error",
-      "service_not_found",
+      "provider_not_found",
     );
   }
-  if (keyId !== undefined && !service.keys.some((key) => key.id === keyId)) {
+  if (
+    credentialId !== undefined &&
+    !provider.credentials.some((key) => key.id === credentialId)
+  ) {
     requestLog.warn({
       outcome: "key_not_found",
-      health: { action: "clear", service_id: serviceId, key_id: keyId },
+      health: {
+        action: "clear",
+        provider_id: providerId,
+        credential_id: credentialId,
+      },
     });
     return openAiError(
       404,
-      `Key ${keyId} is not available in service ${serviceId}`,
+      `Key ${credentialId} is not available in provider ${providerId}`,
       "invalid_request_error",
       "key_not_found",
     );
@@ -101,28 +115,28 @@ export async function handleHealthClear(
       outcome: "invalid_health_scope",
       health: {
         action: "clear",
-        service_id: serviceId,
+        provider_id: providerId,
         scope: incomingUrl.searchParams.get("scope"),
       },
     });
     return invalidHealthScope();
   }
   const snapshot =
-    keyId === undefined
-      ? await clearServiceHealth(env, serviceId, scope)
-      : await clearKeyHealth(env, serviceId, keyId, scope);
+    credentialId === undefined
+      ? await clearProviderHealth(env, providerId, scope)
+      : await clearCredentialHealth(env, providerId, credentialId, scope);
   requestLog.set({
     health: {
       action: "clear",
-      service_id: serviceId,
-      ...(keyId === undefined ? {} : { key_id: keyId }),
+      provider_id: providerId,
+      ...(credentialId === undefined ? {} : { credential_id: credentialId }),
       scope,
       ...snapshot,
     },
   });
   return jsonResponse({
-    service_id: serviceId,
-    ...(keyId === undefined ? {} : { key_id: keyId }),
+    provider_id: providerId,
+    ...(credentialId === undefined ? {} : { credential_id: credentialId }),
     scope,
     ...snapshot,
   });

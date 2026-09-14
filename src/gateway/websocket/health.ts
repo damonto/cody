@@ -1,8 +1,8 @@
 import {
   healthFailureScope,
-  recordKeyFailure,
-  recordServiceFailure,
-  recordServiceSuccess,
+  recordCredentialFailure,
+  recordProviderFailure,
+  recordProviderSuccess,
 } from "../health/health.ts";
 import type { WebSocketStorage, StoredWebSocketSession } from "./storage.ts";
 
@@ -30,14 +30,18 @@ export class WebSocketHealth {
   ): Promise<void> {
     if (status === undefined) return;
     const scope = healthFailureScope(status, "openai");
-    if (scope === "key" && state.selected_service_id && state.selected_key_id) {
-      await recordKeyFailure(
+    if (
+      scope === "credential" &&
+      state.selected_provider_id &&
+      state.selected_credential_id
+    ) {
+      await recordCredentialFailure(
         this.env,
-        state.selected_service_id,
-        state.selected_key_id,
+        state.selected_provider_id,
+        state.selected_credential_id,
         state.request_id,
       );
-    } else if (scope === "service") {
+    } else if (scope === "provider") {
       await this.fail();
     }
   }
@@ -53,13 +57,13 @@ export class WebSocketHealth {
     if (
       !transition ||
       transition.previous.response_outcome_recorded ||
-      !transition.next.selected_service_id
+      !transition.next.selected_provider_id
     ) {
       return;
     }
-    await recordServiceFailure(
+    await recordProviderFailure(
       this.env,
-      transition.next.selected_service_id,
+      transition.next.selected_provider_id,
       transition.next.request_id,
     );
   }
@@ -73,13 +77,13 @@ export class WebSocketHealth {
     if (
       !transition ||
       transition.previous.response_outcome_recorded ||
-      !transition.next.selected_service_id
+      !transition.next.selected_provider_id
     ) {
       return;
     }
-    await recordServiceSuccess(
+    await recordProviderSuccess(
       this.env,
-      transition.next.selected_service_id,
+      transition.next.selected_provider_id,
       transition.next.request_id,
     );
   }

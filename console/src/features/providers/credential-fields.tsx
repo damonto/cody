@@ -1,7 +1,7 @@
 import { withForm } from "@/lib/form";
-import { serviceFormOptions } from "./form-options";
+import { newCredential, providerFormOptions } from "./form-options";
 import { SECRET_PLACEHOLDER } from "../../../../src/shared/secrets";
-import { revealServiceKey } from "@/lib/api";
+import { revealProviderCredential } from "@/lib/api";
 import { CredentialField } from "@/components/form/credential-field";
 import { TabsContent } from "@/components/ui/tabs";
 import { Plus, Trash2 } from "lucide-react";
@@ -11,29 +11,29 @@ import { FieldError } from "@/components/ui/field";
 import { fieldErrors } from "@/lib/form-errors";
 
 export const CredentialFields = withForm({
-  ...serviceFormOptions,
-  props: { serviceId: "", version: 0, draftVersion: 0 },
+  ...providerFormOptions,
+  props: { providerId: "", version: 0, draftVersion: 0 },
   render: function CredentialFields({
     form,
-    serviceId,
+    providerId,
     version,
     draftVersion,
   }) {
     return (
       <TabsContent
-        value="keys"
+        value="credentials"
         forceMount
         className="space-y-4 data-[state=inactive]:hidden"
       >
         <p className="text-xs leading-relaxed text-muted-foreground">
-          Retries use the same selected key. Saved secret values are hidden;
-          enter a new value to rotate a credential.
+          Retries use the same selected credential. Saved secret values are
+          hidden; enter a new value to rotate a credential.
         </p>
-        <form.AppField name="keys" mode="array">
-          {(keys) => (
+        <form.AppField name="credentials" mode="array">
+          {(credentials) => (
             <>
-              {keys.state.value.map((key, position) => (
-                <Card key={position} className="shadow-none">
+              {credentials.state.value.map((credential, position) => (
+                <Card key={credential.rowId} className="shadow-none">
                   <CardHeader className="flex-row items-center justify-between">
                     <CardTitle className="text-sm">
                       Credential {position + 1}
@@ -42,31 +42,37 @@ export const CredentialFields = withForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      disabled={keys.state.value.length === 1}
+                      disabled={credentials.state.value.length === 1}
                       aria-label={`Remove credential ${position + 1}`}
-                      onClick={() => keys.removeValue(position)}
+                      onClick={() => credentials.removeValue(position)}
                     >
                       <Trash2 />
                     </Button>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <form.AppField name={`keys[${position}].id`}>
+                      <form.AppField name={`credentials[${position}].id`}>
                         {(field) => (
                           <field.TextField
-                            label="Key ID"
-                            readOnly={key.api_key === SECRET_PLACEHOLDER}
+                            label="Credential ID"
+                            readOnly={
+                              credential.auth.api_key === SECRET_PLACEHOLDER
+                            }
                           />
                         )}
                       </form.AppField>
-                      <form.AppField name={`keys[${position}].priority`}>
-                        {(field) => <field.NumberField label="Key priority" />}
+                      <form.AppField name={`credentials[${position}].priority`}>
+                        {(field) => (
+                          <field.NumberField label="Credential priority" />
+                        )}
                       </form.AppField>
                     </div>
-                    <form.AppField name={`keys[${position}].api_key`}>
+                    <form.AppField
+                      name={`credentials[${position}].auth.api_key`}
+                    >
                       {(field) => (
                         <CredentialField
-                          key={`${serviceId}:${key.id}:${version}:${draftVersion}`}
+                          key={`${providerId}:${credential.id}:${field.name}:${version}:${draftVersion}`}
                           label="API key"
                           name={field.name}
                           value={field.state.value}
@@ -74,37 +80,35 @@ export const CredentialFields = withForm({
                           onBlur={field.handleBlur}
                           errors={fieldErrors(field)}
                           reveal={(signal) =>
-                            revealServiceKey(serviceId, key.id, version, signal)
+                            revealProviderCredential(
+                              providerId,
+                              credential.id,
+                              version,
+                              signal,
+                            )
                           }
                         />
                       )}
                     </form.AppField>
-                    <form.AppField name={`keys[${position}].disabled`}>
+                    <form.AppField name={`credentials[${position}].disabled`}>
                       {(field) => (
-                        <field.ToggleField label="Key enabled" inverse />
+                        <field.ToggleField label="Credential enabled" inverse />
                       )}
                     </form.AppField>
-                    <form.AppField name={`keys[${position}].proxy`}>
+                    <form.AppField name={`credentials[${position}].proxy`}>
                       {(field) => <field.SocksProxyField inherit />}
                     </form.AppField>
                   </CardContent>
                 </Card>
               ))}
-              <FieldError errors={fieldErrors(keys)} />
+              <FieldError errors={fieldErrors(credentials)} />
               <Button
                 type="button"
                 variant="outline"
-                onClick={() =>
-                  keys.pushValue({
-                    id: `key-${crypto.randomUUID().slice(0, 6)}`,
-                    api_key: "",
-                    priority: 50,
-                    disabled: false,
-                  })
-                }
+                onClick={() => credentials.pushValue(newCredential())}
               >
                 <Plus />
-                Add key
+                Add credential
               </Button>
             </>
           )}

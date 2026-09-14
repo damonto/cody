@@ -3,7 +3,8 @@ import type { NormalizedUsage } from "../../billing/types.ts";
 import { retryResponseUsage } from "../../telemetry/retry.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
-import { createUpstreamFetch, type UpstreamFetch } from "../transport/index.ts";
+import type { UpstreamFetch } from "../transport/index.ts";
+import { prepareProviderRequest } from "../../providers/index.ts";
 import {
   codexTurnMetadata,
   contextManagementRequested,
@@ -11,13 +12,13 @@ import {
 } from "../sessions/context-management-protocol.ts";
 import {
   healthFailureScope,
-  recordKeyFailure,
-  recordServiceFailure,
-  recordServiceSuccess,
+  recordCredentialFailure,
+  recordProviderFailure,
+  recordProviderSuccess,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "../health/health.ts";
-import { apiError, forwardRequestHeaders, upstreamUrl } from "./http.ts";
+import { apiError } from "./http.ts";
 import {
   bounded,
   elapsedMs,
@@ -27,12 +28,12 @@ import {
 import { requestProtocol, type InferencePath } from "../protocol.ts";
 import {
   resolveModelRoute,
-  selectAvailableServiceWithDetails,
+  selectAvailableProviderWithDetails,
 } from "../routing/routing.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
-  ServiceRetryConfig,
+  ProviderRetryConfig,
 } from "../../config/types.ts";
 import {
   hasJsonUpstreamError,
@@ -133,7 +134,7 @@ async function fetchAttempt(
 
 export async function fetchWithConfiguredRetries(
   makeRequest: () => Request,
-  retry: ServiceRetryConfig | undefined,
+  retry: ProviderRetryConfig | undefined,
   retryOptions: UpstreamRetryOptions,
 ): Promise<FetchWithRetriesResult> {
   const attempts: UpstreamAttemptLog[] = [];
@@ -360,6 +361,7 @@ export async function handleInference(
     );
   }
   const route = resolveModelRoute(config, client, payload.model, {
+    endpoint: upstreamPath,
     requiredCapabilities: [
       ...(upstreamPath === "alpha/search"
         ? ["supports_web_search" as const]
@@ -367,12 +369,12 @@ export async function handleInference(
       ...(contextManagement ? ["supports_context_management" as const] : []),
     ],
   });
-  const candidateServices = route.targets.map((target) => target.service.id);
+  const candidateProviders = route.targets.map((target) => target.provider.id);
   requestLog?.set({
     model: {
       requested: bounded(payload.model, 160),
     },
-    routing: { candidate_services: candidateServices },
+    routing: { candidate_providers: candidateProviders },
   });
   if (route.targets.length === 0) {
     requestLog?.warn({ outcome: "model_not_found" });
@@ -383,7 +385,7 @@ export async function handleInference(
       { code: "model_not_found", requestId },
     );
   }
-  const selection = await selectAvailableServiceWithDetails(env, route, {
+  const selection = await selectAvailableProviderWithDetails(env, route, {
     contextManagement,
     ...(sessionId
       ? {
@@ -396,23 +398,23 @@ export async function handleInference(
   });
   const target = selection.target;
   const routing = {
-    candidate_services: candidateServices,
-    checked_available_services: selection.checks
+    candidate_providers: candidateProviders,
+    checked_available_providers: selection.checks
       .filter((check) => check.available)
-      .map((check) => check.service_id),
-    service_checks: selection.checks,
-    key_checks: selection.keyChecks,
+      .map((check) => check.provider_id),
+    provider_checks: selection.checks,
+    credential_checks: selection.credentialChecks,
     ...(selection.affinity ? { affinity: selection.affinity } : {}),
     ...(target
       ? {
-          selected_service: target.service.id,
-          selected_key_id: target.key.id,
+          selected_provider: target.provider.id,
+          selected_credential_id: target.credential.id,
         }
       : {}),
   };
   if (
     selection.checks.some((check) => check.reason === "health_read_failed") ||
-    selection.keyChecks.some(
+    selection.credentialChecks.some(
       (check) => check.reason === "health_read_failed",
     ) ||
     selection.affinity?.status === "failed"
@@ -454,15 +456,15 @@ export async function handleInference(
         },
       );
     }
-    requestLog?.warn({ outcome: "service_cooling_down" });
+    requestLog?.warn({ outcome: "provider_cooling_down" });
     return apiError(
       protocol,
       503,
-      `No healthy service is currently available for model ${payload.model}`,
-      { type: "server_error", code: "service_cooling_down", requestId },
+      `No healthy provider is currently available for model ${payload.model}`,
+      { type: "server_error", code: "provider_cooling_down", requestId },
     );
   }
-  const { service, key: selectedKey } = target;
+  const { provider, credential: selectedCredential } = target;
   if (
     (contextManagement || selection.affinity?.context_management) &&
     !contextManagementSessionMatches(payload, sessionId)
@@ -484,17 +486,22 @@ export async function handleInference(
     },
   });
 
-  const headers = forwardRequestHeaders(request, selectedKey.api_key);
+  const prepared = await prepareProviderRequest(provider, selectedCredential, {
+    request,
+    endpoint: upstreamPath,
+    transport: "http",
+  });
+  const { headers } = prepared;
   requestLog?.set({
     upstream: {
-      service_id: service.id,
-      key_id: selectedKey.id,
+      provider_id: provider.id,
+      credential_id: selectedCredential.id,
       model: upstreamModel,
     },
   });
   meter?.select({
-    serviceId: service.id,
-    keyId: selectedKey.id,
+    providerId: provider.id,
+    credentialId: selectedCredential.id,
     model: upstreamModel,
   });
   headers.delete("content-length");
@@ -509,21 +516,20 @@ export async function handleInference(
     headers.set("content-type", "application/json");
   }
   const body = upstreamBody(rawBody, payload, upstreamModel, modelRewritten);
-  const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(
     () =>
-      new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
+      new Request(prepared.url, {
         method: request.method,
         headers,
         body,
         redirect: "manual",
         signal: request.signal,
       }),
-    service.retry,
+    provider.retry,
     {
       ...retryOptions,
-      send: retryOptions.send ?? createUpstreamFetch(service, selectedKey),
+      send: retryOptions.send ?? prepared.send,
       ...(meter
         ? {
             observeDiscardedResponse: (response: Response) =>
@@ -532,10 +538,15 @@ export async function handleInference(
         : {}),
       onResponse: async (response, attempt) => {
         await retryOptions.onResponse?.(response, attempt);
-        if (healthFailureScope(response.status, protocol) === "key") {
+        if (healthFailureScope(response.status, protocol) === "credential") {
           await scheduleHealthUpdate(
             context,
-            recordKeyFailure(env, service.id, selectedKey.id, requestId),
+            recordCredentialFailure(
+              env,
+              provider.id,
+              selectedCredential.id,
+              requestId,
+            ),
           );
         }
       },
@@ -552,8 +563,8 @@ export async function handleInference(
     requestLog?.warn({
       outcome: code,
       upstream: {
-        service_id: service.id,
-        key_id: selectedKey.id,
+        provider_id: provider.id,
+        credential_id: selectedCredential.id,
         model: bounded(upstreamModel, 160),
         model_rewritten: modelRewritten,
         duration_ms: upstreamDurationMs,
@@ -564,7 +575,7 @@ export async function handleInference(
     if (!cancelled) {
       await scheduleHealthUpdate(
         context,
-        recordServiceFailure(env, service.id, requestId),
+        recordProviderFailure(env, provider.id, requestId),
       );
     }
     return apiError(
@@ -572,7 +583,7 @@ export async function handleInference(
       status,
       cancelled
         ? "The client cancelled the request"
-        : "The selected upstream service could not be reached",
+        : "The selected upstream provider could not be reached",
       {
         type: cancelled ? "invalid_request_error" : "server_error",
         code,
@@ -585,8 +596,8 @@ export async function handleInference(
   if (!upstreamResponse.ok) meter?.diagnostic("upstream_error");
   if (requestLog) {
     const upstreamBase = {
-      service_id: service.id,
-      key_id: selectedKey.id,
+      provider_id: provider.id,
+      credential_id: selectedCredential.id,
       model: bounded(upstreamModel, 160),
       model_rewritten: modelRewritten,
       duration_ms: upstreamDurationMs,
@@ -627,14 +638,14 @@ export async function handleInference(
   if (upstreamResponse.ok) {
     await scheduleHealthUpdate(
       context,
-      recordServiceSuccess(env, service.id, requestId),
+      recordProviderSuccess(env, provider.id, requestId),
     );
   } else if (
-    healthFailureScope(upstreamResponse.status, protocol) === "service"
+    healthFailureScope(upstreamResponse.status, protocol) === "provider"
   ) {
     await scheduleHealthUpdate(
       context,
-      recordServiceFailure(env, service.id, requestId),
+      recordProviderFailure(env, provider.id, requestId),
     );
   }
   return upstreamResponse;

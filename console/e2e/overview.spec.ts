@@ -18,7 +18,7 @@ import { mockApi } from "./fixtures";
 const now = Date.UTC(2026, 8, 12, 12, 30);
 const start = Date.UTC(2026, 8, 12);
 type SourceRow = SeriesRow & {
-  service_id: string;
+  provider_id: string;
   client_id: string;
   model: string;
 };
@@ -28,7 +28,7 @@ function source(hour: number, alternate: boolean, previous = false): SourceRow {
     ...emptyAggregate(),
     hour,
     currency: alternate ? "EUR" : "USD",
-    service_id: alternate ? "archived-service" : "example-provider",
+    provider_id: alternate ? "archived-provider" : "example-provider",
     client_id: alternate ? "archived-client" : "example-client",
     model: alternate ? "other-model" : "example-model",
     requests_count: requests,
@@ -68,7 +68,7 @@ async function overviewApi(page: Page, sourceRows: SourceRow[] = samples) {
   await page.route("**/console/api/report-options?**", async (route) =>
     route.fulfill({
       json: {
-        services: ["example-provider", "archived-service"],
+        providers: ["example-provider", "archived-provider"],
         models: ["example-model", "other-model"],
         clients: ["example-client", "archived-client"],
         time_zone: "UTC",
@@ -90,7 +90,7 @@ async function overviewApi(page: Page, sourceRows: SourceRow[] = samples) {
     const filter = (rows: SourceRow[]) =>
       rows.filter(
         (row) =>
-          (!query.service_id || row.service_id === query.service_id) &&
+          (!query.provider_id || row.provider_id === query.provider_id) &&
           (!query.client_id || row.client_id === query.client_id) &&
           (!query.model || row.model === query.model),
       );
@@ -265,9 +265,9 @@ test("overview shows outcomes, token composition, comparison and currency-isolat
   await page
     .getByRole("option", { name: "By known cost", exact: true })
     .click();
-  await page.getByRole("combobox", { name: "Filter by service" }).click();
+  await page.getByRole("combobox", { name: "Filter by provider" }).click();
   await page
-    .getByRole("option", { name: "archived-service", exact: true })
+    .getByRole("option", { name: "archived-provider", exact: true })
     .click();
   await expect(
     metric(page, "Requests").getByText("8", { exact: true }),
@@ -286,7 +286,7 @@ test("overview filters and failed-request links preserve the exact report window
 }) => {
   const calls = await overviewApi(page);
   await page.goto("/console/overview");
-  await page.getByRole("combobox", { name: "Filter by service" }).click();
+  await page.getByRole("combobox", { name: "Filter by provider" }).click();
   await page
     .getByRole("option", { name: "example-provider", exact: true })
     .click();
@@ -310,7 +310,7 @@ test("overview filters and failed-request links preserve the exact report window
   expect(query.get("period")).toBe("custom");
   expect(query.get("from")).toBe(String(start));
   expect(query.get("to")).toBe(String(now));
-  expect(query.get("service_id")).toBe("example-provider");
+  expect(query.get("provider_id")).toBe("example-provider");
   expect(query.get("client_id")).toBe("example-client");
   expect(query.get("outcome")).toBe("failed");
   expect(query.has("kind")).toBe(false);
@@ -364,7 +364,7 @@ test("source rankings distinguish missing usage and pricing from zero shares", a
   await overviewApi(page, [samples[0], missing]);
   await page.goto("/console/overview");
   const row = page.getByRole("row").filter({
-    has: page.getByRole("button", { name: "archived-service", exact: true }),
+    has: page.getByRole("button", { name: "archived-provider", exact: true }),
   });
   for (const name of ["By tokens", "By known cost"]) {
     await page.getByRole("combobox", { name: "Rank by", exact: true }).click();
@@ -379,7 +379,7 @@ test("time intervals drill down, and incomplete usage has its own request filter
   page,
 }) => {
   await overviewApi(page);
-  await page.goto("/console/overview?service_id=example-provider");
+  await page.goto("/console/overview?provider_id=example-provider");
   await page
     .getByRole("button", { name: /7 reported requests, 6 success/ })
     .click();

@@ -1,12 +1,12 @@
 import {
   mapWithConcurrency,
-  SERVICE_FAN_OUT_CONCURRENCY,
+  PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { errorMessage, logWarn } from "../../shared/log.ts";
 import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
 import type {
-  ServiceConfig,
-  ServiceHealthSnapshot,
+  ProviderConfig,
+  ProviderHealthSnapshot,
 } from "../../config/types.ts";
 
 export const FAILURE_THRESHOLD = 10;
@@ -14,33 +14,33 @@ export const FAILURE_WINDOW_MS = 5 * 60 * 1000;
 export const COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Which health record an upstream status produces. */
-export type HealthFailureScope = "service" | "key";
+export type HealthFailureScope = "provider" | "credential";
 
-// One map per protocol rather than a service set plus a key set: a status can
-// only appear once, so recording both a service and a key failure for the same
+// One map per protocol rather than a provider set plus a key set: a status can
+// only appear once, so recording both a provider and a key failure for the same
 // response is unrepresentable instead of merely unlikely.
 //
-// OpenAI-compatible upstreams: 400 and 503 mean the service is unhealthy, while
+// OpenAI-compatible upstreams: 400 and 503 mean the provider is unhealthy, while
 // 402 (billing) and 403 (forbidden) are specific to the key used.
 const OPENAI_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
-  [400, "service"],
-  [402, "key"],
-  [403, "key"],
-  [503, "service"],
+  [400, "provider"],
+  [402, "credential"],
+  [403, "credential"],
+  [503, "provider"],
 ]);
 
-// Anthropic upstreams signal an unhealthy service with 5xx statuses: 529 is
+// Anthropic upstreams signal an unhealthy provider with 5xx statuses: 529 is
 // their documented overload code, and real gateways in front of them return
 // 500/502/503 for the same condition. 401 is an invalid key and 403 is a key
 // without access. The failure streak threshold keeps an isolated 5xx from
-// cooling the service down.
+// cooling the provider down.
 const ANTHROPIC_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
-  [401, "key"],
-  [403, "key"],
-  [500, "service"],
-  [502, "service"],
-  [503, "service"],
-  [529, "service"],
+  [401, "credential"],
+  [403, "credential"],
+  [500, "provider"],
+  [502, "provider"],
+  [503, "provider"],
+  [529, "provider"],
 ]);
 
 /**
@@ -64,42 +64,42 @@ export interface HealthExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-export interface StoredServiceHealthState {
+export interface StoredProviderHealthState {
   failures: number;
   failure_window_started_at: number | null;
   cooling_until: number | null;
 }
 
-export interface CoolingServiceHealth extends ServiceHealthSnapshot {
-  service_id: string;
+export interface CoolingProviderHealth extends ProviderHealthSnapshot {
+  provider_id: string;
 }
 
-export interface CoolingKeyHealth extends ServiceHealthSnapshot {
-  service_id: string;
-  key_id: string;
+interface CoolingCredentialHealth extends ProviderHealthSnapshot {
+  provider_id: string;
+  credential_id: string;
 }
 
-export type CoolingHealth = CoolingServiceHealth | CoolingKeyHealth;
+export type CoolingHealth = CoolingProviderHealth | CoolingCredentialHealth;
 
-export type ServiceAvailabilityReason =
+type ProviderAvailabilityReason =
   "available" | "cooling" | "health_read_failed";
 
-export interface ServiceAvailability {
+export interface ProviderAvailability {
   available: boolean;
-  reason: ServiceAvailabilityReason;
+  reason: ProviderAvailabilityReason;
   failures?: number;
   cooling_until?: number | null;
   error?: string;
 }
 
-export class ServiceHealthState {
+export class ProviderHealthState {
   private failures = 0;
   private failureWindowStartedAt: number | null = null;
   private coolingUntil: number | null = null;
 
   constructor(
     private readonly clock: () => number = () => Date.now(),
-    stored?: StoredServiceHealthState,
+    stored?: StoredProviderHealthState,
   ) {
     if (stored) {
       this.failures = stored.failures;
@@ -113,7 +113,7 @@ export class ServiceHealthState {
     this.failureWindowStartedAt = null;
   }
 
-  private snapshot(now = this.clock()): ServiceHealthSnapshot {
+  private snapshot(now = this.clock()): ProviderHealthSnapshot {
     if (this.coolingUntil !== null && now >= this.coolingUntil) {
       this.resetFailures();
       this.coolingUntil = null;
@@ -131,12 +131,12 @@ export class ServiceHealthState {
     };
   }
 
-  getStatus(): ServiceHealthSnapshot {
+  getStatus(): ProviderHealthSnapshot {
     const now = this.clock();
     return this.snapshot(now);
   }
 
-  getStoredState(): StoredServiceHealthState | null {
+  getStoredState(): StoredProviderHealthState | null {
     if (
       this.failures === 0 &&
       this.failureWindowStartedAt === null &&
@@ -151,17 +151,17 @@ export class ServiceHealthState {
     };
   }
 
-  clear(): ServiceHealthSnapshot {
+  clear(): ProviderHealthSnapshot {
     this.resetFailures();
     this.coolingUntil = null;
     return this.snapshot();
   }
 
-  recordSuccess(): ServiceHealthSnapshot {
+  recordSuccess(): ProviderHealthSnapshot {
     return this.clear();
   }
 
-  recordFailure(): ServiceHealthSnapshot {
+  recordFailure(): ProviderHealthSnapshot {
     const now = this.clock();
     this.snapshot(now);
     if (this.coolingUntil === null) {
@@ -180,7 +180,7 @@ export class ServiceHealthState {
     return this.snapshot(now);
   }
 
-  recordImmediateFailure(): ServiceHealthSnapshot {
+  recordImmediateFailure(): ProviderHealthSnapshot {
     const now = this.clock();
     this.snapshot(now);
     if (this.coolingUntil === null) {
@@ -198,39 +198,41 @@ export class ServiceHealthState {
   }
 }
 
-function healthObjectName(serviceId: string, scope: HealthScope): string {
-  return scope === "inference" ? serviceId : `${serviceId}:catalog`;
+function healthObjectName(providerId: string, scope: HealthScope): string {
+  return scope === "inference" ? providerId : `${providerId}:catalog`;
 }
 
-function healthStub(env: Env, serviceId: string, scope: HealthScope) {
-  return env.HEALTH.getByName(healthObjectName(serviceId, scope));
+function healthStub(env: Env, providerId: string, scope: HealthScope) {
+  return env.HEALTH.getByName(healthObjectName(providerId, scope));
 }
 
-function keyHealthObjectName(
-  serviceId: string,
-  keyId: string,
+function credentialHealthObjectName(
+  providerId: string,
+  credentialId: string,
   scope: HealthScope,
 ): string {
-  const base = `key:${serviceId}:${keyId}`;
+  const base = `key:${providerId}:${credentialId}`;
   return scope === "inference" ? base : `${base}:catalog`;
 }
 
-function keyHealthStub(
+function credentialHealthStub(
   env: Env,
-  serviceId: string,
-  keyId: string,
+  providerId: string,
+  credentialId: string,
   scope: HealthScope,
 ) {
-  return env.HEALTH.getByName(keyHealthObjectName(serviceId, keyId, scope));
+  return env.HEALTH.getByName(
+    credentialHealthObjectName(providerId, credentialId, scope),
+  );
 }
 
-export async function getServiceAvailability(
+export async function getProviderAvailability(
   env: Env,
-  serviceId: string,
+  providerId: string,
   scope: HealthScope = "inference",
-): Promise<ServiceAvailability> {
+): Promise<ProviderAvailability> {
   try {
-    const snapshot = await healthStub(env, serviceId, scope).getStatus();
+    const snapshot = await healthStub(env, providerId, scope).getStatus();
     const available =
       snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     return {
@@ -248,25 +250,25 @@ export async function getServiceAvailability(
   }
 }
 
-export async function serviceIsAvailable(
+export async function providerIsAvailable(
   env: Env,
-  serviceId: string,
+  providerId: string,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
-  return (await getServiceAvailability(env, serviceId, scope)).available;
+  return (await getProviderAvailability(env, providerId, scope)).available;
 }
 
-export async function getKeyAvailability(
+export async function getCredentialAvailability(
   env: Env,
-  serviceId: string,
-  keyId: string,
+  providerId: string,
+  credentialId: string,
   scope: HealthScope = "inference",
-): Promise<ServiceAvailability> {
+): Promise<ProviderAvailability> {
   try {
-    const snapshot = await keyHealthStub(
+    const snapshot = await credentialHealthStub(
       env,
-      serviceId,
-      keyId,
+      providerId,
+      credentialId,
       scope,
     ).getStatus();
     const available =
@@ -286,24 +288,25 @@ export async function getKeyAvailability(
   }
 }
 
-export async function keyIsAvailable(
+export async function credentialIsAvailable(
   env: Env,
-  serviceId: string,
-  keyId: string,
+  providerId: string,
+  credentialId: string,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
-  return (await getKeyAvailability(env, serviceId, keyId, scope)).available;
+  return (await getCredentialAvailability(env, providerId, credentialId, scope))
+    .available;
 }
 
 async function record(
   env: Env,
-  serviceId: string,
+  providerId: string,
   outcome: "success" | "failure",
   requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<void> {
   try {
-    const stub = healthStub(env, serviceId, scope);
+    const stub = healthStub(env, providerId, scope);
     const snapshot =
       outcome === "success"
         ? await stub.recordSuccess()
@@ -311,7 +314,7 @@ async function record(
     if (outcome === "failure" && snapshot.cooling_until !== null) {
       logWarn("health.cooldown.active", {
         request_id: requestId,
-        service_id: serviceId,
+        provider_id: providerId,
         scope,
         failures: snapshot.failures,
         cooling_until: snapshot.cooling_until,
@@ -320,7 +323,7 @@ async function record(
   } catch (error) {
     logWarn("health.update.failed", {
       request_id: requestId,
-      service_id: serviceId,
+      provider_id: providerId,
       scope,
       outcome,
       error: errorMessage(error),
@@ -328,42 +331,42 @@ async function record(
   }
 }
 
-export function recordServiceSuccess(
+export function recordProviderSuccess(
   env: Env,
-  serviceId: string,
+  providerId: string,
   requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<void> {
-  return record(env, serviceId, "success", requestId, scope);
+  return record(env, providerId, "success", requestId, scope);
 }
 
-export function recordServiceFailure(
+export function recordProviderFailure(
   env: Env,
-  serviceId: string,
+  providerId: string,
   requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<void> {
-  return record(env, serviceId, "failure", requestId, scope);
+  return record(env, providerId, "failure", requestId, scope);
 }
 
-export async function recordKeyFailure(
+export async function recordCredentialFailure(
   env: Env,
-  serviceId: string,
-  keyId: string,
+  providerId: string,
+  credentialId: string,
   requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<void> {
   try {
-    const snapshot = await keyHealthStub(
+    const snapshot = await credentialHealthStub(
       env,
-      serviceId,
-      keyId,
+      providerId,
+      credentialId,
       scope,
     ).recordImmediateFailure();
-    logWarn("health.key_cooldown.active", {
+    logWarn("health.credential_cooldown.active", {
       request_id: requestId,
-      service_id: serviceId,
-      key_id: keyId,
+      provider_id: providerId,
+      credential_id: credentialId,
       scope,
       failures: snapshot.failures,
       cooling_until: snapshot.cooling_until,
@@ -371,43 +374,43 @@ export async function recordKeyFailure(
   } catch (error) {
     logWarn("health.key_update.failed", {
       request_id: requestId,
-      service_id: serviceId,
-      key_id: keyId,
+      provider_id: providerId,
+      credential_id: credentialId,
       scope,
       error: errorMessage(error),
     });
   }
 }
 
-export async function clearServiceHealth(
+export async function clearProviderHealth(
   env: Env,
-  serviceId: string,
+  providerId: string,
   scope: HealthScope = "inference",
-): Promise<ServiceHealthSnapshot> {
-  const snapshot = await healthStub(env, serviceId, scope).clear();
+): Promise<ProviderHealthSnapshot> {
+  const snapshot = await healthStub(env, providerId, scope).clear();
   return snapshot;
 }
 
-export async function clearKeyHealth(
+export async function clearCredentialHealth(
   env: Env,
-  serviceId: string,
-  keyId: string,
+  providerId: string,
+  credentialId: string,
   scope: HealthScope = "inference",
-): Promise<ServiceHealthSnapshot> {
-  return keyHealthStub(env, serviceId, keyId, scope).clear();
+): Promise<ProviderHealthSnapshot> {
+  return credentialHealthStub(env, providerId, credentialId, scope).clear();
 }
 
-export async function listCoolingServices(
+export async function listCoolingProviders(
   env: Env,
-  serviceIds: string[],
+  providerIds: string[],
   scope: HealthScope = "inference",
-): Promise<CoolingServiceHealth[]> {
+): Promise<CoolingProviderHealth[]> {
   const statuses = await mapWithConcurrency(
-    serviceIds,
-    SERVICE_FAN_OUT_CONCURRENCY,
-    async (serviceId) => ({
-      service_id: serviceId,
-      ...(await healthStub(env, serviceId, scope).getStatus()),
+    providerIds,
+    PROVIDER_FAN_OUT_CONCURRENCY,
+    async (providerId) => ({
+      provider_id: providerId,
+      ...(await healthStub(env, providerId, scope).getStatus()),
     }),
   );
   const now = Date.now();
@@ -418,35 +421,35 @@ export async function listCoolingServices(
 
 export async function listCoolingHealth(
   env: Env,
-  services: ServiceConfig[],
+  providers: ProviderConfig[],
   scope: HealthScope = "inference",
 ): Promise<CoolingHealth[]> {
-  const descriptors = services.flatMap((service) => [
-    { kind: "service" as const, service_id: service.id },
-    ...service.keys.map((key) => ({
-      kind: "key" as const,
-      service_id: service.id,
-      key_id: key.id,
+  const descriptors = providers.flatMap((provider) => [
+    { kind: "provider" as const, provider_id: provider.id },
+    ...provider.credentials.map((key) => ({
+      kind: "credential" as const,
+      provider_id: provider.id,
+      credential_id: key.id,
     })),
   ]);
   const statuses = await mapWithConcurrency(
     descriptors,
-    SERVICE_FAN_OUT_CONCURRENCY,
+    PROVIDER_FAN_OUT_CONCURRENCY,
     async (descriptor): Promise<CoolingHealth> => {
       const snapshot =
-        descriptor.kind === "service"
-          ? await healthStub(env, descriptor.service_id, scope).getStatus()
-          : await keyHealthStub(
+        descriptor.kind === "provider"
+          ? await healthStub(env, descriptor.provider_id, scope).getStatus()
+          : await credentialHealthStub(
               env,
-              descriptor.service_id,
-              descriptor.key_id,
+              descriptor.provider_id,
+              descriptor.credential_id,
               scope,
             ).getStatus();
-      return descriptor.kind === "service"
-        ? { service_id: descriptor.service_id, ...snapshot }
+      return descriptor.kind === "provider"
+        ? { provider_id: descriptor.provider_id, ...snapshot }
         : {
-            service_id: descriptor.service_id,
-            key_id: descriptor.key_id,
+            provider_id: descriptor.provider_id,
+            credential_id: descriptor.credential_id,
             ...snapshot,
           };
     },

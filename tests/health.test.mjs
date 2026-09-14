@@ -1,26 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVICE_FAN_OUT_CONCURRENCY } from "../src/shared/concurrency.ts";
+import { PROVIDER_FAN_OUT_CONCURRENCY } from "../src/shared/concurrency.ts";
 import {
   COOLDOWN_MS,
   FAILURE_THRESHOLD,
   FAILURE_WINDOW_MS,
-  clearKeyHealth,
-  clearServiceHealth,
+  clearCredentialHealth,
+  clearProviderHealth,
   healthFailureScope,
-  keyIsAvailable,
+  credentialIsAvailable,
   listCoolingHealth,
-  listCoolingServices,
-  recordKeyFailure,
-  recordServiceFailure,
+  listCoolingProviders,
+  recordCredentialFailure,
+  recordProviderFailure,
   scheduleHealthUpdate,
-  serviceIsAvailable,
-  ServiceHealthState,
+  providerIsAvailable,
+  ProviderHealthState,
 } from "../src/gateway/health/health.ts";
 
 test("ten consecutive failures start a cooldown and success resets state", async () => {
-  const health = new ServiceHealthState();
+  const health = new ProviderHealthState();
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     health.recordFailure();
   }
@@ -35,7 +35,7 @@ test("ten consecutive failures start a cooldown and success resets state", async
 
 test("failures outside the five-minute window do not join the same streak", async () => {
   let now = 1_000;
-  const health = new ServiceHealthState(() => now);
+  const health = new ProviderHealthState(() => now);
 
   for (let index = 0; index < FAILURE_THRESHOLD - 1; index += 1) {
     health.recordFailure();
@@ -50,7 +50,7 @@ test("failures outside the five-minute window do not join the same streak", asyn
 
 test("an expired failure window is cleared when health is read", async () => {
   let now = 3_000;
-  const health = new ServiceHealthState(() => now);
+  const health = new ProviderHealthState(() => now);
   health.recordFailure();
 
   now += FAILURE_WINDOW_MS;
@@ -60,7 +60,7 @@ test("an expired failure window is cleared when health is read", async () => {
 
 test("ten failures inside one five-minute window start a cooldown", async () => {
   let now = 2_000;
-  const health = new ServiceHealthState(() => now);
+  const health = new ProviderHealthState(() => now);
 
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     now += 20_000;
@@ -74,10 +74,10 @@ test("ten failures inside one five-minute window start a cooldown", async () => 
 
 test("OpenAI statuses resolve to one failure scope each", () => {
   const scope = (status) => healthFailureScope(status, "openai");
-  assert.equal(scope(400), "service");
-  assert.equal(scope(503), "service");
-  assert.equal(scope(402), "key");
-  assert.equal(scope(403), "key");
+  assert.equal(scope(400), "provider");
+  assert.equal(scope(503), "provider");
+  assert.equal(scope(402), "credential");
+  assert.equal(scope(403), "credential");
   assert.equal(scope(401), undefined);
   assert.equal(scope(429), undefined);
   assert.equal(scope(500), undefined);
@@ -85,12 +85,12 @@ test("OpenAI statuses resolve to one failure scope each", () => {
 
 test("Anthropic statuses resolve to one failure scope each", () => {
   const scope = (status) => healthFailureScope(status, "anthropic");
-  assert.equal(scope(500), "service");
-  assert.equal(scope(502), "service");
-  assert.equal(scope(503), "service");
-  assert.equal(scope(529), "service");
-  assert.equal(scope(401), "key");
-  assert.equal(scope(403), "key");
+  assert.equal(scope(500), "provider");
+  assert.equal(scope(502), "provider");
+  assert.equal(scope(503), "provider");
+  assert.equal(scope(529), "provider");
+  assert.equal(scope(401), "credential");
+  assert.equal(scope(403), "credential");
   assert.equal(scope(402), undefined);
   assert.equal(scope(400), undefined);
   assert.equal(scope(429), undefined);
@@ -110,7 +110,7 @@ test("statuses outside the failure maps are not counted", () => {
 
 test("a first key failure starts a 30-minute cooldown that expires normally", () => {
   let now = 10_000;
-  const health = new ServiceHealthState(() => now);
+  const health = new ProviderHealthState(() => now);
   const snapshot = health.recordImmediateFailure();
   assert.deepEqual(snapshot, {
     failures: 1,
@@ -123,7 +123,7 @@ test("a first key failure starts a 30-minute cooldown that expires normally", ()
 
 test("a repeated key failure refreshes the full 30-minute cooldown", () => {
   let now = 20_000;
-  const health = new ServiceHealthState(() => now);
+  const health = new ProviderHealthState(() => now);
   health.recordImmediateFailure();
 
   now += 10 * 60 * 1000;
@@ -136,8 +136,8 @@ test("a repeated key failure refreshes the full 30-minute cooldown", () => {
 
 test("catalog health is isolated from inference health", async () => {
   const objects = new Map([
-    ["service", new ServiceHealthState()],
-    ["service:catalog", new ServiceHealthState()],
+    ["provider", new ProviderHealthState()],
+    ["provider:catalog", new ProviderHealthState()],
   ]);
   const env = {
     HEALTH: {
@@ -145,20 +145,20 @@ test("catalog health is isolated from inference health", async () => {
     },
   };
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
-    await recordServiceFailure(env, "service", "test", "catalog");
+    await recordProviderFailure(env, "provider", "test", "catalog");
   }
-  assert.equal(await serviceIsAvailable(env, "service", "inference"), true);
-  assert.equal(await serviceIsAvailable(env, "service", "catalog"), false);
+  assert.equal(await providerIsAvailable(env, "provider", "inference"), true);
+  assert.equal(await providerIsAvailable(env, "provider", "catalog"), false);
 
-  await clearServiceHealth(env, "service", "catalog");
-  assert.equal(await serviceIsAvailable(env, "service", "catalog"), true);
-  assert.equal(await serviceIsAvailable(env, "service", "inference"), true);
+  await clearProviderHealth(env, "provider", "catalog");
+  assert.equal(await providerIsAvailable(env, "provider", "catalog"), true);
+  assert.equal(await providerIsAvailable(env, "provider", "inference"), true);
 });
 
 test("catalog key cooldown is isolated from inference key cooldown", async () => {
   const objects = new Map([
-    ["key:service:key", new ServiceHealthState()],
-    ["key:service:key:catalog", new ServiceHealthState()],
+    ["key:provider:credential", new ProviderHealthState()],
+    ["key:provider:credential:catalog", new ProviderHealthState()],
   ]);
   const env = {
     HEALTH: {
@@ -166,30 +166,48 @@ test("catalog key cooldown is isolated from inference key cooldown", async () =>
     },
   };
 
-  await recordKeyFailure(env, "service", "key", "test", "catalog");
-  assert.equal(await keyIsAvailable(env, "service", "key", "inference"), true);
-  assert.equal(await keyIsAvailable(env, "service", "key", "catalog"), false);
+  await recordCredentialFailure(
+    env,
+    "provider",
+    "credential",
+    "test",
+    "catalog",
+  );
+  assert.equal(
+    await credentialIsAvailable(env, "provider", "credential", "inference"),
+    true,
+  );
+  assert.equal(
+    await credentialIsAvailable(env, "provider", "credential", "catalog"),
+    false,
+  );
 
-  await clearKeyHealth(env, "service", "key", "catalog");
-  assert.equal(await keyIsAvailable(env, "service", "key", "catalog"), true);
-  assert.equal(await keyIsAvailable(env, "service", "key", "inference"), true);
+  await clearCredentialHealth(env, "provider", "credential", "catalog");
+  assert.equal(
+    await credentialIsAvailable(env, "provider", "credential", "catalog"),
+    true,
+  );
+  assert.equal(
+    await credentialIsAvailable(env, "provider", "credential", "inference"),
+    true,
+  );
 });
 
-test("health listing preserves service and key configuration order", async () => {
-  const services = [
+test("health listing preserves provider and key configuration order", async () => {
+  const providers = [
     {
       id: "first",
-      keys: [{ id: "first-a" }, { id: "first-b" }],
+      credentials: [{ id: "first-a" }, { id: "first-b" }],
     },
     {
       id: "second",
-      keys: [{ id: "second-a" }],
+      credentials: [{ id: "second-a" }],
     },
   ];
   const objects = new Map();
   const get = (name) => {
     if (!objects.has(name)) {
-      objects.set(name, new ServiceHealthState());
+      objects.set(name, new ProviderHealthState());
     }
     return objects.get(name);
   };
@@ -200,9 +218,9 @@ test("health listing preserves service and key configuration order", async () =>
   get("key:first:first-b").recordImmediateFailure();
   get("key:second:second-a").recordImmediateFailure();
 
-  const cooling = await listCoolingHealth(env, services);
+  const cooling = await listCoolingHealth(env, providers);
   assert.deepEqual(
-    cooling.map((entry) => [entry.service_id, entry.key_id ?? null]),
+    cooling.map((entry) => [entry.provider_id, entry.credential_id ?? null]),
     [
       ["first", null],
       ["first", "first-b"],
@@ -213,24 +231,24 @@ test("health listing preserves service and key configuration order", async () =>
 
 test("stored state recreates an active cooldown after an eviction", () => {
   let now = 5_000;
-  const original = new ServiceHealthState(() => now);
+  const original = new ProviderHealthState(() => now);
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     original.recordFailure();
   }
 
   const stored = original.getStoredState();
   assert(stored);
-  const recreated = new ServiceHealthState(() => now, stored);
+  const recreated = new ProviderHealthState(() => now, stored);
   assert.deepEqual(recreated.getStatus(), original.getStatus());
 
   now += FAILURE_WINDOW_MS;
   assert.equal(recreated.getStatus().cooling_until, stored.cooling_until);
 });
 
-test("cooldown status fan-out uses the service concurrency limit", async () => {
-  const serviceIds = Array.from(
-    { length: SERVICE_FAN_OUT_CONCURRENCY * 2 },
-    (_, index) => `service-${index}`,
+test("cooldown status fan-out uses the provider concurrency limit", async () => {
+  const providerIds = Array.from(
+    { length: PROVIDER_FAN_OUT_CONCURRENCY * 2 },
+    (_, index) => `provider-${index}`,
   );
   let active = 0;
   let maximumActive = 0;
@@ -251,10 +269,10 @@ test("cooldown status fan-out uses the service concurrency limit", async () => {
     },
   };
 
-  const cooling = await listCoolingServices(env, serviceIds);
+  const cooling = await listCoolingProviders(env, providerIds);
 
-  assert.equal(cooling.length, serviceIds.length);
-  assert.equal(maximumActive, SERVICE_FAN_OUT_CONCURRENCY);
+  assert.equal(cooling.length, providerIds.length);
+  assert.equal(maximumActive, PROVIDER_FAN_OUT_CONCURRENCY);
 });
 
 test("health updates use waitUntil when it is available", async () => {

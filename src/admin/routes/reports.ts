@@ -23,8 +23,8 @@ import { validate } from "../validation.ts";
 function filters(query: ReportQuery): ReportFilters {
   const result: ReportFilters = {};
   for (const name of [
-    "service_id",
-    "key_id",
+    "provider_id",
+    "credential_id",
     "client_id",
     "model",
     "currency",
@@ -74,14 +74,14 @@ export const reportRoutes = new Hono<AdminContext>()
       const history = await reportDimensions(
         context.env.CODY_DB,
         range,
-        query.service_id,
+        query.provider_id,
       );
       const sorted = (values: string[]) => [...new Set(values)].sort();
       return context.json({
         time_zone: range.time_zone,
-        services: sorted([
-          ...history.services,
-          ...(config?.services.map((service) => service.id) ?? []),
+        providers: sorted([
+          ...history.providers,
+          ...(config?.providers.map((provider) => provider.id) ?? []),
         ]),
         clients: sorted([
           ...history.clients,
@@ -89,11 +89,12 @@ export const reportRoutes = new Hono<AdminContext>()
         ]),
         models: sorted([
           ...history.models,
-          ...(config?.services
+          ...(config?.providers
             .filter(
-              (service) => !query.service_id || service.id === query.service_id,
+              (provider) =>
+                !query.provider_id || provider.id === query.provider_id,
             )
-            .flatMap((service) => service.models) ?? []),
+            .flatMap((provider) => provider.models) ?? []),
         ]),
       });
     },

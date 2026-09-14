@@ -2,10 +2,10 @@
 
 An AI API gateway with a web console on Cloudflare Workers, for Codex and other OpenAI- or Anthropic-compatible clients.
 
-- Manage upstream services, API keys, and model aliases in the console.
+- Manage AI Gateway providers, upstream credentials, client API keys, and model aliases in the console.
 - View usage and costs for today, this week, this month, and all time.
 - Inspect request timing, token usage, caching, reasoning, and context information.
-- Set prices by service and model, including different rates for larger contexts.
+- Set prices by provider and model, including different rates for larger contexts.
 
 ## Quick start
 
@@ -17,11 +17,13 @@ npm run dev:setup
 npm run dev
 ```
 
-Open the console at `http://localhost:8788/console/`. Add an upstream service and its models, create a client key, then **Publish**. The gateway endpoint is `http://localhost:8788/v1`.
+Open the console at `http://localhost:8788/console/`. Add an upstream provider and its models, create a client key, then **Publish**. The gateway endpoint is `http://localhost:8788/v1`.
 
 Configure token prices in **Pricing** and your reporting time zone in **Settings**. Cost estimates depend on the usage reported by your upstream providers.
 
 To import an existing configuration, use **Settings → Import JSON**. See [config.example.json](config.example.json) and [config.schema.json](config.schema.json) for the JSON format.
+
+Configuration uses `providers` directly. Each `providers[]` entry declares `type: "ai_gateway"` and a non-empty `credentials` list, with secrets under `auth: { "type": "api_key", "api_key": "…" }`. Provider types and credential resolvers have separate extension points; native providers and OAuth are not enabled yet.
 
 For frontend hot reload, keep the Worker running and start `npm run dev:web` in another terminal, then open `http://localhost:5173/console/`.
 
@@ -57,9 +59,9 @@ Other clients can use the gateway's OpenAI or Anthropic endpoints with the same 
 
 ## SOCKS5 proxies
 
-Set **Outbound proxy** on a service's **Connection** tab or on an individual key. SOCKS5 supports API requests, streaming, and WebSockets within the same deployment.
+Set **Outbound proxy** on a provider's **Connection** tab or on an individual credential. SOCKS5 supports API requests, streaming, and WebSockets within the same deployment.
 
-The JSON field is `proxy` on either `services[]` or `services[].keys[]`:
+The JSON field is `proxy` on either `providers[]` or `providers[].credentials[]`:
 
 ```json
 {
@@ -71,7 +73,7 @@ The JSON field is `proxy` on either `services[]` or `services[].keys[]`:
 }
 ```
 
-- Keys inherit the service's proxy by default. Set a key's `proxy` to override it, or to `null` to connect directly.
+- Credentials inherit the provider's proxy by default. Set a credential's `proxy` to override it, or to `null` to connect directly.
 - Include the host and port in the URL. Supply username and password together, or omit both for a proxy without authentication.
 
 Use a proxy [reachable from Cloudflare Workers](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/). Proxy failures do not fall back to a direct connection.
@@ -99,10 +101,12 @@ npx wrangler secret put CONFIG_ENCRYPTION_KEY
 npm run deploy
 ```
 
-`npm run deploy` builds the console, applies unapplied D1 migrations to the remote `CODY_DB`, then deploys the Worker. A failed build or migration stops the release. Applied migrations are tracked by Wrangler and skipped on later deployments. The release runs non-interactively.
+`npm run deploy` builds the console, applies unapplied D1 migrations to the remote `CODY_DB`, then deploys the Worker. A failed build or migration stops the release. Applied migrations are tracked by Wrangler and skipped on later deployments. The release runs non-interactively and uses your existing Wrangler login.
+
+D1 initialization is consolidated in `migrations/0001_control_and_usage.sql`. Keep this filename stable so existing databases skip it. Add future schema changes in new migration files starting at `0007_*.sql`.
 
 Use `npm run deploy:check` (or `npm run deploy -- --dry-run`) to build and validate the Worker bundle without applying migrations or deploying. The deploy script also accepts `--env`/`-e`, `--config`/`-c`, and repeated `--env-file` options; the same target settings are used for migration and deployment.
 
-Open `/console/` on your domain to configure and publish your services. The root `/` and `/console` redirect there. Keep the encryption key unchanged across deployments, and keep `config.json`, `config.local.json`, and `.dev.vars` out of Git.
+Open `/console/` on your domain to configure and publish your providers. The root `/` and `/console` redirect there. Keep the encryption key unchanged across deployments, and keep `config.json`, `config.local.json`, and `.dev.vars` out of Git.
 
 For automatic deployments, connect `main` through [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and use `npm run deploy` as the deploy command. Its API token must include Account → D1 → Edit in addition to the Worker deployment permissions, so the same release can apply migrations.

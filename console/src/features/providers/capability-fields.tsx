@@ -1,12 +1,12 @@
 import { withForm } from "@/lib/form";
-import { serviceFormOptions } from "./form-options";
+import { providerFormOptions } from "./form-options";
 import { TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { fieldErrors } from "@/lib/form-errors";
 
 export const CapabilityFields = withForm({
-  ...serviceFormOptions,
+  ...providerFormOptions,
 
   render: function CapabilityFields({ form }) {
     return (
@@ -68,7 +68,7 @@ export const CapabilityFields = withForm({
                     {(delays) => (
                       <delays.NumberListField
                         label="Retry delays (milliseconds)"
-                        hint="One delay per retry, at most 10 retries. No service or key switching."
+                        hint="One delay per retry, at most 10 retries. No provider or key switching."
                       />
                     )}
                   </form.AppField>

@@ -7,7 +7,6 @@
     "types": [
       "node",
       "@cloudflare/workers-types",
-      "./worker-configuration.d.ts",
       "@cloudflare/vitest-plugin/types"
     ],
     "strict": true,

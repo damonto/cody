@@ -35,11 +35,11 @@ test("report ranges, filters, empty states, and mobile navigation work", async (
   await expect(
     page.getByRole("heading", { name: "Your traffic will appear here" }),
   ).toBeVisible();
-  await page.getByRole("combobox", { name: "Filter by service" }).click();
+  await page.getByRole("combobox", { name: "Filter by provider" }).click();
   await page.getByRole("option", { name: "example-provider" }).click();
   await expect
     .poll(() =>
-      mock.calls.some((call) => call.includes("service_id=example-provider")),
+      mock.calls.some((call) => call.includes("provider_id=example-provider")),
     )
     .toBe(true);
   await page.goto("/console/requests?period=total");
@@ -63,32 +63,32 @@ test("report ranges, filters, empty states, and mobile navigation work", async (
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   await expect(
-    page.getByRole("link", { name: "Services", exact: true }),
+    page.getByRole("link", { name: "Providers", exact: true }),
   ).toBeVisible();
-  await page.getByRole("link", { name: "Services", exact: true }).click();
-  await expect(page).toHaveURL(/\/console\/services$/);
+  await page.getByRole("link", { name: "Providers", exact: true }).click();
+  await expect(page).toHaveURL(/\/console\/providers$/);
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("heading", { name: "Services", exact: true }),
+    page.getByRole("heading", { name: "Providers", exact: true }),
   ).toBeVisible();
   expect(errors).toEqual([]);
   expect(paths.every((path) => path.startsWith("/console/"))).toBe(true);
 });
 
-test("service forms preserve credentials, validate keys, and save before publishing", async ({
+test("provider forms preserve credentials, validate credentials, and save before publishing", async ({
   page,
 }) => {
   const mock = await mockApi(page);
-  await page.goto("/console/services");
+  await page.goto("/console/providers");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Priority", { exact: true }).fill("250");
-  await dialog.getByRole("tab", { name: "Upstream keys" }).click();
+  await dialog.getByRole("tab", { name: "Upstream credentials" }).click();
   await expect(dialog.getByLabel("API key", { exact: true })).toHaveValue("");
-  await dialog.getByRole("button", { name: "Save service" }).click();
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(dialog).toBeHidden();
-  expect(mock.current().config.services[0].priority).toBe(250);
-  expect(mock.current().config.services[0].keys[0].api_key).toBe(
+  expect(mock.current().config.providers[0].priority).toBe(250);
+  expect(mock.current().config.providers[0].credentials[0].auth.api_key).toBe(
     "__CODY_SECRET_UNCHANGED__",
   );
   expect(
@@ -96,9 +96,9 @@ test("service forms preserve credentials, validate keys, and save before publish
   ).toHaveLength(0);
   await page.getByRole("button", { name: "Publish", exact: true }).click();
   await expect.poll(() => mock.current().published_revision).toBe(2);
-  await page.getByRole("button", { name: "Add service", exact: true }).click();
-  await dialog.getByRole("button", { name: "Save service" }).click();
-  await expect(dialog.getByLabel("Service ID")).toHaveAttribute(
+  await page.getByRole("button", { name: "Add provider", exact: true }).click();
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(dialog.getByLabel("Provider ID")).toHaveAttribute(
     "aria-invalid",
     "true",
   );
@@ -134,6 +134,42 @@ test("context tier pricing and the calculator use the edited policy", async ({
   ).toBeEnabled();
 });
 
+test("failed provider deletion stays open with an error and can be retried", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  let fail = true;
+  await page.route("**/console/api/config", async (route) => {
+    if (route.request().method() === "PUT" && fail) {
+      fail = false;
+      await route.fulfill({
+        status: 409,
+        json: { error: "The draft changed; reload before saving" },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto("/console/providers");
+  await page
+    .getByRole("button", { name: "Delete example-provider", exact: true })
+    .click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog
+    .getByRole("button", { name: "Remove from draft", exact: true })
+    .click();
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText("The draft changed; reload before saving"),
+  ).toBeVisible();
+  expect(mock.current().config.providers).toHaveLength(1);
+  await dialog
+    .getByRole("button", { name: "Remove from draft", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  expect(mock.current().config.providers).toHaveLength(0);
+});
+
 for (const protocol of ["openai", "anthropic"] as const) {
   test(`${protocol} tool-only requests show first response separately from text and price version`, async ({
     page,
@@ -150,7 +186,7 @@ for (const protocol of ["openai", "anthropic"] as const) {
       reasoning_tokens: null,
     };
     const event: UsageEvent = {
-      schema_version: 1,
+      schema_version: 2,
       sequence: 2,
       phase: "finished",
       request_id: "example-request-123",
@@ -159,8 +195,8 @@ for (const protocol of ["openai", "anthropic"] as const) {
       started_at: Date.now() - 125145,
       finished_at: Date.now(),
       client_id: "example-client",
-      service_id: "example-provider",
-      key_id: "primary",
+      provider_id: "example-provider",
+      credential_id: "primary",
       model: "example-model",
       requested_model: "alias",
       reported_model: "example-model",
@@ -196,18 +232,18 @@ for (const protocol of ["openai", "anthropic"] as const) {
       },
       attempts: [],
     };
-    const legacy: UsageEvent = {
+    const missingLatency: UsageEvent = {
       ...event,
-      request_id: "legacy-request-123",
+      request_id: "missing-latency-123",
       ttft_ms: 100,
       first_text_ms: 250,
     };
-    delete legacy.first_response_ms;
+    delete missingLatency.first_response_ms;
     await page.route("**/console/api/requests**", (route) =>
       route.fulfill({
-        json: [event, legacy].find((item) =>
+        json: [event, missingLatency].find((item) =>
           new URL(route.request().url()).pathname.endsWith(item.request_id),
-        ) ?? { items: [event, legacy], next_cursor: null },
+        ) ?? { items: [event, missingLatency], next_cursor: null },
       }),
     );
     await page.goto("/console/requests");
@@ -253,7 +289,7 @@ for (const protocol of ["openai", "anthropic"] as const) {
     ).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
-    await page.getByRole("button", { name: /legacy-reque/ }).click();
+    await page.getByRole("button", { name: /missing-late/ }).click();
     await expect(
       dialog
         .getByText("First response", { exact: true })

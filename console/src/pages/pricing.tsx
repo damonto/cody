@@ -21,49 +21,50 @@ export default function Pricing() {
       <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
     );
   const config = draft.data.config;
-  const service =
-    config.services.find((entry) => entry.id === search.get("service")) ??
-    config.services[0];
+  const provider =
+    config.providers.find((entry) => entry.id === search.get("provider")) ??
+    config.providers[0];
   const model =
-    service?.models.find((entry) => entry === search.get("model")) ??
-    service?.models[0];
+    provider?.models.find((entry) => entry === search.get("model")) ??
+    provider?.models[0];
   return (
     <>
       <PageHeading
         title="Model pricing"
-        description="Set token rates and context windows for each service and upstream model."
+        description="Set token rates and context windows for each provider and upstream model."
       />
-      {!service || !model ? (
+      {!provider || !model ? (
         <Card className="shadow-none">
-          <Empty title="Add a service and model first">
-            Pricing is shared by all upstream keys within the same service.
+          <Empty title="Add a provider and model first">
+            Pricing is shared by all upstream credentials within the same
+            provider.
           </Empty>
         </Card>
       ) : (
         <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
           <aside className="space-y-3">
             <Choice
-              label="Service"
-              value={service.id}
-              onChange={(value) => setSearch({ service: value })}
-              options={config.services.map((entry) => ({
+              label="Provider"
+              value={provider.id}
+              onChange={(value) => setSearch({ provider: value })}
+              options={config.providers.map((entry) => ({
                 value: entry.id,
                 label: entry.id,
               }))}
               className="w-full"
             />
             <div className="rounded-xl border p-1.5">
-              {service.models.map((name) => {
+              {provider.models.map((name) => {
                 const policy = config.model_policies?.find(
                   (entry) =>
-                    entry.service_id === service.id && entry.model === name,
+                    entry.provider_id === provider.id && entry.model === name,
                 );
                 return (
                   <button
                     key={name}
                     type="button"
                     onClick={() =>
-                      setSearch({ service: service.id, model: name })
+                      setSearch({ provider: provider.id, model: name })
                     }
                     className={cn(
                       "flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm transition-colors hover:bg-muted",
@@ -87,9 +88,9 @@ export default function Pricing() {
             </div>
           </aside>
           <PolicyForm
-            key={`${service.id}:${model}:${draft.data.version}`}
+            key={`${provider.id}:${model}:${draft.data.version}`}
             snapshot={draft.data}
-            serviceId={service.id}
+            providerId={provider.id}
             model={model}
           />
         </div>

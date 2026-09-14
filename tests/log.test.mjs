@@ -10,6 +10,35 @@ import {
   RequestLogContext,
 } from "../src/shared/log.ts";
 
+test("credential diagnostics retain identifiers while auth material stays redacted", () => {
+  const original = console.info;
+  const entries = [];
+  console.info = (entry) => entries.push(entry);
+  try {
+    configureLogging("info");
+    logInfo("routing.selected", {
+      selected_credential_id: "primary",
+      selected_credentials: [
+        { provider_id: "upstream", credential_id: "primary" },
+      ],
+      credential_checks: [
+        {
+          credential_id: "primary",
+          available: true,
+          auth: { api_key: "private-key" },
+        },
+      ],
+      credentials: [{ auth: { api_key: "another-private-key" } }],
+    });
+  } finally {
+    console.info = original;
+  }
+  assert.equal(entries[0].selected_credential_id, "primary");
+  assert.equal(entries[0].selected_credentials[0].credential_id, "primary");
+  assert.equal(entries[0].credential_checks[0].credential_id, "primary");
+  assert.doesNotMatch(JSON.stringify(entries[0]), /private-key/);
+});
+
 test("logging honors production levels and redacts credentials", () => {
   const original = {
     info: console.info,
@@ -105,7 +134,7 @@ test("request logs emit one completion summary", () => {
       }),
       "responses",
     );
-    context.set({ routing: { selected_service: "primary" } });
+    context.set({ routing: { selected_provider: "primary" } });
     const response = new Response(null, { status: 429 });
     assert.equal(context.complete(response), response);
     assert.equal(context.complete(response), response);
@@ -124,7 +153,7 @@ test("request logs emit one completion summary", () => {
   assert.equal(entry.request_id, "request-1");
   assert.equal(entry.path, "/v1/responses");
   assert.equal(entry.response_status, 429);
-  assert.equal(entry.routing.selected_service, "primary");
+  assert.equal(entry.routing.selected_provider, "primary");
   assert(!JSON.stringify(entry).includes("hidden"));
 });
 

@@ -12,9 +12,9 @@ test("a failed page chunk preserves navigation and recovers after reload", async
     page.getByRole("heading", { name: "Could not open this page" }),
   ).toBeVisible();
 
-  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await page.getByRole("link", { name: "Providers", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Services", exact: true }),
+    page.getByRole("heading", { name: "Providers", exact: true }),
   ).toBeVisible();
   await page.getByRole("link", { name: "Overview", exact: true }).click();
   await expect(
@@ -41,7 +41,7 @@ test("a provider failure shows application recovery and reload restores the cons
       return matchMedia(query);
     };
   });
-  await page.goto("/console/services");
+  await page.goto("/console/providers");
   await expect(
     page.getByRole("heading", { name: "Cody Console could not start" }),
   ).toBeVisible();
@@ -50,6 +50,6 @@ test("a provider failure shows application recovery and reload restores the cons
   );
   await page.getByRole("button", { name: "Reload page" }).click();
   await expect(
-    page.getByRole("heading", { name: "Services", exact: true }),
+    page.getByRole("heading", { name: "Providers", exact: true }),
   ).toBeVisible();
 });

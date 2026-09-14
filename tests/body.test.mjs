@@ -72,12 +72,8 @@ test("inference requests larger than 96 MiB return an OpenAI-compatible 413", as
   const response = await handleInference(
     request,
     {},
-    {
-      services: [],
-      api_keys: [],
-      model_routes: {},
-    },
-    { id: "client", api_key: "client", services: [] },
+    { providers: [], api_keys: [], model_routes: {} },
+    { id: "client", api_key: "client", providers: [] },
     "responses",
   );
 

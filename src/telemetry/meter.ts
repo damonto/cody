@@ -21,8 +21,8 @@ export interface UsageSink {
 }
 
 export interface MeterTarget {
-  serviceId: string;
-  keyId: string;
+  providerId: string;
+  credentialId: string;
   model: string;
 }
 
@@ -86,7 +86,7 @@ export class RequestMeter {
     this.now = options.now ?? Date.now;
     this.accumulator = new UsageAccumulator(options.protocol);
     this.data = {
-      schema_version: 1,
+      schema_version: 2,
       sequence: 0,
       phase: "started",
       request_id: options.requestId,
@@ -95,8 +95,8 @@ export class RequestMeter {
       started_at: options.startedAt ?? this.now(),
       finished_at: null,
       client_id: "",
-      service_id: "",
-      key_id: "",
+      provider_id: "",
+      credential_id: "",
       model: "",
       requested_model: "",
       reported_model: "",
@@ -172,7 +172,7 @@ export class RequestMeter {
     if (this.data.sequence !== 0) return;
     const policy = this.config?.model_policies?.find(
       (policy) =>
-        policy.service_id === this.data.service_id &&
+        policy.provider_id === this.data.provider_id &&
         policy.model === this.data.model,
     );
     this.policy = policy ? structuredClone(policy) : undefined;
@@ -191,8 +191,8 @@ export class RequestMeter {
 
   select(target: MeterTarget): void {
     if (this.finished || this.data.sequence !== 0) return;
-    this.data.service_id = target.serviceId;
-    this.data.key_id = target.keyId;
+    this.data.provider_id = target.providerId;
+    this.data.credential_id = target.credentialId;
     this.data.model = target.model;
     this.selectPolicy();
     this.announceSelection();
@@ -317,7 +317,7 @@ export class RequestMeter {
     const version = this.policy
       ? priceVersion(
           this.data.config_revision ?? undefined,
-          this.data.service_id,
+          this.data.provider_id,
           this.data.model,
         )
       : null;

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { ingestUsage } from "../reporting/store.ts";
 import { logWarn } from "../shared/log.ts";
 import type { UsageEvent } from "./types.ts";
+import { parseUsageEvent } from "./schema.ts";
 
 const PREFIX = "event:";
 const CURSOR_KEY = "delivery-cursor";
@@ -48,8 +49,9 @@ export class UsageOutbox extends DurableObject<Env> {
     void this.ctx.blockConcurrencyWhile(() => this.schedule());
   }
 
-  async enqueue(event: UsageEvent): Promise<void> {
-    if (event.kind !== "inference") {
+  async enqueue(input: unknown): Promise<void> {
+    const event = parseUsageEvent(input);
+    if (event === null) {
       return;
     }
     const key = `${PREFIX}${event.request_id}:${event.sequence}`;
@@ -94,7 +96,7 @@ export class UsageOutbox extends DurableObject<Env> {
     try {
       let cursor = await this.ctx.storage.get<string>(CURSOR_KEY);
       for (let pass = 0; pass < MAX_BATCHES; pass++) {
-        let pending = await this.ctx.storage.list<UsageEvent>({
+        let pending = await this.ctx.storage.list<unknown>({
           prefix: PREFIX,
           limit: BATCH_SIZE,
           ...(cursor === undefined ? {} : { startAfter: cursor }),
@@ -104,21 +106,31 @@ export class UsageOutbox extends DurableObject<Env> {
           if (pass > 0) {
             break;
           }
-          pending = await this.ctx.storage.list<UsageEvent>({
+          pending = await this.ctx.storage.list<unknown>({
             prefix: PREFIX,
             limit: BATCH_SIZE,
           });
         }
-        const entries = [...pending].map(([key, event]): JournalEntry => ({
-          key,
-          event,
-        }));
-        const last = entries.at(-1);
-        if (!last) {
+        const last = [...pending.keys()].at(-1);
+        if (last === undefined) {
           break;
         }
+        const entries: JournalEntry[] = [];
+        for (const [key, value] of pending) {
+          try {
+            const event = parseUsageEvent(value);
+            if (event === null) {
+              await this.ctx.storage.delete(key);
+            } else {
+              entries.push({ key, event });
+            }
+          } catch {
+            // Retain bad records for inspection without starving later deliveries.
+            logWarn("usage.outbox.invalid_record", { key });
+          }
+        }
         await this.deliverEntries(entries);
-        cursor = last.key;
+        cursor = last;
         // Resume beyond failures on the next alarm, including after eviction.
         await this.ctx.storage.put(CURSOR_KEY, cursor);
       }
@@ -132,21 +144,14 @@ export class UsageOutbox extends DurableObject<Env> {
   private async deliverEntries(
     entries: readonly JournalEntry[],
   ): Promise<void> {
-    const ignored = entries.filter((entry) => entry.event.kind !== "inference");
-    if (ignored.length > 0) {
-      await this.ctx.storage.delete(ignored.map((entry) => entry.key));
-    }
-    const inference = entries.filter(
-      (entry) => entry.event.kind === "inference",
-    );
     // Each destination acknowledges its own successful writes. D1 failure
     // must not prevent terminal records from reaching the Queue, or vice versa.
     await Promise.all([
       this.deliverProgress(
-        inference.filter((entry) => entry.event.phase !== "finished"),
+        entries.filter((entry) => entry.event.phase !== "finished"),
       ),
       this.deliverFinished(
-        inference.filter((entry) => entry.event.phase === "finished"),
+        entries.filter((entry) => entry.event.phase === "finished"),
       ),
     ]);
   }

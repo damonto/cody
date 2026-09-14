@@ -15,8 +15,8 @@ function fixture() {
   });
   meter.authenticate("client");
   meter.select({
-    serviceId: "anthropic",
-    keyId: "primary",
+    providerId: "anthropic",
+    credentialId: "primary",
     model: "claude-test",
   });
   return {
