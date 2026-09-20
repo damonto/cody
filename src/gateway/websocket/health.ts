@@ -4,7 +4,7 @@ import {
   recordProviderFailure,
   recordProviderSuccess,
 } from "../health/health.ts";
-import type { WebSocketStorage, StoredWebSocketSession } from "./storage.ts";
+import type { StoredWebSocketSession, WebSocketStorage } from "./storage.ts";
 
 export function shouldRecordUpstreamFailure(
   state: StoredWebSocketSession | undefined,

@@ -2,7 +2,7 @@
 
 An AI API gateway with a web console on Cloudflare Workers, for Codex and other OpenAI- or Anthropic-compatible clients.
 
-- Manage AI Gateway providers, upstream credentials, client API keys, and model aliases in the console.
+- Manage AI Gateway and Antigravity providers, upstream credentials, client API keys, and model aliases in the console.
 - View usage and costs for today, this week, this month, and all time.
 - Inspect request timing, token usage, caching, reasoning, and context information.
 - Set prices by provider and model, including different rates for larger contexts.
@@ -13,9 +13,10 @@ Requires Node.js 24 or newer.
 
 ```bash
 npm install
-npm run dev:setup
 npm run dev
 ```
+
+`npm run dev` prepares `.dev.vars` and applies pending **local** D1 migrations before starting. Existing settings and encryption keys are preserved. If the key is missing but configuration or OAuth data already exists, startup stops: restore the original `CONFIG_ENCRYPTION_KEY` in `.dev.vars` rather than generating a replacement. `npm run dev:setup` runs the same preparation without starting the server.
 
 Open the console at `http://localhost:8788/console/`. Add an upstream provider and its models, create a client key, then **Publish**. The gateway endpoint is `http://localhost:8788/v1`.
 
@@ -23,7 +24,31 @@ Configure token prices in **Pricing** and your reporting time zone in **Settings
 
 To import an existing configuration, use **Settings → Import JSON**. See [config.example.json](config.example.json) and [config.schema.json](config.schema.json) for the JSON format.
 
-Configuration uses `providers` directly. Each `providers[]` entry declares `type: "ai_gateway"` and a non-empty `credentials` list, with secrets under `auth: { "type": "api_key", "api_key": "…" }`. Provider types and credential resolvers have separate extension points; native providers and OAuth are not enabled yet.
+Configuration uses `providers` directly. AI Gateway supports multiple entries with `type: "ai_gateway"`, a `base_url`, and non-empty `models` and `credentials` lists with `auth: { "type": "api_key", "api_key": "…" }`. Antigravity is a fixed provider: at most one entry, with `type: "antigravity"` and the reserved ID `antigravity`. It uses official adapter endpoints (no `base_url`) and `auth: { "type": "oauth", "account_ref": "UUID" }`. Other native provider types are not accepted. Adapters and credential lifecycle resolvers are separate extension points.
+
+The **Providers** submenu contains **AI Gateway** (`/console/providers/ai-gateway`) and **Antigravity** (`/console/providers/antigravity`). The old `/console/providers` address redirects to AI Gateway.
+
+## Antigravity accounts
+
+1. Start locally with `npm run dev`, or apply the D1 migrations and deploy the Worker as described below.
+2. Open **Providers → Antigravity**. The page manages Google accounts and quotas directly; there is no provider creation form. The Google desktop OAuth client from CLIProxyAPI is built in.
+3. Open **Settings** at the top right to configure priority, proxy, models, and **Routing & retry**. Antigravity starts disabled. Settings can be saved without accounts or models; keep it disabled until setup is complete. If direct Worker egress cannot reach Antigravity, create and **publish** a reachable SOCKS5 group first. OAuth always uses proxy nodes from the published snapshot. An account inherits its provider's group unless it selects another group; explicit Direct connection (`null`) bypasses the group.
+4. Click **Add Google account**, then **Authorize with Google** and open the authorization link. No Provider ID or credential ID needs to be entered. Google sign-in uses the browser's network, not the Worker proxy.
+5. After approval, copy the complete `http://localhost:51121/oauth-callback?...` URL from the browser address bar and paste it into the form. The localhost page is not expected to load. Each session has a random state, S256 PKCE and a ten-minute deadline. Authorization URLs/callbacks must not be shared or logged. See [Google's desktop OAuth flow](https://developers.google.com/identity/protocols/oauth2/native-app).
+6. The Worker exchanges the code, stores encrypted tokens, reads the Google identity, discovers a project with `loadCodeAssist`, and initializes it with `onboardUser` if needed. If project initialization fails, **Retry project initialization** reuses the saved tokens without redeeming the code again. A cancelled/expired session or failed token exchange requires a new authorization.
+7. Click **Save account**. Open **Settings → Models** to select the real IDs returned by **Discover models**, enable the provider in **General**, then **Save settings**. Settings and accounts save independently to the draft. Add `antigravity` to the appropriate client keys and model routes, then **Publish**. An enabled Antigravity must have at least one account and model before publication. Accounts from abandoned forms or removed draft references can be recovered through **Add Google account → Use an existing account for this provider**.
+
+The disabled Antigravity entry in `config.example.json` starts with empty accounts and models, matching the console. Authorize an account and select its discovered models before enabling it. A UUID alone cannot create credentials. Neither raw tokens nor authorization codes belong in configuration JSON or KV snapshots.
+
+Each account has its own `ProviderOAuthAccount` Durable Object. Active and in-progress tokens are encrypted with `CONFIG_ENCRYPTION_KEY`; D1 stores only the non-sensitive account index. Access tokens refresh on demand within five minutes of expiry, with concurrent refreshes merged and stale results fenced. Refresh-token rotation is saved; `invalid_grant` requires reauthorization. Reauthorization updates the same account reference and must use the same Google identity. Publishing or rolling back configuration does not roll back tokens. Keep the encryption key backed up securely: changing it without a deliberate re-encryption migration makes existing configuration and account data unreadable.
+
+**Remove from draft** removes only the account reference; it does not delete tokens or revoke a Google grant. **Manage → Disconnect** deletes that account's local tokens immediately, including for published configurations; revoke Google access separately in your Google account if desired.
+
+Quotas are display-only: `retrieveUserQuotaSummary` is preferred, with `fetchAvailableModels` quota data used only for explicit unsupported HTTP statuses (404/405/501). Plan and available credits come from `loadCodeAssist`. Missing fields display Unknown, and failures retain the last successful snapshot with a stale marker. Results are cached for one minute and refresh every five minutes while the page is visible. Single-account and bulk refreshes are supported with at most six parallel operations. Quotas do not drive automatic account switching or enable paid credits. OAuth/quota failures do not affect inference health; confirmed proxy connection failures still update shared proxy health.
+
+Antigravity supports ordinary and SSE `POST /v1/responses`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`, including text/images, tools, structured output and thinking. Send full conversation history, including returned Responses `reasoning.encrypted_content` or Messages `thinking.signature` blocks in their original positions. The gateway's encrypted replay envelopes bind signed content to the client ID, provider, account and real upstream model; they work across Worker restarts and reject changed signed content. See [Responses manual item replay](https://developers.openai.com/api/docs/guides/migrate-to-responses).
+
+This adapter does not support Chat Completions, WebSocket, remote compact, Astra history/notes, server-side `previous_response_id`, or credential-file import. Use the custom Codex provider below (not an OpenAI-native provider preset), so unsupported native context features are not requested. Retries keep the same provider, account, token and transformed request; only the configured retry policy applies.
 
 For frontend hot reload, keep the Worker running and start `npm run dev:web` in another terminal, then open `http://localhost:5173/console/`.
 
@@ -56,6 +81,16 @@ codex
 ```
 
 Other clients can use the gateway's OpenAI or Anthropic endpoints with the same client key, supplied through `Authorization: Bearer` or `x-api-key`.
+
+For Claude Code, select a declared model or configured alias backed by an Antigravity provider and use the same gateway client-key permissions:
+
+```bash
+export ANTHROPIC_BASE_URL="https://cody.example.workers.dev"
+export ANTHROPIC_API_KEY="your-gateway-client-key"
+claude --model "your-configured-model"
+```
+
+For live acceptance, authorize a real Google account through its intended proxy, check project/model/quota results, and exercise both clients with two-turn text, image and tool requests (including returned thinking signatures), streaming cancellation and a forced reauthorization. Automated tests use simulated Google responses and cannot establish account eligibility or whether a particular egress IP is accepted by Google.
 
 ## SOCKS5 proxies
 
@@ -121,7 +156,7 @@ npm run deploy
 
 `npm run deploy` builds the console, applies unapplied D1 migrations to the remote `CODY_DB`, then deploys the Worker. A failed build or migration stops the release. Applied migrations are tracked by Wrangler and skipped on later deployments. The release runs non-interactively and uses your existing Wrangler login.
 
-D1 initialization is consolidated in `migrations/0001_control_and_usage.sql`. Keep this filename stable so existing databases skip it. Add future schema changes in new migration files starting at `0007_*.sql`.
+D1 initialization is consolidated in `migrations/0001_control_and_usage.sql`; keep this filename stable. `0007_oauth_accounts.sql` adds the OAuth account index; its unused `oauth_clients` table is retained for migration history. Durable Object migration v9 adds `ProviderOAuthAccount` after the existing v8 proxy-group migration; retain all earlier migrations, including the v7 health-class rename. Future D1 changes must use new filenames, not rewrite applied migrations.
 
 Use `npm run deploy:check` (or `npm run deploy -- --dry-run`) to build and validate the Worker bundle without applying migrations or deploying. The deploy script also accepts `--env`/`-e`, `--config`/`-c`, and repeated `--env-file` options; the same target settings are used for migration and deployment.
 

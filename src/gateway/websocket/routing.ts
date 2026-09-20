@@ -1,20 +1,20 @@
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import { logWarn } from "../../shared/log.ts";
 import {
+  selectAvailableProviderWithDetails,
+  targetIsAvailableForRoute,
+  type ModelProviderTarget,
+  type ModelRoute,
+} from "../routing/routing.ts";
+import {
   contextManagementRequested,
   contextManagementSessionMatches,
 } from "../sessions/context-management-protocol.ts";
-import {
-  selectAvailableProviderWithDetails,
-  targetIsAvailableForRoute,
-  type ModelRoute,
-  type ModelProviderTarget,
-} from "../routing/routing.ts";
+import type { StoredWebSocketSession } from "./storage.ts";
 import {
   gatewayErrorEvent,
   type ResponseCreateFrame,
 } from "./websocket-protocol.ts";
-import type { StoredWebSocketSession } from "./storage.ts";
 
 export interface CurrentRoutingContext {
   config: GatewayConfig;

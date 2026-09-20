@@ -1,7 +1,7 @@
 import { zValidator } from "@hono/zod-validator";
-import type { z } from "zod";
 import type { ValidationTargets } from "hono";
 import { HTTPException } from "hono/http-exception";
+import type { z } from "zod";
 import { validationMessage } from "../billing/schema.ts";
 
 /** Never serialize Zod's input data: configuration payloads contain secrets. */

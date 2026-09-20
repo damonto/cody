@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "npm run build:web && wrangler dev --local",
+    "dev": "npm run dev:setup && npm run build:web && wrangler dev --local",
     "dev:web": "npm run dev --workspace @cody/console",
     "dev:setup": "node scripts/setup-local.mjs",
     "deploy": "npm run build:web && node scripts/deploy.mjs",
@@ -15,7 +15,8 @@
     "types": "wrangler types --include-runtime=false --strict-vars=false",
     "build:web": "npm run build --workspace @cody/console",
     "db:migrate:local": "wrangler d1 migrations apply CODY_DB --local",
-    "lint": "oxlint --deny-warnings .",
+    "lint": "oxlint --deny-warnings . && npm run lint:types",
+    "lint:types": "oxlint --type-aware --deny-warnings src console/src",
     "lint:fix": "oxlint --fix --deny-warnings .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

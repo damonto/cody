@@ -3,8 +3,8 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { draftConfigurationSchema } from "../../config/schema.ts";
 import { publisherReplySchema, revisionSchema } from "../../control/schema.ts";
+import { apiKeySchema } from "../credential-schema.ts";
 import {
-  apiKeySchema,
   clientIdSchema,
   draftSchema,
   rollbackSchema,
@@ -83,6 +83,10 @@ export const configurationRoutes = new Hono<AdminContext>()
       if (!key)
         throw new HTTPException(404, {
           message: "Provider key does not exist",
+        });
+      if (key.auth.type !== "api_key")
+        throw new HTTPException(400, {
+          message: "OAuth tokens cannot be revealed",
         });
       return c.json(apiKeySchema.parse({ api_key: key.auth.api_key }));
     },

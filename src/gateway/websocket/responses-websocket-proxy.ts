@@ -1,13 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { WebSocketHealth, shouldRecordUpstreamFailure } from "./health.ts";
-import { UpstreamWebSocket } from "./upstream.ts";
-import {
-  WebSocketStorage,
-  LIVE_PHASES,
-  type SessionPhase,
-  type StoredWebSocketSession,
-} from "./storage.ts";
-import { WebSocketUsage } from "./usage.ts";
 import {
   contextSessionIdsMatch,
   frameUsesContextManagement,
@@ -16,15 +8,17 @@ import {
   validateCurrentTarget,
   type CurrentRoutingContext,
 } from "./routing.ts";
+import {
+  LIVE_PHASES,
+  WebSocketStorage,
+  type SessionPhase,
+  type StoredWebSocketSession,
+} from "./storage.ts";
+import { UpstreamWebSocket } from "./upstream.ts";
+import { WebSocketUsage } from "./usage.ts";
 
 import { loadConfig } from "../../config/store.ts";
-import { webSocketUsageSink } from "../../telemetry/delivery.ts";
-import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
-import { healthFailureScope } from "../health/health.ts";
-import {
-  findClientApiKeyByDigest,
-  forwardableWebSocketHeaders,
-} from "../http/http.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import {
   bounded,
   configureLogging,
@@ -33,14 +27,20 @@ import {
   logInfo,
   logWarn,
 } from "../../shared/log.ts";
+import { webSocketUsageSink } from "../../telemetry/delivery.ts";
+import { healthFailureScope } from "../health/health.ts";
+import {
+  findClientApiKeyByDigest,
+  forwardableWebSocketHeaders,
+} from "../http/http.ts";
 import { UpstreamAttemptTimeoutError } from "../http/proxy.ts";
 import {
   resolveModelRoute,
   selectAvailableProviderWithDetails,
-  type ModelRoute,
   type ModelProviderTarget,
+  type ModelRoute,
 } from "../routing/routing.ts";
-import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
+import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
 import {
   RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
   RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,

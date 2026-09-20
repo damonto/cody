@@ -1,20 +1,21 @@
 import { Hono } from "hono";
-import { gatewayRoutes } from "./gateway/app.ts";
-import { gatewayNotFound } from "./gateway/handler.ts";
 import { adminApp } from "./admin/app.ts";
 import { CONSOLE_PATH } from "./admin/paths.ts";
 import { DEFAULT_REPORTING } from "./billing/config.ts";
 import { ControlStore } from "./control/store.ts";
+import { gatewayRoutes } from "./gateway/app.ts";
+import { gatewayNotFound } from "./gateway/handler.ts";
 import { cleanupRequests, ingestUsage } from "./reporting/store.ts";
 import { parseUsageEvent } from "./telemetry/schema.ts";
 
-export { ProviderHealth } from "./gateway/health/provider-health.ts";
-export { SessionAffinity } from "./gateway/sessions/session-affinity.ts";
-export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
-export { ResponsesWebSocketProxy } from "./gateway/websocket/responses-websocket-proxy.ts";
-export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
-export { UsageOutbox } from "./telemetry/outbox.ts";
 export { ConfigPublisher } from "./control/publisher.ts";
+export { ProviderHealth } from "./gateway/health/provider-health.ts";
+export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
+export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
+export { SessionAffinity } from "./gateway/sessions/session-affinity.ts";
+export { ResponsesWebSocketProxy } from "./gateway/websocket/responses-websocket-proxy.ts";
+export { ProviderOAuthAccount } from "./providers/oauth/account.ts";
+export { UsageOutbox } from "./telemetry/outbox.ts";
 
 export const app = new Hono<{ Bindings: Env }>()
   .route("/", gatewayRoutes)

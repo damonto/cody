@@ -1020,8 +1020,10 @@ for (const mode of ["tavily", "exa"] as const) {
       await (await call("/console/api/config")).json(),
     );
     expect(
-      draft.config.providers.map(
-        (provider) => provider.credentials[0].auth.api_key,
+      draft.config.providers.map((provider) =>
+        provider.credentials[0].auth.type === "api_key"
+          ? provider.credentials[0].auth.api_key
+          : undefined,
       ),
     ).toEqual([SECRET_PLACEHOLDER, SECRET_PLACEHOLDER]);
     expect(draft.config.web_search).toMatchObject({
@@ -1433,6 +1435,8 @@ test("validated RPC drafts accept repeated secret placeholders and never echo in
     config: draft.config,
   });
   expect(again.status).toBe(200);
+  if (input.providers[0].type !== "ai_gateway")
+    throw new Error("Expected an AI Gateway fixture");
   input.providers[0].base_url = "";
   const invalid = await call("/console/api/config", "PUT", {
     version: 2,

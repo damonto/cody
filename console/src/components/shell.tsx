@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Collapsible } from "radix-ui";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/components/theme-provider";
@@ -63,6 +64,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
@@ -88,6 +92,10 @@ const navigation = [
       { path: "/settings", title: "Settings", icon: Settings },
     ],
   },
+];
+const providerNavigation = [
+  { path: "/providers/ai-gateway", title: "AI Gateway" },
+  { path: "/providers/antigravity", title: "Antigravity" },
 ];
 
 function publishedConfigurationLabel(
@@ -134,9 +142,11 @@ export function Shell() {
     },
     onError: (error) => toast.error(error.message),
   });
-  const current = navigation
-    .flatMap((group) => group.items)
-    .find((item) => item.path === pathname);
+  const current =
+    providerNavigation.find((item) => item.path === pathname) ??
+    navigation
+      .flatMap((group) => group.items)
+      .find((item) => item.path === pathname);
   return (
     <SidebarProvider>
       <Sidebar>
@@ -161,23 +171,60 @@ export function Shell() {
               </SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {group.items.map((item) => (
-                    <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton
+                  {group.items.map((item) =>
+                    item.path === "/providers" ? (
+                      <Collapsible.Root
+                        key={item.path}
                         asChild
-                        isActive={pathname === item.path}
-                        className="h-10 px-3"
+                        defaultOpen={pathname.startsWith("/providers")}
                       >
-                        <NavLink to={item.path}>
-                          <item.icon className="size-4" />
-                          <span>{item.title}</span>
-                          {pathname === item.path && (
-                            <ChevronRight className="ml-auto size-3 text-muted-foreground" />
-                          )}
-                        </NavLink>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
+                        <SidebarMenuItem className="group/providers">
+                          <Collapsible.Trigger asChild>
+                            <SidebarMenuButton
+                              className="h-10 px-3"
+                              isActive={pathname.startsWith("/providers")}
+                            >
+                              <Server className="size-4" />
+                              <span>Providers</span>
+                              <ChevronRight className="ml-auto size-3 transition-transform group-data-[state=open]/providers:rotate-90" />
+                            </SidebarMenuButton>
+                          </Collapsible.Trigger>
+                          <Collapsible.Content>
+                            <SidebarMenuSub>
+                              {providerNavigation.map((provider) => (
+                                <SidebarMenuSubItem key={provider.path}>
+                                  <SidebarMenuSubButton
+                                    asChild
+                                    isActive={pathname === provider.path}
+                                  >
+                                    <NavLink to={provider.path}>
+                                      {provider.title}
+                                    </NavLink>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              ))}
+                            </SidebarMenuSub>
+                          </Collapsible.Content>
+                        </SidebarMenuItem>
+                      </Collapsible.Root>
+                    ) : (
+                      <SidebarMenuItem key={item.path}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={pathname === item.path}
+                          className="h-10 px-3"
+                        >
+                          <NavLink to={item.path}>
+                            <item.icon className="size-4" />
+                            <span>{item.title}</span>
+                            {pathname === item.path && (
+                              <ChevronRight className="ml-auto size-3 text-muted-foreground" />
+                            )}
+                          </NavLink>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ),
+                  )}
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>

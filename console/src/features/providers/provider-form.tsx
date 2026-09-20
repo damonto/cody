@@ -30,7 +30,7 @@ export function ProviderForm({
   const [current] = useState(() => {
     if (index === -1) return newProvider();
     const provider = snapshot.config.providers[index];
-    if (!provider)
+    if (!provider || provider.type !== "ai_gateway")
       throw new Error("Provider is missing from the editing snapshot");
     return providerFormValues(provider);
   });

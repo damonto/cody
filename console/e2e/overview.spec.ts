@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { reportQuerySchema } from "../../src/admin/schema";
+import { reportQuerySchema } from "../../src/reporting/query";
 import {
   emptyAggregate,
   summarize,

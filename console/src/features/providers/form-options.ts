@@ -3,9 +3,8 @@ import { formOptions } from "@tanstack/react-form";
 import {
   aiGatewayProviderSchema,
   credentialSchema,
-  providerSchema,
 } from "../../../../src/config/schema";
-import type { ProviderConfig } from "../../../../src/config/types";
+import type { AiGatewayProviderConfig } from "../../../../src/config/types";
 
 // Form identity stays stable when an editable credential ID or position changes.
 // The final parse strips UI metadata and applies the shared configuration rules.
@@ -14,19 +13,22 @@ export const providerEditorSchema = aiGatewayProviderSchema
     credentials: z.array(credentialSchema.extend({ rowId: z.string().min(1) })),
   })
   .transform(
-    ({ credentials, ...provider }): z.input<typeof providerSchema> => ({
+    ({
+      credentials,
+      ...provider
+    }): z.input<typeof aiGatewayProviderSchema> => ({
       ...provider,
       credentials: credentials.map(
         ({ rowId: _rowId, ...credential }) => credential,
       ),
     }),
   )
-  .pipe(providerSchema);
+  .pipe(aiGatewayProviderSchema);
 
 type ProviderFormValues = z.input<typeof providerEditorSchema>;
 
 export function providerFormValues(
-  provider: ProviderConfig,
+  provider: AiGatewayProviderConfig,
 ): ProviderFormValues {
   return {
     ...provider,

@@ -6,6 +6,7 @@ import { record, UsageAccumulator } from "./usage.ts";
 export async function retryResponseUsage(
   response: Response,
   protocol: ApiProtocol,
+  extract?: (payload: unknown) => unknown,
 ): Promise<NormalizedUsage | null> {
   if (
     !response.body ||
@@ -34,8 +35,11 @@ export async function retryResponseUsage(
     if (interrupted) return null;
     const payload = record(JSON.parse(text + decoder.decode()) as unknown);
     const usage = new UsageAccumulator(protocol);
-    usage.add(payload?.usage);
-    usage.add(record(payload?.response)?.usage);
+    if (extract) usage.add(extract(payload));
+    else {
+      usage.add(payload?.usage);
+      usage.add(record(payload?.response)?.usage);
+    }
     const result = usage.snapshot();
     return result.status === "missing" ? null : result;
   } catch {

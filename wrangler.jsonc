@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cody",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-07-24",
+  "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
   "workers_dev": true,
   "secrets": {
@@ -10,6 +10,9 @@
   },
   "dev": {
     "port": 8788,
+  },
+  "placement": {
+    "mode": "smart",
   },
   "assets": {
     "directory": "./console/dist",
@@ -20,7 +23,7 @@
   "observability": {
     "enabled": true,
     "logs": {
-      "head_sampling_rate": 0.1,
+      "head_sampling_rate": 1,
       "persist": true,
     },
     "traces": {
@@ -98,6 +101,10 @@
         "name": "PROXY_GROUP",
         "class_name": "ProxyGroup",
       },
+      {
+        "name": "PROVIDER_OAUTH_ACCOUNT",
+        "class_name": "ProviderOAuthAccount",
+      },
     ],
   },
   "migrations": [
@@ -127,11 +134,20 @@
     },
     {
       "tag": "v7",
-      "renamed_classes": [{ "from": "ServiceHealth", "to": "ProviderHealth" }],
+      "renamed_classes": [
+        {
+          "from": "ServiceHealth",
+          "to": "ProviderHealth",
+        },
+      ],
     },
     {
       "tag": "v8",
       "new_sqlite_classes": ["ProxyGroup"],
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": ["ProviderOAuthAccount"],
     },
   ],
   "triggers": {

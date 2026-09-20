@@ -2,13 +2,13 @@ import type { GatewayConfig } from "../../config/types.ts";
 import { abortable } from "../../shared/abort.ts";
 import { logInfo, type RequestLogContext } from "../../shared/log.ts";
 import type { HealthExecutionContext } from "../health/health.ts";
+import type { UpstreamTransport } from "../transport/index.ts";
 import {
   DEFAULT_SOCKS_CONNECT_TIMEOUT_MS,
   socksFetch,
   type SocksFetchOptions,
   type SocksStage,
 } from "../transport/socks-fetch.ts";
-import type { UpstreamTransport } from "../transport/index.ts";
 import type { ProxyGroupReference } from "./configuration.ts";
 import {
   ProxyUnavailableError,

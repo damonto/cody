@@ -254,9 +254,10 @@ test("leaving the client list cancels a pending copy and ignores the late key", 
     "aria-busy",
     "true",
   );
-  await page.getByRole("link", { name: "Providers", exact: true }).click();
+  await page.getByRole("button", { name: "Providers", exact: true }).click();
+  await page.getByRole("link", { name: "AI Gateway", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Providers", exact: true }),
+    page.getByRole("heading", { name: "AI Gateway", exact: true }),
   ).toBeVisible();
   await pending.fulfill({ json: { api_key: "outdated-key" } });
   await page.getByRole("link", { name: "Client keys", exact: true }).click();

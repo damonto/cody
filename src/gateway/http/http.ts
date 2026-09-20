@@ -1,4 +1,7 @@
-import type { ClientApiKeyConfig, ProviderConfig } from "../../config/types.ts";
+import type {
+  AiGatewayProviderConfig,
+  ClientApiKeyConfig,
+} from "../../config/types.ts";
 import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -300,7 +303,7 @@ export async function findClientApiKeyByDigest(
 }
 
 export function upstreamUrl(
-  provider: ProviderConfig,
+  provider: AiGatewayProviderConfig,
   path: string,
   search = "",
 ): string {

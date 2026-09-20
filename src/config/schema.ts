@@ -5,6 +5,7 @@ import {
   validateModelPolicyReferences,
 } from "../billing/schema.ts";
 import { SEARCH_PROVIDERS } from "../shared/search.ts";
+import { secretSchema } from "../shared/secret-schema.ts";
 
 export const identifierSchema = z
   .string({ error: "must be a non-empty string" })
@@ -16,10 +17,6 @@ export const nameSchema = z
   .trim()
   .min(1, "must be a non-empty string")
   .max(256);
-const secretSchema = z
-  .string({ error: "must be a non-empty string" })
-  .trim()
-  .min(1, "must be a non-empty string");
 const integer = z
   .number({ error: "must be an integer" })
   .int({ error: "must be an integer" });
@@ -39,11 +36,11 @@ const baseUrlSchema = z
 function unique<T>(values: readonly T[]): boolean {
   return new Set(values).size === values.length;
 }
-const names = z
+const nameList = z
   .array(nameSchema, { error: "must be a non-empty array" })
-  .min(1, "must be a non-empty array")
   .refine(unique, "must not contain duplicates")
   .meta({ uniqueItems: true });
+const names = nameList.min(1, "must be a non-empty array");
 export const routeSchema = z.strictObject({
   model: nameSchema,
   providers: names.optional(),
@@ -200,13 +197,24 @@ export const credentialSchema = z.strictObject({
   disabled: boolean,
   proxy_group: proxyGroupReferenceSchema,
 });
+export const oauthCredentialSchema = credentialSchema.extend({
+  auth: z.strictObject({
+    type: z.literal("oauth"),
+    account_ref: z.uuid(),
+  }),
+});
 export const aiGatewayProviderSchema = z.strictObject({
   type: z.literal("ai_gateway"),
-  id: identifierSchema,
+  id: identifierSchema
+    .refine(
+      (id) => id !== "antigravity",
+      "antigravity is a reserved provider ID",
+    )
+    .meta({ not: { const: "antigravity" } }),
   base_url: baseUrlSchema,
   proxy_group: proxyGroupReferenceSchema,
   credentials: z
-    .array(credentialSchema, { error: "must be a non-empty array" })
+    .array(credentialSchema)
     .min(1, "must be a non-empty array")
     .superRefine((credentials, context) => {
       if (!unique(credentials.map((key) => key.id)))
@@ -225,11 +233,60 @@ export const aiGatewayProviderSchema = z.strictObject({
   retry: retrySchema.optional(),
   model_routes: routes(providerRouteSchema).optional(),
 });
-export const providerSchema = z.discriminatedUnion(
-  "type",
-  [aiGatewayProviderSchema],
-  { error: "must use a supported provider type (ai_gateway)" },
-);
+export const antigravityDraftProviderSchema = aiGatewayProviderSchema
+  .omit({ base_url: true })
+  .extend({
+    type: z.literal("antigravity"),
+    id: z.literal("antigravity"),
+    models: nameList,
+    credentials: z
+      .array(oauthCredentialSchema)
+      .superRefine((credentials, context) => {
+        if (!unique(credentials.map((credential) => credential.id)))
+          context.addIssue({
+            code: "custom",
+            path: ["id"],
+            message: "values must be unique",
+          });
+        if (
+          !unique(credentials.map((credential) => credential.auth.account_ref))
+        )
+          context.addIssue({
+            code: "custom",
+            path: ["auth", "account_ref"],
+            message: "an account may only be attached once",
+          });
+      }),
+    supports_websocket: z.literal(false).default(false),
+    supports_web_search: z.literal(false).default(false),
+    supports_context_management: z.literal(false).default(false),
+  });
+export const antigravityProviderSchema = antigravityDraftProviderSchema
+  .superRefine((provider, context) => {
+    if (provider.disabled) return;
+    if (!provider.models.length)
+      context.addIssue({
+        code: "custom",
+        path: ["models"],
+        message: "select Antigravity models before enabling the provider",
+      });
+    if (!provider.credentials.length)
+      context.addIssue({
+        code: "custom",
+        path: ["credentials"],
+        message: "add an Antigravity account before enabling the provider",
+      });
+  })
+  .meta({
+    if: { properties: { disabled: { const: false } }, required: ["disabled"] },
+    then: {
+      properties: { models: { minItems: 1 }, credentials: { minItems: 1 } },
+    },
+  });
+export const providerSchema = z.discriminatedUnion("type", [
+  aiGatewayProviderSchema,
+  antigravityProviderSchema,
+]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
   api_key: secretSchema,
@@ -265,7 +322,17 @@ export const searchSchema = z.discriminatedUnion(
 const shape = z.strictObject({
   $schema: z.string({ error: "must be a string" }).optional(),
   proxy_groups: z.array(proxyGroupSchema).default([]),
-  providers: z.array(providerSchema, { error: "must be a non-empty array" }),
+  providers: z
+    .array(providerSchema, { error: "must be a non-empty array" })
+    .meta({
+      contains: {
+        type: "object",
+        properties: { type: { const: "antigravity" } },
+        required: ["type"],
+      },
+      minContains: 0,
+      maxContains: 1,
+    }),
   api_keys: z.array(clientSchema, { error: "must be a non-empty array" }),
   model_routes: routes(routeSchema).default({}),
   web_search: searchSchema.default({ mode: "proxy" }),
@@ -274,8 +341,25 @@ const shape = z.strictObject({
   revision: integer.positive().optional(),
 });
 type Configuration = z.output<typeof shape>;
+const draftShape = shape.extend({
+  providers: z.array(
+    z.discriminatedUnion("type", [
+      aiGatewayProviderSchema,
+      antigravityDraftProviderSchema,
+    ]),
+  ),
+});
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
+  if (
+    config.providers.filter((provider) => provider.type === "antigravity")
+      .length > 1
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["providers"],
+      message: "Antigravity is a fixed provider and may only be declared once",
+    });
   for (const [path, values] of [
     [["proxy_groups", "id"], config.proxy_groups.map((group) => group.id)],
     [["providers", "id"], config.providers.map((provider) => provider.id)],
@@ -371,12 +455,12 @@ function normalize({ $schema: _schema, ...config }: Configuration) {
   return config;
 }
 
-/** Drafts share every structural rule, but may have unresolved references. */
-export const draftConfigurationSchema = shape
+/** Drafts allow unresolved references and a native provider awaiting accounts or models. */
+export const draftConfigurationSchema = draftShape
   .superRefine(validateIdentities)
   .transform(normalize);
 /** Masked credentials are repeated placeholders, so secret uniqueness is checked only after restoration. */
-export const maskedConfigurationSchema = shape.transform(normalize);
+export const maskedConfigurationSchema = draftShape.transform(normalize);
 export const configurationSchema = shape
   .extend({
     providers: shape.shape.providers.min(1, "must be a non-empty array"),
@@ -405,6 +489,14 @@ export function configurationError(error: z.ZodError): string {
   const path = pathText(issue.path) || "configuration";
   if (issue.code === "unrecognized_keys") {
     const key = issue.keys[0];
+    if (path === "configuration" && issue.keys.includes("protocol"))
+      return "providers[0].protocol is not supported";
+    if (
+      path === "configuration" &&
+      issue.keys.includes("providers") &&
+      ["base_url"].every((name) => issue.keys.includes(name))
+    )
+      return "providers[0].base_url is not supported";
     if (
       path === "web_search" &&
       ["api_key", "base_url", "max_results"].includes(key)

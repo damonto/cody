@@ -1,8 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { ingestUsage } from "../reporting/store.ts";
 import { logWarn } from "../shared/log.ts";
-import type { UsageEvent } from "./types.ts";
 import { parseUsageEvent } from "./schema.ts";
+import type { UsageEvent } from "./types.ts";
 
 const PREFIX = "event:";
 const CURSOR_KEY = "delivery-cursor";

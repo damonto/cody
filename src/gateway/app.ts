@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { handleModels } from "./catalog/models.ts";
 import {
   gatewayHandler,
   gatewayNotFound,
@@ -6,17 +7,16 @@ import {
   type GatewayRequest,
 } from "./handler.ts";
 import { handleHealthClear, handleHealthList } from "./health/handlers.ts";
-import { handleSessions } from "./sessions/handlers.ts";
-import { handleModels } from "./catalog/models.ts";
 import { handleInference } from "./http/proxy.ts";
-import { handleConfiguredWebSearch } from "./search/search.ts";
-import { handleContextManagement } from "./sessions/context-management.ts";
-import { handleResponsesWebSocket } from "./websocket/websocket.ts";
 import {
   CONTEXT_MANAGEMENT_PATHS,
   type GatewayEndpoint,
   type InferencePath,
 } from "./protocol.ts";
+import { handleConfiguredWebSearch } from "./search/search.ts";
+import { handleContextManagement } from "./sessions/context-management.ts";
+import { handleSessions } from "./sessions/handlers.ts";
+import { handleResponsesWebSocket } from "./websocket/websocket.ts";
 
 export const gatewayRoutes = new Hono<GatewayBindings>();
 

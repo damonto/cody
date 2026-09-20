@@ -21,6 +21,7 @@ import { gatewayApp as worker } from "../../src/gateway/app.ts";
 import { clearModelsCacheForTests } from "../../src/gateway/catalog/models.ts";
 import { CONTEXT_MANAGEMENT_PATHS } from "../../src/gateway/protocol.ts";
 import type { GatewayConfig } from "../../src/config/types.ts";
+import { aiGatewayProviderSchema } from "../../src/config/schema.ts";
 
 beforeAll(async () => {
   const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
@@ -292,7 +293,11 @@ test("a first thread hint pins subsequent inference and notes across priority ch
   });
   await evictDurableObject(stub);
   settings.providers[0].supports_context_management = true;
-  settings.providers[1].credentials.push({
+  const credentialProvider = aiGatewayProviderSchema.parse(
+    settings.providers[1],
+  );
+  settings.providers[1] = credentialProvider;
+  credentialProvider.credentials.push({
     id: "new-key",
     auth: { type: "api_key", api_key: "new-secret" },
     priority: 200,

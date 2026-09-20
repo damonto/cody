@@ -46,6 +46,9 @@ export default function Providers() {
       <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
     );
   const config = draft.data.config;
+  const providers = config.providers.filter(
+    (provider) => provider.type === "ai_gateway",
+  );
   const edit = (index: number) =>
     setEditor({ snapshot: structuredClone(draft.data), index });
   const referencedBy = remove
@@ -56,7 +59,7 @@ export default function Providers() {
   return (
     <>
       <PageHeading
-        title="Providers"
+        title="AI Gateway"
         description="Manage upstream providers, real model names, and prioritized credentials."
       >
         <Button onClick={() => edit(-1)}>
@@ -66,15 +69,14 @@ export default function Providers() {
       </PageHeading>
       <div className="grid gap-4 sm:grid-cols-3">
         {[
-          ["Configured providers", config.providers.length],
+          ["Configured providers", providers.length],
           [
             "Enabled providers",
-            config.providers.filter((provider) => !provider.disabled).length,
+            providers.filter((provider) => !provider.disabled).length,
           ],
           [
             "Upstream models",
-            new Set(config.providers.flatMap((provider) => provider.models))
-              .size,
+            new Set(providers.flatMap((provider) => provider.models)).size,
           ],
         ].map(([title, count]) => (
           <Card key={title} className="shadow-none">
@@ -88,7 +90,7 @@ export default function Providers() {
         ))}
       </div>
       <Card className="overflow-hidden py-0 shadow-none">
-        {!config.providers.length ? (
+        {!providers.length ? (
           <Empty
             title="Add your first upstream"
             action={
@@ -102,7 +104,7 @@ export default function Providers() {
           </Empty>
         ) : (
           <DataTable
-            data={config.providers}
+            data={providers}
             columns={[
               {
                 id: "provider",

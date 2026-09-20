@@ -1,22 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
-import {
-  proxyGroupSnapshotSchema,
-  proxyOutcomeSchema,
-  proxySelectInputSchema,
-  storedProxyHealthSchema,
-  proxyGroupStatusSchema,
-  type ProxyGroupSnapshot,
-  type ProxyGroupStatus,
-  type ProxySelection,
-  type StoredProxyHealth,
-} from "./schema.ts";
+import { identifierSchema } from "../../config/schema.ts";
 import {
   chooseProxy,
   currentProxyHealth,
   freshProxyHealth,
   observeProxyHealth,
 } from "./policy.ts";
-import { identifierSchema } from "../../config/schema.ts";
+import {
+  proxyGroupSnapshotSchema,
+  proxyGroupStatusSchema,
+  proxyOutcomeSchema,
+  proxySelectInputSchema,
+  storedProxyHealthSchema,
+  type ProxyGroupSnapshot,
+  type ProxyGroupStatus,
+  type ProxySelection,
+  type StoredProxyHealth,
+} from "./schema.ts";
 
 interface NodeRow extends Record<string, SqlStorageValue> {
   id: string;

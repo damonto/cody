@@ -1,10 +1,10 @@
-import type { ApiProtocol } from "../gateway/protocol.ts";
 import {
   USAGE_FIELDS,
   type ModelPolicy,
   type NormalizedUsage,
   type TokenUsage,
 } from "../billing/types.ts";
+import type { ApiProtocol } from "../gateway/protocol.ts";
 
 export function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)

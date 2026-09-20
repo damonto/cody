@@ -1,13 +1,13 @@
+import type {
+  ProviderConfig,
+  ProviderHealthSnapshot,
+} from "../../config/types.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { errorMessage, logWarn } from "../../shared/log.ts";
 import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
-import type {
-  ProviderConfig,
-  ProviderHealthSnapshot,
-} from "../../config/types.ts";
 
 export const FAILURE_THRESHOLD = 10;
 export const FAILURE_WINDOW_MS = 5 * 60 * 1000;

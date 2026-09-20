@@ -1,14 +1,14 @@
-import { DEFAULT_REPORTING } from "../billing/config.ts";
 import { priceVersion } from "../billing/calculate.ts";
+import { DEFAULT_REPORTING } from "../billing/config.ts";
+import { maskedConfigurationSchema } from "../config/schema.ts";
 import { parseConfig } from "../config/store.ts";
-import { record } from "../telemetry/usage.ts";
+import type { GatewayConfig } from "../config/types.ts";
 import { draftConfigurationSchema } from "../shared/forms.ts";
 import { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
-import { maskedConfigurationSchema } from "../config/schema.ts";
+import { record } from "../telemetry/usage.ts";
+import { decryptConfig, encryptConfig } from "./crypto.ts";
 import type { DraftView } from "./schema.ts";
 export type { DraftView } from "./schema.ts";
-import type { GatewayConfig } from "../config/types.ts";
-import { decryptConfig, encryptConfig } from "./crypto.ts";
 
 export { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
 export type JsonValue =
@@ -138,6 +138,24 @@ export class ControlStore {
     private readonly configKey = "gateway-config",
   ) {}
 
+  private async validateOAuthReferences(config: GatewayConfig): Promise<void> {
+    for (const provider of config.providers) {
+      if (provider.type !== "antigravity") continue;
+      for (const credential of provider.credentials) {
+        const row = await this.db
+          .prepare(
+            "SELECT provider_id FROM oauth_accounts WHERE account_ref = ?",
+          )
+          .bind(credential.auth.account_ref)
+          .first<{ provider_id: string }>();
+        if (!row || row.provider_id !== provider.id)
+          throw new ControlInputError(
+            "OAuth account must be authorized for this provider before saving",
+          );
+      }
+    }
+  }
+
   async state(): Promise<ControlState> {
     const state = await this.db
       .prepare(
@@ -196,6 +214,9 @@ export class ControlStore {
     }
     if (new TextEncoder().encode(JSON.stringify(restored)).length > 1024 * 1024)
       throw new ControlInputError("Configuration exceeds 1 MiB");
+    await this.validateOAuthReferences(
+      draftConfigurationSchema.parse(restored),
+    );
     const encrypted = await encryptConfig(restored, this.encryptionKey);
     const now = Date.now();
     const [updated] = await this.db.batch([
@@ -224,6 +245,7 @@ export class ControlStore {
     if (state.draft_version !== expectedVersion)
       throw new ControlConflict("The draft changed; reload before publishing");
     const config = parseConfig(await this.rawDraft(Promise.resolve(state)));
+    await this.validateOAuthReferences(config);
     delete config.revision;
     const payload = await encryptConfig(config, this.encryptionKey);
     const inserted = await this.db

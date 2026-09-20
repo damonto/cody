@@ -1,7 +1,12 @@
+import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
+import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { jsonResponse, openAiError } from "../http/http.ts";
-import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import { modelIsAvailableForClient } from "../routing/routing.ts";
+import {
+  ProviderProtocolError,
+  webSearchProviderFor,
+} from "./providers/index.ts";
 import {
   executeSearchBatch,
   ProviderHttpError,
@@ -9,16 +14,11 @@ import {
   ProviderNetworkError,
 } from "./search-executor.ts";
 import {
-  ProviderProtocolError,
-  webSearchProviderFor,
-} from "./providers/index.ts";
-import {
   parseSearchRequest,
   SearchRequestError,
   type ParsedSearchRequest,
 } from "./search-request.ts";
 import { codexOutput, codexResults } from "./search-response.ts";
-import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 
 const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
 

@@ -1,5 +1,5 @@
 import { errorMessage, type RequestLogContext } from "../shared/log.ts";
-import { configurationSchema, configurationError } from "./schema.ts";
+import { configurationError, configurationSchema } from "./schema.ts";
 import type { GatewayConfig } from "./types.ts";
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;

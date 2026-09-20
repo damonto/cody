@@ -1,5 +1,5 @@
-import { createMiddleware } from "hono/factory";
 import type { ErrorHandler } from "hono";
+import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { BodyTooLargeError } from "../gateway/http/body.ts";

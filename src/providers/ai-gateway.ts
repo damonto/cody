@@ -1,10 +1,10 @@
+import type { AiGatewayProviderConfig } from "../config/types.ts";
 import {
   forwardRequestHeaders,
   forwardWebSocketHeaders,
   upstreamUrl,
 } from "../gateway/http/http.ts";
 import { isContextManagementPath } from "../gateway/protocol.ts";
-import type { AiGatewayProviderConfig } from "../config/types.ts";
 import type { ProviderAdapter } from "./types.ts";
 
 export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {

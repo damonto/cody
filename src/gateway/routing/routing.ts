@@ -138,9 +138,9 @@ export function modelRoutesByProvider(
   );
 }
 
-export function selectProviderCredential(
-  provider: ProviderConfig,
-): ProviderCredentialConfig | undefined {
+export function selectProviderCredential(provider: {
+  credentials: readonly ProviderCredentialConfig[];
+}): ProviderCredentialConfig | undefined {
   const enabled = provider.credentials.filter(
     (credential) => !credential.disabled,
   );
@@ -513,7 +513,7 @@ export async function selectAvailableCatalogTargetsWithDetails(
   );
   const targets = availability.candidates.flatMap(
     ({ provider, credentials }) => {
-      const credential = selectProviderCredential({ ...provider, credentials });
+      const credential = selectProviderCredential({ credentials });
       return credential ? [{ provider, credential }] : [];
     },
   );

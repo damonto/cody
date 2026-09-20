@@ -1,8 +1,13 @@
-import type { GatewayConfig } from "../../src/config/types.ts";
+import type {
+  GatewayConfig,
+  AiGatewayProviderConfig,
+} from "../../src/config/types.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
 
-export function config(): GatewayConfig {
+export function config(): Omit<GatewayConfig, "providers"> & {
+  providers: AiGatewayProviderConfig[];
+} {
   return {
     proxy_groups: [],
     providers: [

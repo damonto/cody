@@ -1,6 +1,6 @@
 import { emptyCost } from "../../billing/calculate.ts";
-import type { UsageEvent } from "../../telemetry/types.ts";
 import { parseUsageEvent } from "../../telemetry/schema.ts";
+import type { UsageEvent } from "../../telemetry/types.ts";
 
 const SESSION_KEY = "session";
 const CHECKPOINT_PREFIX = "usage:";

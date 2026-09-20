@@ -1,15 +1,15 @@
-import { upstreamSecretValues } from "../routing/credentials.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
+import type { RequestLogContext } from "../../shared/log.ts";
 import {
   clientApiKeyDigest,
   forwardableWebSocketHeaders,
   openAiError,
 } from "../http/http.ts";
-import type { RequestLogContext } from "../../shared/log.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
   RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,
 } from "./websocket-metadata.ts";
-import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 
 export async function handleResponsesWebSocket(
   request: Request,

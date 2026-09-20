@@ -10,10 +10,10 @@ import {
   type ReportRange,
 } from "../../reporting/ranges.ts";
 import {
+  reportDimensions,
   requestDetail,
   requestList,
   summary,
-  reportDimensions,
   type ReportFilters,
 } from "../../reporting/store.ts";
 import { publishedConfig, type AdminContext } from "../context.ts";

@@ -33,9 +33,14 @@ export async function readBodyWithinLimit(
   maxBytes: number,
   contentLength?: string | null,
   onChunk?: (byteLength: number) => void,
+  signal?: AbortSignal,
 ): Promise<Uint8Array<ArrayBuffer>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new RangeError("maxBytes must be a non-negative safe integer");
+  }
+  if (signal?.aborted) {
+    await cancelBody(body);
+    signal.throwIfAborted();
   }
   const expectedLength = declaredLength(contentLength);
   if (expectedLength !== undefined && expectedLength > BigInt(maxBytes)) {
@@ -47,6 +52,10 @@ export async function readBodyWithinLimit(
   }
 
   const reader = body.getReader();
+  const abort = () => {
+    void reader.cancel(signal?.reason).catch(() => {});
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   const initialCapacity =
     expectedLength === undefined
       ? Math.min(maxBytes, 64 * 1024)
@@ -56,6 +65,7 @@ export async function readBodyWithinLimit(
   try {
     while (true) {
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
       if (done) {
         break;
       }
@@ -90,6 +100,7 @@ export async function readBodyWithinLimit(
     }
     throw error;
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
   return buffer.subarray(0, totalBytes);

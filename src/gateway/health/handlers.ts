@@ -1,12 +1,12 @@
+import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
+import type { RequestLogContext } from "../../shared/log.ts";
+import { jsonResponse, openAiError } from "../http/http.ts";
 import {
   clearCredentialHealth,
   clearProviderHealth,
   listCoolingHealth,
   type HealthScope,
 } from "./health.ts";
-import { jsonResponse, openAiError } from "../http/http.ts";
-import type { RequestLogContext } from "../../shared/log.ts";
-import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 
 function healthScope(incomingUrl: URL): HealthScope | undefined {
   const scope = incomingUrl.searchParams.get("scope") ?? "inference";

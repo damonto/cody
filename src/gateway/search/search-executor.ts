@@ -1,9 +1,10 @@
+import type { WebSearchProviderConfig } from "../../config/types.ts";
+import { errorMessage } from "../../shared/log.ts";
 import {
   BodyTooLargeError,
   discardBody,
   readBodyWithinLimit,
 } from "../http/body.ts";
-import { errorMessage } from "../../shared/log.ts";
 import {
   type NormalizedSearchResult,
   ProviderProtocolError,
@@ -11,7 +12,6 @@ import {
 } from "./providers/index.ts";
 import type { SearchFilters, SearchQuery } from "./search-request.ts";
 import { intersectDomains } from "./search-request.ts";
-import type { WebSearchProviderConfig } from "../../config/types.ts";
 
 export const MAX_SEARCH_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const MAX_SEARCH_BATCH_RESPONSE_BYTES = 4 * 1024 * 1024;

@@ -1,11 +1,9 @@
 import { expect, type Page } from "@playwright/test";
 import type { Draft, Summary } from "../src/lib/api";
+import type { AiGatewayProviderConfig } from "../../src/config/types";
 
-import {
-  draftSchema,
-  reportQuerySchema,
-  versionSchema,
-} from "../../src/admin/schema";
+import { draftSchema, versionSchema } from "../../src/admin/schema";
+import { reportQuerySchema } from "../../src/reporting/query";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import {
   DAY_MS,
@@ -14,7 +12,11 @@ import {
 } from "../../src/reporting/ranges";
 
 const secret = SECRET_PLACEHOLDER;
-export function draftFixture(): Draft {
+export function draftFixture(): Omit<Draft, "config"> & {
+  config: Omit<Draft["config"], "providers"> & {
+    providers: AiGatewayProviderConfig[];
+  };
+} {
   return {
     version: 1,
     published_revision: 1,
@@ -94,13 +96,17 @@ function maskKeys(config: Draft["config"]): Draft["config"] {
       })),
     })),
     api_keys: config.api_keys.map((client) => ({ ...client, api_key: secret })),
-    providers: config.providers.map((provider) => ({
-      ...provider,
-      credentials: provider.credentials.map((key) => ({
-        ...key,
-        auth: { type: "api_key", api_key: secret },
-      })),
-    })),
+    providers: config.providers.map((provider) =>
+      provider.type === "antigravity"
+        ? provider
+        : {
+            ...provider,
+            credentials: provider.credentials.map((key) => ({
+              ...key,
+              auth: { type: "api_key", api_key: secret },
+            })),
+          },
+    ),
     web_search:
       config.web_search.mode === "proxy"
         ? config.web_search
@@ -115,7 +121,7 @@ function requiredKey(value: string | undefined, owner: string): string {
   return value;
 }
 
-export async function mockApi(page: Page, initial = draftFixture()) {
+export async function mockApi(page: Page, initial: Draft = draftFixture()) {
   let draft = structuredClone(initial);
   let clientKeys = new Map(
     draft.config.api_keys.map((client) => [
@@ -124,14 +130,16 @@ export async function mockApi(page: Page, initial = draftFixture()) {
     ]),
   );
   let providerKeys = new Map(
-    draft.config.providers.flatMap((provider) =>
-      provider.credentials.map((key): [string, string] => [
-        `${provider.id}:${key.id}`,
-        key.auth.api_key === secret
-          ? `test-key-${provider.id}-${key.id}`
-          : key.auth.api_key,
-      ]),
-    ),
+    draft.config.providers
+      .filter((provider) => provider.type === "ai_gateway")
+      .flatMap((provider) =>
+        provider.credentials.map((key): [string, string] => [
+          `${provider.id}:${key.id}`,
+          key.auth.api_key === secret
+            ? `test-key-${provider.id}-${key.id}`
+            : key.auth.api_key,
+        ]),
+      ),
   );
   const search = draft.config.web_search;
   let searchApiKey =
@@ -180,14 +188,16 @@ export async function mockApi(page: Page, initial = draftFixture()) {
           }),
         );
         providerKeys = new Map(
-          input.config.providers.flatMap((provider) =>
-            provider.credentials.map((key): [string, string] => [
-              `${provider.id}:${key.id}`,
-              key.auth.api_key === secret
-                ? providerKey(provider.id, key.id)
-                : key.auth.api_key,
-            ]),
-          ),
+          input.config.providers
+            .filter((provider) => provider.type === "ai_gateway")
+            .flatMap((provider) =>
+              provider.credentials.map((key): [string, string] => [
+                `${provider.id}:${key.id}`,
+                key.auth.api_key === secret
+                  ? providerKey(provider.id, key.id)
+                  : key.auth.api_key,
+              ]),
+            ),
         );
         const search = input.config.web_search;
         searchApiKey =

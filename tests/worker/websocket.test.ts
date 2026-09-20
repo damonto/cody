@@ -15,7 +15,10 @@ import { clearConfigCacheForTests } from "../../src/config/store.ts";
 import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
 import { ResponsesWebSocketProxy } from "../../src/gateway/websocket/responses-websocket-proxy.ts";
-import type { GatewayConfig } from "../../src/config/types.ts";
+import type {
+  GatewayConfig,
+  AiGatewayProviderConfig,
+} from "../../src/config/types.ts";
 import { requestDetail } from "../../src/reporting/store.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
 
@@ -41,7 +44,9 @@ interface UpstreamPair {
   pendingCloses: UpstreamClose[];
 }
 
-function gatewayConfig(): GatewayConfig {
+function gatewayConfig(): Omit<GatewayConfig, "providers"> & {
+  providers: AiGatewayProviderConfig[];
+} {
   return {
     proxy_groups: [],
     providers: [

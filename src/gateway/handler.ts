@@ -1,15 +1,15 @@
 import type { Context, ExecutionContext, Handler } from "hono";
 import { ConfigError, loadConfig } from "../config/store.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "../config/types.ts";
-import { RequestMeter } from "../telemetry/meter.ts";
-import { durableUsageSink } from "../telemetry/delivery.ts";
-import { apiError, bearerToken, findClientApiKey } from "./http/http.ts";
 import {
-  errorMessage,
   configureLogging,
+  errorMessage,
   newRequestId,
   RequestLogContext,
 } from "../shared/log.ts";
+import { durableUsageSink } from "../telemetry/delivery.ts";
+import { RequestMeter } from "../telemetry/meter.ts";
+import { apiError, bearerToken, findClientApiKey } from "./http/http.ts";
 import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
 
 export type GatewayBindings = { Bindings: Env };

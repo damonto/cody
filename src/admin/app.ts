@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { configureLogging } from "../shared/log.ts";
 import type { AdminContext } from "./context.ts";
 import { serveConsoleAsset } from "./assets.ts";
 import { adminError, adminSecurity } from "./middleware.ts";
@@ -8,6 +9,7 @@ import { configurationRoutes } from "./routes/configuration.ts";
 import { pricingRoutes } from "./routes/pricing.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { runtimeRoutes } from "./routes/runtime.ts";
+import { oauthRoutes } from "./routes/oauth.ts";
 
 const adminApi = new Hono<AdminContext>()
   .use(
@@ -28,12 +30,17 @@ const adminApi = new Hono<AdminContext>()
   })
   .route("/config", configurationRoutes)
   .route("/pricing", pricingRoutes)
+  .route("/", oauthRoutes)
   .route("/", reportRoutes)
   .route("/runtime", runtimeRoutes);
 
 export type AdminApi = typeof adminApi;
 export const adminApp = new Hono<AdminContext>()
   .use("*", adminSecurity)
+  .use("*", async (c, next) => {
+    configureLogging(c.env.LOG_LEVEL);
+    await next();
+  })
   .route("/api", adminApi)
   .all("/api", (c) => c.json({ error: "Not found" }, 404))
   .all("/api/*", (c) => c.json({ error: "Not found" }, 404))

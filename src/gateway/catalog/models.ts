@@ -1,16 +1,25 @@
-import { discardBody, readBodyWithinLimit } from "../http/body.ts";
-import type { UpstreamFetch } from "../transport/index.ts";
-import type { PreparedProviderRequest } from "../../providers/types.ts";
-import type { ProxyFailure } from "../proxies/errors.ts";
+import type {
+  ClientApiKeyConfig,
+  GatewayConfig,
+  ModelRouteConfig,
+  ProviderConfig,
+} from "../../config/types.ts";
 import {
   prepareProviderRequest,
   providerSupportsEndpoint,
 } from "../../providers/index.ts";
+import { OAuthError } from "../../providers/oauth/schema.ts";
+import type { PreparedProviderRequest } from "../../providers/types.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
-import { upstreamSecretValues } from "../routing/credentials.ts";
+import {
+  elapsedMs,
+  errorMessage,
+  type LogFields,
+  type RequestLogContext,
+} from "../../shared/log.ts";
 import {
   healthFailureScope,
   recordCredentialFailure,
@@ -19,37 +28,29 @@ import {
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "../health/health.ts";
+import { discardBody, readBodyWithinLimit } from "../http/body.ts";
 import {
   apiError,
   jsonResponse,
   shouldStripRequestHeader,
 } from "../http/http.ts";
 import {
-  elapsedMs,
-  errorMessage,
-  type LogFields,
-  type RequestLogContext,
-} from "../../shared/log.ts";
-import codexCatalog from "./models.json" with { type: "json" };
-import { requestProtocol } from "../protocol.ts";
-import {
-  allowedProviderCandidates,
-  modelRoutesByProvider,
-  selectAvailableCatalogTargetsWithDetails,
-  type RoutedProvider,
-  type ProviderTarget,
-} from "../routing/routing.ts";
-import type {
-  ClientApiKeyConfig,
-  GatewayConfig,
-  ModelRouteConfig,
-  ProviderConfig,
-} from "../../config/types.ts";
-import {
   hasJsonUpstreamError,
   upstreamErrorStatusFields,
   upstreamResponseLogFields,
 } from "../http/upstream-log.ts";
+import { requestProtocol } from "../protocol.ts";
+import type { ProxyFailure } from "../proxies/errors.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
+import {
+  allowedProviderCandidates,
+  modelRoutesByProvider,
+  selectAvailableCatalogTargetsWithDetails,
+  type ProviderTarget,
+  type RoutedProvider,
+} from "../routing/routing.ts";
+import type { UpstreamFetch } from "../transport/index.ts";
+import codexCatalog from "./models.json" with { type: "json" };
 
 const MODEL_CATALOG_TIMEOUT_MS = 3_000;
 export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
@@ -209,6 +210,7 @@ async function fetchCatalogResponse(
   url: string,
   init: RequestInit,
   send: UpstreamFetch,
+  timeoutMs = MODEL_CATALOG_TIMEOUT_MS,
 ): Promise<{ response: Response; body?: unknown }> {
   const controller = new AbortController();
   const signal = init.signal
@@ -229,6 +231,8 @@ async function fetchCatalogResponse(
       response.body,
       MAX_MODEL_CATALOG_BODY_BYTES,
       response.headers.get("content-length"),
+      undefined,
+      signal,
     );
     let body: unknown;
     try {
@@ -245,7 +249,7 @@ async function fetchCatalogResponse(
     timer = setTimeout(() => {
       controller.abort();
       reject(timeoutError());
-    }, MODEL_CATALOG_TIMEOUT_MS);
+    }, timeoutMs);
   });
   try {
     return await Promise.race([operation, timeout]);
@@ -253,6 +257,27 @@ async function fetchCatalogResponse(
     if (timer !== undefined) {
       clearTimeout(timer);
     }
+  }
+}
+
+async function prepareCatalogWithinDeadline(
+  operation: Promise<PreparedProviderRequest>,
+  signal: AbortSignal,
+): Promise<PreparedProviderRequest> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    abort = () =>
+      reject(signal.reason ?? new Error("Catalog request cancelled"));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    timer = setTimeout(() => reject(timeoutError()), MODEL_CATALOG_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (abort) signal.removeEventListener("abort", abort);
   }
 }
 
@@ -272,25 +297,30 @@ async function fetchProviderModels(
   const startedAt = performance.now();
   let prepared: PreparedProviderRequest | undefined;
   try {
-    prepared = await prepareProviderRequest(
-      provider,
-      key,
-      {
-        request,
-        endpoint: "models",
-        transport: "http",
-      },
-      { config, env, context, requestLog, requestId },
+    prepared = await prepareCatalogWithinDeadline(
+      prepareProviderRequest(
+        provider,
+        key,
+        {
+          request,
+          endpoint: "models",
+          transport: "http",
+        },
+        { config, env, context, requestLog, requestId },
+      ),
+      request.signal,
     );
     const result = await fetchCatalogResponse(
       prepared.url,
       {
-        method: "GET",
+        method: prepared.method ?? "GET",
+        ...(prepared.body === undefined ? {} : { body: prepared.body }),
         headers: prepared.headers,
         redirect: "manual",
         signal: request.signal,
       },
       prepared.send,
+      Math.max(1, MODEL_CATALOG_TIMEOUT_MS - (performance.now() - startedAt)),
     );
     const durationMs = elapsedMs(startedAt);
     if (!result.response.ok) {
@@ -334,7 +364,9 @@ async function fetchProviderModels(
         upstreamError,
       };
     }
-    const models = parseUpstreamModels(result.body);
+    const models = parseUpstreamModels(
+      prepared.parseModels ? prepared.parseModels(result.body) : result.body,
+    );
     if (!models) {
       const upstream = {
         provider_id: provider.id,
@@ -370,7 +402,12 @@ async function fetchProviderModels(
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
     };
-    if (!request.signal.aborted && !proxyError) {
+    if (
+      prepared &&
+      !request.signal.aborted &&
+      !proxyError &&
+      !(error instanceof OAuthError)
+    ) {
       await scheduleHealthUpdate(
         context,
         recordProviderFailure(env, provider.id, requestId, "catalog"),
@@ -467,11 +504,21 @@ function codexModelIds(
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
   contextManagementModelIds: Set<string> = new Set(),
+  nativeModels: JsonObject[] = [],
 ): JsonObject[] {
-  return codexCatalogModels
+  const nativeById = new Map(
+    nativeModels
+      .filter(
+        (model) => typeof model.id === "string" && clientModelIds.has(model.id),
+      )
+      .map((model) => [model.id, model]),
+  );
+  const standard = codexCatalogModels
     .filter(
       (model) =>
-        typeof model.slug === "string" && clientModelIds.has(model.slug),
+        typeof model.slug === "string" &&
+        clientModelIds.has(model.slug) &&
+        !nativeById.has(model.slug),
     )
     .map((model) => {
       if (model.slug !== "gpt-6-astra") {
@@ -497,6 +544,46 @@ export function aggregateCodexModels(
         },
       };
     });
+  // Native aliases must not inherit OpenAI-only capabilities from a matching slug.
+  // Unknown limits remain null, allowing Codex's configured fallback to apply.
+  return [
+    ...standard,
+    ...[...nativeById.values()].map((model, index) => ({
+      slug: model.id,
+      display_name: model.display_name ?? model.id,
+      description: "Antigravity account model",
+      default_reasoning_level:
+        model.supports_thinking === true ? "medium" : null,
+      supported_reasoning_levels:
+        model.supports_thinking === true
+          ? ["low", "medium", "high"].map((effort) => ({
+              effort,
+              description: `${effort} thinking budget`,
+            }))
+          : [],
+      shell_type: "shell_command",
+      visibility: "list",
+      supported_in_api: true,
+      priority: index,
+      base_instructions: "",
+      supports_reasoning_summaries: model.supports_thinking === true,
+      default_reasoning_summary: "none",
+      support_verbosity: false,
+      apply_patch_tool_type: "freeform",
+      truncation_policy: { mode: "bytes", limit: 10000 },
+      context_window:
+        typeof model.context_window === "number" ? model.context_window : null,
+      max_context_window:
+        typeof model.context_window === "number" ? model.context_window : null,
+      effective_context_window_percent: 95,
+      supports_parallel_tool_calls: true,
+      experimental_supported_tools: [],
+      input_modalities: model.input_modalities ?? ["text"],
+      supports_experimental_context: false,
+      supports_search_tool: false,
+      node_repl_disabled: true,
+    })),
+  ];
 }
 
 function isCodexUserAgent(request: Request): boolean {
@@ -530,37 +617,47 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     // value the upstream did provide. Claude Desktop Discovery needs it.
     return { name: id, ...model, id };
   }
-  const catalog = codexModelBySlug.get(id);
-  const inputModalities = Array.isArray(catalog?.input_modalities)
-    ? (catalog.input_modalities as unknown[])
-    : [];
+  const catalog =
+    model.owned_by === "antigravity" ? undefined : codexModelBySlug.get(id);
+  const inputModalities = Array.isArray(model.input_modalities)
+    ? model.input_modalities
+    : Array.isArray(catalog?.input_modalities)
+      ? (catalog.input_modalities as unknown[])
+      : [];
   const supportsImages = inputModalities.includes("image");
   const supportsPdf = inputModalities.includes("pdf");
   const supportsCodeExecution =
     catalog !== undefined &&
     typeof catalog.node_repl_disabled === "boolean" &&
     !catalog.node_repl_disabled;
-  const supportedEffortLevels = Array.isArray(
-    catalog?.supported_reasoning_levels,
-  )
-    ? (catalog.supported_reasoning_levels as unknown[])
-        .filter(
-          (entry): entry is { effort?: unknown } =>
-            typeof entry === "object" && entry !== null,
-        )
-        .map((entry) => entry.effort)
-        .filter((effort): effort is string => typeof effort === "string")
-    : [];
+  const supportedEffortLevels =
+    model.supports_thinking === true
+      ? ["low", "medium", "high"]
+      : Array.isArray(catalog?.supported_reasoning_levels)
+        ? (catalog.supported_reasoning_levels as unknown[])
+            .filter(
+              (entry): entry is { effort?: unknown } =>
+                typeof entry === "object" && entry !== null,
+            )
+            .map((entry) => entry.effort)
+            .filter((effort): effort is string => typeof effort === "string")
+        : [];
   const supportsEffort = supportedEffortLevels.length > 0;
   const maxInputTokens =
-    typeof catalog?.max_context_window === "number"
-      ? catalog.max_context_window
-      : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+    typeof model.context_window === "number"
+      ? model.context_window
+      : typeof catalog?.max_context_window === "number"
+        ? catalog.max_context_window
+        : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
 
   const supports1mContext = maxInputTokens >= ANTHROPIC_1M_CONTEXT_TOKENS;
 
   const displayName =
-    typeof catalog?.display_name === "string" ? catalog.display_name : id;
+    typeof model.display_name === "string"
+      ? model.display_name
+      : typeof catalog?.display_name === "string"
+        ? catalog.display_name
+        : id;
   const effortCapability = {
     supported: supportsEffort,
     low: { supported: supportedEffortLevels.includes("low") },
@@ -584,13 +681,16 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     max_input_tokens: maxInputTokens,
     // The catalog publishes no output-token field for any model, so this is the
     // Claude Code default for unknown models rather than a per-model limit.
-    max_tokens: ANTHROPIC_MODEL_MAX_TOKENS,
+    max_tokens:
+      typeof model.max_output_tokens === "number"
+        ? model.max_output_tokens
+        : ANTHROPIC_MODEL_MAX_TOKENS,
     capabilities: {
       // The Codex catalog has no per-model equivalent for these two, and the
       // gateway cannot probe an upstream for them, so they report the protocol
       // default rather than a verified per-model value.
-      batch: { supported: true },
-      citations: { supported: true },
+      batch: { supported: model.owned_by !== "antigravity" },
+      citations: { supported: model.owned_by !== "antigravity" },
       code_execution: { supported: supportsCodeExecution },
       // Three named Anthropic beta strategies with nothing equivalent in the
       // Codex catalog. Reasoning-summary support says nothing about them, so
@@ -810,6 +910,10 @@ function modelsPayload(
             results.filter(
               ({ provider }) => provider.supports_context_management,
             ),
+            routesByProvider,
+          ),
+          aggregateStandardModels(
+            results.filter(({ provider }) => provider.type === "antigravity"),
             routesByProvider,
           ),
         ),

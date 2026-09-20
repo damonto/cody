@@ -1,11 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
+import type { ProviderHealthSnapshot } from "../../config/types.ts";
+import { configureLogging } from "../../shared/log.ts";
 import {
   ProviderHealthState,
   type StoredProviderHealthState,
 } from "./health.ts";
-import { configureLogging } from "../../shared/log.ts";
-import type { ProviderHealthSnapshot } from "../../config/types.ts";
 
 const HEALTH_STORAGE_KEY = "health";
 

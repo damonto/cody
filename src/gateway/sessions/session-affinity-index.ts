@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
-import { SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE } from "../routing/affinity.ts";
 import { configureLogging } from "../../shared/log.ts";
+import { SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE } from "../routing/affinity.ts";
 
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 

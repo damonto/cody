@@ -119,7 +119,17 @@ export function validateModelPolicyReferences(
 }
 
 export function validationMessage(error: z.core.$ZodError): string {
-  return error.issues
+  const issues = error.issues.flatMap((issue) => {
+    if (
+      issue.code === "invalid_union" &&
+      issue.errors &&
+      issue.errors.length > 0
+    ) {
+      return issue.errors.flat();
+    }
+    return [issue];
+  });
+  return issues
     .map(
       (issue) => `${issue.path.join(".") || "Configuration"}: ${issue.message}`,
     )

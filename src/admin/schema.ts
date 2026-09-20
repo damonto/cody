@@ -1,12 +1,9 @@
 import { z } from "zod";
 import { modelPolicySchema, tokenCountSchema } from "../billing/schema.ts";
 import {
-  clientSchema,
   identifierSchema,
   maskedConfigurationSchema,
 } from "../config/schema.ts";
-import { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
-export { reportQuerySchema } from "../reporting/query.ts";
 
 export const versionSchema = z.strictObject({ version: tokenCountSchema });
 export const rollbackSchema = versionSchema.extend({
@@ -20,11 +17,6 @@ export const providerCredentialIdSchema = z.object({
   id: identifierSchema,
   credentialId: identifierSchema,
 });
-export const apiKeySchema = clientSchema
-  .pick({ api_key: true })
-  .refine(({ api_key }) => api_key !== SECRET_PLACEHOLDER, {
-    message: "Invalid API credential",
-  });
 export const priceHistoryQuerySchema = z.object({
   provider_id: z.string().min(1).max(256),
   model: z.string().min(1).max(256),

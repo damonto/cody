@@ -33,16 +33,21 @@ import { cn } from "@/lib/utils";
 export function PageHeading({
   title,
   description,
+  badge,
   children,
 }: {
   title: string;
   description: string;
+  badge?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          {badge}
+        </div>
         <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
       </div>
       {children}
@@ -74,7 +79,7 @@ export function ErrorNotice({
       <AlertDescription>
         <p>{typeof error === "string" ? error : error.message}</p>
         {retry && (
-          <Button variant="outline" size="sm" onClick={retry}>
+          <Button type="button" variant="outline" size="sm" onClick={retry}>
             Try again
           </Button>
         )}

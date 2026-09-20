@@ -18,8 +18,8 @@ export interface UpstreamTransport {
 }
 
 export function createUpstreamTransport(
-  provider: ProviderConfig,
-  credential: ProviderCredentialConfig,
+  provider: Pick<ProviderConfig, "id" | "proxy_group">,
+  credential: Pick<ProviderCredentialConfig, "id" | "proxy_group">,
   context?: ProxyTransportContext,
 ): UpstreamTransport {
   const selection = effectiveProxyGroup(provider, credential);

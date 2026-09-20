@@ -1,15 +1,15 @@
+import type { GatewayConfig } from "../../config/types.ts";
+import { prepareProviderRequest } from "../../providers/index.ts";
+import { errorMessage, logError } from "../../shared/log.ts";
 import {
-  recordCredentialFailure,
   healthFailureScope,
+  recordCredentialFailure,
 } from "../health/health.ts";
 import {
   fetchWithConfiguredRetries,
   type FetchWithRetriesResult,
 } from "../http/proxy.ts";
-import type { GatewayConfig } from "../../config/types.ts";
 import type { ProxyFailure } from "../proxies/errors.ts";
-import { prepareProviderRequest } from "../../providers/index.ts";
-import { logError, errorMessage } from "../../shared/log.ts";
 import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
 import {

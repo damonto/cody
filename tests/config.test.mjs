@@ -338,7 +338,9 @@ test("parseConfig requires a non-empty provider credentials array", () => {
     assert.throws(
       () => parseConfig(input),
       (error) =>
-        error instanceof ConfigError &&
+        (error instanceof ConfigError &&
+          error.message ===
+            "providers[0].credentials Invalid input: expected array, received undefined") ||
         error.message === "providers[0].credentials must be a non-empty array",
     );
   }

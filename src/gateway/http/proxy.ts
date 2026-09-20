@@ -1,16 +1,21 @@
-import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import type { NormalizedUsage } from "../../billing/types.ts";
-import { retryResponseUsage } from "../../telemetry/retry.ts";
-import type { RequestMeter } from "../../telemetry/meter.ts";
-import { upstreamSecretValues } from "../routing/credentials.ts";
-import type { UpstreamFetch } from "../transport/index.ts";
+import type {
+  ClientApiKeyConfig,
+  GatewayConfig,
+  ProviderRetryConfig,
+} from "../../config/types.ts";
+import { ProviderRequestError } from "../../providers/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
-import { SocksProxyError } from "../proxies/errors.ts";
+import { OAuthError } from "../../providers/oauth/schema.ts";
+import type { PreparedProviderRequest } from "../../providers/types.ts";
 import {
-  codexTurnMetadata,
-  contextManagementRequested,
-  contextManagementSessionMatches,
-} from "../sessions/context-management-protocol.ts";
+  bounded,
+  elapsedMs,
+  errorMessage,
+  type RequestLogContext,
+} from "../../shared/log.ts";
+import type { RequestMeter } from "../../telemetry/meter.ts";
+import { retryResponseUsage } from "../../telemetry/retry.ts";
 import {
   healthFailureScope,
   recordCredentialFailure,
@@ -19,23 +24,21 @@ import {
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "../health/health.ts";
-import { apiError } from "./http.ts";
-import {
-  bounded,
-  elapsedMs,
-  errorMessage,
-  type RequestLogContext,
-} from "../../shared/log.ts";
 import { requestProtocol, type InferencePath } from "../protocol.ts";
+import { SocksProxyError } from "../proxies/errors.ts";
+import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   resolveModelRoute,
   selectAvailableProviderWithDetails,
 } from "../routing/routing.ts";
-import type {
-  ClientApiKeyConfig,
-  GatewayConfig,
-  ProviderRetryConfig,
-} from "../../config/types.ts";
+import {
+  codexTurnMetadata,
+  contextManagementRequested,
+  contextManagementSessionMatches,
+} from "../sessions/context-management-protocol.ts";
+import type { UpstreamFetch } from "../transport/index.ts";
+import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
+import { apiError } from "./http.ts";
 import {
   hasJsonUpstreamError,
   upstreamErrorStatusFields,
@@ -491,16 +494,51 @@ export async function handleInference(
     },
   });
 
-  const prepared = await prepareProviderRequest(
-    provider,
-    selectedCredential,
-    {
-      request,
-      endpoint: upstreamPath,
-      transport: "http",
-    },
-    { config, env, context, requestLog, requestId },
-  );
+  let prepared: PreparedProviderRequest;
+  try {
+    if (
+      provider.type === "antigravity" &&
+      rawBody.byteLength > 16 * 1024 * 1024
+    )
+      throw new ProviderRequestError(
+        "Antigravity requests must not exceed 16 MiB",
+        413,
+        "request_too_large",
+      );
+    prepared = await prepareProviderRequest(
+      provider,
+      selectedCredential,
+      {
+        request,
+        endpoint: upstreamPath,
+        transport: "http",
+        payload,
+        model: upstreamModel,
+        clientId: client.id,
+        sessionId,
+      },
+      { config, env, context, requestLog, requestId },
+    );
+  } catch (error) {
+    const status = error instanceof ProviderRequestError ? error.status : 503;
+    const code =
+      error instanceof ProviderRequestError
+        ? error.code
+        : "oauth_account_unavailable";
+    requestLog?.warn({
+      outcome: "provider_preparation_failed",
+      error: { code },
+    });
+    meter?.diagnostic(code);
+    return apiError(
+      protocol,
+      status,
+      error instanceof ProviderRequestError || error instanceof OAuthError
+        ? error.message
+        : "The selected provider account is unavailable",
+      { code, requestId },
+    );
+  }
   const { headers } = prepared;
   requestLog?.set({
     upstream: {
@@ -525,12 +563,14 @@ export async function handleInference(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  const body = upstreamBody(rawBody, payload, upstreamModel, modelRewritten);
+  const body =
+    prepared.body ??
+    upstreamBody(rawBody, payload, upstreamModel, modelRewritten);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(
     () =>
       new Request(prepared.url, {
-        method: request.method,
+        method: prepared.method ?? request.method,
         headers,
         body,
         redirect: "manual",
@@ -543,7 +583,9 @@ export async function handleInference(
       ...(meter
         ? {
             observeDiscardedResponse: (response: Response) =>
-              retryResponseUsage(response, protocol),
+              prepared.retryUsage
+                ? prepared.retryUsage(response)
+                : retryResponseUsage(response, protocol),
           }
         : {}),
       onResponse: async (response, attempt) => {
@@ -664,5 +706,18 @@ export async function handleInference(
       recordProviderFailure(env, provider.id, requestId),
     );
   }
-  return upstreamResponse;
+  if (!prepared.transformResponse) return upstreamResponse;
+  try {
+    return await prepared.transformResponse(upstreamResponse);
+  } catch (error) {
+    meter?.diagnostic("invalid_upstream_response");
+    return apiError(
+      protocol,
+      502,
+      error instanceof ProviderRequestError
+        ? error.message
+        : "Antigravity returned an invalid response",
+      { code: "invalid_upstream_response", requestId },
+    );
+  }
 }

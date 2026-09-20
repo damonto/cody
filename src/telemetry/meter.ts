@@ -8,13 +8,13 @@ import {
   type ModelPolicy,
   type NormalizedUsage,
 } from "../billing/types.ts";
-import { logWarn, type LogExecutionContext } from "../shared/log.ts";
-import type { ApiProtocol } from "../gateway/protocol.ts";
 import type { GatewayConfig } from "../config/types.ts";
+import type { ApiProtocol } from "../gateway/protocol.ts";
+import { logWarn, type LogExecutionContext } from "../shared/log.ts";
+import { generationSignal } from "./generation.ts";
 import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
 import type { AttemptRecord, RequestOutcome, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
-import { generationSignal } from "./generation.ts";
 
 export interface UsageSink {
   send(event: UsageEvent): Promise<unknown>;

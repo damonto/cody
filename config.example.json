@@ -99,6 +99,15 @@
         "delays_ms": [500, 1000]
       },
       "type": "ai_gateway"
+    },
+    {
+      "id": "antigravity",
+      "type": "antigravity",
+      "priority": 50,
+      "disabled": true,
+      "proxy_group": "US",
+      "models": [],
+      "credentials": []
     }
   ],
   "api_keys": [

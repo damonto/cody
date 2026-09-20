@@ -7,7 +7,7 @@ import {
   reportBucketMs,
   reportRange,
 } from "../src/reporting/ranges.ts";
-import { reportQuerySchema } from "../src/admin/schema.ts";
+import { reportQuerySchema } from "../src/reporting/query.ts";
 
 test("day, Monday week and month use the chosen reporting time zone", () => {
   const now = Date.parse("2026-09-12T04:30:00Z");

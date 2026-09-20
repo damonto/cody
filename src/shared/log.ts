@@ -15,7 +15,7 @@ const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
 };
 const REDACTED = "[REDACTED]";
 const SENSITIVE_FIELD =
-  /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials)(?:$|[_-])/i;
+  /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials|code_verifier|pkce_verifier|authorization_code|redirect_url|callback_url)(?:$|[_-])/i;
 // Routing identifiers and availability checks are diagnostics, not auth material.
 const CREDENTIAL_DIAGNOSTIC_FIELD =
   /^(?:selected_)?credential_ids?$|^credential_checks$|^selected_credentials$/i;
@@ -25,9 +25,9 @@ const CREDENTIAL_DIAGNOSTIC_FIELD =
 // a catch-all. The patterns intentionally overlap for defense-in-depth.
 const BEARER_PATTERN = /\b(Bearer|Basic)\s+[^\s,;]+/gi;
 const QUERY_SECRET_PATTERN =
-  /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization)\s*=)[^&#\s]+/gi;
+  /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|code|state|code_verifier)\s*=)[^&#\s]+/gi;
 const ASSIGNMENT_SECRET_PATTERN =
-  /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
+  /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential|code_verifier|pkce_verifier|authorization_code)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
 // Catch-all for bare OpenAI-format credentials not already redacted by the patterns above.
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 

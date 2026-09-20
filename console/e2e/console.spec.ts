@@ -63,13 +63,14 @@ test("report ranges, filters, empty states, and mobile navigation work", async (
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   await expect(
-    page.getByRole("link", { name: "Providers", exact: true }),
+    page.getByRole("button", { name: "Providers", exact: true }),
   ).toBeVisible();
-  await page.getByRole("link", { name: "Providers", exact: true }).click();
-  await expect(page).toHaveURL(/\/console\/providers$/);
+  await page.getByRole("button", { name: "Providers", exact: true }).click();
+  await page.getByRole("link", { name: "AI Gateway", exact: true }).click();
+  await expect(page).toHaveURL(/\/console\/providers\/ai-gateway$/);
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("heading", { name: "Providers", exact: true }),
+    page.getByRole("heading", { name: "AI Gateway", exact: true }),
   ).toBeVisible();
   expect(errors).toEqual([]);
   expect(paths.every((path) => path.startsWith("/console/"))).toBe(true);
@@ -88,9 +89,10 @@ test("provider forms preserve credentials, validate credentials, and save before
   await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(dialog).toBeHidden();
   expect(mock.current().config.providers[0].priority).toBe(250);
-  expect(mock.current().config.providers[0].credentials[0].auth.api_key).toBe(
-    "__CODY_SECRET_UNCHANGED__",
-  );
+  expect(mock.current().config.providers[0].credentials[0].auth).toEqual({
+    type: "api_key",
+    api_key: "__CODY_SECRET_UNCHANGED__",
+  });
   expect(
     mock.calls.filter((call) => call.includes("/console/api/config/publish")),
   ).toHaveLength(0);

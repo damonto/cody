@@ -1,17 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 import {
   affinitySelectionIsHighestPriority,
   chooseAffinityCandidate,
   resolveStoredAffinity,
   SESSION_AFFINITY_TTL_MS,
-  type AffinitySelection,
   type AffinityProviderCandidate,
+  type AffinitySelection,
   type SessionAffinityRecord,
   type SessionAffinityRegistration,
   type SessionAffinityResolution,
 } from "../routing/affinity.ts";
-import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 
 const AFFINITY_STORAGE_KEY = "affinity";
 const CONTEXT_OWNER_STORAGE_KEY = "context_owner";

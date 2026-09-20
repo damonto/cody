@@ -8,7 +8,7 @@ import { parseResponse, type InferResponseType } from "hono/client";
 import { z } from "zod";
 import { toast } from "sonner";
 import { createAdminClient } from "../../../src/admin/client";
-import { apiKeySchema } from "../../../src/admin/schema";
+import { apiKeySchema } from "../../../src/admin/credential-schema";
 import type { GatewayConfig } from "../../../src/config/types";
 export type { GatewayConfig } from "../../../src/config/types";
 export type { UsageEvent } from "../../../src/telemetry/types";

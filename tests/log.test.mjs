@@ -10,6 +10,32 @@ import {
   RequestLogContext,
 } from "../src/shared/log.ts";
 
+test("OAuth callback, verifier and token material is redacted without hiding diagnostic codes", () => {
+  const original = console.warn;
+  const entries = [];
+  console.warn = (entry) => entries.push(entry);
+  try {
+    configureLogging("warn");
+    logWarn("oauth.failure", {
+      code: "oauth_account_unavailable",
+      code_verifier: "private-verifier",
+      authorization_code: "private-authorization-code",
+      redirect_url:
+        "http://localhost:51121/oauth-callback?code=private-code&state=private-state",
+      access_token: "private-access",
+      refresh_token: "private-refresh",
+      client_secret: "private-client-secret",
+      detail:
+        "Callback http://localhost:51121/oauth-callback?code=private-code&state=private-state code_verifier=private-verifier",
+    });
+  } finally {
+    console.warn = original;
+    configureLogging("info");
+  }
+  assert.doesNotMatch(JSON.stringify(entries), /private-/);
+  assert.equal(entries[0].code, "oauth_account_unavailable");
+});
+
 test("credential diagnostics retain identifiers while auth material stays redacted", () => {
   const original = console.info;
   const entries = [];
