@@ -124,7 +124,8 @@ export class RequestMeter {
     this.send(this.data);
   }
 
-  private send(event: UsageEvent): void {
+  private send(event: UsageEvent): UsageEvent {
+    // The sink owns its copy; this.data remains mutable for later phases.
     const snapshot = structuredClone(event);
     const task = Promise.resolve()
       .then(() => this.options.sink.send(snapshot))
@@ -139,6 +140,7 @@ export class RequestMeter {
     if (snapshot.phase === "finished") this.terminalDelivery = task;
     this.work.push(task);
     this.options.executionContext?.waitUntil?.(task);
+    return snapshot;
   }
 
   async drain(): Promise<boolean> {
@@ -207,7 +209,7 @@ export class RequestMeter {
         status: attempt.status ?? null,
         duration_ms: attempt.duration_ms,
         retry_delay_ms: attempt.retry_delay_ms ?? null,
-        usage: attempt.usage ? structuredClone(attempt.usage) : null,
+        usage: attempt.usage ?? null,
         billing: null,
       }));
   }
@@ -389,8 +391,7 @@ export class RequestMeter {
     }
     if (this.data.observation_issue && this.data.usage.status === "reported")
       this.data.usage.status = "partial";
-    this.send(this.data);
-    return structuredClone(this.data);
+    return this.send(this.data);
   }
 
   response(response: Response): Response {

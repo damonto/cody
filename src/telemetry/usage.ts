@@ -67,7 +67,9 @@ export class UsageAccumulator {
 
   snapshot(policy?: ModelPolicy): NormalizedUsage {
     const tokens = emptyUsage();
-    const raw = structuredClone(this.raw);
+    // Counters are primitive values and detail objects are never mutated in
+    // place by add(), so a shallow copy safely isolates subsequent snapshots.
+    const raw: Record<string, unknown> = { ...this.raw };
     if (Object.keys(raw).length === 0)
       return { tokens, raw, status: "missing" };
     let invalid = false;
