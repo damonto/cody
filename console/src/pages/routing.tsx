@@ -3,11 +3,16 @@ import { useAppForm } from "@/lib/form";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { routeFormSchema } from "../../../src/shared/forms";
-import type {
-  GatewayConfig,
-  ModelRouteConfig,
-} from "../../../src/config/types";
 import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
+import {
+  GLOBAL_SCOPE_KEY,
+  parseScope,
+  routesFor,
+  scopeKey,
+  scopeProviders,
+  setRoutes,
+  type RouteScope,
+} from "@/features/routing/scope";
 import {
   Choice,
   DataTable,
@@ -29,45 +34,14 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldLabel } from "@/components/ui/field";
 
-function routesFor(
-  config: GatewayConfig,
-  scope: string,
-): Record<string, ModelRouteConfig> {
-  if (scope.startsWith("provider:"))
-    return (
-      config.providers.find((provider) => provider.id === scope.slice(8))
-        ?.model_routes ?? {}
-    );
-  if (scope.startsWith("client:"))
-    return (
-      config.api_keys.find((client) => client.id === scope.slice(7))
-        ?.model_routes ?? {}
-    );
-  return config.model_routes;
-}
-function setRoutes(
-  config: GatewayConfig,
-  scope: string,
-  routes: Record<string, ModelRouteConfig>,
-) {
-  if (scope.startsWith("provider:")) {
-    const provider = config.providers.find(
-      (entry) => entry.id === scope.slice(8),
-    );
-    if (provider) provider.model_routes = routes;
-  } else if (scope.startsWith("client:")) {
-    const client = config.api_keys.find((entry) => entry.id === scope.slice(7));
-    if (client) client.model_routes = routes;
-  } else config.model_routes = routes;
-}
 export default function Routing() {
   const draft = useDraft();
   const save = useSaveDraft();
-  const [scope, setScope] = useState("global");
+  const [scopeChoice, setScopeChoice] = useState(GLOBAL_SCOPE_KEY);
   const [editor, setEditor] = useState<{
     snapshot: Draft;
     alias: string;
-    scope: string;
+    scope: RouteScope;
   } | null>(null);
   if (draft.isPending) return <Loading />;
   if (draft.error)
@@ -76,20 +50,21 @@ export default function Routing() {
     );
   const config = draft.data.config;
   const choices = [
-    { value: "global", label: "Global routes" },
+    { value: GLOBAL_SCOPE_KEY, label: "Global routes" },
     ...config.providers.map((provider) => ({
-      value: `provider:${provider.id}`,
+      value: scopeKey({ kind: "provider", id: provider.id }),
       label: `Provider · ${provider.id}`,
     })),
     ...config.api_keys.map((client) => ({
-      value: `client:${client.id}`,
+      value: scopeKey({ kind: "client", id: client.id }),
       label: `Client · ${client.id}`,
     })),
   ];
-  const selected = choices.some((choice) => choice.value === scope)
-    ? scope
-    : "global";
-  const rows = Object.entries(routesFor(config, selected)).map(
+  const selected = choices.some((choice) => choice.value === scopeChoice)
+    ? scopeChoice
+    : GLOBAL_SCOPE_KEY;
+  const scope = parseScope(selected);
+  const rows = Object.entries(routesFor(config, scope)).map(
     ([alias, route]) => ({ alias, ...route }),
   );
   return (
@@ -104,7 +79,7 @@ export default function Routing() {
             setEditor({
               snapshot: structuredClone(draft.data),
               alias: "",
-              scope: selected,
+              scope,
             })
           }
         >
@@ -116,7 +91,7 @@ export default function Routing() {
         <Choice
           label="Route scope"
           value={selected}
-          onChange={setScope}
+          onChange={setScopeChoice}
           options={choices}
         />
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -163,8 +138,8 @@ export default function Routing() {
                 header: "Provider restriction",
                 cell: ({ row }) => (
                   <span className="text-sm text-muted-foreground">
-                    {selected.startsWith("provider:")
-                      ? selected.slice(8)
+                    {scope.kind === "provider"
+                      ? scope.id
                       : (row.original.providers?.join(", ") ??
                         "Any permitted provider")}
                   </span>
@@ -182,7 +157,7 @@ export default function Routing() {
                         setEditor({
                           snapshot: structuredClone(draft.data),
                           alias: row.original.alias,
-                          scope: selected,
+                          scope,
                         })
                       }
                     >
@@ -195,9 +170,9 @@ export default function Routing() {
                       disabled={save.isPending}
                       onClick={() => {
                         const next = structuredClone(config);
-                        const routes = { ...routesFor(next, selected) };
+                        const routes = { ...routesFor(next, scope) };
                         delete routes[row.original.alias];
-                        setRoutes(next, selected, routes);
+                        setRoutes(next, scope, routes);
                         save.mutate({
                           config: next,
                           version: draft.data.version,
@@ -250,21 +225,13 @@ function RouteForm({
   close,
 }: {
   snapshot: Draft;
-  scope: string;
+  scope: RouteScope;
   alias: string;
   close: () => void;
 }) {
   const save = useSaveDraft();
   const existing = routesFor(snapshot.config, scope)[alias];
-  const availableProviders = scope.startsWith("provider:")
-    ? snapshot.config.providers.filter((entry) => entry.id === scope.slice(8))
-    : scope.startsWith("client:")
-      ? snapshot.config.providers.filter((entry) =>
-          snapshot.config.api_keys
-            .find((client) => client.id === scope.slice(7))
-            ?.providers.includes(entry.id),
-        )
-      : snapshot.config.providers;
+  const availableProviders = scopeProviders(snapshot.config, scope);
   const models = [
     ...new Set(availableProviders.flatMap((provider) => provider.models)),
   ];
@@ -285,7 +252,7 @@ function RouteForm({
       }
       routes[parsed.alias] = {
         model: parsed.model,
-        ...(!scope.startsWith("provider:") && parsed.providers.length
+        ...(scope.kind !== "provider" && parsed.providers.length
           ? { providers: parsed.providers }
           : {}),
       };
@@ -331,7 +298,7 @@ function RouteForm({
           </Field>
         )}
       </form.AppField>
-      {!scope.startsWith("provider:") && (
+      {scope.kind !== "provider" && (
         <form.Subscribe selector={(state) => state.values.model}>
           {(model) => (
             <form.AppField name="providers">
