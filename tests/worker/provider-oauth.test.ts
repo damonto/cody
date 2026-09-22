@@ -746,10 +746,18 @@ test("accounts remain bound to their provider and Google identity", async () => 
       : undefined;
   await complete(stub, next.session, "new-user");
   await runDurableObjectAlarm(stub);
-  const session = await accountReply(
-    stub.run({ action: "session", actor, session_id: sessionId(next.session) }),
-    sessionViewSchema,
-  );
+  const session = await vi.waitFor(async () => {
+    const reply = await accountReply(
+      stub.run({
+        action: "session",
+        actor,
+        session_id: sessionId(next.session),
+      }),
+      sessionViewSchema,
+    );
+    expect(reply.status).toBe("error");
+    return reply;
+  });
   expect(session.status).toBe("error");
   expect(session.error).toContain("different Google account");
   expect(await resolve(stub, connection)).toMatchObject({
