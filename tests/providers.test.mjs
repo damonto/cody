@@ -110,43 +110,62 @@ test("AI Gateway adapter supports both request dialects and strips client creden
   );
 });
 
-test("AI Gateway adapter applies the [1m] suffix only when sending Anthropic requests", async () => {
+test("AI Gateway adapter merges the 1M context beta only into Anthropic inference requests", async () => {
   const config = configuration();
   const provider = { ...config.providers[0], anthropic_1m_context: true };
   const credential = provider.credentials[0];
   const payload = { model: "claude-opus-5", max_tokens: 8 };
-  const prepare = (protocol, model = payload.model) =>
+  const prepare = (protocol, headers = {}, endpoint = "messages") =>
     prepareProviderRequest(provider, credential, {
-      request: new Request("https://gateway.example/v1/messages", {
-        headers: { digest: "stale", "content-encoding": "gzip" },
+      request: new Request(`https://gateway.example/v1/${endpoint}`, {
+        headers: { digest: "keep", ...headers },
       }),
-      endpoint: "messages",
+      endpoint,
       transport: "http",
       protocol,
-      payload: { ...payload, model },
-      model,
+      payload,
+      model: payload.model,
     });
 
+  // The body is never rewritten, so the model name and digests stay intact.
   const anthropic = await prepare("anthropic");
-  assert.deepEqual(JSON.parse(anthropic.body), {
-    model: "claude-opus-5[1m]",
-    max_tokens: 8,
+  assert.equal(anthropic.body, undefined);
+  assert.equal(
+    anthropic.headers.get("anthropic-beta"),
+    "context-1m-2025-08-07",
+  );
+  assert.equal(anthropic.headers.get("digest"), "keep");
+
+  // Claude Code's own betas are preserved and the 1M beta is never duplicated.
+  const merged = await prepare("anthropic", {
+    "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07",
   });
-  assert.equal(anthropic.headers.get("digest"), null);
-  assert.equal(anthropic.headers.get("content-encoding"), null);
+  assert.equal(
+    merged.headers.get("anthropic-beta"),
+    "claude-code-20250219,context-1m-2025-08-07",
+  );
+  const appended = await prepare("anthropic", {
+    "anthropic-beta": "claude-code-20250219",
+  });
+  assert.equal(
+    appended.headers.get("anthropic-beta"),
+    "claude-code-20250219,context-1m-2025-08-07",
+  );
 
-  const openai = await prepare("openai");
-  assert.equal(openai.body, undefined);
-  assert.equal(openai.headers.get("digest"), "stale");
-
-  const suffixed = await prepare("anthropic", "claude-opus-5[1m]");
-  assert.equal(suffixed.body, undefined);
+  const openai = await prepare("openai", {}, "responses");
+  assert.equal(openai.headers.get("anthropic-beta"), null);
+  const catalog = await prepare("anthropic", {}, "models");
+  assert.equal(catalog.headers.get("anthropic-beta"), null);
+  const counted = await prepare("anthropic", {}, "messages/count_tokens");
+  assert.equal(counted.headers.get("anthropic-beta"), "context-1m-2025-08-07");
 
   const disabled = await prepareProviderRequest(
     config.providers[0],
     credential,
     {
-      request: new Request("https://gateway.example/v1/messages"),
+      request: new Request("https://gateway.example/v1/messages", {
+        headers: { "anthropic-beta": "claude-code-20250219" },
+      }),
       endpoint: "messages",
       transport: "http",
       protocol: "anthropic",
@@ -155,4 +174,5 @@ test("AI Gateway adapter applies the [1m] suffix only when sending Anthropic req
     },
   );
   assert.equal(disabled.body, undefined);
+  assert.equal(disabled.headers.get("anthropic-beta"), "claude-code-20250219");
 });

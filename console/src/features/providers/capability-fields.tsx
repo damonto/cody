@@ -43,7 +43,7 @@ export const CapabilityFields = withForm({
           {(field) => (
             <field.ToggleField
               label="Default to 1M context"
-              hint="Append [1m] to the upstream model for Anthropic-dialect (Claude Code) requests."
+              hint="Add the context-1m-2025-08-07 beta header to Anthropic-dialect requests."
             />
           )}
         </form.AppField>

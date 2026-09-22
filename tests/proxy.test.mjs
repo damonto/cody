@@ -1399,6 +1399,7 @@ async function captureUpstreamModel(fixture, request) {
       input instanceof Request ? input : new Request(input, init);
     captured = {
       digest: upstream.headers.get("digest"),
+      beta: upstream.headers.get("anthropic-beta"),
       body: JSON.parse(await upstream.text()),
     };
     return new Response(null, { status: 200 });
@@ -1418,19 +1419,20 @@ async function captureUpstreamModel(fixture, request) {
   return captured;
 }
 
-function anthropicRequest(model) {
+function anthropicRequest(model, headers = {}) {
   return new Request("https://gateway.example/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "anthropic-version": "2023-06-01",
       digest: "stale-digest",
+      ...headers,
     },
     body: JSON.stringify({ model, max_tokens: 8, messages: [] }),
   });
 }
 
-test("anthropic_1m_context appends [1m] to Anthropic-dialect upstream models", async () => {
+test("anthropic_1m_context merges the 1M beta into Anthropic-dialect requests", async () => {
   const fixture = inferenceFixture();
   fixture.config.providers[0].anthropic_1m_context = true;
   fixture.config.providers[0].models = ["claude-opus-5"];
@@ -1438,9 +1440,12 @@ test("anthropic_1m_context appends [1m] to Anthropic-dialect upstream models", a
     fixture,
     anthropicRequest("claude-opus-5"),
   );
-  assert.equal(captured.body.model, "claude-opus-5[1m]");
-  // The rewrite invalidates body digests exactly like a model route does.
-  assert.equal(captured.digest, null);
+  // The model name is never rewritten: `[1m]` is a Claude Code client
+  // convention, and the upstream only understands the beta header.
+  assert.equal(captured.body.model, "claude-opus-5");
+  assert.equal(captured.beta, "context-1m-2025-08-07");
+  // The body is untouched, so the client's digest stays valid.
+  assert.equal(captured.digest, "stale-digest");
 });
 
 test("anthropic_1m_context leaves OpenAI-dialect requests untouched", async () => {
@@ -1455,18 +1460,28 @@ test("anthropic_1m_context leaves OpenAI-dialect requests untouched", async () =
     }),
   );
   assert.equal(captured.body.model, "model");
+  assert.equal(captured.beta, null);
   assert.equal(captured.digest, "keep");
 });
 
-test("anthropic_1m_context does not duplicate an existing [1m] suffix", async () => {
+test("anthropic_1m_context keeps Claude Code's betas and does not duplicate the 1M beta", async () => {
   const fixture = inferenceFixture();
   fixture.config.providers[0].anthropic_1m_context = true;
-  fixture.config.providers[0].models = ["claude-opus-5[1m]"];
-  const captured = await captureUpstreamModel(
+  fixture.config.providers[0].models = ["claude-opus-5"];
+  const already = await captureUpstreamModel(
     fixture,
-    anthropicRequest("claude-opus-5[1m]"),
+    anthropicRequest("claude-opus-5", {
+      "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07",
+    }),
   );
-  assert.equal(captured.body.model, "claude-opus-5[1m]");
+  assert.equal(already.beta, "claude-code-20250219,context-1m-2025-08-07");
+  const merged = await captureUpstreamModel(
+    fixture,
+    anthropicRequest("claude-opus-5", {
+      "anthropic-beta": "claude-code-20250219",
+    }),
+  );
+  assert.equal(merged.beta, "claude-code-20250219,context-1m-2025-08-07");
 });
 
 test("anthropic_1m_context applies after model routes resolve the upstream model", async () => {
@@ -1478,10 +1493,11 @@ test("anthropic_1m_context applies after model routes resolve the upstream model
     fixture,
     anthropicRequest("client-alias"),
   );
-  assert.equal(captured.body.model, "claude-opus-5[1m]");
+  assert.equal(captured.body.model, "claude-opus-5");
+  assert.equal(captured.beta, "context-1m-2025-08-07");
 });
 
-test("Anthropic-dialect models stay unchanged when anthropic_1m_context is off", async () => {
+test("Anthropic-dialect requests stay unchanged when anthropic_1m_context is off", async () => {
   const fixture = inferenceFixture();
   fixture.config.providers[0].models = ["claude-opus-5"];
   const captured = await captureUpstreamModel(
@@ -1489,5 +1505,6 @@ test("Anthropic-dialect models stay unchanged when anthropic_1m_context is off",
     anthropicRequest("claude-opus-5"),
   );
   assert.equal(captured.body.model, "claude-opus-5");
+  assert.equal(captured.beta, null);
   assert.equal(captured.digest, "stale-digest");
 });

@@ -4,29 +4,31 @@ import {
   forwardWebSocketHeaders,
   upstreamUrl,
 } from "../gateway/http/http.ts";
-import {
-  isContextManagementPath,
-  type ApiProtocol,
-} from "../gateway/protocol.ts";
+import { isContextManagementPath } from "../gateway/protocol.ts";
 import type { ProviderAdapter } from "./types.ts";
 
-const ANTHROPIC_1M_SUFFIX = "[1m]";
+/**
+ * Claude enables its 1M context window through this beta. Claude Code adds it
+ * itself when the user picks a `[1m]` model variant and strips the suffix
+ * before sending, so the upstream model name never carries `[1m]`.
+ */
+export const ANTHROPIC_1M_CONTEXT_BETA = "context-1m-2025-08-07";
 
 /**
- * Some gateways enable Claude's 1M context only when the model name carries a
- * `[1m]` suffix. The suffix is applied at send time only: routing, logging and
- * metering keep the configured upstream model name.
+ * Merges the 1M context beta into the forwarded `anthropic-beta` header. The
+ * client's own betas are kept in order and the beta is never duplicated. The
+ * body is untouched, so routing, logging, metering and digests all stay valid.
  */
-function sentModel(
-  provider: AiGatewayProviderConfig,
-  protocol: ApiProtocol,
-  model: string,
-): string {
-  return provider.anthropic_1m_context &&
-    protocol === "anthropic" &&
-    !model.endsWith(ANTHROPIC_1M_SUFFIX)
-    ? `${model}${ANTHROPIC_1M_SUFFIX}`
-    : model;
+function addAnthropic1mBeta(headers: Headers): void {
+  const betas = (headers.get("anthropic-beta") ?? "")
+    .split(",")
+    .map((beta) => beta.trim())
+    .filter((beta) => beta.length > 0);
+  if (betas.includes(ANTHROPIC_1M_CONTEXT_BETA)) return;
+  headers.set(
+    "anthropic-beta",
+    [...betas, ANTHROPIC_1M_CONTEXT_BETA].join(","),
+  );
 }
 
 export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
@@ -43,11 +45,7 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
     }
     return true;
   },
-  prepare(
-    provider,
-    credential,
-    { request, endpoint, transport, protocol, payload, model },
-  ) {
+  prepare(provider, credential, { request, endpoint, transport, protocol }) {
     const url = upstreamUrl(provider, endpoint, new URL(request.url).search);
     if (transport === "websocket") {
       return {
@@ -56,27 +54,16 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
       };
     }
     const headers = forwardRequestHeaders(request, credential.token);
-    const upstreamModel =
-      model === undefined ? undefined : sentModel(provider, protocol, model);
+    // Inference only: the model list and context-management calls carry no
+    // Anthropic message body for the beta to apply to.
     if (
-      payload === undefined ||
-      upstreamModel === undefined ||
-      upstreamModel === model
+      provider.anthropic_1m_context &&
+      protocol === "anthropic" &&
+      endpoint !== "models" &&
+      !isContextManagementPath(endpoint)
     ) {
-      return { url, headers };
+      addAnthropic1mBeta(headers);
     }
-    // The body changes, so digests computed over the client bytes are stale.
-    for (const name of [
-      "content-md5",
-      "digest",
-      "content-digest",
-      "content-encoding",
-    ])
-      headers.delete(name);
-    return {
-      url,
-      headers,
-      body: JSON.stringify({ ...payload, model: upstreamModel }),
-    };
+    return { url, headers };
   },
 };
