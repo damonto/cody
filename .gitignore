@@ -11,6 +11,7 @@ config.local.json
 .claude
 .tmp*
 refs/
+.mcp.json
 
 # Browser test artifacts
 console/test-results/

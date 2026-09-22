@@ -1,7 +1,7 @@
 {
   "models": [
     {
-      "slug": "claude-fable-5",
+      "slug": "claude-fable-5-1",
       "prefer_websockets": false,
       "support_verbosity": true,
       "default_verbosity": "low",
@@ -31,7 +31,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "comp_hash": "3000",
-      "display_name": "Fable 5",
+      "display_name": "Fable 5.1",
       "description": "Next-generation intelligence for long-running agents",
       "shell_type": "shell_command",
       "visibility": "list",
