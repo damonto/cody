@@ -32,7 +32,12 @@ export const CapabilityFields = withForm({
           )}
         </form.AppField>
         <form.AppField name="supports_web_search">
-          {(field) => <field.ToggleField label="Native web search" />}
+          {(field) => (
+            <field.ToggleField
+              label="Native web search"
+              hint="Allow this AI Gateway provider to handle alpha/search requests; configured search settings still apply."
+            />
+          )}
         </form.AppField>
         <form.AppField name="anthropic_1m_context">
           {(field) => (
