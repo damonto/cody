@@ -29,6 +29,18 @@ const GENERATION_FIELDS = new Map([
   ["response.image_generation_call.partial_image", "partial_image_b64"],
 ]);
 
+/**
+ * Classifies streaming delta events that carry only content: they can affect
+ * first-token timing but never usage, identity, or completion state.
+ */
+export function deltaSignal(type: string): Signal | null {
+  if (type === "content_block_delta") return "text";
+  if (TEXT_FIELDS.has(type) && type.endsWith(".delta")) return "text";
+  if (GENERATION_FIELDS.has(type) && type.endsWith(".delta"))
+    return "generation";
+  return null;
+}
+
 function nonempty(value: unknown): boolean {
   return typeof value === "string" && value.length > 0;
 }

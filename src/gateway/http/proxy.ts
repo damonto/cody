@@ -38,6 +38,7 @@ import {
 } from "../sessions/context-management-protocol.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
 import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
+import { rewriteModel } from "./model-rewrite.ts";
 import { apiError } from "./http.ts";
 import {
   hasJsonUpstreamError,
@@ -277,18 +278,21 @@ function parseInferencePayload(text: string): InferencePayload {
 }
 
 /**
- * Serializes the upstream request body after a model rewrite, or passes the
- * original bytes through untouched when nothing changed.
+ * Rewrites the upstream request body after a model rewrite, or passes the
+ * original bytes through untouched when nothing changed. The rewrite splices
+ * only the top-level `model` string in the client's own text, so large bodies
+ * are never re-serialized; a body the splice cannot handle is re-serialized.
  */
 export function upstreamBody(
   rawBody: Uint8Array<ArrayBuffer>,
   payload: InferencePayload,
   upstreamModel: string,
   changed: boolean,
+  originalText?: string,
 ): BodyInit {
-  return changed
-    ? JSON.stringify({ ...payload, model: upstreamModel })
-    : rawBody;
+  if (!changed) return rawBody;
+  const text = originalText ?? new TextDecoder().decode(rawBody);
+  return rewriteModel(text, payload, upstreamModel);
 }
 
 export async function handleInference(
@@ -566,7 +570,7 @@ export async function handleInference(
   }
   const body =
     prepared.body ??
-    upstreamBody(rawBody, payload, upstreamModel, modelRewritten);
+    upstreamBody(rawBody, payload, upstreamModel, modelRewritten, originalText);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(
     () =>

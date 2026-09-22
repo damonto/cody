@@ -9,6 +9,7 @@ import { app } from "../../src/worker.ts";
 import { DAY_MS, HOUR_MS, reportRange } from "../../src/reporting/ranges.ts";
 import {
   cleanupRequests,
+  expirePendingRequests,
   ingestUsage,
   reportDimensions,
   requestDetail,
@@ -405,6 +406,45 @@ test("historic sources and costs survive request retention", async () => {
   expect(
     (await requestList(bindings.CODY_DB, range, {}, { limit: 10 })).items,
   ).toEqual([]);
+});
+
+test("abandoned pending requests are finalized as failed and rolled up", async () => {
+  const stale = usage("stale", now - HOUR_MS);
+  const fresh = usage("fresh", now - 60_000);
+  for (const event of [stale, fresh]) {
+    await ingestUsage(bindings.CODY_DB, {
+      ...event,
+      phase: "started",
+      sequence: 1,
+      finished_at: null,
+      outcome: "pending",
+      duration_ms: null,
+    });
+  }
+  // Other tests may leave their own pending rows behind; this one must be among them.
+  expect(
+    await expirePendingRequests(bindings.CODY_DB, 15 * 60_000, now),
+  ).toBeGreaterThanOrEqual(1);
+  const detail = await requestDetail(bindings.CODY_DB, "stale");
+  expect(detail?.phase).toBe("finished");
+  expect(detail?.outcome).toBe("failed");
+  expect(detail?.finished_at).toBe(now);
+  expect(detail?.duration_ms).toBe(HOUR_MS);
+  expect(detail?.diagnostic_code).toBe("worker_terminated");
+  expect((await requestDetail(bindings.CODY_DB, "fresh"))?.outcome).toBe(
+    "pending",
+  );
+  const range = reportRange("total", "UTC", now);
+  const result = await summary(bindings.CODY_DB, range, {});
+  expect(result.totals.failed_count).toBe(1);
+  // A late terminal event for the expired request no longer replaces the row.
+  await ingestUsage(bindings.CODY_DB, stale);
+  expect((await requestDetail(bindings.CODY_DB, "stale"))?.outcome).toBe(
+    "failed",
+  );
+  expect(await expirePendingRequests(bindings.CODY_DB, 15 * 60_000, now)).toBe(
+    0,
+  );
 });
 
 test("quality drilldowns include only completed requests matching the same dimensions", async () => {

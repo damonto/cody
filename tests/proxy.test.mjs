@@ -145,23 +145,29 @@ test("a rewritten body changes only the model value semantically", () => {
   });
 });
 
-test("a rewritten body serializes payload mutations", () => {
-  // Serializing the parsed payload must pick up any mutations made before the
-  // body is rewritten, even when the model itself is unchanged.
-  const original = '{"model":"grok-4.5","messages":[]}';
-  const payload = JSON.parse(original);
-  payload.system = [{ type: "text", text: "marker" }];
+test("a rewritten body splices only the model string into the client bytes", () => {
+  const original =
+    '{\n  "stream": true,\n  "input": [{"model": "inner"}],\n  "model": "gpt-5.6-sol",\n  "n": {"model": "x"}\n}';
   const body = upstreamBody(
     new TextEncoder().encode(original),
-    payload,
+    JSON.parse(original),
     "grok-4.5",
     true,
+    original,
   );
-  assert.deepEqual(JSON.parse(body), {
-    model: "grok-4.5",
-    messages: [],
-    system: [{ type: "text", text: "marker" }],
-  });
+  assert.equal(body, original.replace('"gpt-5.6-sol"', '"grok-4.5"'));
+  assert.equal(JSON.parse(body).model, "grok-4.5");
+});
+
+test("a rewritten body falls back to serialization when the key is escaped", () => {
+  const original = '{"\\u006dodel":"grok-4.5","messages":[]}';
+  const body = upstreamBody(
+    new TextEncoder().encode(original),
+    JSON.parse(original),
+    "other",
+    true,
+  );
+  assert.deepEqual(JSON.parse(body), { model: "other", messages: [] });
 });
 
 test("session identifiers use header, metadata, then search id precedence", () => {

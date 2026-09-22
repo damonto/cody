@@ -5,7 +5,11 @@ import { DEFAULT_REPORTING } from "./billing/config.ts";
 import { ControlStore } from "./control/store.ts";
 import { gatewayRoutes } from "./gateway/app.ts";
 import { gatewayNotFound } from "./gateway/handler.ts";
-import { cleanupRequests, ingestUsage } from "./reporting/store.ts";
+import {
+  cleanupRequests,
+  expirePendingRequests,
+  ingestUsage,
+} from "./reporting/store.ts";
 import { parseUsageEvent } from "./telemetry/schema.ts";
 
 export { ConfigPublisher } from "./control/publisher.ts";
@@ -59,6 +63,7 @@ export default {
     const config = state.published_revision
       ? await store.revision(state.published_revision)
       : null;
+    await expirePendingRequests(env.CODY_DB);
     await cleanupRequests(
       env.CODY_DB,
       config?.reporting?.retention_days ?? DEFAULT_REPORTING.retention_days,

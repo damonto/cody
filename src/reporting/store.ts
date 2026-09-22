@@ -507,3 +507,45 @@ export async function cleanupRequests(
     if (result.meta.changes < 1000) break;
   }
 }
+
+export const PENDING_REQUEST_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * Closes requests whose isolate died before the meter could finish them, such
+ * as CPU-limit terminations. The row is finalized in place so the hourly
+ * rollup triggers count it as failed, and the stored event stays consistent.
+ */
+export async function expirePendingRequests(
+  db: D1Database,
+  maxAgeMs = PENDING_REQUEST_MAX_AGE_MS,
+  now = Date.now(),
+): Promise<number> {
+  const cutoff = now - maxAgeMs;
+  let expired = 0;
+  for (let pass = 0; pass < 5; pass++) {
+    const result = await db
+      .prepare(
+        `UPDATE requests SET
+          event_sequence = 2,
+          finished_at = ?1,
+          outcome = 'failed',
+          duration_ms = ?1 - started_at,
+          event_json = json_set(event_json,
+            '$.sequence', 2,
+            '$.phase', 'finished',
+            '$.finished_at', ?1,
+            '$.outcome', 'failed',
+            '$.diagnostic_code', 'worker_terminated',
+            '$.observation_issue', 'stream_abandoned',
+            '$.duration_ms', ?1 - started_at)
+        WHERE request_id IN (
+          SELECT request_id FROM requests
+          WHERE finished_at IS NULL AND started_at < ?2 LIMIT 1000)`,
+      )
+      .bind(now, cutoff)
+      .run();
+    expired += result.meta.changes;
+    if (result.meta.changes < 1000) break;
+  }
+  return expired;
+}

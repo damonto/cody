@@ -11,7 +11,7 @@ import {
 import type { GatewayConfig } from "../config/types.ts";
 import type { ApiProtocol } from "../gateway/protocol.ts";
 import { logWarn, type LogExecutionContext } from "../shared/log.ts";
-import { generationSignal } from "./generation.ts";
+import { deltaSignal, generationSignal } from "./generation.ts";
 import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
 import type { AttemptRecord, RequestOutcome, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
@@ -57,6 +57,13 @@ interface WebSocketMeterOptions extends MeterOptionsBase {
 }
 
 export type MeterOptions = HttpMeterOptions | WebSocketMeterOptions;
+
+const TYPE_PREFIX = /^\{\s*"type"\s*:\s*"([^"\\]{0,160})"/;
+
+/** Reads the event type from the head of an SSE data payload without parsing it. */
+function peekType(data: string, event: string): string {
+  return TYPE_PREFIX.exec(data.slice(0, 200))?.[1] ?? event;
+}
 
 function name(value: unknown): string {
   return typeof value === "string" ? value.slice(0, 256) : "";
@@ -224,6 +231,17 @@ export class RequestMeter {
 
   observe(value: unknown, event = "", at = this.now()): void {
     this.observePayload(value, event, at);
+  }
+
+  /**
+   * Content deltas are the bulk of a stream and only matter until the first
+   * token timings are known, so parsing them afterwards is wasted CPU.
+   */
+  private needsEvent(data: string, event: string): boolean {
+    const signal = deltaSignal(peekType(data, event));
+    if (signal === "text") return this.data.first_text_ms === null;
+    if (signal === "generation") return this.data.ttft_ms === null;
+    return true;
   }
 
   private observeFirstResponse(at: number): void {
@@ -419,6 +437,7 @@ export class RequestMeter {
             this.streamCompleted = true;
           },
           onFirstData: () => this.observeFirstResponse(this.now()),
+          shouldParse: (data, event) => this.needsEvent(data, event),
         })
       : undefined;
     let jsonBody = "";

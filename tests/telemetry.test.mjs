@@ -521,6 +521,46 @@ test("discarded data lines still distinguish DONE from response data at EOF", ()
   }
 });
 
+test("content deltas stop being parsed once first-token timings are known", async () => {
+  const { meter, events } = fixture();
+  meter.select({ providerId: "a", credentialId: "k", model: "real" });
+  const broken = '{"type":"response.output_text.delta","delta":"x", not json';
+  const source = [
+    'data: {"type":"response.created","response":{"id":"resp"}}',
+    'data: {"type":"response.reasoning_text.delta","delta":"think"}',
+    'data: {"type":"response.output_text.delta","delta":"hi"}',
+    "data: " + broken,
+    'data: {"type":"response.completed","response":{"id":"resp","usage":{"input_tokens":3,"output_tokens":2}}}',
+    "",
+  ].join("\n\n");
+  const response = meter.response(
+    new Response(source, { headers: { "content-type": "text/event-stream" } }),
+  );
+  assert.equal(await response.text(), source);
+  await meter.drain();
+  const final = events.at(-1);
+  assert.equal(final.outcome, "success");
+  assert.equal(final.usage.tokens.output_tokens, 2);
+  assert.notEqual(final.ttft_ms, null);
+  assert.notEqual(final.first_text_ms, null);
+  // The malformed delta after the timings were known was skipped, not parsed.
+  assert.equal(final.observation_issue, null);
+});
+
+test("SSE observers skip events the consumer declines to parse", () => {
+  const events = [];
+  const observer = new SseObserver({
+    onEvent: (value) => events.push(value),
+    onIssue: () => {},
+    shouldParse: (data) => !data.includes('"skip"'),
+  });
+  observer.push(
+    'data: {"skip":1}\n\ndata: not json but skipped "skip"\n\ndata: {"keep":1}\n\n',
+  );
+  observer.end();
+  assert.deepEqual(events, [{ keep: 1 }]);
+});
+
 test("one meter emits a terminal event once and retains request-time pricing", async () => {
   const { meter, events } = fixture();
   meter.observe({

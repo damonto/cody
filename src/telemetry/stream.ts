@@ -8,6 +8,8 @@ export interface SseObserverOptions {
   readonly maxEventChars?: number;
   readonly onDone?: () => void;
   readonly onFirstData?: () => void;
+  /** Skip JSON parsing for events the consumer does not need; they are not delivered. */
+  readonly shouldParse?: (data: string, event: string) => boolean;
 }
 
 /** A bounded SSE observer. The forwarding stream never uses decoded bytes. */
@@ -123,6 +125,8 @@ export class SseObserver {
       this.options.onDone?.();
       return;
     }
+    if (this.options.shouldParse && !this.options.shouldParse(text, event))
+      return;
     let value: unknown;
     try {
       value = JSON.parse(text);
