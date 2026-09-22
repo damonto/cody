@@ -167,6 +167,7 @@
                 "default": false,
                 "type": "boolean"
               },
+              "anthropic_1m_context": { "default": false, "type": "boolean" },
               "retry": {
                 "type": "object",
                 "properties": {
@@ -319,6 +320,11 @@
                 "const": false
               },
               "supports_context_management": {
+                "default": false,
+                "type": "boolean",
+                "const": false
+              },
+              "anthropic_1m_context": {
                 "default": false,
                 "type": "boolean",
                 "const": false

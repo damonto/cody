@@ -82,6 +82,7 @@ export class UpstreamWebSocket {
           ),
           endpoint: "responses",
           transport: "websocket",
+          protocol: "openai",
         },
         {
           config,

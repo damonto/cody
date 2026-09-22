@@ -73,6 +73,7 @@ function gatewayConfig(): Omit<GatewayConfig, "providers"> & {
         supports_websocket: true,
         supports_web_search: false,
         supports_context_management: false,
+        anthropic_1m_context: false,
         models: ["upstream-model", "other-model"],
       },
     ],
@@ -844,6 +845,7 @@ test("responses WebSocket skips higher-priority providers without WebSocket supp
     supports_websocket: true,
     supports_web_search: false,
     supports_context_management: false,
+    anthropic_1m_context: false,
     models: ["upstream-model"],
   });
   config.api_keys[0].providers.push("websocket");
@@ -1504,6 +1506,7 @@ test("a later response.create that requires another target closes and rebinds on
       supports_websocket: true,
       supports_web_search: false,
       supports_context_management: false,
+      anthropic_1m_context: false,
       models: ["model-a"],
     },
     {
@@ -1523,6 +1526,7 @@ test("a later response.create that requires another target closes and rebinds on
       supports_websocket: true,
       supports_web_search: false,
       supports_context_management: false,
+      anthropic_1m_context: false,
       models: ["model-b"],
     },
   ];
@@ -1609,6 +1613,7 @@ test("a recovered higher-priority provider changes affinity and requires WebSock
       supports_websocket: true,
       supports_web_search: false,
       supports_context_management: false,
+      anthropic_1m_context: false,
       models: ["upstream-model"],
     },
     {
@@ -1628,6 +1633,7 @@ test("a recovered higher-priority provider changes affinity and requires WebSock
       supports_websocket: true,
       supports_web_search: false,
       supports_context_management: false,
+      anthropic_1m_context: false,
       models: ["upstream-model"],
     },
   ];

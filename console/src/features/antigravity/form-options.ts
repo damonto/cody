@@ -40,6 +40,7 @@ export function newAntigravityProvider(): AntigravityProviderConfig {
     supports_websocket: false,
     supports_context_management: false,
     supports_web_search: false,
+    anthropic_1m_context: false,
   };
 }
 export function antigravityProvider(
@@ -60,6 +61,7 @@ export const settingsEditorSchema = antigravityDraftProviderSchema
     supports_websocket: true,
     supports_context_management: true,
     supports_web_search: true,
+    anthropic_1m_context: true,
   })
   .extend({
     routes: z

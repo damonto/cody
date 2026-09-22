@@ -1390,3 +1390,104 @@ test("metering records routing, retries, pricing and failures without a request 
     globalThis.fetch = originalFetch;
   }
 });
+
+async function captureUpstreamModel(fixture, request) {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
+    captured = {
+      digest: upstream.headers.get("digest"),
+      body: JSON.parse(await upstream.text()),
+    };
+    return new Response(null, { status: 200 });
+  };
+  try {
+    const response = await handleInference(
+      request,
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      new URL(request.url).pathname.replace(/^\/v1\//, ""),
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return captured;
+}
+
+function anthropicRequest(model) {
+  return new Request("https://gateway.example/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      digest: "stale-digest",
+    },
+    body: JSON.stringify({ model, max_tokens: 8, messages: [] }),
+  });
+}
+
+test("anthropic_1m_context appends [1m] to Anthropic-dialect upstream models", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].anthropic_1m_context = true;
+  fixture.config.providers[0].models = ["claude-opus-5"];
+  const captured = await captureUpstreamModel(
+    fixture,
+    anthropicRequest("claude-opus-5"),
+  );
+  assert.equal(captured.body.model, "claude-opus-5[1m]");
+  // The rewrite invalidates body digests exactly like a model route does.
+  assert.equal(captured.digest, null);
+});
+
+test("anthropic_1m_context leaves OpenAI-dialect requests untouched", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].anthropic_1m_context = true;
+  const captured = await captureUpstreamModel(
+    fixture,
+    new Request("https://gateway.example/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", digest: "keep" },
+      body: JSON.stringify({ model: "model", input: "hello" }),
+    }),
+  );
+  assert.equal(captured.body.model, "model");
+  assert.equal(captured.digest, "keep");
+});
+
+test("anthropic_1m_context does not duplicate an existing [1m] suffix", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].anthropic_1m_context = true;
+  fixture.config.providers[0].models = ["claude-opus-5[1m]"];
+  const captured = await captureUpstreamModel(
+    fixture,
+    anthropicRequest("claude-opus-5[1m]"),
+  );
+  assert.equal(captured.body.model, "claude-opus-5[1m]");
+});
+
+test("anthropic_1m_context applies after model routes resolve the upstream model", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].anthropic_1m_context = true;
+  fixture.config.providers[0].models = ["claude-opus-5"];
+  fixture.config.model_routes = { "client-alias": { model: "claude-opus-5" } };
+  const captured = await captureUpstreamModel(
+    fixture,
+    anthropicRequest("client-alias"),
+  );
+  assert.equal(captured.body.model, "claude-opus-5[1m]");
+});
+
+test("Anthropic-dialect models stay unchanged when anthropic_1m_context is off", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].models = ["claude-opus-5"];
+  const captured = await captureUpstreamModel(
+    fixture,
+    anthropicRequest("claude-opus-5"),
+  );
+  assert.equal(captured.body.model, "claude-opus-5");
+  assert.equal(captured.digest, "stale-digest");
+});

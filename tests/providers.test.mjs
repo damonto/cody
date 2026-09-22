@@ -71,6 +71,7 @@ test("AI Gateway adapter supports both request dialects and strips client creden
       request,
       endpoint,
       transport: "http",
+      protocol: "anthropic",
     });
     assert.equal(
       prepared.url,
@@ -107,4 +108,51 @@ test("AI Gateway adapter supports both request dialects and strips client creden
     ),
     true,
   );
+});
+
+test("AI Gateway adapter applies the [1m] suffix only when sending Anthropic requests", async () => {
+  const config = configuration();
+  const provider = { ...config.providers[0], anthropic_1m_context: true };
+  const credential = provider.credentials[0];
+  const payload = { model: "claude-opus-5", max_tokens: 8 };
+  const prepare = (protocol, model = payload.model) =>
+    prepareProviderRequest(provider, credential, {
+      request: new Request("https://gateway.example/v1/messages", {
+        headers: { digest: "stale", "content-encoding": "gzip" },
+      }),
+      endpoint: "messages",
+      transport: "http",
+      protocol,
+      payload: { ...payload, model },
+      model,
+    });
+
+  const anthropic = await prepare("anthropic");
+  assert.deepEqual(JSON.parse(anthropic.body), {
+    model: "claude-opus-5[1m]",
+    max_tokens: 8,
+  });
+  assert.equal(anthropic.headers.get("digest"), null);
+  assert.equal(anthropic.headers.get("content-encoding"), null);
+
+  const openai = await prepare("openai");
+  assert.equal(openai.body, undefined);
+  assert.equal(openai.headers.get("digest"), "stale");
+
+  const suffixed = await prepare("anthropic", "claude-opus-5[1m]");
+  assert.equal(suffixed.body, undefined);
+
+  const disabled = await prepareProviderRequest(
+    config.providers[0],
+    credential,
+    {
+      request: new Request("https://gateway.example/v1/messages"),
+      endpoint: "messages",
+      transport: "http",
+      protocol: "anthropic",
+      payload,
+      model: payload.model,
+    },
+  );
+  assert.equal(disabled.body, undefined);
 });

@@ -1,6 +1,6 @@
 import type { NormalizedUsage } from "../billing/types.ts";
 import type { ProviderConfig } from "../config/types.ts";
-import type { GatewayEndpoint } from "../gateway/protocol.ts";
+import type { GatewayEndpoint, ApiProtocol } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
 import type { UpstreamTransport } from "../gateway/transport/index.ts";
 import type { ResolvedCredentialFor } from "./credentials.ts";
@@ -22,6 +22,8 @@ export interface ProviderRequest {
   readonly request: Request;
   readonly endpoint: ProviderEndpoint;
   readonly transport: ProviderTransport;
+  /** Request dialect, resolved by the gateway with `requestProtocol`. */
+  readonly protocol: ApiProtocol;
   readonly payload?: Readonly<Record<string, unknown>>;
   readonly model?: string;
   readonly clientId?: string;

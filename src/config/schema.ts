@@ -230,6 +230,7 @@ export const aiGatewayProviderSchema = z.strictObject({
   supports_websocket: boolean.default(false),
   supports_web_search: boolean.default(false),
   supports_context_management: boolean.default(false),
+  anthropic_1m_context: boolean.default(false),
   retry: retrySchema.optional(),
   model_routes: routes(providerRouteSchema).optional(),
 });
@@ -260,6 +261,7 @@ export const antigravityDraftProviderSchema = aiGatewayProviderSchema
     supports_websocket: z.literal(false).default(false),
     supports_web_search: z.literal(false).default(false),
     supports_context_management: z.literal(false).default(false),
+    anthropic_1m_context: z.literal(false).default(false),
   });
 export const antigravityProviderSchema = antigravityDraftProviderSchema
   .superRefine((provider, context) => {

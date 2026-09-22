@@ -184,6 +184,7 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   assert.equal(config.providers[0].supports_websocket, false);
   assert.equal(config.providers[0].supports_web_search, false);
   assert.equal(config.providers[0].supports_context_management, false);
+  assert.equal(config.providers[0].anthropic_1m_context, false);
   assert.deepEqual(config.providers[0].credentials, [
     {
       id: "primary-key",
@@ -274,11 +275,13 @@ test("parseConfig accepts explicit provider capability flags", () => {
   input.providers[0].supports_websocket = true;
   input.providers[0].supports_web_search = false;
   input.providers[0].supports_context_management = true;
+  input.providers[0].anthropic_1m_context = true;
 
   const config = parseConfig(input);
   assert.equal(config.providers[0].supports_websocket, true);
   assert.equal(config.providers[0].supports_context_management, true);
   assert.equal(config.providers[0].supports_web_search, false);
+  assert.equal(config.providers[0].anthropic_1m_context, true);
 });
 
 test("parseConfig rejects a provider protocol field", () => {
@@ -299,6 +302,7 @@ test("parseConfig rejects non-boolean provider capability flags", () => {
     "supports_websocket",
     "supports_web_search",
     "supports_context_management",
+    "anthropic_1m_context",
   ]) {
     const input = validConfig();
     input.providers[0][field] = "true";

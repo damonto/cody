@@ -34,6 +34,14 @@ export const CapabilityFields = withForm({
         <form.AppField name="supports_web_search">
           {(field) => <field.ToggleField label="Native web search" />}
         </form.AppField>
+        <form.AppField name="anthropic_1m_context">
+          {(field) => (
+            <field.ToggleField
+              label="Default to 1M context"
+              hint="Append [1m] to the upstream model for Anthropic-dialect (Claude Code) requests."
+            />
+          )}
+        </form.AppField>
         <form.AppField name="retry">
           {(field) => (
             <div className="space-y-4 border-t pt-5">

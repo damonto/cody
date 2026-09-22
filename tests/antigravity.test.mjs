@@ -269,6 +269,9 @@ test("Antigravity configuration accepts only implemented OAuth accounts and capa
     (p) => {
       p.supports_web_search = true;
     },
+    (p) => {
+      p.anthropic_1m_context = true;
+    },
   ]) {
     const copy = structuredClone(value);
     mutate(copy.providers[0]);
@@ -918,6 +921,7 @@ test(
       {
         endpoint: "messages/count_tokens",
         transport: "http",
+        protocol: "anthropic",
         request: new Request("https://gateway/v1/messages/count_tokens", {
           signal: cancellation.signal,
           headers: {

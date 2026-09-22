@@ -305,6 +305,7 @@ async function fetchProviderModels(
           request,
           endpoint: "models",
           transport: "http",
+          protocol,
         },
         { config, env, context, requestLog, requestId },
       ),

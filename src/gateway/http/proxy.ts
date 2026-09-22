@@ -512,6 +512,7 @@ export async function handleInference(
         request,
         endpoint: upstreamPath,
         transport: "http",
+        protocol,
         payload,
         model: upstreamModel,
         clientId: client.id,

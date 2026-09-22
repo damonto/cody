@@ -70,6 +70,7 @@ export function newProvider(): ProviderFormValues {
     supports_websocket: false,
     supports_web_search: false,
     supports_context_management: false,
+    anthropic_1m_context: false,
   };
 }
 export const providerFormOptions = formOptions({

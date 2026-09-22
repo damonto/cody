@@ -122,6 +122,7 @@ export async function handleContextManagement(
       request,
       endpoint: path,
       transport: "http",
+      protocol: "openai",
     },
     { config, env, context, requestLog, requestId },
   );
