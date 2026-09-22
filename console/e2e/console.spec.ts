@@ -84,7 +84,7 @@ test("provider forms preserve credentials, validate credentials, and save before
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Priority", { exact: true }).fill("250");
-  await dialog.getByRole("tab", { name: "Upstream credentials" }).click();
+  await dialog.getByRole("tab", { name: "Credentials" }).click();
   await expect(dialog.getByLabel("API key", { exact: true })).toHaveValue("");
   await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(dialog).toBeHidden();

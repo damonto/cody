@@ -111,8 +111,7 @@ export function validateModelPolicyReferences(
       context.addIssue({
         code: "custom",
         path: ["model_policies", index],
-        message:
-          "must reference a declared provider and one of its real upstream models",
+        message: "must reference a declared provider and one of its models",
       });
     }
   }

@@ -104,7 +104,7 @@ export function AntigravitySettingsForm({
             className="space-y-4 data-[state=inactive]:hidden"
           >
             <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium">Upstream models</p>
+              <p className="text-sm font-medium">Models</p>
               <Button
                 type="button"
                 variant="outline"
@@ -205,7 +205,7 @@ export function AntigravitySettingsForm({
                             >
                               {(selected) => (
                                 <Choice
-                                  label="Upstream model"
+                                  label="Model"
                                   value={field.state.value}
                                   onChange={field.handleChange}
                                   options={[

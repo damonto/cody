@@ -71,7 +71,7 @@ export default function Routing() {
     <>
       <PageHeading
         title="Model routes"
-        description="Map client-facing model names to real upstream models."
+        description="Map client model names to provider models."
       >
         <Button
           disabled={!config.providers.length}
@@ -126,7 +126,7 @@ export default function Routing() {
               },
               {
                 id: "model",
-                header: "Upstream model",
+                header: "Model",
                 cell: ({ row }) => (
                   <span className="font-mono text-xs">
                     {row.original.model}
@@ -188,8 +188,8 @@ export default function Routing() {
           />
         ) : (
           <Empty title="No routes in this scope">
-            Clients can use real model names directly. Add a route to introduce
-            an alias or pin the permitted upstream providers.
+            Clients can use provider model names directly. Add a route to
+            introduce an alias or restrict the permitted providers.
           </Empty>
         )}
       </Card>
@@ -285,9 +285,9 @@ function RouteForm({
       <form.AppField name="model">
         {(field) => (
           <Field>
-            <FieldLabel>Real upstream model</FieldLabel>
+            <FieldLabel>Model</FieldLabel>
             <Choice
-              label="Real upstream model"
+              label="Model"
               value={field.state.value}
               onChange={(value) => {
                 field.handleChange(value);

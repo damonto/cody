@@ -7,7 +7,7 @@ async function openProvider(page: Page) {
   await page.goto("/console/providers");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("tab", { name: "Upstream credentials" }).click();
+  await dialog.getByRole("tab", { name: "Credentials" }).click();
   return dialog;
 }
 

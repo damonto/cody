@@ -60,7 +60,7 @@ export default function Providers() {
     <>
       <PageHeading
         title="AI Gateway"
-        description="Manage upstream providers, real model names, and prioritized credentials."
+        description="Manage providers, models, and prioritized credentials."
       >
         <Button onClick={() => edit(-1)}>
           <Plus />
@@ -75,7 +75,7 @@ export default function Providers() {
             providers.filter((provider) => !provider.disabled).length,
           ],
           [
-            "Upstream models",
+            "Models",
             new Set(providers.flatMap((provider) => provider.models)).size,
           ],
         ].map(([title, count]) => (

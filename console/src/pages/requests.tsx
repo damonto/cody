@@ -417,7 +417,7 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
             rows={[
               ["Client", item.client_id || "—"],
               ["Provider", item.provider_id || "—"],
-              ["Upstream credential ID", item.credential_id || "—"],
+              ["Credential ID", item.credential_id || "—"],
               ["Requested model", item.requested_model || "—"],
               ["Routed model", item.model || "—"],
               ["Reported model", item.reported_model || "—"],

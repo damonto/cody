@@ -98,9 +98,7 @@ test("providers select groups and credentials retain explicit group, direct and 
     ["Use provider proxy group", undefined],
   ] as const) {
     await page.getByRole("button", { name: "Configure", exact: true }).click();
-    await dialog
-      .getByRole("tab", { name: "Upstream credentials", exact: true })
-      .click();
+    await dialog.getByRole("tab", { name: "Credentials", exact: true }).click();
     await dialog
       .getByRole("combobox", { name: "Proxy group", exact: true })
       .click();

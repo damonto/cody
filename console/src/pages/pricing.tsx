@@ -31,13 +31,12 @@ export default function Pricing() {
     <>
       <PageHeading
         title="Model pricing"
-        description="Set token rates and context windows for each provider and upstream model."
+        description="Set token rates and context windows for each provider and model."
       />
       {!provider || !model ? (
         <Card className="shadow-none">
           <Empty title="Add a provider and model first">
-            Pricing is shared by all upstream credentials within the same
-            provider.
+            Pricing is shared by all credentials within the same provider.
           </Empty>
         </Card>
       ) : (

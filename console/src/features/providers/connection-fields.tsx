@@ -49,8 +49,8 @@ export const ConnectionFields = withForm({
         <form.AppField name="models">
           {(field) => (
             <field.StringListField
-              label="Upstream models"
-              hint="Real provider model names, one per line. Configure client aliases under Model routes."
+              label="Models"
+              hint="One model name per line. Configure client aliases under Model routes."
             />
           )}
         </form.AppField>

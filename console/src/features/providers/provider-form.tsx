@@ -74,7 +74,7 @@ export function ProviderForm({
       <Tabs defaultValue="connection">
         <TabsList className="w-full">
           <TabsTrigger value="connection">Connection</TabsTrigger>
-          <TabsTrigger value="credentials">Upstream credentials</TabsTrigger>
+          <TabsTrigger value="credentials">Credentials</TabsTrigger>
           <TabsTrigger value="routing">Capabilities & retry</TabsTrigger>
         </TabsList>
         <ConnectionFields

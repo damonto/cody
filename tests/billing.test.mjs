@@ -284,7 +284,7 @@ test("policies are unique per provider and real model, with sorted complete tier
   );
   assert.throws(
     () => parseModelPolicies([{ ...policy, model: "client-alias" }], providers),
-    /real upstream models/,
+    /one of its models/,
   );
   const invalid = structuredClone(policy);
   invalid.pricing.tiers[1].up_to_input_tokens = 300000;
