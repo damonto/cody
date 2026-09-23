@@ -5,7 +5,15 @@ import {
   upstreamUrl,
 } from "../gateway/http/http.ts";
 import { isContextManagementPath } from "../gateway/protocol.ts";
-import type { ProviderAdapter } from "./types.ts";
+import {
+  emulateClaudeCodeRequest,
+  syntheticClaudeCodeIdentity,
+} from "./claude-code.ts";
+import type {
+  PreparedUpstreamRequest,
+  ProviderAdapter,
+  ProviderRuntimeContext,
+} from "./types.ts";
 
 /**
  * Claude enables its 1M context window through this beta. Claude Code adds it
@@ -31,6 +39,39 @@ function addAnthropic1mBeta(headers: Headers): void {
   );
 }
 
+/**
+ * Applies `emulate_claude_code` to one Anthropic inference request. A request
+ * that already looks like Claude Code's main loop is forwarded byte for byte;
+ * any other (permission classifiers, connection tests, other clients) is
+ * reshaped just enough for an upstream that only serves Claude Code traffic.
+ */
+async function emulateClaudeCode(
+  prepared: PreparedUpstreamRequest,
+  payload: Readonly<Record<string, unknown>>,
+  model: string,
+  clientId: string,
+  sessionId: string | undefined,
+  context: ProviderRuntimeContext | undefined,
+): Promise<PreparedUpstreamRequest> {
+  const emulated = emulateClaudeCodeRequest(
+    payload,
+    await syntheticClaudeCodeIdentity(clientId, sessionId),
+  );
+  if (!emulated) return prepared;
+  // The body changes, so digests computed over the client bytes are stale.
+  for (const name of [
+    "content-md5",
+    "digest",
+    "content-digest",
+    "content-encoding",
+  ])
+    prepared.headers.delete(name);
+  context?.requestLog?.mergeSection("inference", {
+    claude_code_emulation: "applied",
+  });
+  return { ...prepared, body: JSON.stringify({ ...emulated, model }) };
+}
+
 export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
   type: "ai_gateway",
   supports(provider, endpoint, transport) {
@@ -45,7 +86,8 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
     }
     return true;
   },
-  prepare(provider, credential, { request, endpoint, transport, protocol }) {
+  prepare(provider, credential, input, context) {
+    const { request, endpoint, transport, protocol, payload, model } = input;
     const url = upstreamUrl(provider, endpoint, new URL(request.url).search);
     if (transport === "websocket") {
       return {
@@ -63,6 +105,23 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
       !isContextManagementPath(endpoint)
     ) {
       addAnthropic1mBeta(headers);
+    }
+    if (
+      provider.emulate_claude_code &&
+      protocol === "anthropic" &&
+      endpoint === "messages" &&
+      payload !== undefined &&
+      model !== undefined &&
+      input.clientId !== undefined
+    ) {
+      return emulateClaudeCode(
+        { url, headers },
+        payload,
+        model,
+        input.clientId,
+        input.sessionId,
+        context,
+      );
     }
     return { url, headers };
   },

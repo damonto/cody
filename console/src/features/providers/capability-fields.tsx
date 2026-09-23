@@ -47,6 +47,14 @@ export const CapabilityFields = withForm({
             />
           )}
         </form.AppField>
+        <form.AppField name="emulate_claude_code">
+          {(field) => (
+            <field.ToggleField
+              label="Emulate Claude Code requests"
+              hint="For upstreams that only serve Claude Code traffic: Anthropic messages requests that do not look like Claude Code (permission classifiers, connection tests, other clients) gain its prompt prefix, a device and session id, and its core tools."
+            />
+          )}
+        </form.AppField>
         <form.AppField name="retry">
           {(field) => (
             <div className="space-y-4 border-t pt-5">

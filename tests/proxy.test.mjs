@@ -1514,3 +1514,247 @@ test("Anthropic-dialect requests stay unchanged when anthropic_1m_context is off
   assert.equal(captured.beta, null);
   assert.equal(captured.digest, "stale-digest");
 });
+
+const CLAUDE_CODE_ATTRIBUTION =
+  "x-anthropic-billing-header: cc_version=2.1.278.b3a; cc_entrypoint=cli;";
+const CLAUDE_CODE_PREFIX =
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function claudeCodeUserId(sessionId) {
+  return JSON.stringify({
+    device_id: "device-1",
+    account_uuid: "",
+    session_id: sessionId,
+  });
+}
+
+function messagesRequest(body, headers = {}) {
+  return new Request("https://gateway.example/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      digest: "stale-digest",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+/** A request shaped like Claude Code's main loop for the given conversation. */
+function claudeCodeMainLoopRequest(sessionId) {
+  return messagesRequest({
+    model: "claude-opus-5",
+    max_tokens: 8,
+    system: [
+      { type: "text", text: CLAUDE_CODE_ATTRIBUTION },
+      {
+        type: "text",
+        text: CLAUDE_CODE_PREFIX,
+        cache_control: { type: "ephemeral" },
+      },
+      { type: "text", text: "Main loop instructions." },
+    ],
+    tools: [
+      { name: "Bash", description: "run", input_schema: { type: "object" } },
+      { name: "Read", description: "read", input_schema: { type: "object" } },
+      { name: "Edit", description: "edit", input_schema: { type: "object" } },
+    ],
+    metadata: { user_id: claudeCodeUserId(sessionId) },
+    messages: [{ role: "user", content: "hello" }],
+  });
+}
+
+/** Claude Code's permission classifier: its own attribution block, no prefix, no tools. */
+function claudeCodeClassifierRequest(sessionId, extra = {}) {
+  return messagesRequest({
+    model: "claude-opus-5",
+    max_tokens: 64,
+    system: [
+      { type: "text", text: CLAUDE_CODE_ATTRIBUTION },
+      { type: "text", text: "You are a permission classifier." },
+    ],
+    temperature: 0,
+    thinking: { type: "disabled" },
+    metadata: { user_id: claudeCodeUserId(sessionId) },
+    messages: [{ role: "user", content: "Should `ls` be allowed?" }],
+    ...extra,
+  });
+}
+
+async function captureUpstream(fixture, request) {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
+    captured = {
+      digest: upstream.headers.get("digest"),
+      body: JSON.parse(await upstream.text()),
+    };
+    return new Response(null, { status: 200 });
+  };
+  try {
+    const response = await handleInference(
+      request,
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages",
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return captured;
+}
+
+function emulationFixture() {
+  const fixture = inferenceFixture();
+  fixture.config.providers[0].emulate_claude_code = true;
+  fixture.config.providers[0].models = ["claude-opus-5"];
+  return fixture;
+}
+
+const SESSION = "0f5a2b1c-3d4e-4f60-8a7b-9c0d1e2f3a4b";
+
+test("emulate_claude_code forwards Claude Code's own requests byte for byte", async () => {
+  const captured = await captureUpstream(
+    emulationFixture(),
+    claudeCodeMainLoopRequest(SESSION),
+  );
+  assert.equal(captured.digest, "stale-digest");
+  assert.deepEqual(
+    captured.body.system.map((block) => block.text),
+    [CLAUDE_CODE_ATTRIBUTION, CLAUDE_CODE_PREFIX, "Main loop instructions."],
+  );
+  assert.deepEqual(captured.body.metadata, {
+    user_id: claudeCodeUserId(SESSION),
+  });
+  assert.equal(captured.body.tools.length, 3);
+  assert.equal(captured.body.tool_choice, undefined);
+});
+
+test("emulate_claude_code reshapes a permission classifier request just enough", async () => {
+  const captured = await captureUpstream(
+    emulationFixture(),
+    claudeCodeClassifierRequest(SESSION),
+  );
+  // The body changed, so the client's digest no longer applies.
+  assert.equal(captured.digest, null);
+  assert.deepEqual(captured.body.system, [
+    { type: "text", text: CLAUDE_CODE_ATTRIBUTION },
+    {
+      type: "text",
+      text: "You are Claude Code, Anthropic's official CLI for Claude.",
+    },
+    { type: "text", text: "You are a permission classifier." },
+  ]);
+  // The request already names its device and conversation.
+  assert.deepEqual(captured.body.metadata, {
+    user_id: claudeCodeUserId(SESSION),
+  });
+  assert.deepEqual(
+    captured.body.tools.map((tool) => tool.name),
+    ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+  );
+  assert.deepEqual(captured.body.tool_choice, { type: "none" });
+  // Everything else survives, including the model rewrite target.
+  assert.equal(captured.body.model, "claude-opus-5");
+  assert.equal(captured.body.temperature, 0);
+  assert.deepEqual(captured.body.thinking, { type: "disabled" });
+  assert.deepEqual(captured.body.messages, [
+    { role: "user", content: "Should `ls` be allowed?" },
+  ]);
+});
+
+test("emulate_claude_code presents a connection test as a stable synthetic conversation", async () => {
+  const fixture = emulationFixture();
+  const probe = () =>
+    messagesRequest({
+      model: "claude-opus-5",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "." }],
+    });
+  const first = await captureUpstream(fixture, probe());
+  assert.deepEqual(first.body.system, [
+    {
+      type: "text",
+      text: "You are Claude Code, Anthropic's official CLI for Claude.",
+    },
+  ]);
+  const user = JSON.parse(first.body.metadata.user_id);
+  assert.deepEqual(Object.keys(user), [
+    "device_id",
+    "account_uuid",
+    "session_id",
+  ]);
+  assert.match(user.device_id, /^[0-9a-f]{64}$/);
+  assert.equal(user.account_uuid, "");
+  assert.match(user.session_id, UUID);
+  assert.deepEqual(
+    first.body.tools.map((tool) => tool.name),
+    ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+  );
+  assert.deepEqual(first.body.tool_choice, { type: "none" });
+  assert.equal(first.body.max_tokens, 1);
+  // The same client is always the same device and conversation.
+  const second = await captureUpstream(fixture, probe());
+  assert.equal(second.body.metadata.user_id, first.body.metadata.user_id);
+  // A UUID session named in the header is kept as the conversation.
+  const headed = await captureUpstream(
+    fixture,
+    messagesRequest(
+      { model: "claude-opus-5", max_tokens: 1, messages: [] },
+      { "session-id": SESSION },
+    ),
+  );
+  assert.equal(JSON.parse(headed.body.metadata.user_id).session_id, SESSION);
+  assert.equal(
+    JSON.parse(headed.body.metadata.user_id).device_id,
+    user.device_id,
+  );
+});
+
+test("emulate_claude_code keeps a request's own tools and tool choice", async () => {
+  const captured = await captureUpstream(
+    emulationFixture(),
+    claudeCodeClassifierRequest(SESSION, {
+      tools: [
+        { name: "my_tool", description: "x", input_schema: { type: "object" } },
+      ],
+      tool_choice: { type: "auto" },
+    }),
+  );
+  assert.deepEqual(
+    captured.body.tools.map((tool) => tool.name),
+    ["my_tool", "Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+  );
+  assert.deepEqual(captured.body.tool_choice, { type: "auto" });
+});
+
+test("emulate_claude_code leaves other dialects, endpoints and providers alone", async () => {
+  const fixture = emulationFixture();
+  fixture.config.providers[0].models = ["claude-opus-5", "model"];
+  const openai = await captureUpstreamModel(
+    fixture,
+    new Request("https://gateway.example/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", digest: "keep" },
+      body: JSON.stringify({ model: "model", input: "hello" }),
+    }),
+  );
+  assert.equal(openai.digest, "keep");
+  assert.deepEqual(openai.body, { model: "model", input: "hello" });
+  const disabled = inferenceFixture();
+  disabled.config.providers[0].models = ["claude-opus-5"];
+  const untouched = await captureUpstream(
+    disabled,
+    claudeCodeClassifierRequest(SESSION),
+  );
+  assert.equal(untouched.digest, "stale-digest");
+  assert.equal(untouched.body.tools, undefined);
+  assert.equal(untouched.body.system.length, 2);
+});

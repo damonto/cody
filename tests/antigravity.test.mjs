@@ -272,6 +272,9 @@ test("Antigravity configuration accepts only implemented OAuth accounts and capa
     (p) => {
       p.anthropic_1m_context = true;
     },
+    (p) => {
+      p.emulate_claude_code = true;
+    },
   ]) {
     const copy = structuredClone(value);
     mutate(copy.providers[0]);

@@ -168,6 +168,7 @@
                 "type": "boolean"
               },
               "anthropic_1m_context": { "default": false, "type": "boolean" },
+              "emulate_claude_code": { "default": false, "type": "boolean" },
               "retry": {
                 "type": "object",
                 "properties": {
@@ -325,6 +326,11 @@
                 "const": false
               },
               "anthropic_1m_context": {
+                "default": false,
+                "type": "boolean",
+                "const": false
+              },
+              "emulate_claude_code": {
                 "default": false,
                 "type": "boolean",
                 "const": false

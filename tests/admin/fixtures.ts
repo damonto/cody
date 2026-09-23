@@ -30,6 +30,7 @@ export function config(): Omit<GatewayConfig, "providers"> & {
         supports_web_search: false,
         supports_context_management: false,
         anthropic_1m_context: false,
+        emulate_claude_code: false,
       },
     ],
     api_keys: [

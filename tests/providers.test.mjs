@@ -176,3 +176,81 @@ test("AI Gateway adapter merges the 1M context beta only into Anthropic inferenc
   assert.equal(disabled.body, undefined);
   assert.equal(disabled.headers.get("anthropic-beta"), "claude-code-20250219");
 });
+
+test("AI Gateway adapter applies emulate_claude_code only to Anthropic messages requests", async () => {
+  const config = configuration();
+  const provider = { ...config.providers[0], emulate_claude_code: true };
+  const credential = provider.credentials[0];
+  const payload = { model: "client-model", max_tokens: 1, messages: [] };
+  const prepare = (overrides = {}) =>
+    prepareProviderRequest(
+      overrides.provider ?? provider,
+      credential,
+      {
+        request: new Request("https://gateway.example/v1/messages", {
+          headers: { digest: "stale" },
+        }),
+        endpoint: "messages",
+        transport: "http",
+        protocol: "anthropic",
+        payload,
+        model: "real",
+        clientId: "client",
+        ...overrides.input,
+      },
+      { config: { proxy_groups: [], revision: 1 }, env: {} },
+    );
+
+  const emulated = await prepare();
+  const body = JSON.parse(emulated.body);
+  assert.equal(body.model, "real");
+  assert.deepEqual(body.system, [
+    {
+      type: "text",
+      text: "You are Claude Code, Anthropic's official CLI for Claude.",
+    },
+  ]);
+  assert.match(JSON.parse(body.metadata.user_id).device_id, /^[0-9a-f]{64}$/);
+  assert.deepEqual(body.tool_choice, { type: "none" });
+  assert.equal(emulated.headers.get("digest"), null);
+
+  // A request that already looks like Claude Code is forwarded as it is.
+  const own = await prepare({
+    input: {
+      payload: {
+        ...payload,
+        system: [
+          {
+            type: "text",
+            text: "You are Claude Code, Anthropic's official CLI for Claude.",
+          },
+        ],
+        metadata: {
+          user_id: JSON.stringify({
+            device_id: "d",
+            account_uuid: "",
+            session_id: "0f5a2b1c-3d4e-4f60-8a7b-9c0d1e2f3a4b",
+          }),
+        },
+        tools: ["Bash", "Read", "Edit"].map((name) => ({
+          name,
+          description: "x",
+          input_schema: { type: "object" },
+        })),
+      },
+    },
+  });
+  assert.equal(own.body, undefined);
+  assert.equal(own.headers.get("digest"), "stale");
+
+  for (const overrides of [
+    { input: { protocol: "openai", endpoint: "responses" } },
+    { input: { endpoint: "messages/count_tokens" } },
+    { input: { clientId: undefined } },
+    { provider: config.providers[0] },
+  ]) {
+    const untouched = await prepare(overrides);
+    assert.equal(untouched.body, undefined, JSON.stringify(overrides));
+    assert.equal(untouched.headers.get("digest"), "stale");
+  }
+});
