@@ -13,6 +13,7 @@ import {
   type GatewayEndpoint,
   type InferencePath,
 } from "./protocol.ts";
+import { allowedProviderCandidates } from "./routing/routing.ts";
 import { handleConfiguredWebSearch } from "./search/search.ts";
 import { handleContextManagement } from "./sessions/context-management.ts";
 import { handleSessions } from "./sessions/handlers.ts";
@@ -110,11 +111,24 @@ endpoint(aliases("sessions/*"), "sessions", ["DELETE"], async (r) => {
   );
 });
 
+// Tavily/Exa handle alpha/search unless the settings prefer native search and the
+// client can reach a provider that declares it.
+function shouldUseConfiguredWebSearch(r: GatewayRequest): boolean {
+  const search = r.config.web_search;
+  if (search.mode === "proxy") return false;
+  return (
+    !search.prefer_native ||
+    !allowedProviderCandidates(r.config, r.client).some(
+      ({ provider }) => provider.supports_web_search,
+    )
+  );
+}
+
 async function inference(
   path: InferencePath,
   r: GatewayRequest,
 ): Promise<Response> {
-  if (path === "alpha/search" && r.config.web_search.mode !== "proxy") {
+  if (path === "alpha/search" && shouldUseConfiguredWebSearch(r)) {
     return handleConfiguredWebSearch(
       r.request,
       r.config,

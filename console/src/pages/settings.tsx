@@ -235,6 +235,7 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
                                   : "https://api.tavily.com",
                               api_key: "",
                               max_results: 5,
+                              prefer_native: false,
                             },
                       )
                     }
@@ -247,6 +248,14 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
                 </Field>
                 {field.state.value.mode !== "proxy" && (
                   <>
+                    <form.AppField name="web_search.prefer_native">
+                      {(input) => (
+                        <input.ToggleField
+                          label="Prefer native search"
+                          hint="Forward alpha/search to a provider with native web search when the client API key can reach one; otherwise use the configured search provider."
+                        />
+                      )}
+                    </form.AppField>
                     <form.AppField name="web_search.base_url">
                       {(input) => (
                         <input.TextField label="Search provider URL" />

@@ -247,6 +247,20 @@ async function initialize(stub: Account) {
   }
   throw new Error("Account did not become ready");
 }
+// Account alarms are due immediately, so workerd may fire them on its own
+// before the test does; drive them until the session leaves "initializing".
+async function settleSession(stub: Account, session: SessionView) {
+  for (let i = 0; i < 7; i++) {
+    await runDurableObjectAlarm(stub);
+    const view = await accountReply(
+      stub.run({ action: "session", actor, session_id: sessionId(session) }),
+      sessionViewSchema,
+    );
+    if (view.status !== "initializing") return view;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Session did not leave initialization");
+}
 async function ready(connection?: ProviderConnection, ref?: string) {
   const account = await start(connection, ref);
   await complete(account.stub, account.session);
@@ -503,12 +517,7 @@ test("initialization failure retains tokens across eviction and retries without 
       : undefined;
   const { stub, session } = await start();
   await complete(stub, session);
-  await runDurableObjectAlarm(stub);
-  await runDurableObjectAlarm(stub);
-  const progress = await accountReply(
-    stub.run({ action: "session", actor, session_id: sessionId(session) }),
-    sessionViewSchema,
-  );
+  const progress = await settleSession(stub, session);
   expect(progress).toMatchObject({ status: "error", can_retry: true });
   await evictDurableObject(stub);
   override = undefined;

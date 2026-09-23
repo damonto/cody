@@ -204,6 +204,7 @@ for (const mode of ["tavily", "exa"] as const) {
     const initial = draftFixture();
     initial.config.web_search = {
       mode,
+      prefer_native: false,
       api_key: `saved-${mode}-key`,
       base_url: "https://search.example",
       max_results: 5,
@@ -250,6 +251,7 @@ test("switching search providers cancels a pending reveal and shows only the new
   const initial = draftFixture();
   initial.config.web_search = {
     mode: "tavily",
+    prefer_native: false,
     api_key: "old-search-key",
     base_url: "https://search.example",
     max_results: 5,

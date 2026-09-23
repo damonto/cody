@@ -498,6 +498,7 @@
           "type": "object",
           "properties": {
             "mode": { "type": "string", "const": "tavily" },
+            "prefer_native": { "default": false, "type": "boolean" },
             "api_key": { "type": "string", "minLength": 1 },
             "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
             "max_results": {
@@ -514,6 +515,7 @@
           "type": "object",
           "properties": {
             "mode": { "type": "string", "const": "exa" },
+            "prefer_native": { "default": false, "type": "boolean" },
             "api_key": { "type": "string", "minLength": 1 },
             "base_url": { "type": "string", "pattern": "^https?:\\/\\/" },
             "max_results": {

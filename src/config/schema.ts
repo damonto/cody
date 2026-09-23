@@ -305,6 +305,7 @@ function searchProvider<Mode extends keyof typeof SEARCH_PROVIDERS>(
   const message = `must be between ${defaults.maxResults.min} and ${defaults.maxResults.max} for ${mode}`;
   return z.strictObject({
     mode: z.literal(mode),
+    prefer_native: boolean.default(false),
     api_key: secretSchema,
     base_url: baseUrlSchema.default(defaults.defaultBaseUrl),
     max_results: integer
@@ -503,7 +504,7 @@ export function configurationError(error: z.ZodError): string {
       return "providers[0].base_url is not supported";
     if (
       path === "web_search" &&
-      ["api_key", "base_url", "max_results"].includes(key)
+      ["api_key", "base_url", "max_results", "prefer_native"].includes(key)
     )
       return `${path}.${key} is only supported for Tavily or Exa mode`;
     return `${path}.${key} is not supported`;

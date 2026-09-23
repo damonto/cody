@@ -56,6 +56,7 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 - Context-management sessions pin their provider and credential, fail closed on unavailable bindings, and preserve upstream session ownership by client ID. Auxiliary history/notes calls make one upstream HTTP attempt and never alter inference provider/credential health; keep encrypted payloads and truncation headers intact.
 - All session bindings and indexes use the stable client ID, including ordinary inference. Session requests fail closed if affinity storage is unavailable; do not add credential-keyed compatibility registries or choose identity based on current route capabilities.
 - Schedule health writes with `ExecutionContext.waitUntil` in Workers; direct test callers may use synchronous fallback behavior.
+- `web_search` is global. `mode: "proxy"` forwards `alpha/search` to providers with `supports_web_search`; Tavily or Exa modes handle it in the gateway. Their optional `prefer_native` flag forwards to a provider instead whenever the client API key can reach any enabled provider with `supports_web_search`, decided per key without reading the request model; it never falls back after that decision.
 - User-Agents containing `codex` receive the Codex `{models: [...]}` shape; other clients receive the standard model-list shape.
 
 ## Cloudflare deployment

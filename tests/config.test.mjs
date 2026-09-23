@@ -218,6 +218,7 @@ test("parseConfig selects an explicit web search mode", () => {
     input.web_search = { mode, api_key: `${mode}-key` };
     assert.deepEqual(parseConfig(input).web_search, {
       mode,
+      prefer_native: false,
       base_url: baseUrl,
       api_key: `${mode}-key`,
       max_results: mode === "tavily" ? 5 : 10,
@@ -240,6 +241,14 @@ test("parseConfig accepts provider-specific web search result limits", () => {
   }
 });
 
+test("parseConfig accepts prefer_native for Tavily and Exa modes", () => {
+  for (const mode of ["tavily", "exa"]) {
+    const input = validConfig();
+    input.web_search = { mode, api_key: `${mode}-key`, prefer_native: true };
+    assert.equal(parseConfig(input).web_search.prefer_native, true);
+  }
+});
+
 test("parseConfig validates explicit web search settings", () => {
   const cases = [
     [
@@ -258,6 +267,14 @@ test("parseConfig validates explicit web search settings", () => {
     [
       "web_search.api_key is only supported for Tavily or Exa mode",
       { mode: "proxy", api_key: "unexpected" },
+    ],
+    [
+      "web_search.prefer_native is only supported for Tavily or Exa mode",
+      { mode: "proxy", prefer_native: true },
+    ],
+    [
+      "web_search.prefer_native must be a boolean",
+      { mode: "tavily", api_key: "tavily-key", prefer_native: "yes" },
     ],
     ["web_search.extra is not supported", { mode: "proxy", extra: true }],
   ];

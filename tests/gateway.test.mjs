@@ -700,6 +700,130 @@ test("configured Tavily search returns a provider 404 without upstream fallback"
   assert.deepEqual(urls, ["https://tavily.example/search"]);
 });
 
+test("prefer_native forwards alpha search to a provider with web search support", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.web_search = {
+    mode: "tavily",
+    prefer_native: true,
+    base_url: "https://tavily.example",
+    api_key: "tavily-key",
+    max_results: 4,
+  };
+  const originalFetch = globalThis.fetch;
+  const captured = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured.push({
+      url: request.url,
+      authorization: request.headers.get("authorization"),
+    });
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/alpha/search", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(captured, [
+    {
+      url: "https://primary.example/v1/alpha/search",
+      authorization: "Bearer upstream-key",
+    },
+  ]);
+});
+
+for (const [reason, unreachable] of [
+  ["the native search provider is not on the client key", () => {}],
+  [
+    "the native search provider has no enabled credential",
+    (config) => {
+      config.api_keys[0].providers.push("search");
+      config.providers[1].credentials[0].disabled = true;
+    },
+  ],
+]) {
+  test(`prefer_native uses the configured search provider when ${reason}`, async () => {
+    clearConfigCacheForTests();
+    const config = gatewayConfig();
+    config.providers[0].supports_web_search = false;
+    config.web_search = {
+      mode: "tavily",
+      prefer_native: true,
+      base_url: "https://tavily.example",
+      api_key: "tavily-key",
+      max_results: 4,
+    };
+    config.providers.push({
+      type: "ai_gateway",
+      id: "search",
+      base_url: "https://search.example/v1",
+      credentials: [
+        {
+          id: "search-key",
+          auth: { type: "api_key", api_key: "search-upstream-key" },
+          disabled: false,
+          priority: 100,
+        },
+      ],
+      disabled: false,
+      priority: 50,
+      supports_websocket: false,
+      supports_web_search: true,
+      models: ["grok-4.5"],
+    });
+    unreachable(config);
+    const originalFetch = globalThis.fetch;
+    const urls = [];
+    globalThis.fetch = async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      urls.push(request.url);
+      return Response.json({ detail: { error: "not found" } }, { status: 404 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request("https://gateway.example/v1/alpha/search", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-5.6-sol",
+            commands: { search_query: [{ q: "docs" }] },
+          }),
+        }),
+        testEnv(config),
+        {},
+      );
+      assert.equal(response.status, 404);
+      assert.equal(
+        (await response.json()).error.code,
+        "web_search_upstream_error",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(urls, ["https://tavily.example/search"]);
+  });
+}
+
 test("new HTTP forwarding endpoints accept POST only", async () => {
   clearConfigCacheForTests();
   const env = testEnv(gatewayConfig());

@@ -991,6 +991,7 @@ for (const mode of ["tavily", "exa"] as const) {
     });
     input.web_search = {
       mode,
+      prefer_native: false,
       api_key: "test-search-key",
       base_url: "https://search.example",
       max_results: 5,
@@ -1048,6 +1049,7 @@ for (const path of [
     const input = config();
     input.web_search = {
       mode: "tavily",
+      prefer_native: false,
       api_key: "test-search-key",
       base_url: "https://search.example",
       max_results: 5,
@@ -1126,6 +1128,7 @@ for (const target of ["provider", "search"]) {
     const input = config();
     input.web_search = {
       mode: "tavily",
+      prefer_native: false,
       api_key: "test-search-key",
       base_url: "https://search.example",
       max_results: 5,
