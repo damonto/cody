@@ -77,7 +77,7 @@
       }
     },
     {
-      "slug": "claude-opus-5",
+      "slug": "claude-opus-5-5",
       "prefer_websockets": false,
       "support_verbosity": true,
       "default_verbosity": "low",
@@ -107,7 +107,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "comp_hash": "3000",
-      "display_name": "Opus 5",
+      "display_name": "Opus 5.5",
       "description": "For complex agentic coding and enterprise work",
       "shell_type": "shell_command",
       "visibility": "list",
