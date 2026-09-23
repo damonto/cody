@@ -514,6 +514,9 @@ export const PENDING_REQUEST_MAX_AGE_MS = 15 * 60_000;
  * Closes requests whose isolate died before the meter could finish them, such
  * as CPU-limit terminations. The row is finalized in place so the hourly
  * rollup triggers count it as failed, and the stored event stays consistent.
+ * The true end of the request is unknown, so `finished_at` only records when
+ * the row was reaped and `duration_ms` stays null to keep latency averages
+ * free of cron timing.
  */
 export async function expirePendingRequests(
   db: D1Database,
@@ -529,7 +532,7 @@ export async function expirePendingRequests(
           event_sequence = 2,
           finished_at = ?1,
           outcome = 'failed',
-          duration_ms = ?1 - started_at,
+          duration_ms = NULL,
           event_json = json_set(event_json,
             '$.sequence', 2,
             '$.phase', 'finished',
@@ -537,7 +540,7 @@ export async function expirePendingRequests(
             '$.outcome', 'failed',
             '$.diagnostic_code', 'worker_terminated',
             '$.observation_issue', 'stream_abandoned',
-            '$.duration_ms', ?1 - started_at)
+            '$.duration_ms', json('null'))
         WHERE request_id IN (
           SELECT request_id FROM requests
           WHERE finished_at IS NULL AND started_at < ?2 LIMIT 1000)`,

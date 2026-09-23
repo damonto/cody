@@ -429,7 +429,9 @@ test("abandoned pending requests are finalized as failed and rolled up", async (
   expect(detail?.phase).toBe("finished");
   expect(detail?.outcome).toBe("failed");
   expect(detail?.finished_at).toBe(now);
-  expect(detail?.duration_ms).toBe(HOUR_MS);
+  // The reaper cannot know when the request really ended, so its duration
+  // stays unknown instead of measuring the cron delay.
+  expect(detail?.duration_ms).toBeNull();
   expect(detail?.diagnostic_code).toBe("worker_terminated");
   expect((await requestDetail(bindings.CODY_DB, "fresh"))?.outcome).toBe(
     "pending",
@@ -437,6 +439,8 @@ test("abandoned pending requests are finalized as failed and rolled up", async (
   const range = reportRange("total", "UTC", now);
   const result = await summary(bindings.CODY_DB, range, {});
   expect(result.totals.failed_count).toBe(1);
+  expect(result.totals.duration_samples).toBe(0);
+  expect(result.totals.duration_sum).toBe(0);
   // A late terminal event for the expired request no longer replaces the row.
   await ingestUsage(bindings.CODY_DB, stale);
   expect((await requestDetail(bindings.CODY_DB, "stale"))?.outcome).toBe(
