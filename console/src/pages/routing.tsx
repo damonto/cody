@@ -246,10 +246,11 @@ function RouteForm({
       const next = structuredClone(snapshot.config);
       const routes = { ...routesFor(next, scope) };
       const parsed = routeFormSchema.parse(value);
-      if (!alias && Object.hasOwn(routes, parsed.alias)) {
+      if (parsed.alias !== alias && Object.hasOwn(routes, parsed.alias)) {
         toast.error("This alias already exists in this scope");
         return;
       }
+      if (alias && parsed.alias !== alias) delete routes[alias];
       routes[parsed.alias] = {
         model: parsed.model,
         ...(scope.kind !== "provider" && parsed.providers.length
@@ -277,7 +278,6 @@ function RouteForm({
         {(field) => (
           <field.TextField
             label="Client model name"
-            readOnly={!!alias}
             placeholder="my-model-alias"
           />
         )}
