@@ -53,15 +53,6 @@ export default function Proxies() {
           Add group
         </Button>
       </PageHeading>
-      <p className="text-sm text-muted-foreground">
-        Group edits take effect after publishing. Live health and fixed bindings
-        reflect the published configuration. Three connection failures within
-        one minute cool a node for five minutes.
-      </p>
-      <p className="text-sm text-muted-foreground">
-        Test checks the saved draft node’s exit IP without changing live health.
-        Results are cleared when you change the draft or leave this page.
-      </p>
       {health.error && (
         <ErrorNotice error={health.error} retry={() => void health.refetch()} />
       )}
