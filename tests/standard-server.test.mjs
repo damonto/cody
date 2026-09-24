@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { config } from "./admin/fixtures.ts";
@@ -29,6 +32,19 @@ test(
   "native Node serves the console and proxies HTTP, SSE and WebSocket",
   { timeout: 20_000 },
   async (t) => {
+    const runtimeRoot = await mkdtemp(path.join(tmpdir(), "cody-node-server-"));
+    t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+    // Unit tests run before build:web in CI; serve an isolated fixture bundle.
+    const consoleRoot = path.join(runtimeRoot, "console", "dist");
+    const consoleHtml =
+      '<!doctype html><title>Console fixture</title><div id="root"></div>';
+    const consoleScript =
+      'document.querySelector("#root").textContent = "Console fixture";';
+    await mkdir(path.join(consoleRoot, "assets"), { recursive: true });
+    await Promise.all([
+      writeFile(path.join(consoleRoot, "index.html"), consoleHtml),
+      writeFile(path.join(consoleRoot, "assets", "fixture.js"), consoleScript),
+    ]);
     const captured = [];
     const upstream = createServer(async (request, response) => {
       const chunks = [];
@@ -97,7 +113,7 @@ test(
     await applyMigrations(db, migrationDirectories("sqlite", ROOT));
     const runtime = await createRuntime({
       target: "node",
-      root: ROOT,
+      root: runtimeRoot,
       source: {
         DATABASE_URL: "sqlite::memory:",
         REDIS_URL: "redis://localhost:6379",
@@ -137,6 +153,12 @@ test(
       page.headers.get("content-security-policy"),
       /default-src 'self'/,
     );
+    assert.equal(await page.text(), consoleHtml);
+    const asset = await fetch(`${url}/console/assets/fixture.js`);
+    assert.equal(asset.status, 200);
+    assert.match(asset.headers.get("content-type"), /text\/javascript/);
+    assert.equal(await asset.text(), consoleScript);
+    assert.equal((await fetch(`${url}/console/assets/missing.js`)).status, 404);
     assert.equal((await fetch(`${url}/console/api/config`)).status, 401);
     assert.equal(
       (await fetch(`${url}/v1/responses`, { method: "POST", body: "{}" }))

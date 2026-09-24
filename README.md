@@ -30,30 +30,6 @@ Configuration uses `providers` directly. AI Gateway supports multiple entries wi
 
 The **Providers** submenu contains **AI Gateway** (`/console/providers/ai-gateway`) and **Antigravity** (`/console/providers/antigravity`). The old `/console/providers` address redirects to AI Gateway.
 
-## Antigravity accounts
-
-1. Start locally with `npm run dev`, or apply the D1 migrations and deploy the Worker as described below.
-2. Open **Providers → Antigravity**. The page manages Google accounts and quotas directly; there is no provider creation form. The Google desktop OAuth client from CLIProxyAPI is built in.
-3. Open **Settings** at the top right to configure priority, proxy, models, and **Routing & retry**. Antigravity starts disabled. Settings can be saved without accounts or models; keep it disabled until setup is complete. If direct Worker egress cannot reach Antigravity, create and **publish** a reachable SOCKS5 group first. OAuth always uses proxy nodes from the published snapshot. An account inherits its provider's group unless it selects another group; explicit Direct connection (`null`) bypasses the group.
-4. Click **Add Google account**, then **Authorize with Google** and open the authorization link. No Provider ID or credential ID needs to be entered. Google sign-in uses the browser's network, not the Worker proxy.
-5. After approval, copy the complete `http://localhost:51121/oauth-callback?...` URL from the browser address bar and paste it into the form. The localhost page is not expected to load. Each session has a random state, S256 PKCE and a ten-minute deadline. Authorization URLs/callbacks must not be shared or logged. See [Google's desktop OAuth flow](https://developers.google.com/identity/protocols/oauth2/native-app).
-6. The Worker exchanges the code, stores encrypted tokens, reads the Google identity, discovers a project with `loadCodeAssist`, and initializes it with `onboardUser` if needed. If project initialization fails, **Retry project initialization** reuses the saved tokens without redeeming the code again. A cancelled/expired session or failed token exchange requires a new authorization.
-7. Click **Save account**. Open **Settings → Models** to select the real IDs returned by **Discover models**, enable the provider in **General**, then **Save settings**. Settings and accounts save independently to the draft. Add `antigravity` to the appropriate client keys and model routes, then **Publish**. An enabled Antigravity must have at least one account and model before publication. Accounts from abandoned forms or removed draft references can be recovered through **Add Google account → Use an existing account for this provider**.
-
-The disabled Antigravity entry in `config.example.json` starts with empty accounts and models, matching the console. Authorize an account and select its discovered models before enabling it. A UUID alone cannot create credentials. Neither raw tokens nor authorization codes belong in configuration JSON or KV snapshots.
-
-Each account has its own `ProviderOAuthAccount` Durable Object. Active and in-progress tokens are encrypted with `CONFIG_ENCRYPTION_KEY`; D1 stores only the non-sensitive account index. Access tokens refresh on demand within five minutes of expiry, with concurrent refreshes merged and stale results fenced. Refresh-token rotation is saved; `invalid_grant` requires reauthorization. Reauthorization updates the same account reference and must use the same Google identity. Publishing or rolling back configuration does not roll back tokens. Keep the encryption key backed up securely: changing it without a deliberate re-encryption migration makes existing configuration and account data unreadable.
-
-**Remove from draft** removes only the account reference; it does not delete tokens or revoke a Google grant. **Manage → Disconnect** deletes that account's local tokens immediately, including for published configurations; revoke Google access separately in your Google account if desired.
-
-Quotas are display-only: `retrieveUserQuotaSummary` is preferred, with `fetchAvailableModels` quota data used only for explicit unsupported HTTP statuses (404/405/501). Plan and available credits come from `loadCodeAssist`. Missing fields display Unknown, and failures retain the last successful snapshot with a stale marker. Results are cached for one minute and refresh every five minutes while the page is visible. Single-account and bulk refreshes are supported with at most six parallel operations. Quotas do not drive automatic account switching or enable paid credits. OAuth/quota failures do not affect inference health; confirmed proxy connection failures still update shared proxy health.
-
-Antigravity supports ordinary and SSE `POST /v1/responses`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`, including text/images, tools, structured output and thinking. Send full conversation history, including returned Responses `reasoning.encrypted_content` or Messages `thinking.signature` blocks in their original positions. The gateway's encrypted replay envelopes bind signed content to the client ID, provider, account and real upstream model; they work across Worker restarts and reject changed signed content. See [Responses manual item replay](https://developers.openai.com/api/docs/guides/migrate-to-responses).
-
-This adapter does not support Chat Completions, WebSocket, remote compact, Astra history/notes, server-side `previous_response_id`, or credential-file import. Use the custom Codex provider below (not an OpenAI-native provider preset), so unsupported native context features are not requested. Retries keep the same provider, account, token and transformed request; only the configured retry policy applies.
-
-For frontend hot reload, keep the Worker running and start `npm run dev:web` in another terminal, then open `http://localhost:5173/console/`.
-
 ## Use with Codex
 
 Add this provider to `~/.codex/config.toml`, replacing `base_url` with your Worker URL and choosing a configured model:
