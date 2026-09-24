@@ -9,7 +9,7 @@ import {
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { ingestUsage, requestDetail } from "../../src/reporting/store.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
-import type { UsageOutbox } from "../../src/telemetry/outbox.ts";
+import type { UsageOutbox } from "../../src/platform/cloudflare/objects.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
 import { usage } from "../admin/fixtures.ts";
 

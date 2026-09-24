@@ -17,6 +17,7 @@ import {
 } from "../../shared/concurrency.ts";
 import { controlStore, type AdminContext } from "../context.ts";
 import { validate } from "../validation.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 const startSchema = connectionSchema.extend({
   provider_id: z.literal("antigravity"),
@@ -41,7 +42,7 @@ const sessionParam = z.object({
     return { account_ref, session_id };
   }),
 });
-async function checkedAccount(env: Env, ref: string, providerId?: string) {
+async function checkedAccount(env: Bindings, ref: string, providerId?: string) {
   const row = await env.CODY_DB.prepare(
     "SELECT provider_id FROM oauth_accounts WHERE account_ref = ?",
   )
@@ -53,7 +54,12 @@ async function checkedAccount(env: Env, ref: string, providerId?: string) {
     });
   return env.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
 }
-async function audit(env: Env, actor: string, action: string, ref: string) {
+async function audit(
+  env: Bindings,
+  actor: string,
+  action: string,
+  ref: string,
+) {
   await env.CODY_DB.prepare(
     "INSERT INTO audit_log (id, created_at, actor, action) VALUES (?, ?, ?, ?)",
   )

@@ -17,10 +17,11 @@ import {
 } from "./errors.ts";
 import { ProxyGroupClient } from "./group-client.ts";
 import type { ProxyLease } from "./schema.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ProxyTransportContext {
   readonly config: Pick<GatewayConfig, "proxy_groups" | "revision">;
-  readonly env: Pick<Env, "PROXY_GROUP">;
+  readonly env: Pick<Bindings, "PROXY_GROUP">;
   readonly context?: HealthExecutionContext | undefined;
   readonly requestLog?: RequestLogContext | undefined;
   readonly requestId?: string | undefined;

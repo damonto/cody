@@ -1,4 +1,3 @@
-import { DurableObject } from "cloudflare:workers";
 import { WebSocketHealth, shouldRecordUpstreamFailure } from "./health.ts";
 import {
   contextSessionIdsMatch,
@@ -60,6 +59,12 @@ import {
   type ResponseCreateFrame,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
+import type { Bindings } from "../../platform/bindings.ts";
+import type {
+  WebSocketHandler,
+  WebSocketObjectContext,
+} from "../../platform/object-context.ts";
+import { webSocketUpgradeResponse } from "../../platform/websocket-upgrade.ts";
 
 const FIRST_FRAME_TIMEOUT_MS = 10_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 32 * 1024 * 1024;
@@ -99,7 +104,7 @@ function requestOutcomeOnClose(code: number, outcome: string) {
   return code === 1000 ? "incomplete" : "failed";
 }
 
-export class ResponsesWebSocketProxy extends DurableObject<Env> {
+export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private pendingClientBytes = 0;
   private clientMessages = Promise.resolve();
   private readonly upstream: UpstreamWebSocket;
@@ -107,8 +112,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
   private readonly storage: WebSocketStorage;
   private readonly usage: WebSocketUsage;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(
+    protected readonly ctx: WebSocketObjectContext,
+    protected readonly env: Bindings,
+  ) {
     configureLogging(this.env.LOG_LEVEL);
     this.storage = new WebSocketStorage(this.ctx.storage);
     this.health = new WebSocketHealth(this.env, this.storage);
@@ -126,10 +133,15 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     });
     this.usage = new WebSocketUsage(
       this.storage,
-      this.env.USAGE_QUEUE ? webSocketUsageSink(this.env) : undefined,
+      this.env.USAGE_OUTBOX
+        ? webSocketUsageSink({
+            USAGE_OUTBOX: this.env.USAGE_OUTBOX,
+            USAGE_QUEUE: this.env.USAGE_QUEUE,
+          })
+        : undefined,
       this.ctx,
     );
-    if (this.env.USAGE_QUEUE) {
+    if (this.env.USAGE_OUTBOX) {
       // Only local storage work runs under the constructor's input gate.
       void this.ctx.blockConcurrencyWhile(async () => {
         await this.storage.recoverUsage();
@@ -138,7 +150,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
     if (
       request.method !== "GET" ||
       request.headers.get("upgrade")?.toLowerCase() !== "websocket"
@@ -185,10 +197,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       });
       throw error;
     }
-    return new Response(null, { status: 101, webSocket: pair[0] });
+    return webSocketUpgradeResponse(pair[0]);
   }
 
-  override async alarm(): Promise<void> {
+  async alarm(): Promise<void> {
     await this.usage.flush();
     const state = await this.storage.loadSession();
     if (state?.phase !== "awaiting_first_frame") {
@@ -974,10 +986,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     return this.clientMessages;
   }
 
-  override webSocketMessage(
-    socket: WebSocket,
-    message: string | ArrayBuffer,
-  ): void {
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     const role = this.socketRole(socket);
     if (role === "client") {
       this.ctx.waitUntil(this.enqueueClientMessage(message));
@@ -988,7 +997,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     );
   }
 
-  override async webSocketClose(
+  async webSocketClose(
     socket: WebSocket,
     code: number,
     reason: string,
@@ -1006,10 +1015,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     );
   }
 
-  override async webSocketError(
-    socket: WebSocket,
-    error: unknown,
-  ): Promise<void> {
+  async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
     const role = this.socketRole(socket);
     const state = await this.storage.loadSession();
     logWarn("websocket.socket_error", {

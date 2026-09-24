@@ -5,6 +5,7 @@ import {
   recordProviderSuccess,
 } from "../health/health.ts";
 import type { StoredWebSocketSession, WebSocketStorage } from "./storage.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export function shouldRecordUpstreamFailure(
   state: StoredWebSocketSession | undefined,
@@ -20,7 +21,7 @@ export function shouldRecordUpstreamFailure(
 /** Applies OpenAI health outcomes once per active WebSocket response. */
 export class WebSocketHealth {
   constructor(
-    private readonly env: Env,
+    private readonly env: Bindings,
     private readonly storage: WebSocketStorage,
   ) {}
 

@@ -51,6 +51,7 @@ import {
 } from "../routing/routing.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
 import codexCatalog from "./models.json" with { type: "json" };
+import type { Bindings } from "../../platform/bindings.ts";
 
 const MODEL_CATALOG_TIMEOUT_MS = 3_000;
 export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
@@ -283,7 +284,7 @@ async function prepareCatalogWithinDeadline(
 
 async function fetchProviderModels(
   request: Request,
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   target: ProviderTarget,
   requestId: string,
@@ -718,7 +719,7 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
   };
 }
 
-function cacheTtlMs(env: Env): number {
+function cacheTtlMs(env: Bindings): number {
   const raw = env.MODELS_CACHE_TTL_SECONDS;
   const rawText = typeof raw === "string" ? raw.trim() : raw;
   const configured =
@@ -779,7 +780,7 @@ export function clearModelsCacheForTests(): void {
 
 async function collectModels(
   request: Request,
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   configuredTargets: RoutedProvider[],
@@ -935,7 +936,7 @@ function modelsPayload(
 
 export async function handleModels(
   request: Request,
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestId = "unknown",

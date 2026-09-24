@@ -14,7 +14,8 @@ import {
   type SessionAffinityRecord,
   type SessionAffinityRegistration,
 } from "../routing/affinity.ts";
-import type { SessionAffinityIndexEntry } from "./session-affinity-index.ts";
+import type { SessionAffinityIndexEntry } from "../../platform/bindings.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 const SESSION_LIST_DEFAULT_LIMIT = 100;
 const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
@@ -91,12 +92,12 @@ export function decodeSessionIdPath(value: string): string | undefined {
   }
 }
 
-function sessionIndex(env: Env, registryName: string) {
+function sessionIndex(env: Bindings, registryName: string) {
   return env.SESSION_AFFINITY_INDEX.getByName(registryName);
 }
 
 function sessionAffinity(
-  env: Env,
+  env: Bindings,
   registryName: string,
   sessionDigest: string,
 ) {
@@ -143,7 +144,7 @@ function sessionView(
 }
 
 export async function handleSessionList(
-  env: Env,
+  env: Bindings,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
   requestLog: RequestLogContext,
@@ -197,7 +198,7 @@ export async function handleSessionList(
 }
 
 async function clearIndexedEntry(
-  env: Env,
+  env: Bindings,
   registryName: string,
   entry: SessionAffinityIndexEntry,
 ): Promise<boolean> {
@@ -215,7 +216,7 @@ async function clearIndexedEntry(
 }
 
 async function clearManagedByIdentity(
-  env: Env,
+  env: Bindings,
   identity: SessionAffinityRegistration,
 ): Promise<boolean> {
   const affinity = sessionAffinity(
@@ -236,7 +237,7 @@ async function clearManagedByIdentity(
 }
 
 export async function handleSessionClearAll(
-  env: Env,
+  env: Bindings,
   client: ClientApiKeyConfig,
   requestLog: RequestLogContext,
 ): Promise<Response> {
@@ -262,7 +263,7 @@ export async function handleSessionClearAll(
 }
 
 export async function handleSessionClearOne(
-  env: Env,
+  env: Bindings,
   client: ClientApiKeyConfig,
   sessionId: string,
   requestLog: RequestLogContext,

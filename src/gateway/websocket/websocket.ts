@@ -10,10 +10,11 @@ import {
   RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
   RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,
 } from "./websocket-metadata.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export async function handleResponsesWebSocket(
   request: Request,
-  env: Env,
+  env: Bindings,
   initialConfig: GatewayConfig,
   initialClient: ClientApiKeyConfig,
   requestId: string,
@@ -42,9 +43,19 @@ export async function handleResponsesWebSocket(
   );
   headers.set(RESPONSES_WEBSOCKET_REQUEST_ID_HEADER, requestId);
   const proxyRequest = new Request(request, { headers });
-  const proxyId = env.RESPONSES_WEBSOCKET.newUniqueId();
-  const response =
-    await env.RESPONSES_WEBSOCKET.get(proxyId).fetch(proxyRequest);
+  const namespace = env.RESPONSES_WEBSOCKET;
+  if (!namespace) {
+    requestLog?.warn({ outcome: "websocket_unsupported" });
+    return openAiError(
+      501,
+      "WebSocket connections are not supported by this deployment",
+      "api_error",
+      "websocket_unsupported",
+    );
+  }
+  const response = await namespace
+    .get(namespace.newUniqueId())
+    .fetch(proxyRequest);
   if (response.status === 101 && response.webSocket) {
     requestLog?.set({ outcome: "websocket_accepted" });
   } else {

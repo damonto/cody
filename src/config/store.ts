@@ -1,19 +1,24 @@
 import { errorMessage, type RequestLogContext } from "../shared/log.ts";
 import { configurationError, configurationSchema } from "./schema.ts";
 import type { GatewayConfig } from "./types.ts";
+import type { Bindings, KeyValueStore } from "../platform/bindings.ts";
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
 export class ConfigError extends Error {
   override name = "ConfigError";
 }
-// Successful KV reads are cached per isolate only, never per request.
-let cached: { config: GatewayConfig; expiresAt: number } | undefined;
+interface CachedConfig {
+  config: GatewayConfig;
+  expiresAt: number;
+}
+// A process may host multiple application instances with distinct stores.
+let stores = new WeakMap<KeyValueStore, Map<string, CachedConfig>>();
 export function parseConfig(value: unknown): GatewayConfig {
   const result = configurationSchema.safeParse(value);
   if (!result.success) throw new ConfigError(configurationError(result.error));
   return result.data;
 }
-function cacheTtlMs(env: Env): number {
+function cacheTtlMs(env: Bindings): number {
   const configured = Number(
     env.CONFIG_CACHE_TTL_SECONDS ?? DEFAULT_CACHE_TTL_SECONDS,
   );
@@ -24,25 +29,31 @@ function cacheTtlMs(env: Env): number {
 }
 
 export async function loadConfig(
-  env: Env,
+  env: Bindings,
   requestLog?: RequestLogContext,
 ): Promise<GatewayConfig> {
   const now = Date.now();
+  const key = env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY;
+  let snapshots = stores.get(env.CODY_CONFIG_KV);
+  if (!snapshots) {
+    snapshots = new Map();
+    stores.set(env.CODY_CONFIG_KV, snapshots);
+  }
+  let cached = snapshots.get(key);
   if (cached && cached.expiresAt > now) {
     requestLog?.mergeSection("configuration", { source: "cache" });
     return cached.config;
   }
 
   try {
-    const raw = await env.CODY_CONFIG_KV.get(
-      env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY,
-    );
+    const raw = await env.CODY_CONFIG_KV.get(key);
     if (!raw) {
       throw new ConfigError("configuration key is missing from CODY_CONFIG_KV");
     }
     const config = parseConfig(JSON.parse(raw) as unknown);
     const ttlMs = cacheTtlMs(env);
     cached = { config, expiresAt: now + ttlMs };
+    snapshots.set(key, cached);
     requestLog?.mergeSection("configuration", {
       source: "kv",
       cache_ttl_ms: ttlMs,
@@ -69,5 +80,5 @@ export async function loadConfig(
 }
 
 export function clearConfigCacheForTests(): void {
-  cached = undefined;
+  stores = new WeakMap();
 }

@@ -1,11 +1,11 @@
-import { DurableObject } from "cloudflare:workers";
-
 import type { ProviderHealthSnapshot } from "../../config/types.ts";
 import { configureLogging } from "../../shared/log.ts";
 import {
   ProviderHealthState,
   type StoredProviderHealthState,
 } from "./health.ts";
+import type { Bindings } from "../../platform/bindings.ts";
+import type { ObjectContext } from "../../platform/object-context.ts";
 
 const HEALTH_STORAGE_KEY = "health";
 
@@ -23,9 +23,11 @@ function storedStatesEqual(
   );
 }
 
-export class ProviderHealth extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+export class ProviderHealthCore {
+  constructor(
+    protected readonly ctx: ObjectContext,
+    protected readonly env: Bindings,
+  ) {
     configureLogging(this.env.LOG_LEVEL);
   }
 

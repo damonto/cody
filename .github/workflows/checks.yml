@@ -33,6 +33,10 @@ jobs:
 
       - run: npm test
 
+      - run: node scripts/build-standard.mjs node
+
+      - run: node scripts/build-standard.mjs vercel
+
       - run: npm run config:validate -- config.example.json
 
       - run: npm run config:schema:check

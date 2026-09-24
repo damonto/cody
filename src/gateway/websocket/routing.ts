@@ -15,6 +15,7 @@ import {
   gatewayErrorEvent,
   type ResponseCreateFrame,
 } from "./websocket-protocol.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export interface CurrentRoutingContext {
   config: GatewayConfig;
@@ -68,7 +69,7 @@ export function contextSessionIdsMatch(
 }
 
 export async function validateCurrentTarget(
-  env: Env,
+  env: Bindings,
   state: StoredWebSocketSession,
   route: ModelRoute,
   sessionId: string | undefined,

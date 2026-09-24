@@ -1,8 +1,11 @@
 import type { UsageSink } from "./meter.ts";
+import type { Bindings } from "../platform/bindings.ts";
+
+type UsageSinkBindings = Required<Pick<Bindings, "USAGE_OUTBOX">>;
 
 /** UUID prefixes distribute journals across 256 independently scheduled objects. */
 export function durableUsageSink(
-  env: Pick<Env, "USAGE_OUTBOX">,
+  env: UsageSinkBindings,
   requestId: string,
 ): UsageSink {
   const shard = requestId.slice(0, 2);
@@ -28,7 +31,7 @@ export function durableUsageSink(
 
 /** WebSocket final events are already journaled by WebSocketUsage. */
 export function webSocketUsageSink(
-  env: Pick<Env, "USAGE_OUTBOX" | "USAGE_QUEUE">,
+  env: UsageSinkBindings & Pick<Bindings, "USAGE_QUEUE">,
 ): UsageSink {
   return {
     async send(event): Promise<void> {

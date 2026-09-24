@@ -14,7 +14,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { clearConfigCacheForTests } from "../../src/config/store.ts";
 import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
-import { ResponsesWebSocketProxy } from "../../src/gateway/websocket/responses-websocket-proxy.ts";
+import { ResponsesWebSocketProxy } from "../../src/platform/cloudflare/objects.ts";
 import type {
   GatewayConfig,
   AiGatewayProviderConfig,

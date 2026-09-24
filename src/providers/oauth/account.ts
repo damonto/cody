@@ -1,7 +1,7 @@
-import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
 import { configurationSchema } from "../../config/schema.ts";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
+import { equalSecret } from "../../shared/equal-secret.ts";
 import { configureLogging, logWarn } from "../../shared/log.ts";
 import {
   ANTIGRAVITY_REDIRECT_URI,
@@ -35,12 +35,15 @@ import {
   type QuotaSnapshot,
   type SessionView,
 } from "./schema.ts";
+import { sqlDialect, type Bindings } from "../../platform/bindings.ts";
+import { insertIgnore } from "../../platform/sql-dialect.ts";
+import type { ObjectContext } from "../../platform/object-context.ts";
 
 const SESSION_TTL_MS = 10 * 60_000;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 const QUOTA_CACHE_TTL_MS = 60_000;
 type AccountEnv = Pick<
-  Env,
+  Bindings,
   | "CODY_DB"
   | "CODY_CONFIG_KV"
   | "LOG_LEVEL"
@@ -107,20 +110,15 @@ function base64url(bytes: Uint8Array): string {
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 }
-async function equalState(a: string, b: string): Promise<boolean> {
-  const hash = (text: string) =>
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  const [left, right] = await Promise.all([hash(a), hash(b)]);
-  return crypto.subtle.timingSafeEqual(left, right);
-}
-
 /** One account owns its token lifecycle. Inference streams never pass through this object. */
-export class ProviderOAuthAccount extends DurableObject<AccountEnv> {
+export class ProviderOAuthAccountCore {
   private account: Stored | null = null;
   private mutations: Promise<unknown> = Promise.resolve();
   private readonly refreshes = new Map<RefreshKind, PendingRefresh>();
-  constructor(ctx: DurableObjectState, env: AccountEnv) {
-    super(ctx, env);
+  constructor(
+    protected readonly ctx: ObjectContext,
+    protected readonly env: AccountEnv,
+  ) {
     void this.ctx.blockConcurrencyWhile(async () => {
       const encrypted = await this.ctx.storage.get<string>("account");
       if (encrypted)
@@ -390,7 +388,10 @@ export class ProviderOAuthAccount extends DurableObject<AccountEnv> {
       return account;
     });
     await this.env.CODY_DB.prepare(
-      "INSERT OR IGNORE INTO oauth_accounts (account_ref, provider_id, provider_type, created_at) VALUES (?, ?, 'antigravity', ?)",
+      insertIgnore(
+        sqlDialect(this.env.CODY_DB),
+        "INSERT INTO oauth_accounts (account_ref, provider_id, provider_type, created_at) VALUES (?, ?, 'antigravity', ?)",
+      ),
     )
       .bind(accountRef, connection.provider_id, Date.now())
       .run();
@@ -424,7 +425,7 @@ export class ProviderOAuthAccount extends DurableObject<AccountEnv> {
       url.password ||
       url.hash ||
       url.searchParams.getAll("state").length !== 1 ||
-      !(await equalState(url.searchParams.get("state") ?? "", session.state))
+      !(await equalSecret(url.searchParams.get("state") ?? "", session.state))
     )
       throw new OAuthError("Invalid callback URL or OAuth state");
     if (url.searchParams.has("error")) {
@@ -794,7 +795,7 @@ export class ProviderOAuthAccount extends DurableObject<AccountEnv> {
       };
     }
   }
-  override async alarm(): Promise<void> {
+  async alarm(): Promise<void> {
     await this.expireSession();
     const account = this.requireAccount();
     const session = account.session;

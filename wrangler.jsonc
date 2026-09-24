@@ -11,9 +11,6 @@
   "dev": {
     "port": 8788,
   },
-  "placement": {
-    "mode": "smart",
-  },
   "assets": {
     "directory": "./console/dist",
     "binding": "ASSETS",
@@ -51,7 +48,7 @@
       "binding": "CODY_DB",
       "database_name": "cody",
       "database_id": "78c229f6-390b-4ffc-815f-ced5f5563277",
-      "migrations_dir": "migrations",
+      "migrations_dir": "migrations/d1",
     },
   ],
   "queues": {

@@ -18,10 +18,18 @@ export type SocksDial = (address: {
 
 const ENCODER = new TextEncoder();
 
+let defaultDial: SocksDial | undefined;
+
+/** Node entry points install a `node:net` dialer; Workers use `cloudflare:sockets`. */
+export function setDefaultSocksDial(dial: SocksDial): void {
+  defaultDial = dial;
+}
+
 async function dialSocks(address: {
   hostname: string;
   port: number;
 }): Promise<SocksSocket> {
+  if (defaultDial) return defaultDial(address);
   const { connect } = await import("cloudflare:sockets");
   return connect(address, { secureTransport: "off", allowHalfOpen: false });
 }

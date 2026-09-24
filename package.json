@@ -15,6 +15,7 @@
     "types": "wrangler types --include-runtime=false --strict-vars=false",
     "build:web": "npm run build --workspace @cody/console",
     "db:migrate:local": "wrangler d1 migrations apply CODY_DB --local",
+    "db:migrate:standard": "node --env-file-if-exists=.env --import tsx src/migrate.ts",
     "lint": "oxlint --deny-warnings . && npm run lint:types",
     "lint:types": "oxlint --type-aware --deny-warnings src console/src",
     "lint:fix": "oxlint --fix --deny-warnings .",
@@ -30,12 +31,21 @@
     "config:put": "node --import tsx scripts/upload-config.mjs",
     "test:e2e": "npm run test:e2e --workspace @cody/console --",
     "deploy:check": "npm run deploy -- --dry-run",
-    "pretest:worker": "npm run build:web"
+    "pretest:worker": "npm run build:web",
+    "dev:node": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "start": "node --env-file-if-exists=.env dist/server.mjs",
+    "build:node": "npm run build:web && node scripts/build-standard.mjs node",
+    "build:vercel": "npm run build:web && node scripts/build-standard.mjs vercel",
+    "config:import": "node --env-file-if-exists=.env --import tsx scripts/import-standard-config.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.8",
     "@cloudflare/workers-types": "^5.20260911.1",
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "24.13.4",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
     "oxlint": "^1.82.0",
     "oxlint-tsgolint": "^7.0.2001",
     "prettier": "^3.9.6",
@@ -45,13 +55,18 @@
     "wrangler": "^4.131.1"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.1",
     "@hono/zod-validator": "^0.9.1",
     "@js-temporal/polyfill": "^0.5.1",
     "@peculiar/x509": "1.14.3",
     "@reclaimprotocol/tls": "0.1.4",
+    "@vercel/functions": "^3.9.9",
     "hono": "^4.13.7",
+    "ioredis": "^6.0.0",
     "jose": "^6.2.12",
+    "pg": "^8.23.0",
     "websocket-driver": "0.7.5",
+    "ws": "^8.21.3",
     "zod": "^4.6.2"
   },
   "workspaces": [

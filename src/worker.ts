@@ -1,36 +1,19 @@
-import { Hono } from "hono";
-import { adminApp } from "./admin/app.ts";
-import { CONSOLE_PATH } from "./admin/paths.ts";
-import { DEFAULT_REPORTING } from "./billing/config.ts";
-import { ControlStore } from "./control/store.ts";
-import { gatewayRoutes } from "./gateway/app.ts";
-import { gatewayNotFound } from "./gateway/handler.ts";
-import {
-  cleanupRequests,
-  expirePendingRequests,
-  ingestUsage,
-} from "./reporting/store.ts";
+import { app } from "./app.ts";
+import { runMaintenance } from "./maintenance.ts";
+import { ingestUsage } from "./reporting/store.ts";
 import { parseUsageEvent } from "./telemetry/schema.ts";
 
-export { ConfigPublisher } from "./control/publisher.ts";
-export { ProviderHealth } from "./gateway/health/provider-health.ts";
+export { app } from "./app.ts";
 export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
 export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
-export { SessionAffinity } from "./gateway/sessions/session-affinity.ts";
-export { ResponsesWebSocketProxy } from "./gateway/websocket/responses-websocket-proxy.ts";
-export { ProviderOAuthAccount } from "./providers/oauth/account.ts";
-export { UsageOutbox } from "./telemetry/outbox.ts";
-
-export const app = new Hono<{ Bindings: Env }>()
-  .route("/", gatewayRoutes)
-  .get("/", (c) =>
-    c.redirect(`${CONSOLE_PATH}/${new URL(c.req.url).search}`, 302),
-  )
-  .get(CONSOLE_PATH, (c) =>
-    c.redirect(`${CONSOLE_PATH}/${new URL(c.req.url).search}`, 308),
-  )
-  .route(CONSOLE_PATH, adminApp)
-  .all("*", gatewayNotFound);
+export {
+  ConfigPublisher,
+  ProviderHealth,
+  ProviderOAuthAccount,
+  ResponsesWebSocketProxy,
+  SessionAffinity,
+  UsageOutbox,
+} from "./platform/cloudflare/objects.ts";
 
 export default {
   fetch: app.fetch,
@@ -53,20 +36,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const store = new ControlStore(
-      env.CODY_DB,
-      env.CODY_CONFIG_KV,
-      env.CONFIG_ENCRYPTION_KEY,
-      env.CONFIG_KEY,
-    );
-    const state = await store.state();
-    const config = state.published_revision
-      ? await store.revision(state.published_revision)
-      : null;
-    await expirePendingRequests(env.CODY_DB);
-    await cleanupRequests(
-      env.CODY_DB,
-      config?.reporting?.retention_days ?? DEFAULT_REPORTING.retention_days,
-    );
+    await runMaintenance(env);
   },
 } satisfies ExportedHandler<Env>;

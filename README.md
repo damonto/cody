@@ -1,6 +1,6 @@
 # Cody Gateway
 
-An AI API gateway with a web console on Cloudflare Workers, for Codex and other OpenAI- or Anthropic-compatible clients.
+An AI API gateway with a web console on Cloudflare Workers, native Node.js, and Vercel, for Codex and other OpenAI- or Anthropic-compatible clients.
 
 - Manage AI Gateway and Antigravity providers, upstream credentials, client API keys, and model aliases in the console.
 - View usage and costs for today, this week, this month, and all time.
@@ -10,6 +10,8 @@ An AI API gateway with a web console on Cloudflare Workers, for Codex and other 
 ## Quick start
 
 Requires Node.js 24 or newer.
+
+The commands below start the Cloudflare development runtime. For a native Node server with Redis and SQLite/Postgres, or a Vercel deployment with Redis and Postgres, see [Node and Vercel setup](docs/standard-runtime.md).
 
 ```bash
 npm install
@@ -156,7 +158,7 @@ npm run deploy
 
 `npm run deploy` builds the console, applies unapplied D1 migrations to the remote `CODY_DB`, then deploys the Worker. A failed build or migration stops the release. Applied migrations are tracked by Wrangler and skipped on later deployments. The release runs non-interactively and uses your existing Wrangler login.
 
-D1 initialization is consolidated in `migrations/0001_control_and_usage.sql`; keep this filename stable. `0007_oauth_accounts.sql` adds the OAuth account index; its unused `oauth_clients` table is retained for migration history. Durable Object migration v9 adds `ProviderOAuthAccount` after the existing v8 proxy-group migration; retain all earlier migrations, including the v7 health-class rename. Future D1 changes must use new filenames, not rewrite applied migrations.
+D1 initialization is consolidated in `migrations/d1/0001_control_and_usage.sql`; keep this filename stable. `0007_oauth_accounts.sql` adds the OAuth account index; its unused `oauth_clients` table is retained for migration history. Durable Object migration v9 adds `ProviderOAuthAccount` after the existing v8 proxy-group migration; retain all earlier migrations, including the v7 health-class rename. Future D1 changes must use new filenames, not rewrite applied migrations.
 
 Use `npm run deploy:check` (or `npm run deploy -- --dry-run`) to build and validate the Worker bundle without applying migrations or deploying. The deploy script also accepts `--env`/`-e`, `--config`/`-c`, and repeated `--env-file` options; the same target settings are used for migration and deployment.
 

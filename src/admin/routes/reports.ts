@@ -19,6 +19,7 @@ import {
 import { publishedConfig, type AdminContext } from "../context.ts";
 import { requestIdSchema } from "../schema.ts";
 import { validate } from "../validation.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 function filters(query: ReportQuery): ReportFilters {
   const result: ReportFilters = {};
@@ -33,7 +34,7 @@ function filters(query: ReportQuery): ReportFilters {
   }
   return result;
 }
-async function rangeFor(query: ReportQuery, env: Env) {
+async function rangeFor(query: ReportQuery, env: Bindings) {
   const config = await publishedConfig(env);
   const now = Date.now();
   const days =

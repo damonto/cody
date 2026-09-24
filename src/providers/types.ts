@@ -4,13 +4,14 @@ import type { GatewayEndpoint, ApiProtocol } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
 import type { UpstreamTransport } from "../gateway/transport/index.ts";
 import type { ResolvedCredentialFor } from "./credentials.ts";
+import type { Bindings } from "../platform/bindings.ts";
 
 export interface ProviderRuntimeContext extends Omit<
   ProxyTransportContext,
   "clientSignal" | "env"
 > {
   readonly env: Pick<
-    Env,
+    Bindings,
     "PROXY_GROUP" | "PROVIDER_OAUTH_ACCOUNT" | "CONFIG_ENCRYPTION_KEY"
   >;
 }

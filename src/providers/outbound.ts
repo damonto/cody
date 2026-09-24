@@ -8,6 +8,7 @@ import {
   type ProviderConnection,
   type ProxyConfiguration,
 } from "./oauth/schema.ts";
+import type { Bindings } from "../platform/bindings.ts";
 
 export function providerConnection(
   provider: Pick<ProviderConfig, "id" | "proxy_group">,
@@ -23,7 +24,7 @@ export function providerConnection(
 
 /** Management operations use published nodes, never a draft that could change live proxy health. */
 export async function publishedProxyConfiguration(
-  env: Pick<Env, "CODY_CONFIG_KV" | "CONFIG_KEY">,
+  env: Pick<Bindings, "CODY_CONFIG_KV" | "CONFIG_KEY">,
 ): Promise<ProxyConfiguration> {
   const raw = await env.CODY_CONFIG_KV.get(env.CONFIG_KEY ?? "gateway-config");
   return proxyConfigurationSchema.parse(
@@ -34,7 +35,7 @@ export async function publishedProxyConfiguration(
 export function providerOutbound(
   connection: ProviderConnection,
   config: ProxyConfiguration,
-  env: Pick<Env, "PROXY_GROUP">,
+  env: Pick<Bindings, "PROXY_GROUP">,
   signal: AbortSignal,
 ) {
   return createUpstreamTransport(

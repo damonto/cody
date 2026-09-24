@@ -12,6 +12,25 @@ export { socksFetch, type SocksFetchOptions } from "./socks-fetch.ts";
 export { effectiveProxyGroup } from "../proxies/configuration.ts";
 
 export type UpstreamFetch = (request: Request) => Promise<Response>;
+
+let directWebSocket: UpstreamFetch | undefined;
+
+/**
+ * Standard runtimes cannot perform a WebSocket upgrade through `fetch`; they
+ * install a WebSocket client for direct (non-proxied) upstream connections.
+ */
+export function setDirectWebSocketConnector(
+  connector: UpstreamFetch | undefined,
+): void {
+  directWebSocket = connector;
+}
+
+function directFetch(request: Request): Promise<Response> {
+  return directWebSocket &&
+    request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    ? directWebSocket(request)
+    : fetch(request);
+}
 export interface UpstreamTransport {
   readonly send: UpstreamFetch;
   readonly proxyFailure: (error: unknown) => ProxyFailure | undefined;
@@ -26,7 +45,7 @@ export function createUpstreamTransport(
   return selection
     ? createProxyTransport(selection, context)
     : {
-        send: (request) => fetch(request),
+        send: directFetch,
         proxyFailure: () => undefined,
       };
 }

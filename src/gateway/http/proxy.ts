@@ -1,4 +1,5 @@
 import type { NormalizedUsage } from "../../billing/types.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -297,7 +298,7 @@ export function upstreamBody(
 
 export async function handleInference(
   request: Request,
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   upstreamPath: InferencePath,

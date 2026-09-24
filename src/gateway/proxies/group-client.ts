@@ -4,7 +4,6 @@ import { logWarn } from "../../shared/log.ts";
 import type { HealthExecutionContext } from "../health/health.ts";
 import { proxyGroupSnapshot } from "./configuration.ts";
 import { ProxyUnavailableError } from "./errors.ts";
-import type { ProxyGroup } from "./proxy-group.ts";
 import {
   proxySelectionSchema,
   type ProxyGroupSnapshot,
@@ -12,10 +11,11 @@ import {
   type ProxyOutcome,
   type ProxyOwner,
 } from "./schema.ts";
+import type { Bindings, ProxyGroupObject } from "../../platform/bindings.ts";
 
 interface ProxyGroupClientOptions {
   readonly config: Pick<GatewayConfig, "revision">;
-  readonly namespace: Env["PROXY_GROUP"];
+  readonly namespace: Bindings["PROXY_GROUP"];
   readonly context?: HealthExecutionContext | undefined;
   readonly requestId?: string | undefined;
 }
@@ -23,7 +23,7 @@ interface ProxyGroupClientOptions {
 /** One request owns this client and its RPC stub; no I/O is shared across requests. */
 export class ProxyGroupClient {
   private snapshot: ProxyGroupSnapshot | undefined;
-  private stub: DurableObjectStub<ProxyGroup> | undefined;
+  private stub: ProxyGroupObject | undefined;
 
   constructor(
     private readonly group: ProxyGroupConfig,
@@ -31,7 +31,7 @@ export class ProxyGroupClient {
     private readonly options: ProxyGroupClientOptions,
   ) {}
 
-  private getStub(): DurableObjectStub<ProxyGroup> {
+  private getStub(): ProxyGroupObject {
     this.stub ??= this.options.namespace.getByName(this.group.id);
     return this.stub;
   }

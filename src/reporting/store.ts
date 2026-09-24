@@ -15,6 +15,8 @@ import {
   type Rollup,
   type SeriesRow,
 } from "./aggregates.ts";
+import { sqlDialect, type SqlDatabase } from "../platform/bindings.ts";
+import { insertIgnore } from "../platform/sql-dialect.ts";
 
 export type { SeriesRow } from "./aggregates.ts";
 export interface ReportFilters {
@@ -98,7 +100,7 @@ function firstResponseLatency(value: unknown): number | null {
 }
 
 export async function ingestUsage(
-  db: D1Database,
+  db: SqlDatabase,
   event: UsageEvent,
 ): Promise<void> {
   if (event.kind !== "inference") return;
@@ -193,7 +195,10 @@ export async function ingestUsage(
       statements.push(
         db
           .prepare(
-            "INSERT OR IGNORE INTO request_attempts (request_id, attempt, status, duration_ms, event_json) VALUES (?, ?, ?, ?, ?)",
+            insertIgnore(
+              sqlDialect(db),
+              "INSERT INTO request_attempts (request_id, attempt, status, duration_ms, event_json) VALUES (?, ?, ?, ?, ?)",
+            ),
           )
           .bind(
             event.request_id,
@@ -250,7 +255,7 @@ const sumColumns = AGGREGATE_FIELDS.map(
 ).join(", ");
 
 function seriesQuery(
-  db: D1Database,
+  db: SqlDatabase,
   range: ReportRange,
   filters: ReportFilters,
   bucketMs: number,
@@ -259,13 +264,13 @@ function seriesQuery(
   return db
     .prepare(
       `SELECT (hour / ${bucketMs}) * ${bucketMs} AS hour, currency, ${sumColumns}
-     FROM (${source.sql}) GROUP BY 1, 2 ORDER BY 1, 2`,
+     FROM (${source.sql}) AS source GROUP BY 1, 2 ORDER BY 1, 2`,
     )
     .bind(...source.values);
 }
 
 function rankQuery(
-  db: D1Database,
+  db: SqlDatabase,
   range: ReportRange,
   filters: ReportFilters,
   presentation: ReportPresentation,
@@ -320,7 +325,7 @@ function ranking(rows: RankRow[], total: Rollup) {
 }
 
 export async function summary(
-  db: D1Database,
+  db: SqlDatabase,
   range: ReportRange,
   filters: ReportFilters,
   presentation: ReportPresentation = {},
@@ -376,7 +381,7 @@ export async function summary(
 
 /** Include historic IDs from the selected window, even after configuration changes. */
 export async function reportDimensions(
-  db: D1Database,
+  db: SqlDatabase,
   range: ReportRange,
   providerId?: string,
 ) {
@@ -389,7 +394,7 @@ export async function reportDimensions(
         `SELECT DISTINCT ${field} AS value FROM (
         SELECT ${field} FROM usage_hourly WHERE kind = 'inference' AND hour >= ? AND hour < ? ${provider}
         UNION ALL SELECT ${field} FROM requests WHERE kind = 'inference' AND finished_at IS NULL AND started_at >= ? AND started_at < ? ${provider}
-      ) WHERE ${field} <> '' ORDER BY value`,
+      ) AS source WHERE ${field} <> '' ORDER BY value`,
       )
       .bind(
         Math.floor(range.from / HOUR_MS) * HOUR_MS,
@@ -417,7 +422,7 @@ function parseUsageEvent(json: string): UsageEvent {
 }
 
 export async function requestList(
-  db: D1Database,
+  db: SqlDatabase,
   range: ReportRange,
   filters: ReportFilters,
   options: {
@@ -482,7 +487,7 @@ export async function requestList(
 }
 
 export async function requestDetail(
-  db: D1Database,
+  db: SqlDatabase,
   id: string,
 ): Promise<UsageEvent | null> {
   const row = await db
@@ -493,7 +498,7 @@ export async function requestDetail(
 }
 
 export async function cleanupRequests(
-  db: D1Database,
+  db: SqlDatabase,
   retentionDays: number,
 ): Promise<void> {
   const cutoff = Date.now() - retentionDays * 86_400_000;
@@ -519,16 +524,37 @@ export const PENDING_REQUEST_MAX_AGE_MS = 15 * 60_000;
  * free of cron timing.
  */
 export async function expirePendingRequests(
-  db: D1Database,
+  db: SqlDatabase,
   maxAgeMs = PENDING_REQUEST_MAX_AGE_MS,
   now = Date.now(),
 ): Promise<number> {
   const cutoff = now - maxAgeMs;
   let expired = 0;
-  for (let pass = 0; pass < 5; pass++) {
-    const result = await db
-      .prepare(
-        `UPDATE requests SET
+  const statement =
+    sqlDialect(db) === "postgres"
+      ? db
+          .prepare(
+            `UPDATE requests SET
+          event_sequence = 2,
+          finished_at = ?,
+          outcome = 'failed',
+          duration_ms = NULL,
+          event_json = (event_json::jsonb || jsonb_build_object(
+            'sequence', 2,
+            'phase', 'finished',
+            'finished_at', ?::bigint,
+            'outcome', 'failed',
+            'diagnostic_code', 'worker_terminated',
+            'observation_issue', 'stream_abandoned',
+            'duration_ms', NULL))::text
+        WHERE request_id IN (
+          SELECT request_id FROM requests
+          WHERE finished_at IS NULL AND started_at < ? LIMIT 1000)`,
+          )
+          .bind(now, now, cutoff)
+      : db
+          .prepare(
+            `UPDATE requests SET
           event_sequence = 2,
           finished_at = ?1,
           outcome = 'failed',
@@ -544,9 +570,10 @@ export async function expirePendingRequests(
         WHERE request_id IN (
           SELECT request_id FROM requests
           WHERE finished_at IS NULL AND started_at < ?2 LIMIT 1000)`,
-      )
-      .bind(now, cutoff)
-      .run();
+          )
+          .bind(now, cutoff);
+  for (let pass = 0; pass < 5; pass++) {
+    const result = await statement.run();
     expired += result.meta.changes;
     if (result.meta.changes < 1000) break;
   }

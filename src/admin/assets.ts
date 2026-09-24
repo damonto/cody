@@ -1,8 +1,9 @@
 import { CONSOLE_PATH } from "./paths.ts";
+import type { AssetFetcher } from "../platform/bindings.ts";
 
 export async function serveConsoleAsset(
   request: Request,
-  assets: Fetcher,
+  assets: AssetFetcher,
 ): Promise<Response> {
   const url = new URL(request.url);
   // Vite emits public URLs under /console/, while files live at the asset root.

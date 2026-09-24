@@ -17,6 +17,7 @@ import {
   normalizeMessage,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -55,7 +56,7 @@ export class UpstreamWebSocket {
   private events = Promise.resolve();
 
   constructor(
-    private readonly env: Env,
+    private readonly env: Bindings,
     private readonly context: Pick<DurableObjectState, "waitUntil">,
     private readonly handlers: UpstreamHandlers,
   ) {}

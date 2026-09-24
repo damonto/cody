@@ -1,8 +1,9 @@
-import { DurableObject } from "cloudflare:workers";
 import { ingestUsage } from "../reporting/store.ts";
 import { logWarn } from "../shared/log.ts";
 import { parseUsageEvent } from "./schema.ts";
 import type { UsageEvent } from "./types.ts";
+import type { Bindings } from "../platform/bindings.ts";
+import type { ObjectContext } from "../platform/object-context.ts";
 
 const PREFIX = "event:";
 const CURSOR_KEY = "delivery-cursor";
@@ -40,11 +41,13 @@ function queueBatches(entries: readonly JournalEntry[]): JournalEntry[][] {
 }
 
 /** A durable usage journal; only terminal records are published to the Queue. */
-export class UsageOutbox extends DurableObject<Env> {
+export class UsageOutboxCore {
   private flushing: Promise<void> | undefined;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(
+    protected readonly ctx: ObjectContext,
+    protected readonly env: Bindings,
+  ) {
     // Initialization is owned by the Durable Object runtime.
     void this.ctx.blockConcurrencyWhile(() => this.schedule());
   }
@@ -189,7 +192,7 @@ export class UsageOutbox extends DurableObject<Env> {
     }
   }
 
-  override async alarm(): Promise<void> {
+  async alarm(): Promise<void> {
     await this.flush();
   }
 }

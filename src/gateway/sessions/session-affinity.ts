@@ -1,5 +1,3 @@
-import { DurableObject } from "cloudflare:workers";
-
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 import {
   affinitySelectionIsHighestPriority,
@@ -12,15 +10,16 @@ import {
   type SessionAffinityRegistration,
   type SessionAffinityResolution,
 } from "../routing/affinity.ts";
+import type {
+  Bindings,
+  ClearedSessionAffinityBinding,
+  SessionAffinityResolveOptions,
+} from "../../platform/bindings.ts";
+import type { ObjectContext } from "../../platform/object-context.ts";
 
 const AFFINITY_STORAGE_KEY = "affinity";
 const CONTEXT_OWNER_STORAGE_KEY = "context_owner";
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-
-interface ClearedSessionAffinityBinding {
-  binding_id: string;
-  generation: number;
-}
 
 interface AffinityTransactionResult {
   resolution: SessionAffinityResolution | undefined;
@@ -29,11 +28,6 @@ interface AffinityTransactionResult {
 
 interface ContextOwnerRecord {
   client_id: string;
-}
-
-interface SessionAffinityResolveOptions {
-  contextManagement?: boolean;
-  initialProviderIds?: readonly string[];
 }
 
 function validGeneration(value: unknown): value is number {
@@ -99,9 +93,11 @@ function indexEntry(record: SessionAffinityRecord) {
   };
 }
 
-export class SessionAffinity extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+export class SessionAffinityCore {
+  constructor(
+    protected readonly ctx: ObjectContext,
+    protected readonly env: Bindings,
+  ) {
     configureLogging(this.env.LOG_LEVEL);
   }
 
@@ -472,7 +468,7 @@ export class SessionAffinity extends DurableObject<Env> {
     });
   }
 
-  override async alarm(): Promise<void> {
+  async alarm(): Promise<void> {
     const expired = await this.ctx.storage.transaction(async (transaction) => {
       const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
       if (!validRecord(current)) {

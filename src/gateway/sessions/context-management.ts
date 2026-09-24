@@ -16,12 +16,13 @@ import {
   selectAvailableTargetWithDetails,
 } from "../routing/routing.ts";
 import { parseContextManagementSession } from "./context-management-protocol.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export const MAX_CONTEXT_MANAGEMENT_BODY_BYTES = 4 * 1024 * 1024;
 
 export async function handleContextManagement(
   request: Request,
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   path: ContextManagementPath,

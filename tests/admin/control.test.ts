@@ -24,10 +24,8 @@ import { authenticateAdmin, safeAdminMutation } from "../../src/admin/auth.ts";
 import { ControlStore, SECRET_PLACEHOLDER } from "../../src/control/store.ts";
 import { decryptConfig, encryptConfig } from "../../src/control/crypto.ts";
 import { draftViewSchema } from "../../src/control/schema.ts";
-import type {
-  ConfigPublisher,
-  PublisherReply,
-} from "../../src/control/publisher.ts";
+import type { ConfigPublisher } from "../../src/platform/cloudflare/objects.ts";
+import type { PublisherReply } from "../../src/control/publisher.ts";
 import {
   cleanupRequests,
   ingestUsage,

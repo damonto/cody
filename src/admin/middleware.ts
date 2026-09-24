@@ -3,27 +3,27 @@ import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { BodyTooLargeError } from "../gateway/http/body.ts";
-import { authenticateAdmin, safeAdminMutation } from "./auth.ts";
+import {
+  adminChallenge,
+  authenticateAdmin,
+  safeAdminMutation,
+} from "./auth.ts";
 import type { AdminContext } from "./context.ts";
+
+export const CONSOLE_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 export const adminSecurity = createMiddleware<AdminContext>(
   async (context, next) => {
     context.header("cache-control", "no-store");
     context.header("x-content-type-options", "nosniff");
     context.header("referrer-policy", "no-referrer");
-    context.header(
-      "content-security-policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-    );
+    context.header("content-security-policy", CONSOLE_CSP);
     const actor = await authenticateAdmin(context.req.raw, context.env);
-    if (!actor)
-      return context.json(
-        {
-          error:
-            "Administrator authentication required. Configure Cloudflare Access.",
-        },
-        401,
-      );
+    if (!actor) {
+      const challenge = adminChallenge(context.env);
+      return context.json(challenge.body, 401, challenge.headers);
+    }
     if (!safeAdminMutation(context.req.raw))
       return context.json({ error: "Invalid admin request origin" }, 403);
     context.set("actor", actor);
@@ -53,7 +53,7 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
   return context.json(
     {
       error:
-        "Control operation failed. Check D1 migrations, CONFIG_ENCRYPTION_KEY, and Worker logs.",
+        "Control operation failed. Check database migrations, CONFIG_ENCRYPTION_KEY, and server logs.",
     },
     503,
   );

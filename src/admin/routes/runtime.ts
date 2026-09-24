@@ -17,13 +17,14 @@ import {
   sessionListSchema,
 } from "../schema.ts";
 import { validate } from "../validation.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 const runtimeErrorSchema = z.object({
   error: z.object({ message: z.string() }),
 });
 
 async function runtime(
   request: Request,
-  env: Env,
+  env: Bindings,
   path: string,
   actor: string,
   executionContext: ExecutionContext,

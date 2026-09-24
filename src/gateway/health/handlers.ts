@@ -7,6 +7,7 @@ import {
   listCoolingHealth,
   type HealthScope,
 } from "./health.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 function healthScope(incomingUrl: URL): HealthScope | undefined {
   const scope = incomingUrl.searchParams.get("scope") ?? "inference";
@@ -23,7 +24,7 @@ function invalidHealthScope(): Response {
 }
 
 export async function handleHealthList(
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
@@ -69,7 +70,7 @@ export async function handleHealthList(
 }
 
 export async function handleHealthClear(
-  env: Env,
+  env: Bindings,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   incomingUrl: URL,

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import websocketDriver from "websocket-driver";
+import { webSocketUpgradeResponse } from "../../platform/websocket-upgrade.ts";
 import { closeSocket } from "../websocket/websocket-protocol.ts";
 import { ByteReader, type Connection } from "./bytes.ts";
 import { ACCEPT_ENCODING } from "./compression.ts";
@@ -193,11 +194,7 @@ export async function websocketOverConnection(
     // Outgoing sockets and the accepted pair keep the Durable Object active.
     // This is response I/O, not a post-response task for ctx.waitUntil().
     void pump();
-    return new Response(null, {
-      status: 101,
-      headers: withoutHopHeaders(head.headers),
-      webSocket: pair[0],
-    });
+    return webSocketUpgradeResponse(pair[0], withoutHopHeaders(head.headers));
   } catch (error) {
     fail();
     await disconnect();

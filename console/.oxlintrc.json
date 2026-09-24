@@ -1,7 +1,8 @@
 {
   "$schema": "../node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
+  "plugins": ["react", "typescript", "oxc", "import"],
   "rules": {
+    "import/first": "error",
     "react/rules-of-hooks": "error",
     "react/exhaustive-deps": "error",
     "typescript/no-floating-promises": "error",

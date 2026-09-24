@@ -7,13 +7,14 @@ import {
   handleSessionClearOne,
   handleSessionList,
 } from "./session-bindings.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export type SessionAction =
   { action: "collection" } | { action: "clear"; encodedSessionId: string };
 
 export async function handleSessions(
   request: Request,
-  env: Env,
+  env: Bindings,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
   matchedRoute: SessionAction,

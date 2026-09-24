@@ -1,4 +1,8 @@
 import { emptyCost } from "../../billing/calculate.ts";
+import type {
+  ObjectStorage,
+  ObjectTransaction,
+} from "../../platform/object-context.ts";
 import { parseUsageEvent } from "../../telemetry/schema.ts";
 import type { UsageEvent } from "../../telemetry/types.ts";
 
@@ -43,7 +47,7 @@ export interface StateTransition {
 /** Coordinates session state and usage recovery, which share one DO alarm. */
 export class WebSocketStorage {
   constructor(
-    private readonly storage: DurableObjectStorage,
+    private readonly storage: ObjectStorage,
     private readonly now: () => number = () => Date.now(),
   ) {}
 
@@ -166,9 +170,7 @@ export class WebSocketStorage {
     );
   }
 
-  private async updateAlarm(
-    transaction: DurableObjectTransaction,
-  ): Promise<void> {
+  private async updateAlarm(transaction: ObjectTransaction): Promise<void> {
     const session = await transaction.get<StoredWebSocketSession>(SESSION_KEY);
     const current = await transaction.getAlarm();
     let next =

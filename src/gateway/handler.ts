@@ -11,11 +11,12 @@ import { durableUsageSink } from "../telemetry/delivery.ts";
 import { RequestMeter } from "../telemetry/meter.ts";
 import { apiError, bearerToken, findClientApiKey } from "./http/http.ts";
 import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
+import type { Bindings } from "../platform/bindings.ts";
 
-export type GatewayBindings = { Bindings: Env };
+export type GatewayBindings = { Bindings: Bindings };
 export interface GatewayRequest {
   request: Request;
-  env: Env;
+  env: Bindings;
   config: GatewayConfig;
   client: ClientApiKeyConfig;
   incomingUrl: URL;
@@ -50,8 +51,9 @@ export function gatewayHandler(
       request.method === "GET" &&
       request.headers.get("upgrade")?.toLowerCase() === "websocket";
     // WebSocket usage starts with response.create in the Durable Object.
+    const usageOutbox = env.USAGE_OUTBOX;
     const meter =
-      env.USAGE_OUTBOX &&
+      usageOutbox &&
       request.method === "POST" &&
       (endpoint === "messages" || endpoint === "responses")
         ? new RequestMeter({
@@ -59,7 +61,7 @@ export function gatewayHandler(
             endpoint,
             method: request.method,
             protocol,
-            sink: durableUsageSink(env, requestId),
+            sink: durableUsageSink({ USAGE_OUTBOX: usageOutbox }, requestId),
             executionContext: context,
           })
         : undefined;

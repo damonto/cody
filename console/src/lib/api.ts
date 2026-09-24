@@ -21,6 +21,7 @@ export class ApiError extends Error {
   }
 }
 const errorSchema = z.object({
+  login_url: z.string().optional(),
   error: z.union([
     z.string(),
     z.object({ message: z.string() }).transform((error) => error.message),
@@ -39,6 +40,18 @@ export const rpc = createAdminClient(`${import.meta.env.BASE_URL}api`, {
     }
     if (!response.ok) {
       const result = errorSchema.safeParse(await response.json());
+      if (
+        response.status === 401 &&
+        result.success &&
+        result.data.login_url === "/console/auth/login"
+      ) {
+        const login = new URL(result.data.login_url, window.location.origin);
+        login.searchParams.set(
+          "return_to",
+          window.location.pathname + window.location.search,
+        );
+        window.location.assign(login.href);
+      }
       throw new ApiError(
         result.success
           ? result.data.error

@@ -3,20 +3,13 @@ import { DurableObject } from "cloudflare:workers";
 import { configureLogging } from "../../shared/log.ts";
 import { SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE } from "../routing/affinity.ts";
 
+import type {
+  SessionAffinityIndexEntry,
+  SessionAffinityIndexPage,
+} from "../../platform/bindings.ts";
+export type { SessionAffinityIndexEntry } from "../../platform/bindings.ts";
+
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-
-export interface SessionAffinityIndexEntry {
-  session_digest: string;
-  session_id: string;
-  binding_id: string;
-  created_at: number;
-  generation: number;
-}
-
-interface SessionAffinityIndexPage {
-  data: SessionAffinityIndexEntry[];
-  next_cursor: string | null;
-}
 
 type SessionAffinityIndexRow = SessionAffinityIndexEntry &
   Record<string, SqlStorageValue>;

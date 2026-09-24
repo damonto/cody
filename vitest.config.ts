@@ -8,7 +8,7 @@ export default defineConfig({
       miniflare: {
         queueProducers: { USAGE_QUEUE: "cody-test-usage" },
         bindings: {
-          TEST_MIGRATIONS: await readD1Migrations("./migrations"),
+          TEST_MIGRATIONS: await readD1Migrations("./migrations/d1"),
           CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           ADMIN_LOCAL_DEV: "true",
         },
@@ -138,6 +138,8 @@ export default defineConfig({
   ],
   test: {
     include: ["tests/{worker,admin}/**/*.test.ts"],
+    // The first binding RPC includes workerd startup under parallel test load.
+    testTimeout: 10_000,
     // Each test file starts its own workerd runtime and upstream fixture.
     maxWorkers: 4,
   },

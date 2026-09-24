@@ -13,6 +13,7 @@ import {
 } from "../schema.ts";
 import { validate } from "../validation.ts";
 import { controlStore, type AdminContext } from "../context.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 async function publisherReply(reply: Promise<string>) {
   const result = publisherReplySchema.parse(JSON.parse(await reply));
@@ -21,7 +22,7 @@ async function publisherReply(reply: Promise<string>) {
   return result.data;
 }
 
-async function credentialDraft(env: Env, version: number) {
+async function credentialDraft(env: Bindings, version: number) {
   const store = controlStore(env);
   const state = await store.state();
   if (state.draft_version !== version)

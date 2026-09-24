@@ -1,7 +1,8 @@
-import { DurableObject } from "cloudflare:workers";
 import { ZodError } from "zod";
 import { validationMessage } from "../billing/schema.ts";
 import { ConfigError } from "../config/store.ts";
+import type { Bindings } from "../platform/bindings.ts";
+import type { ObjectContext } from "../platform/object-context.ts";
 import {
   ControlConflict,
   ControlInputError,
@@ -13,11 +14,13 @@ import type { PublisherReply } from "./schema.ts";
 export type { PublisherReply } from "./schema.ts";
 
 /** Serializes control-plane writes only; inference never calls this object. */
-export class ConfigPublisher extends DurableObject<Env> {
+export class ConfigPublisherCore {
   private mutations: Promise<unknown> = Promise.resolve();
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(
+    protected readonly ctx: ObjectContext,
+    protected readonly env: Bindings,
+  ) {
     // The runtime waits for initialization and resets the object if it fails.
     void ctx.blockConcurrencyWhile(async () => {
       await ctx.storage.transaction(async (transaction) => {
@@ -130,7 +133,7 @@ export class ConfigPublisher extends DurableObject<Env> {
       }),
     );
   }
-  override alarm(): Promise<void> {
+  alarm(): Promise<void> {
     return this.serial(() => this.recover());
   }
 }

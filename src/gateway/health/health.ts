@@ -8,6 +8,7 @@ import {
 } from "../../shared/concurrency.ts";
 import { errorMessage, logWarn } from "../../shared/log.ts";
 import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export const FAILURE_THRESHOLD = 10;
 export const FAILURE_WINDOW_MS = 5 * 60 * 1000;
@@ -202,7 +203,7 @@ function healthObjectName(providerId: string, scope: HealthScope): string {
   return scope === "inference" ? providerId : `${providerId}:catalog`;
 }
 
-function healthStub(env: Env, providerId: string, scope: HealthScope) {
+function healthStub(env: Bindings, providerId: string, scope: HealthScope) {
   return env.HEALTH.getByName(healthObjectName(providerId, scope));
 }
 
@@ -216,7 +217,7 @@ function credentialHealthObjectName(
 }
 
 function credentialHealthStub(
-  env: Env,
+  env: Bindings,
   providerId: string,
   credentialId: string,
   scope: HealthScope,
@@ -227,7 +228,7 @@ function credentialHealthStub(
 }
 
 export async function getProviderAvailability(
-  env: Env,
+  env: Bindings,
   providerId: string,
   scope: HealthScope = "inference",
 ): Promise<ProviderAvailability> {
@@ -251,7 +252,7 @@ export async function getProviderAvailability(
 }
 
 export async function providerIsAvailable(
-  env: Env,
+  env: Bindings,
   providerId: string,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
@@ -259,7 +260,7 @@ export async function providerIsAvailable(
 }
 
 export async function getCredentialAvailability(
-  env: Env,
+  env: Bindings,
   providerId: string,
   credentialId: string,
   scope: HealthScope = "inference",
@@ -289,7 +290,7 @@ export async function getCredentialAvailability(
 }
 
 export async function credentialIsAvailable(
-  env: Env,
+  env: Bindings,
   providerId: string,
   credentialId: string,
   scope: HealthScope = "inference",
@@ -299,7 +300,7 @@ export async function credentialIsAvailable(
 }
 
 async function record(
-  env: Env,
+  env: Bindings,
   providerId: string,
   outcome: "success" | "failure",
   requestId?: string,
@@ -332,7 +333,7 @@ async function record(
 }
 
 export function recordProviderSuccess(
-  env: Env,
+  env: Bindings,
   providerId: string,
   requestId?: string,
   scope: HealthScope = "inference",
@@ -341,7 +342,7 @@ export function recordProviderSuccess(
 }
 
 export function recordProviderFailure(
-  env: Env,
+  env: Bindings,
   providerId: string,
   requestId?: string,
   scope: HealthScope = "inference",
@@ -350,7 +351,7 @@ export function recordProviderFailure(
 }
 
 export async function recordCredentialFailure(
-  env: Env,
+  env: Bindings,
   providerId: string,
   credentialId: string,
   requestId?: string,
@@ -383,7 +384,7 @@ export async function recordCredentialFailure(
 }
 
 export async function clearProviderHealth(
-  env: Env,
+  env: Bindings,
   providerId: string,
   scope: HealthScope = "inference",
 ): Promise<ProviderHealthSnapshot> {
@@ -392,7 +393,7 @@ export async function clearProviderHealth(
 }
 
 export async function clearCredentialHealth(
-  env: Env,
+  env: Bindings,
   providerId: string,
   credentialId: string,
   scope: HealthScope = "inference",
@@ -401,7 +402,7 @@ export async function clearCredentialHealth(
 }
 
 export async function listCoolingProviders(
-  env: Env,
+  env: Bindings,
   providerIds: string[],
   scope: HealthScope = "inference",
 ): Promise<CoolingProviderHealth[]> {
@@ -420,7 +421,7 @@ export async function listCoolingProviders(
 }
 
 export async function listCoolingHealth(
-  env: Env,
+  env: Bindings,
   providers: ProviderConfig[],
   scope: HealthScope = "inference",
 ): Promise<CoolingHealth[]> {

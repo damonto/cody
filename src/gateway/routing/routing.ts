@@ -26,6 +26,7 @@ import type {
   ProviderCredentialConfig,
   ProviderConfig,
 } from "../../config/types.ts";
+import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ModelRoute {
   requestedModel: string;
@@ -267,7 +268,7 @@ export function allowedProviderCandidates(
 }
 
 async function evaluateAvailability<T extends RoutedProvider>(
-  env: Env,
+  env: Bindings,
   routedProviders: T[],
   scope: HealthScope,
 ): Promise<RouteAvailability<T>> {
@@ -362,7 +363,7 @@ function selectTarget(
 }
 
 export async function selectAvailableProviderWithDetails(
-  env: Env,
+  env: Bindings,
   route: ModelRoute,
   options: ProviderSelectionOptions = {},
 ): Promise<ProviderSelection> {
@@ -389,7 +390,7 @@ export async function selectAvailableProviderWithDetails(
 }
 
 export async function selectAvailableTargetWithDetails(
-  env: Env,
+  env: Bindings,
   providers: RoutedProvider[],
   options: ProviderSelectionOptions = {},
 ): Promise<TargetSelection> {
@@ -495,7 +496,7 @@ export async function selectAvailableTargetWithDetails(
 }
 
 export async function selectAvailableProvider(
-  env: Env,
+  env: Bindings,
   route: ModelRoute,
 ): Promise<ProviderConfig | undefined> {
   return (await selectAvailableProviderWithDetails(env, route)).target
@@ -503,7 +504,7 @@ export async function selectAvailableProvider(
 }
 
 export async function selectAvailableCatalogTargetsWithDetails(
-  env: Env,
+  env: Bindings,
   routedProviders: RoutedProvider[],
 ): Promise<CatalogSelection> {
   const availability = await evaluateAvailability(
@@ -525,7 +526,7 @@ export async function selectAvailableCatalogTargetsWithDetails(
 }
 
 export async function targetIsAvailableForRoute(
-  env: Env,
+  env: Bindings,
   route: ModelRoute,
   target: ModelProviderTarget,
   scope: HealthScope = "inference",

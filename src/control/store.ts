@@ -8,6 +8,12 @@ import { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
 import { record } from "../telemetry/usage.ts";
 import { decryptConfig, encryptConfig } from "./crypto.ts";
 import type { DraftView } from "./schema.ts";
+import {
+  sqlDialect,
+  type KeyValueStore,
+  type SqlDatabase,
+} from "../platform/bindings.ts";
+import { insertIgnore } from "../platform/sql-dialect.ts";
 export type { DraftView } from "./schema.ts";
 
 export { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
@@ -132,8 +138,8 @@ export function maskSecrets(value: unknown): JsonValue {
 
 export class ControlStore {
   constructor(
-    readonly db: D1Database,
-    private readonly kv: KVNamespace,
+    readonly db: SqlDatabase,
+    private readonly kv: KeyValueStore,
     private readonly encryptionKey: string,
     private readonly configKey = "gateway-config",
   ) {}
@@ -219,18 +225,35 @@ export class ControlStore {
     );
     const encrypted = await encryptConfig(restored, this.encryptionKey);
     const now = Date.now();
-    const [updated] = await this.db.batch([
-      this.db
-        .prepare(
-          "UPDATE control_state SET draft_payload = ?, draft_version = draft_version + 1, updated_at = ? WHERE id = 1 AND draft_version = ?",
-        )
-        .bind(encrypted, now, expectedVersion),
-      this.db
-        .prepare(
-          "INSERT INTO audit_log (id, created_at, actor, action) SELECT ?, ?, ?, 'save_draft' WHERE changes() = 1",
-        )
-        .bind(crypto.randomUUID(), now, actor),
-    ]);
+    const [updated] =
+      sqlDialect(this.db) === "postgres"
+        ? await this.db.batch([
+            // The audit row is inserted only when the guarded update changed the draft.
+            this.db
+              .prepare(
+                "WITH updated AS (UPDATE control_state SET draft_payload = ?, draft_version = draft_version + 1, updated_at = ? WHERE id = 1 AND draft_version = ? RETURNING id) INSERT INTO audit_log (id, created_at, actor, action) SELECT ?, ?, ?, 'save_draft' FROM updated",
+              )
+              .bind(
+                encrypted,
+                now,
+                expectedVersion,
+                crypto.randomUUID(),
+                now,
+                actor,
+              ),
+          ])
+        : await this.db.batch([
+            this.db
+              .prepare(
+                "UPDATE control_state SET draft_payload = ?, draft_version = draft_version + 1, updated_at = ? WHERE id = 1 AND draft_version = ?",
+              )
+              .bind(encrypted, now, expectedVersion),
+            this.db
+              .prepare(
+                "INSERT INTO audit_log (id, created_at, actor, action) SELECT ?, ?, ?, 'save_draft' WHERE changes() = 1",
+              )
+              .bind(crypto.randomUUID(), now, actor),
+          ]);
     if (updated.meta.changes !== 1)
       throw new ControlConflict("The draft changed; reload before saving");
     return this.view();
@@ -250,11 +273,12 @@ export class ControlStore {
     const payload = await encryptConfig(config, this.encryptionKey);
     const inserted = await this.db
       .prepare(
-        "INSERT INTO config_revisions (payload, created_at, actor, source_revision) VALUES (?, ?, ?, ?) RETURNING id",
+        "INSERT INTO config_revisions (payload, created_at, actor, source_revision) SELECT ?, ?, ?, ? FROM control_state WHERE id = 1 AND draft_version = ? RETURNING id",
       )
-      .bind(payload, Date.now(), actor, sourceRevision)
+      .bind(payload, Date.now(), actor, sourceRevision, expectedVersion)
       .first<{ id: number }>();
-    if (!inserted) throw new Error("Could not create configuration revision");
+    if (!inserted)
+      throw new ControlConflict("The draft changed; reload before publishing");
     return inserted.id;
   }
 
@@ -280,7 +304,10 @@ export class ControlStore {
     const policies = (config.model_policies ?? []).map((policy) =>
       this.db
         .prepare(
-          "INSERT OR IGNORE INTO pricing_versions (id, revision, provider_id, model, policy_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          insertIgnore(
+            sqlDialect(this.db),
+            "INSERT INTO pricing_versions (id, revision, provider_id, model, policy_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          ),
         )
         .bind(
           priceVersion(id, policy.provider_id, policy.model),
@@ -308,7 +335,10 @@ export class ControlStore {
         .bind(now, id),
       this.db
         .prepare(
-          "INSERT OR IGNORE INTO audit_log (id, created_at, actor, action, revision) SELECT ?, ?, actor, 'publish', id FROM config_revisions WHERE id = ?",
+          insertIgnore(
+            sqlDialect(this.db),
+            "INSERT INTO audit_log (id, created_at, actor, action, revision) SELECT ?, ?, actor, 'publish', id FROM config_revisions WHERE id = ?",
+          ),
         )
         .bind(`publish:${id}`, now, id),
     ]);
