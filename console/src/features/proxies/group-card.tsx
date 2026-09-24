@@ -1,63 +1,48 @@
-import { Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import type { ProxyGroupConfig } from "../../../../src/config/types";
 import type { ProxyGroupStatus } from "../../../../src/gateway/proxies/schema";
 import { date } from "@/lib/format";
-import { DataTable, Status } from "@/components/common";
+import { DataTable } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ProxyNodeRow } from "./node-row";
 
 interface ProxyGroupCardProps {
   readonly group: ProxyGroupConfig;
+  readonly version: number;
   readonly live: ProxyGroupStatus | undefined;
   readonly timeZone: string | undefined;
   readonly clearing: boolean;
   readonly edit: () => void;
+  readonly addNode: () => void;
+  readonly editNode: (proxyId: string) => void;
   readonly remove: () => void;
+  readonly removeNode: (proxyId: string) => void;
   readonly clearHealth: (proxyId: string) => void;
-}
-
-function NodeHealth({
-  health,
-  timeZone,
-}: {
-  readonly health: ProxyGroupStatus["proxies"][number] | undefined;
-  readonly timeZone: string | undefined;
-}) {
-  return (
-    <div>
-      <Status value={health?.status ?? "unpublished"} />
-      {health?.cooling_until && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          Until {date(health.cooling_until, timeZone)}
-        </p>
-      )}
-      {health && (
-        <p className="text-xs text-muted-foreground">
-          {health.failures} failures
-        </p>
-      )}
-    </div>
-  );
 }
 
 export function ProxyGroupCard({
   group,
+  version,
   live,
   timeZone,
   clearing,
   edit,
+  addNode,
+  editNode,
   remove,
+  removeNode,
   clearHealth,
 }: ProxyGroupCardProps) {
   const healthById = new Map(live?.proxies.map((node) => [node.id, node]));
-  const nodes = group.proxies.map(({ id, url, priority, disabled }) => ({
-    id,
-    url,
-    priority,
-    disabled,
-    health: healthById.get(id),
-  }));
   return (
     <Card className="shadow-none">
       <CardHeader className="flex-row items-center justify-between gap-3">
@@ -66,6 +51,15 @@ export function ProxyGroupCard({
           <Badge variant="secondary">{group.strategy}</Badge>
         </div>
         <div className="flex gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label={`Add proxy to ${group.id}`}
+            onClick={addNode}
+          >
+            <Plus />
+            Add proxy
+          </Button>
           <Button variant="outline" size="sm" onClick={edit}>
             Configure {group.id}
           </Button>
@@ -80,71 +74,43 @@ export function ProxyGroupCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!nodes.length ? (
+        {!group.proxies.length ? (
           <p className="text-sm text-muted-foreground">
             This group has no nodes. Requests selecting it will be unavailable.
           </p>
         ) : (
-          <DataTable
-            data={nodes}
-            columns={[
-              {
-                id: "id",
-                header: "Proxy",
-                cell: ({ row }) => (
-                  <div>
-                    <p className="font-medium">{row.original.id}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {row.original.url}
-                    </p>
-                  </div>
-                ),
-              },
-              {
-                id: "priority",
-                header: "Priority",
-                cell: ({ row }) => row.original.priority,
-              },
-              {
-                id: "enabled",
-                header: "Draft",
-                cell: ({ row }) => (
-                  <Status
-                    value={row.original.disabled ? "disabled" : "enabled"}
-                  />
-                ),
-              },
-              {
-                id: "health",
-                header: "Live health",
-                cell: ({ row }) => (
-                  <NodeHealth
-                    health={row.original.health}
-                    timeZone={timeZone}
-                  />
-                ),
-              },
-              {
-                id: "clear",
-                header: "",
-                cell: ({ row }) => (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={
-                      clearing ||
-                      !row.original.health ||
-                      (!row.original.health.failures &&
-                        !row.original.health.cooling_until)
-                    }
-                    onClick={() => clearHealth(row.original.id)}
-                  >
-                    Clear health
-                  </Button>
-                ),
-              },
-            ]}
-          />
+          <Table>
+            <TableHeader className="[&_th]:h-11 [&_th]:bg-muted/30 [&_th]:text-xs">
+              <TableRow>
+                {["Proxy", "Priority", "Draft", "Live health", "Exit IP"].map(
+                  (heading) => (
+                    <TableHead key={heading} scope="col">
+                      {heading}
+                    </TableHead>
+                  ),
+                )}
+                <TableHead scope="col">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {group.proxies.map((node) => (
+                <ProxyNodeRow
+                  key={JSON.stringify([version, node.id])}
+                  groupId={group.id}
+                  version={version}
+                  node={node}
+                  health={healthById.get(node.id)}
+                  timeZone={timeZone}
+                  clearing={clearing}
+                  edit={editNode}
+                  remove={removeNode}
+                  clearHealth={clearHealth}
+                />
+              ))}
+            </TableBody>
+          </Table>
         )}
         {!!live?.bindings.length && (
           <div className="space-y-2 border-t pt-4">

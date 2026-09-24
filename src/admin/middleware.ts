@@ -32,6 +32,13 @@ export const adminSecurity = createMiddleware<AdminContext>(
   },
 );
 export const adminError: ErrorHandler<AdminContext> = (error, context) => {
+  if (context.req.raw.signal.aborted) {
+    // 499 is the gateway's client-cancellation status, outside Hono's standard status union.
+    return Response.json(
+      { error: "Request cancelled." },
+      { status: 499, headers: context.res.headers },
+    );
+  }
   if (error instanceof HTTPException)
     return context.json({ error: error.message }, error.status);
   if (error instanceof BodyTooLargeError)

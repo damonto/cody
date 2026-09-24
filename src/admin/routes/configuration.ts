@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import { draftConfigurationSchema } from "../../config/schema.ts";
+import {
+  draftConfigurationSchema,
+  identifierSchema,
+} from "../../config/schema.ts";
 import { publisherReplySchema, revisionSchema } from "../../control/schema.ts";
 import { apiKeySchema } from "../credential-schema.ts";
 import {
@@ -14,6 +17,7 @@ import {
 import { validate } from "../validation.ts";
 import { controlStore, type AdminContext } from "../context.ts";
 import type { Bindings } from "../../platform/bindings.ts";
+import { testProxy } from "../proxy-test.ts";
 
 async function publisherReply(reply: Promise<string>) {
   const result = publisherReplySchema.parse(JSON.parse(await reply));
@@ -22,12 +26,12 @@ async function publisherReply(reply: Promise<string>) {
   return result.data;
 }
 
-async function credentialDraft(env: Bindings, version: number) {
+async function versionedDraft(env: Bindings, version: number) {
   const store = controlStore(env);
   const state = await store.state();
   if (state.draft_version !== version)
     throw new HTTPException(409, {
-      message: "The draft changed; reload before viewing this key",
+      message: "The draft changed; reload before trying again",
     });
   return draftConfigurationSchema.parse(
     await store.rawDraft(Promise.resolve(state)),
@@ -57,13 +61,32 @@ export const configurationRoutes = new Hono<AdminContext>()
     });
   })
   .post(
+    "/proxy-groups/:groupId/proxies/:proxyId/test",
+    validate(
+      "param",
+      z.object({ groupId: identifierSchema, proxyId: identifierSchema }),
+    ),
+    validate("json", versionSchema),
+    async (c) => {
+      const { groupId, proxyId } = c.req.valid("param");
+      const config = await versionedDraft(c.env, c.req.valid("json").version);
+      const proxy = config.proxy_groups
+        .find((group) => group.id === groupId)
+        ?.proxies.find((node) => node.id === proxyId);
+      if (!proxy) {
+        throw new HTTPException(404, { message: "Draft proxy does not exist" });
+      }
+      return c.json(await testProxy(proxy, c.req.raw.signal));
+    },
+  )
+  .post(
     "/clients/:id/reveal",
     validate("param", clientIdSchema),
     validate("json", versionSchema),
     async (c) => {
       const { id } = c.req.valid("param");
       const { version } = c.req.valid("json");
-      const config = await credentialDraft(c.env, version);
+      const config = await versionedDraft(c.env, version);
       const client = config.api_keys.find((entry) => entry.id === id);
       if (!client)
         throw new HTTPException(404, { message: "Client does not exist" });
@@ -76,7 +99,7 @@ export const configurationRoutes = new Hono<AdminContext>()
     validate("json", versionSchema),
     async (c) => {
       const { id, credentialId } = c.req.valid("param");
-      const config = await credentialDraft(c.env, c.req.valid("json").version);
+      const config = await versionedDraft(c.env, c.req.valid("json").version);
       const provider = config.providers.find((entry) => entry.id === id);
       const key = provider?.credentials.find(
         (entry) => entry.id === credentialId,
@@ -93,7 +116,7 @@ export const configurationRoutes = new Hono<AdminContext>()
     },
   )
   .post("/web-search/reveal", validate("json", versionSchema), async (c) => {
-    const config = await credentialDraft(c.env, c.req.valid("json").version);
+    const config = await versionedDraft(c.env, c.req.valid("json").version);
     if (config.web_search.mode === "proxy")
       throw new HTTPException(404, {
         message: "No search provider key is configured",

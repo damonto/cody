@@ -10,7 +10,7 @@ import {
   ToggleField,
 } from "@/components/form/fields";
 
-export const { useAppForm, withForm } = createFormHook({
+export const { useAppForm, withForm, withFieldGroup } = createFormHook({
   fieldContext,
   formContext,
   fieldComponents: {

@@ -2,21 +2,27 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useDraft, type Draft } from "@/lib/api";
 import { useClearProxyHealth, useProxyGroups } from "@/features/proxies/api";
-import { DeleteProxyGroupDialog } from "@/features/proxies/delete-group-dialog";
+import {
+  DeleteProxyDialog,
+  type ProxyDeletionTarget,
+} from "@/features/proxies/delete-dialog";
 import { ProxyGroupCard } from "@/features/proxies/group-card";
 import { ProxyGroupEditor } from "@/features/proxies/group-editor";
+import { ProxyNodeEditor } from "@/features/proxies/node-editor";
 import { Empty, ErrorNotice, Loading, PageHeading } from "@/components/common";
 import { Button } from "@/components/ui/button";
 
-type GroupDialog =
+type ProxyDialog =
   | { kind: "create"; snapshot: Draft }
-  | { kind: "edit" | "delete"; snapshot: Draft; groupId: string };
+  | { kind: "edit"; snapshot: Draft; groupId: string }
+  | { kind: "node"; snapshot: Draft; groupId: string; proxyId?: string }
+  | { kind: "delete"; snapshot: Draft; target: ProxyDeletionTarget };
 
 export default function Proxies() {
   const draft = useDraft();
   const health = useProxyGroups(draft.data?.published_revision);
   const clear = useClearProxyHealth();
-  const [dialog, setDialog] = useState<GroupDialog | null>(null);
+  const [dialog, setDialog] = useState<ProxyDialog | null>(null);
 
   if (draft.isPending) {
     return <Loading />;
@@ -52,6 +58,10 @@ export default function Proxies() {
         reflect the published configuration. Three connection failures within
         one minute cool a node for five minutes.
       </p>
+      <p className="text-sm text-muted-foreground">
+        Test checks the saved draft node’s exit IP without changing live health.
+        Results are cleared when you change the draft or leave this page.
+      </p>
       {health.error && (
         <ErrorNotice error={health.error} retry={() => void health.refetch()} />
       )}
@@ -65,9 +75,17 @@ export default function Proxies() {
         <ProxyGroupCard
           key={group.id}
           group={group}
+          version={draft.data.version}
           live={liveGroups.get(group.id)}
           timeZone={config.reporting?.time_zone}
           clearing={clear.isPending}
+          addNode={() =>
+            setDialog({
+              kind: "node",
+              snapshot: structuredClone(draft.data),
+              groupId: group.id,
+            })
+          }
           edit={() =>
             setDialog({
               kind: "edit",
@@ -75,11 +93,26 @@ export default function Proxies() {
               groupId: group.id,
             })
           }
+          editNode={(proxyId) =>
+            setDialog({
+              kind: "node",
+              snapshot: structuredClone(draft.data),
+              groupId: group.id,
+              proxyId,
+            })
+          }
           remove={() =>
             setDialog({
               kind: "delete",
               snapshot: structuredClone(draft.data),
-              groupId: group.id,
+              target: { kind: "group", groupId: group.id },
+            })
+          }
+          removeNode={(proxyId) =>
+            setDialog({
+              kind: "delete",
+              snapshot: structuredClone(draft.data),
+              target: { kind: "node", groupId: group.id, proxyId },
             })
           }
           clearHealth={(proxyId) =>
@@ -88,9 +121,17 @@ export default function Proxies() {
         />
       ))}
       {dialog?.kind === "delete" ? (
-        <DeleteProxyGroupDialog
+        <DeleteProxyDialog
+          snapshot={dialog.snapshot}
+          target={dialog.target}
+          close={closeDialog}
+        />
+      ) : dialog?.kind === "node" ? (
+        <ProxyNodeEditor
+          key={JSON.stringify([dialog.groupId, dialog.proxyId ?? null])}
           snapshot={dialog.snapshot}
           groupId={dialog.groupId}
+          {...(dialog.proxyId === undefined ? {} : { proxyId: dialog.proxyId })}
           close={closeDialog}
         />
       ) : (

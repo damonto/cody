@@ -18,6 +18,21 @@ export const proxyGroupEditorSchema = proxyGroupSchema
 
 type ProxyGroupFormValues = z.input<typeof proxyGroupEditorSchema>;
 
+export const emptyProxyNode: z.input<typeof proxyNodeSchema> = {
+  id: "",
+  url: "",
+  priority: 100,
+  disabled: false,
+};
+export const proxyNodeEditorSchema = z.strictObject({ node: proxyNodeSchema });
+export const proxyNodeFormOptions = formOptions({
+  defaultValues: { node: emptyProxyNode },
+  validators: {
+    onSubmit: proxyNodeEditorSchema,
+    onChange: proxyNodeEditorSchema,
+  },
+});
+
 export function proxyGroupFormValues(
   group?: ProxyGroupConfig,
 ): ProxyGroupFormValues {
