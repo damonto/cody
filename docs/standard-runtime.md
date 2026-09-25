@@ -1,12 +1,12 @@
 # Native Node.js and Vercel
 
-The same gateway and console run in all three environments. Cloudflare keeps its existing bindings and migration history. Native Node and Vercel use PostgreSQL or SQLite for durable state and Redis for coordination locks.
+The same gateway and console run in all three environments. Cloudflare keeps its existing bindings and migration history. Native Node and Vercel use PostgreSQL, libSQL or SQLite for durable state and Redis for coordination locks.
 
 | Capability             | Cloudflare        | Native Node.js                    | Vercel                                  |
 | ---------------------- | ----------------- | --------------------------------- | --------------------------------------- |
 | HTTP and SSE inference | Yes               | Yes                               | Yes, within the function duration       |
 | Responses WebSocket    | Yes               | Yes                               | No; returns 501                         |
-| Database               | D1                | SQLite or Postgres                | Postgres                                |
+| Database               | D1                | SQLite, libSQL or Postgres        | Postgres or libSQL                      |
 | Database migrations    | During deployment | Before accepting requests         | After build, before release             |
 | Coordination           | Durable Objects   | Redis                             | Redis                                   |
 | Background recovery    | Alarms and cron   | Timers and persisted alarms       | Request activity and authenticated cron |
@@ -22,7 +22,7 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-Put the generated key in `CONFIG_ENCRYPTION_KEY` in `.env`. Keep this key stable: it encrypts configuration, OAuth accounts and administrator cookies. Set `REDIS_URL` to your Redis connection string. The default `DATABASE_URL=sqlite:./data/cody.sqlite` creates a local database; alternatively set `DATABASE_URL=postgres://user:password@host:5432/cody`. URL-encode special characters in credentials. Use `rediss://` and the PostgreSQL server's SSL settings where required.
+Put the generated key in `CONFIG_ENCRYPTION_KEY` in `.env`. Keep this key stable: it encrypts configuration, OAuth accounts and administrator cookies. Set `REDIS_URL` to your Redis connection string. The default `DATABASE_URL=sqlite:./data/cody.sqlite` creates a local database; alternatively set `DATABASE_URL=postgres://user:password@host:5432/cody`, or `DATABASE_URL=libsql://your-database.turso.io?authToken=your-token` for Turso or a self-hosted `sqld`. URL-encode special characters in credentials. Use `rediss://` and the PostgreSQL server's SSL settings where required.
 
 ```bash
 npm run build:node
@@ -42,11 +42,15 @@ npm run config:import -- config.json
 
 Import refuses to overwrite an existing draft. Subsequent edits and publications use the console. Copying configuration with Antigravity account references does not copy its encrypted account state; authorize accounts in the new installation.
 
-Native Node runs migrations at startup by default. D1 uses `migrations/d1/`. Native SQLite reuses those base migrations and adds `migrations/sqlite/`; PostgreSQL uses `migrations/postgres/`. Migration history and schema changes are committed together. PostgreSQL holds a transaction advisory lock on the same connection that applies migrations, including through transaction-mode connection poolers. `DATABASE_MIGRATE=false` disables automatic migrations once the database has been prepared. SQLite files should live on a persistent local volume; use PostgreSQL when scaling across hosts.
+Native Node runs migrations at startup by default. D1 uses `migrations/d1/`. Native SQLite and libSQL reuse those base migrations and add `migrations/sqlite/`; PostgreSQL uses `migrations/postgres/`. Migration history and schema changes are committed together. PostgreSQL holds a transaction advisory lock on the same connection that applies migrations, including through transaction-mode connection poolers. `DATABASE_MIGRATE=false` disables automatic migrations once the database has been prepared. SQLite files should live on a persistent local volume; use PostgreSQL or libSQL when scaling across hosts.
 
 To apply migrations separately, run `npm run db:migrate:standard`. This command needs only `DATABASE_URL` (or `DATABASE_MIGRATION_URL` for a separate migration connection/role); it does not require Redis, administrator credentials or the configuration encryption key. The bundled equivalent is `node --env-file=.env dist/migrate.mjs`.
 
 The `dist/` directory contains the Node bundle, console and migrations and can run independently with `node server.mjs`. Supply environment variables from the process environment or an env file. `HOST` defaults to `127.0.0.1`; `PORT` defaults to `8787`. Local administrator mode requires a loopback bind. Use OIDC or Access before binding to `0.0.0.0`.
+
+## libSQL
+
+`libsql://` URLs connect to Turso or a self-hosted `sqld` over HTTPS with the HTTP client, which has no native bindings and works on Vercel. Put the database token in the URL as `?authToken=…`; `DATABASE_MIGRATION_URL` and the migration CLI take the same form. For a local `sqld` without TLS, use `libsql://127.0.0.1:8080?tls=0` (an explicit port is required). libSQL speaks SQLite, so it uses the SQLite statements and migrations. Each migration runs in its own write transaction that rechecks the history, so concurrent runners apply it once. Batches run in one write transaction on the server, and `sqld` enforces foreign keys on every connection. `DATABASE_POOL_SIZE` applies only to PostgreSQL.
 
 ## Administrator authentication
 
@@ -74,7 +78,7 @@ Console assets are public by default; APIs always require administrator authenti
 
 Connect the repository to Vercel with Node.js 24 selected and leave Root Directory empty. The deployment builds from the repository root; choosing the `console` workspace as the Root Directory fails with `Missing script: "build:vercel"`. The checked-in `vercel.json` runs `npm run build:vercel && npm run db:migrate:standard`: it builds the [Build Output API v3](https://vercel.com/docs/build-output-api/v3/configuration) deployment, then applies pending PostgreSQL migrations automatically before Vercel releases it. A failed build or migration stops deployment. The output includes a streaming Node function, console assets and a daily maintenance cron. No Cloudflare bindings are needed.
 
-Set `DATABASE_URL` to an existing PostgreSQL database, `REDIS_URL`, `CONFIG_ENCRYPTION_KEY`, the administrator authentication variables above, and a random `CRON_SECRET` of at least 16 characters. All instances of the same deployment must use the same database, Redis prefix and encryption key. Separate independent installations with separate databases and `REDIS_PREFIX` values.
+Set `DATABASE_URL` to an existing PostgreSQL or libSQL database, `REDIS_URL`, `CONFIG_ENCRYPTION_KEY`, the administrator authentication variables above, and a random `CRON_SECRET` of at least 16 characters. All instances of the same deployment must use the same database, Redis prefix and encryption key. Separate independent installations with separate databases and `REDIS_PREFIX` values.
 
 The deployment build needs a reachable database and schema permissions. It uses `DATABASE_MIGRATION_URL` when set, otherwise `DATABASE_URL`; both come from the target Vercel environment. Applied migrations are skipped, and concurrent PostgreSQL migration runners are serialized with a transaction advisory lock. A separate migration connection lets the function use a database role with data permissions only. Keep each preview environment's database and Redis prefix separate from production.
 

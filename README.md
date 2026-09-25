@@ -11,7 +11,7 @@ An AI API gateway with a web console on Cloudflare Workers, native Node.js, and 
 
 Requires Node.js 24 or newer.
 
-The commands below start the Cloudflare development runtime. For a native Node server with Redis and SQLite/Postgres, or a Vercel deployment with Redis and Postgres, see [Node and Vercel setup](docs/standard-runtime.md).
+The commands below start the Cloudflare development runtime. For a native Node server with Redis and SQLite, libSQL or Postgres, or a Vercel deployment with Redis and Postgres or libSQL, see [Node and Vercel setup](docs/standard-runtime.md).
 
 ```bash
 npm install

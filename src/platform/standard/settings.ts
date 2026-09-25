@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { databaseKind } from "./sql/connect.ts";
 
 const text = z.string().trim().min(1);
 const flag = z.enum(["true", "false"]);
@@ -70,13 +71,10 @@ export function readSettings(
     );
   }
   const settings = parsed.data;
-  const postgres = /^postgres(?:ql)?:\/\//.test(settings.DATABASE_URL);
-  if (!postgres && !settings.DATABASE_URL.startsWith("sqlite:")) {
-    throw new Error("DATABASE_URL must use sqlite: or postgres://");
-  }
-  if (target === "vercel" && !postgres)
+  const database = databaseKind(settings.DATABASE_URL);
+  if (target === "vercel" && database === "sqlite")
     throw new Error(
-      "Vercel requires PostgreSQL; local SQLite is not durable there",
+      "Vercel requires PostgreSQL or libSQL; local SQLite is not durable there",
     );
   if (target === "vercel" && settings.DATABASE_MIGRATE === "true") {
     throw new Error(

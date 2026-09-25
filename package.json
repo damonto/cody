@@ -58,6 +58,7 @@
     "@hono/node-server": "^2.1.1",
     "@hono/zod-validator": "^0.9.1",
     "@js-temporal/polyfill": "^0.5.1",
+    "@libsql/client": "^0.18.0",
     "@peculiar/x509": "1.14.3",
     "@reclaimprotocol/tls": "0.1.4",
     "@vercel/functions": "^3.9.9",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
+import { createClient } from "@libsql/client";
 import { config, usage } from "./admin/fixtures.ts";
 import { createRuntime } from "../src/platform/standard/runtime.ts";
 import { readSettings } from "../src/platform/standard/settings.ts";
@@ -21,6 +22,7 @@ import {
   migrationDirectories,
 } from "../src/platform/standard/sql/migrate.ts";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
+import { libsqlDatabase } from "../src/platform/standard/sql/libsql.ts";
 import {
   pgliteQueryable,
   postgresDatabase,
@@ -49,6 +51,21 @@ test("runtime settings enforce platform and authentication requirements", () => 
     /deployment build/,
   );
   assert.throws(() => readSettings(settings, "vercel"), /PostgreSQL/);
+  assert.equal(
+    readSettings(
+      { ...settings, DATABASE_URL: "libsql://cody.example.com?authToken=t" },
+      "vercel",
+    ).DATABASE_MIGRATE,
+    "false",
+  );
+  assert.throws(
+    () =>
+      readSettings(
+        { ...settings, DATABASE_URL: "mysql://localhost/db" },
+        "node",
+      ),
+    /libsql:\/\//,
+  );
   assert.throws(
     () =>
       readSettings(
@@ -258,13 +275,20 @@ test("registered object alarms catch up on access and preserve rescheduling", as
   assert.equal(await backend.getAlarm("alarm", "one"), 300);
 });
 
-for (const dialect of ["sqlite", "postgres"]) {
-  test(`${dialect}: standard runtime integration`, async (t) => {
-    const pglite = dialect === "postgres" ? new PGlite() : undefined;
-    const db = pglite
-      ? postgresDatabase(pgliteQueryable(pglite), () => pglite.close())
-      : await createSqliteDatabase(":memory:");
-    await applyMigrations(db, migrationDirectories(dialect, ROOT));
+const databases = {
+  sqlite: () => createSqliteDatabase(":memory:"),
+  // The in-process client runs the HTTP adapter's logic on libSQL's engine.
+  libsql: () => libsqlDatabase(createClient({ url: ":memory:" })),
+  postgres: () => {
+    const pglite = new PGlite();
+    return postgresDatabase(pgliteQueryable(pglite), () => pglite.close());
+  },
+};
+
+for (const [name, open] of Object.entries(databases)) {
+  test(`${name}: standard runtime integration`, async (t) => {
+    const db = await open();
+    await applyMigrations(db, migrationDirectories(db.dialect, ROOT));
     const redis = new MemoryRedis();
     const resources = { db, redis, close: async () => {} };
     const runtime = await createRuntime({

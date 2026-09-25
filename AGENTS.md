@@ -13,8 +13,8 @@ This repository contains a TypeScript AI API gateway for Codex and other clients
 - Use `npx wrangler deploy --dry-run` to validate the Worker bundle without deploying.
 - Do not commit `config.json`, `config.local.json`, `.dev.vars`, API keys, upstream credentials, or migration backups.
 - Standard runtimes: use `npm run build:node` / `npm start` or `npm run dev:node`; `npm run build:vercel` generates the Vercel Build Output API deployment. Never commit `.env`, `.vercel/`, `data/`, or local SQLite databases.
-- Keep Cloudflare dependencies in the Worker entry and object shells. The standard runtime uses Redis coordination and SQL durable state; never fall back to in-memory production state. Vercel requires PostgreSQL and does not support inbound WebSocket. Local administrator mode must only bind to loopback.
-- D1 uses `migrations/d1/`. Node SQLite reuses `migrations/d1/` and adds `migrations/sqlite/`; PostgreSQL uses `migrations/postgres/`. Preserve atomic migrations, SQL stale-write fencing, encrypted OAuth state and durable usage delivery when changing the standard runtime.
+- Keep Cloudflare dependencies in the Worker entry and object shells. The standard runtime uses Redis coordination and SQL durable state; never fall back to in-memory production state. Vercel requires PostgreSQL or libSQL and does not support inbound WebSocket. Local administrator mode must only bind to loopback.
+- D1 uses `migrations/d1/`. Node SQLite and libSQL reuse `migrations/d1/` and add `migrations/sqlite/`; libSQL uses the native-free `@libsql/client/http` client; PostgreSQL uses `migrations/postgres/`. Preserve atomic migrations, SQL stale-write fencing, encrypted OAuth state and durable usage delivery when changing the standard runtime.
 - Vercel requests must not run migrations. The `vercel.json` build command automatically runs `npm run db:migrate:standard` after a successful build and blocks deployment on migration failure. PostgreSQL migration locks and writes must share one transaction/connection. Reuse pools, bound connection waits, and keep idle cleanup alive with the platform's `waitUntil`.
 
 ## Configuration invariants
