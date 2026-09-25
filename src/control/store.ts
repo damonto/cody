@@ -115,6 +115,23 @@ export function restoreSecrets(value: unknown, previous: unknown): unknown {
   return restored;
 }
 
+const isSecretField = (name: string): boolean =>
+  name === "api_key" || name === "password";
+
+/** Stored drafts hold real secrets; a placeholder means a restoration was skipped. */
+export function hasSecretPlaceholder(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasSecretPlaceholder);
+  const input = record(value);
+  return (
+    !!input &&
+    Object.entries(input).some(([name, entry]) =>
+      isSecretField(name)
+        ? entry === SECRET_PLACEHOLDER
+        : hasSecretPlaceholder(entry),
+    )
+  );
+}
+
 export function maskSecrets(value: unknown): JsonValue {
   if (Array.isArray(value)) return value.map(maskSecrets);
   const input = record(value);
@@ -127,9 +144,7 @@ export function maskSecrets(value: unknown): JsonValue {
   return Object.fromEntries(
     Object.entries(input).map(([name, entry]) => [
       name,
-      (name === "api_key" || name === "password") &&
-      typeof entry === "string" &&
-      entry
+      isSecretField(name) && typeof entry === "string" && entry
         ? SECRET_PLACEHOLDER
         : maskSecrets(entry),
     ]),

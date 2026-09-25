@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { ConfigError, parseConfig } from "../src/config/store.ts";
 import {
+  hasSecretPlaceholder,
   maskSecrets,
   restoreSecrets,
   SECRET_PLACEHOLDER,
@@ -175,6 +176,18 @@ test("proxy passwords are restored by group and node IDs after reordering and ro
   );
   masked.proxy_groups[1].id = "new-group";
   assert.throws(() => restoreSecrets(masked, input), /new credential/);
+});
+
+test("placeholder detection inspects only secret fields", () => {
+  const input = validConfig();
+  input.proxy_groups = proxyGroups();
+  assert.equal(hasSecretPlaceholder(input), false);
+  assert.equal(hasSecretPlaceholder(maskSecrets(input)), true);
+  input.proxy_groups[0].proxies[1].password = SECRET_PLACEHOLDER;
+  assert.equal(hasSecretPlaceholder(input), true);
+  const named = validConfig();
+  named.providers[0].models.push(SECRET_PLACEHOLDER);
+  assert.equal(hasSecretPlaceholder(named), false);
 });
 
 test("parseConfig normalizes and validates a complete configuration", () => {

@@ -10,6 +10,7 @@ import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
+import { audit } from "../audit.ts";
 import { publishedConfig, type AdminContext } from "../context.ts";
 import {
   healthListSchema,
@@ -57,16 +58,11 @@ async function runtime(
     executionContext,
   );
   if (request.method === "DELETE" && response.ok) {
-    await env.CODY_DB.prepare(
-      "INSERT INTO audit_log (id, created_at, actor, action) VALUES (?, ?, ?, ?)",
-    )
-      .bind(
-        crypto.randomUUID(),
-        Date.now(),
-        actor,
-        `clear_${path.startsWith("health") ? "health" : "session"}`,
-      )
-      .run();
+    await audit(
+      env,
+      actor,
+      `clear_${path.startsWith("health") ? "health" : "session"}`,
+    );
   }
   if (!response.ok) {
     const error = runtimeErrorSchema.safeParse(await response.json());
@@ -123,16 +119,11 @@ export const runtimeRoutes = new Hono<AdminContext>()
         await proxyGroupSnapshot(config, group),
         proxyId,
       );
-      await c.env.CODY_DB.prepare(
-        "INSERT INTO audit_log (id, created_at, actor, action) VALUES (?, ?, ?, ?)",
-      )
-        .bind(
-          crypto.randomUUID(),
-          Date.now(),
-          c.get("actor"),
-          `clear_proxy_health:${groupId}:${proxyId}`,
-        )
-        .run();
+      await audit(
+        c.env,
+        c.get("actor"),
+        `clear_proxy_health:${groupId}:${proxyId}`,
+      );
       return c.json({ ok: true as const });
     },
   )

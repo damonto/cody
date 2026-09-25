@@ -1042,6 +1042,7 @@ for (const mode of ["tavily", "exa"] as const) {
 for (const path of [
   "/console/api/config/providers/provider/credentials/primary/reveal",
   "/console/api/config/web-search/reveal",
+  "/console/api/config/export",
 ]) {
   test(`credential access validates authentication, origin, and draft version: ${path}`, async () => {
     const input = config();
@@ -1096,6 +1097,13 @@ for (const path of [
       ).status,
     ).toBe(415);
     expect((await call(path)).status).toBe(404);
+    expect(
+      (
+        await bindings.CODY_DB.prepare(
+          "SELECT * FROM audit_log WHERE action = 'export_secrets'",
+        ).all()
+      ).results,
+    ).toEqual([]);
   });
 }
 
@@ -1447,4 +1455,58 @@ test("validated RPC drafts accept repeated secret placeholders and never echo in
   const text = await invalid.text();
   expect(text).not.toContain("test-upstream-secret");
   expect(text).not.toContain("another-client-secret");
+});
+
+test("secret-bearing exports return the plaintext draft, audit the actor, and round-trip on import", async () => {
+  const input = config();
+  input.web_search = {
+    mode: "tavily",
+    prefer_native: false,
+    api_key: "test-search-key",
+    base_url: "https://search.example",
+    max_results: 5,
+  };
+  const saved = await control().save(input, 0, "tester");
+  const before = await control().state();
+  const response = await call("/console/api/config/export", "POST", {
+    version: saved.version,
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const exported: unknown = await response.json();
+  expect(exported).toEqual(parseConfig(await control().rawDraft()));
+  expect(JSON.stringify(exported)).not.toContain(SECRET_PLACEHOLDER);
+  expect(await control().state()).toEqual(before);
+  const audit = await bindings.CODY_DB.prepare(
+    "SELECT actor, action FROM audit_log WHERE action = 'export_secrets'",
+  ).all();
+  expect(audit.results).toEqual([
+    { actor: "local-admin", action: "export_secrets" },
+  ]);
+
+  await bindings.CODY_DB.prepare(
+    "UPDATE control_state SET draft_version = 0, draft_payload = NULL WHERE id = 1",
+  ).run();
+  const imported = await call("/console/api/config", "PUT", {
+    version: 0,
+    config: exported,
+  });
+  expect(imported.status).toBe(200);
+  expect(await imported.text()).not.toContain("test-search-key");
+  expect(parseConfig(await control().rawDraft())).toEqual(exported);
+});
+
+test("secret-bearing exports fail closed on a stored placeholder", async () => {
+  const input = config();
+  input.api_keys[0].api_key = SECRET_PLACEHOLDER;
+  await bindings.CODY_DB.prepare(
+    "UPDATE control_state SET draft_version = 1, draft_payload = ? WHERE id = 1",
+  )
+    .bind(await encryptConfig(input, bindings.CONFIG_ENCRYPTION_KEY))
+    .run();
+  const response = await call("/console/api/config/export", "POST", {
+    version: 1,
+  });
+  expect(response.status).toBe(500);
+  expect(await response.text()).not.toContain("test-upstream-secret");
 });

@@ -24,7 +24,7 @@ Open the console at `http://localhost:8788/console/`. Add an upstream provider a
 
 Configure token prices in **Pricing** and your reporting time zone in **Settings**. Cost estimates depend on the usage reported by your upstream providers.
 
-To import an existing configuration, use **Settings → Import JSON**. See [config.example.json](config.example.json) and [config.schema.json](config.schema.json) for the JSON format.
+To import an existing configuration, use **Settings → Import JSON**. **Settings → Export JSON** downloads the current draft: the masked export replaces secrets with placeholders that only restore on the same deployment, while **Include secrets** writes plaintext credentials for migrating to another deployment and is recorded in the audit log. OAuth tokens are never exported. See [config.example.json](config.example.json) and [config.schema.json](config.schema.json) for the JSON format.
 
 Configuration uses `providers` directly. AI Gateway supports multiple entries with `type: "ai_gateway"`, a `base_url`, and non-empty `models` and `credentials` lists with `auth: { "type": "api_key", "api_key": "…" }`. Antigravity is a fixed provider: at most one entry, with `type: "antigravity"` and the reserved ID `antigravity`. It uses official adapter endpoints (no `base_url`) and `auth: { "type": "oauth", "account_ref": "UUID" }`. Other native provider types are not accepted. Adapters and credential lifecycle resolvers are separate extension points.
 

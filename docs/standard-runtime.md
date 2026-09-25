@@ -72,7 +72,7 @@ Console assets are public by default; APIs always require administrator authenti
 
 ## Vercel
 
-Connect the repository to Vercel with Node.js 24 selected. The checked-in `vercel.json` runs `npm run build:vercel && npm run db:migrate:standard`: it builds the [Build Output API v3](https://vercel.com/docs/build-output-api/v3/configuration) deployment, then applies pending PostgreSQL migrations automatically before Vercel releases it. A failed build or migration stops deployment. The output includes a streaming Node function, console assets and a daily maintenance cron. No Cloudflare bindings are needed.
+Connect the repository to Vercel with Node.js 24 selected and leave Root Directory empty. The deployment builds from the repository root; choosing the `console` workspace as the Root Directory fails with `Missing script: "build:vercel"`. The checked-in `vercel.json` runs `npm run build:vercel && npm run db:migrate:standard`: it builds the [Build Output API v3](https://vercel.com/docs/build-output-api/v3/configuration) deployment, then applies pending PostgreSQL migrations automatically before Vercel releases it. A failed build or migration stops deployment. The output includes a streaming Node function, console assets and a daily maintenance cron. No Cloudflare bindings are needed.
 
 Set `DATABASE_URL` to an existing PostgreSQL database, `REDIS_URL`, `CONFIG_ENCRYPTION_KEY`, the administrator authentication variables above, and a random `CRON_SECRET` of at least 16 characters. All instances of the same deployment must use the same database, Redis prefix and encryption key. Separate independent installations with separate databases and `REDIS_PREFIX` values.
 

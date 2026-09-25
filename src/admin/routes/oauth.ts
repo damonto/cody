@@ -15,6 +15,7 @@ import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
+import { audit } from "../audit.ts";
 import { controlStore, type AdminContext } from "../context.ts";
 import { validate } from "../validation.ts";
 import type { Bindings } from "../../platform/bindings.ts";
@@ -53,18 +54,6 @@ async function checkedAccount(env: Bindings, ref: string, providerId?: string) {
       message: "Account does not belong to this provider",
     });
   return env.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
-}
-async function audit(
-  env: Bindings,
-  actor: string,
-  action: string,
-  ref: string,
-) {
-  await env.CODY_DB.prepare(
-    "INSERT INTO audit_log (id, created_at, actor, action) VALUES (?, ?, ?, ?)",
-  )
-    .bind(crypto.randomUUID(), Date.now(), actor, `${action}:${ref}`)
-    .run();
 }
 async function reply<T extends z.ZodType>(
   call: Parameters<typeof accountReply>[0],
@@ -116,7 +105,7 @@ export const oauthRoutes = new Hono<AdminContext>()
       }),
       sessionViewSchema,
     );
-    await audit(c.env, c.get("actor"), "oauth_start", ref);
+    await audit(c.env, c.get("actor"), `oauth_start:${ref}`);
     return c.json(session);
   })
   .get("/oauth/sessions/:id", validate("param", sessionParam), async (c) => {
@@ -311,7 +300,7 @@ export const oauthRoutes = new Hono<AdminContext>()
         (await checkedAccount(c.env, ref)).run({ action: "disconnect" }),
         accountViewSchema,
       );
-      await audit(c.env, c.get("actor"), "oauth_disconnect", ref);
+      await audit(c.env, c.get("actor"), `oauth_disconnect:${ref}`);
       return c.json(result);
     },
   );

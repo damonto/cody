@@ -7,6 +7,8 @@ import {
 } from "../../config/schema.ts";
 import { publisherReplySchema, revisionSchema } from "../../control/schema.ts";
 import { apiKeySchema } from "../credential-schema.ts";
+import { hasSecretPlaceholder } from "../../control/store.ts";
+import { audit } from "../audit.ts";
 import {
   clientIdSchema,
   draftSchema,
@@ -122,6 +124,16 @@ export const configurationRoutes = new Hono<AdminContext>()
         message: "No search provider key is configured",
       });
     return c.json(apiKeySchema.parse({ api_key: config.web_search.api_key }));
+  })
+  // The console builds masked exports itself; this route serves plaintext exports only.
+  .post("/export", validate("json", versionSchema), async (c) => {
+    const config = await versionedDraft(c.env, c.req.valid("json").version);
+    if (hasSecretPlaceholder(config))
+      throw new HTTPException(500, {
+        message: "The draft contains an unresolved secret",
+      });
+    await audit(c.env, c.get("actor"), "export_secrets");
+    return c.json(config);
   })
   .post("/publish", validate("json", versionSchema), async (c) =>
     c.json({

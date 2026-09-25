@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldLabel } from "@/components/ui/field";
+import { ExportMenu } from "@/features/configuration/export-menu";
 
 const settingsSchema = z.object({
   reporting: reportingSchema,
@@ -103,6 +104,7 @@ export default function Settings() {
             <FileUp />
             Import JSON
           </Button>
+          <ExportMenu snapshot={draft.data} />
         </div>
       </PageHeading>
       {draft.data.valid ? (
