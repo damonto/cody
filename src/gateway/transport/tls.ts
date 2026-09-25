@@ -2,10 +2,11 @@ import {
   makeTLSClient,
   setCryptoImplementation,
   loadX509FromPem,
+  MAX_ENC_PACKET_SIZE,
   type CipherSuite,
 } from "@reclaimprotocol/tls";
 import { webcryptoCrypto } from "@reclaimprotocol/tls/webcrypto";
-import { ByteReader, STREAM_CHUNK_BYTES, type Connection } from "./bytes.ts";
+import { ByteReader, concatenate, type Connection } from "./bytes.ts";
 import { validatePeerCertificates } from "./certificates.ts";
 import { TlsHandshakeReader } from "./tls-handshake.ts";
 
@@ -62,8 +63,9 @@ export async function secureConnection(
       );
     },
     async write({ header, content }) {
-      await connection.write(header);
-      await connection.write(content);
+      // A record is not usable until its payload arrives. Sending the five-byte
+      // header separately adds tiny TCP writes and can trigger delayed ACKs.
+      await connection.write(concatenate([header, content]));
     },
     onRead({ content, header }, context) {
       const metadata = tls.getMetadata();
@@ -192,6 +194,7 @@ export async function secureConnection(
   }
   // Serialize send-side state while allowing receives to unblock early HTTP responses.
   return {
+    writeChunkBytes: MAX_ENC_PACKET_SIZE,
     async read() {
       try {
         for (;;) {
@@ -219,13 +222,14 @@ export async function secureConnection(
         }
         // Passing a whole large message to tls.write() makes the library copy
         // every TLS record up front. Feed one record at a time instead.
+        // Its 16,380-byte limit is below 16 KiB; larger chunks leave tiny records.
         for (
           let offset = 0;
           offset < data.length;
-          offset += STREAM_CHUNK_BYTES
+          offset += MAX_ENC_PACKET_SIZE
         ) {
           await sendKeyUpdate();
-          await tls.write(data.subarray(offset, offset + STREAM_CHUNK_BYTES));
+          await tls.write(data.subarray(offset, offset + MAX_ENC_PACKET_SIZE));
         }
       });
       writes = next.catch(async () => {

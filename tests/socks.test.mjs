@@ -484,6 +484,9 @@ for (const tlsVersion of ["TLSv1.2", "TLSv1.3"]) {
       const payload = Buffer.from(
         JSON.stringify({ model: "test", input: "你好".repeat(20_000) }),
       );
+      const tlsWrites = [];
+      const requestWrites = [];
+      let stage;
       const result = await socksFetch(
         new Request(`${fixture.url}/v1/responses?x=1&x=2`, {
           method: "POST",
@@ -491,7 +494,28 @@ for (const tlsVersion of ["TLSv1.2", "TLSv1.3"]) {
           headers: { authorization: "Bearer upstream-key" },
         }),
         fixture.proxy,
-        fixture.options,
+        {
+          ...fixture.options,
+          onStage(value) {
+            stage = value;
+          },
+          async dial(address) {
+            const socket = await fixture.options.dial(address);
+            const writer = socket.writable.getWriter();
+            return {
+              ...socket,
+              writable: new WritableStream({
+                async write(bytes) {
+                  if (stage !== "proxy") tlsWrites.push(Buffer.from(bytes));
+                  if (stage === "request")
+                    requestWrites.push(Buffer.from(bytes));
+                  await writer.write(bytes);
+                },
+                abort: () => writer.abort(),
+              }),
+            };
+          },
+        },
       );
       assert.deepEqual(await result.json(), { ok: true });
       assert.deepEqual(received[0].body, payload);
@@ -501,6 +525,19 @@ for (const tlsVersion of ["TLSv1.2", "TLSv1.3"]) {
       assert.equal(fixture.destinations[0].host, "upstream.test");
       assert.equal(fixture.destinations[0].type, 3);
       assert.equal(fixture.connections, 1);
+      assert.ok(tlsWrites.length > 0);
+      for (const bytes of tlsWrites) {
+        assert.equal(
+          bytes.length,
+          5 + bytes.readUInt16BE(3),
+          "send each TLS record intact so its five-byte header cannot incur a separate network wait",
+        );
+        assert.ok(bytes.length <= 18 * 1024, "TLS writes remain bounded");
+      }
+      assert.ok(
+        requestWrites.length <= Math.ceil(payload.length / (16 * 1024)) + 3,
+        `HTTP chunk framing must not multiply upload records: ${requestWrites.length} writes for ${payload.length} bytes`,
+      );
     },
   );
 }

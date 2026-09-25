@@ -1,4 +1,6 @@
 export interface Connection {
+  /** Preferred plaintext write size to avoid fragmenting one write into records. */
+  readonly writeChunkBytes?: number;
   read(): Promise<Uint8Array | null>;
   write(data: Uint8Array): Promise<void>;
   /** Idempotent teardown; resolves after pending I/O and stream locks are released. */

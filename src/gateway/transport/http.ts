@@ -290,6 +290,12 @@ export async function httpOverConnection(
   }
   await connection.write(head);
   const body = request.body?.getReader();
+  // Four hex digits and two CRLFs must fit alongside the data in one record.
+  const chunkBytes =
+    Math.min(
+      STREAM_CHUNK_BYTES,
+      connection.writeChunkBytes ?? STREAM_CHUNK_BYTES,
+    ) - 8;
   let responded = false;
   const upload = (async () => {
     if (!body) {
@@ -309,14 +315,18 @@ export async function httpOverConnection(
         for (
           let offset = 0;
           offset < next.value.length && !responded;
-          offset += STREAM_CHUNK_BYTES
+          offset += chunkBytes
         ) {
-          const part = next.value.subarray(offset, offset + STREAM_CHUNK_BYTES);
+          const part = next.value.subarray(offset, offset + chunkBytes);
+          // Encrypt framing and data together, without separate tiny TLS records
+          // for the length and CRLF or buffering across request stream chunks.
           await connection.write(
-            Buffer.from(`${part.length.toString(16)}\r\n`),
+            Buffer.concat([
+              Buffer.from(`${part.length.toString(16)}\r\n`),
+              part,
+              Buffer.from("\r\n"),
+            ]),
           );
-          await connection.write(part);
-          await connection.write(Buffer.from("\r\n"));
         }
       }
     } catch {
