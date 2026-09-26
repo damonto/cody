@@ -124,11 +124,6 @@ export default function Providers() {
                 ),
               },
               {
-                id: "type",
-                header: "Type",
-                cell: () => <Badge variant="secondary">AI Gateway</Badge>,
-              },
-              {
                 id: "models",
                 header: "Models",
                 cell: ({ row }) => (

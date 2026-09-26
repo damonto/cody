@@ -4,7 +4,6 @@ import { TabsContent } from "@/components/ui/tabs";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import type { ProxyGroupConfig } from "../../../../src/config/types";
 
 export const ConnectionFields = withForm({
@@ -17,10 +16,6 @@ export const ConnectionFields = withForm({
         forceMount
         className="space-y-5 data-[state=inactive]:hidden"
       >
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-muted-foreground">Provider type</span>
-          <Badge variant="secondary">AI Gateway</Badge>
-        </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <form.AppField name="id">
             {(field) => (
