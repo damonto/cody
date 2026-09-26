@@ -46,7 +46,7 @@
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
-    "oxlint": "^1.82.0",
+    "oxlint": "^1.85.0",
     "oxlint-tsgolint": "^7.0.2001",
     "prettier": "^3.9.6",
     "tsx": "^4.23.13",
