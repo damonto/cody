@@ -36,7 +36,8 @@
     "start": "node --env-file-if-exists=.env dist/server.mjs",
     "build:node": "npm run build:web && node scripts/build-standard.mjs node",
     "build:vercel": "npm run build:web && node scripts/build-standard.mjs vercel",
-    "config:import": "node --env-file-if-exists=.env --import tsx scripts/import-standard-config.mjs"
+    "config:import": "node --env-file-if-exists=.env --import tsx scripts/import-standard-config.mjs",
+    "reporting:transfer": "node --env-file-if-exists=.env --import tsx scripts/transfer-reporting.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.8",

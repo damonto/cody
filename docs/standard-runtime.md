@@ -42,6 +42,15 @@ npm run config:import -- config.json
 
 Import refuses to overwrite an existing draft. Subsequent edits and publications use the console. Copying configuration with Antigravity account references does not copy its encrypted account state; authorize accounts in the new installation.
 
+To copy request history (the request log, attempts and hourly usage rollups) between D1 and a standard database, in either direction:
+
+```bash
+npm run reporting:transfer -- --from d1 --to "libsql://your-database.turso.io?authToken=your-token"
+npm run reporting:transfer -- --from "postgres://user:password@host:5432/cody" --to d1
+```
+
+`d1` is the `CODY_DB` binding through Wrangler (`d1:<name>` selects another database, `--local` the local development copy); an omitted endpoint defaults to `DATABASE_URL`. Both databases must already be migrated. Only finished requests are copied and rows the target already holds are skipped, so rerunning the command tops up a target; `--since` limits the copy to requests started from a given time and `--dry-run` only counts. The target's rollup triggers recount the copied requests; rollups whose requests the source's retention already deleted are copied once as adjustments. D1 is read with ordinary queries, so it keeps serving; writes to D1 are imported atomically with `wrangler d1 execute --file`, which pauses other D1 queries while it runs and asks for confirmation unless `--yes` is given. Configuration and OAuth accounts are not copied; use `config:import`.
+
 Native Node runs migrations at startup by default. D1 uses `migrations/d1/`. Native SQLite and libSQL reuse those base migrations and add `migrations/sqlite/`; PostgreSQL uses `migrations/postgres/`. Migration history and schema changes are committed together. PostgreSQL holds a transaction advisory lock on the same connection that applies migrations, including through transaction-mode connection poolers. `DATABASE_MIGRATE=false` disables automatic migrations once the database has been prepared. SQLite files should live on a persistent local volume; use PostgreSQL or libSQL when scaling across hosts.
 
 To apply migrations separately, run `npm run db:migrate:standard`. This command needs only `DATABASE_URL` (or `DATABASE_MIGRATION_URL` for a separate migration connection/role); it does not require Redis, administrator credentials or the configuration encryption key. The bundled equivalent is `node --env-file=.env dist/migrate.mjs`.

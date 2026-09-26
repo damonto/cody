@@ -40,7 +40,8 @@ interface PendingRow {
   count: number;
 }
 
-const AGGREGATE_EXPRESSIONS = {
+/** Per-request rollup terms, as the hourly triggers write them. */
+export const AGGREGATE_EXPRESSIONS = {
   requests_count: "1",
   success_count: "CASE WHEN NEW.outcome = 'success' THEN 1 ELSE 0 END",
   failed_count: "CASE WHEN NEW.outcome = 'failed' THEN 1 ELSE 0 END",
