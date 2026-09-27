@@ -1,7 +1,7 @@
 {
   "models": [
     {
-      "slug": "grok-4.6",
+      "slug": "grok-4.7",
       "prefer_websockets": false,
       "support_verbosity": true,
       "default_verbosity": "low",
