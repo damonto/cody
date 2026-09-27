@@ -77,13 +77,13 @@ async function setup(
   return { ...result, calls };
 }
 
-test("npm dev prepares local storage before building and starting the Worker", async () => {
+test("dev:cloudflare prepares local storage before building and starting the Worker", async () => {
   const { scripts } = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),
   );
   assert.equal(
-    scripts.dev,
-    "npm run dev:setup && npm run build:web && wrangler dev --local",
+    scripts["dev:cloudflare"],
+    "node scripts/setup-local.mjs && npm run build:console && wrangler dev --local",
   );
 });
 

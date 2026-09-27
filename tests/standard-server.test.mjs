@@ -34,7 +34,7 @@ test(
   async (t) => {
     const runtimeRoot = await mkdtemp(path.join(tmpdir(), "cody-node-server-"));
     t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
-    // Unit tests run before build:web in CI; serve an isolated fixture bundle.
+    // Unit tests run before build:console in CI; serve an isolated fixture bundle.
     const consoleRoot = path.join(runtimeRoot, "console", "dist");
     const consoleHtml =
       '<!doctype html><title>Console fixture</title><div id="root"></div>';

@@ -7,10 +7,9 @@ React + TypeScript, Vite, Tailwind CSS, official shadcn/ui Radix components, Zod
 Use the repository root scripts so the gateway, queue consumer, and admin API run together. See [the project README](../README.md) for local setup, deployment, and verification.
 
 ```bash
-npm run dev:setup
-npm run dev
+npm run dev:cloudflare
 # Optional Vite hot reload in another terminal:
-npm run dev:web
+npm run dev:console
 ```
 
 Configuration edits save a versioned draft. Publishing is explicit. Draft conflicts keep the editor open. Secrets returned by the API are masked; an unchanged credential keeps its saved value.
