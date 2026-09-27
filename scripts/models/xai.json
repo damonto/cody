@@ -29,7 +29,7 @@
       "comp_hash": "3000",
       "reasoning_summary_format": "experimental",
       "default_reasoning_summary": "none",
-      "display_name": "Grok 4.6",
+      "display_name": "Grok 4.7",
       "description": "Latest frontier agentic coding model.",
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
