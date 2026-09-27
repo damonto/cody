@@ -169,13 +169,13 @@ test("Anthropic clients receive the Anthropic model-list shape", async () => {
 test("Anthropic model entries carry the ModelInfo fields Claude requires", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  config.providers[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  config.providers[0].models = ["grok-4.7", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
-        { id: "grok-4.6", object: "model" },
+        { id: "grok-4.7", object: "model" },
         { id: "gpt-5.6-sol", object: "model" },
       ],
     });
@@ -199,11 +199,11 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
     const body = await response.json();
     assert.deepEqual(
       body.data.map((entry) => entry.id),
-      ["grok-4.6", "gpt-5.6-sol"],
+      ["grok-4.7", "gpt-5.6-sol"],
     );
-    const grok = body.data.find((entry) => entry.id === "grok-4.6");
+    const grok = body.data.find((entry) => entry.id === "grok-4.7");
     assert.equal(grok.type, "model");
-    assert.equal(grok.display_name, "Grok 4.6");
+    assert.equal(grok.display_name, "Grok 4.7");
     assert.equal(typeof grok.created_at, "string");
     assert.equal(grok.max_input_tokens, 1048576);
     assert.equal(typeof grok.max_tokens, "number");
@@ -239,13 +239,13 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
 test("synthesized Anthropic entries carry client fields and do not guess context management", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  // grok-4.6 has supports_reasoning_summaries in the catalog, which used to be
+  // grok-4.7 has supports_reasoning_summaries in the catalog, which used to be
   // misread as support for the three Anthropic context-management betas.
-  config.providers[0].models = ["grok-4.6"];
+  config.providers[0].models = ["grok-4.7"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    Response.json({ data: [{ id: "grok-4.6", object: "model" }] });
+    Response.json({ data: [{ id: "grok-4.7", object: "model" }] });
   const { env } = healthEnvironment();
 
   try {
@@ -264,8 +264,8 @@ test("synthesized Anthropic entries carry client fields and do not guess context
     const entry = (await response.json()).data[0];
     // Claude Desktop Discovery requires `name` even though the API reference
     // for api.anthropic.com does not list it.
-    assert.equal(entry.name, "grok-4.6");
-    assert.equal(entry.display_name, "Grok 4.6");
+    assert.equal(entry.name, "grok-4.7");
+    assert.equal(entry.display_name, "Grok 4.7");
     assert.deepEqual(entry.capabilities.context_management, {
       supported: false,
       clear_thinking_20251015: { supported: false },
@@ -398,14 +398,14 @@ test("Anthropic model entries fall back conservatively outside the catalog", asy
 test("only models with a 1M context window advertise the 1M flags", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  // grok-4.6 has a 1M context window in the catalog; gpt-5.6-sol has 872k.
-  config.providers[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  // grok-4.7 has a 1M context window in the catalog; gpt-5.6-sol has 872k.
+  config.providers[0].models = ["grok-4.7", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
-        { id: "grok-4.6", object: "model" },
+        { id: "grok-4.7", object: "model" },
         { id: "gpt-5.6-sol", object: "model" },
       ],
     });
@@ -426,7 +426,7 @@ test("only models with a 1M context window advertise the 1M flags", async () => 
       "test",
     );
     const body = await response.json();
-    const grok = body.data.find((entry) => entry.id === "grok-4.6");
+    const grok = body.data.find((entry) => entry.id === "grok-4.7");
     const gpt = body.data.find((entry) => entry.id === "gpt-5.6-sol");
     assert.equal(grok.max_input_tokens, 1048576);
     assert.equal(grok.supports1m, true);

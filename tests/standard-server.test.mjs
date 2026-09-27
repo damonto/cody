@@ -160,6 +160,46 @@ test(
     assert.equal(await asset.text(), consoleScript);
     assert.equal((await fetch(`${url}/console/assets/missing.js`)).status, 404);
     assert.equal((await fetch(`${url}/console/api/config`)).status, 401);
+    // Browsers send bodyless DELETEs without Content-Length; node-server still
+    // attaches a body stream, which must not reach undici's Request constructor.
+    const admin = {
+      authorization: "Bearer test-admin-secret",
+      "x-cody-admin": "1",
+    };
+    const cleared = await fetch(
+      `${url}/console/api/runtime/health/provider/primary?client_id=client&scope=inference`,
+      { method: "DELETE", headers: admin },
+    );
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(await cleared.json(), { ok: true });
+    const chunked = (chunks) =>
+      new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.close();
+        },
+      });
+    const revealed = await fetch(
+      `${url}/console/api/config/clients/client/reveal`,
+      {
+        method: "POST",
+        headers: { ...admin, "content-type": "application/json" },
+        body: chunked([new TextEncoder().encode('{"version":1}')]),
+        duplex: "half",
+      },
+    );
+    assert.equal(revealed.status, 200);
+    assert.equal((await revealed.json()).api_key, "test-client-secret");
+    const oversized = await fetch(`${url}/console/api/config`, {
+      method: "PUT",
+      headers: { ...admin, "content-type": "application/json" },
+      body: chunked([new Uint8Array(2 * 1024 * 1024), new Uint8Array(1)]),
+      duplex: "half",
+    });
+    assert.equal(oversized.status, 413);
+    assert.deepEqual(await oversized.json(), {
+      error: "Request exceeds 2 MiB",
+    });
     assert.equal(
       (await fetch(`${url}/v1/responses`, { method: "POST", body: "{}" }))
         .status,

@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
+import { readBodyWithinLimit } from "../gateway/http/body.ts";
 import { configureLogging } from "../shared/log.ts";
 import type { AdminContext } from "./context.ts";
 import { serveConsoleAsset } from "./assets.ts";
@@ -17,14 +17,32 @@ function isApiPath(path: string): boolean {
   return /\/api(?:\/|$)/.test(path);
 }
 
+const MAX_ADMIN_BODY_BYTES = 2 * 1024 * 1024;
+
+// Hono's bodyLimit rebuilds unsized bodies with `new Request(c.req.raw)`, which
+// undici rejects for @hono/node-server's lightweight requests (bodyless DELETEs
+// included), so buffer the body and rebuild the request from its parts.
+const adminBodyLimit = createMiddleware<AdminContext>(async (c, next) => {
+  const request = c.req.raw;
+  if (!request.body) return next();
+  const body = await readBodyWithinLimit(
+    request.body,
+    MAX_ADMIN_BODY_BYTES,
+    request.headers.get("content-length"),
+    undefined,
+    request.signal,
+  );
+  c.req.raw = new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body,
+    signal: request.signal,
+  });
+  return next();
+});
+
 const adminApi = new Hono<AdminContext>()
-  .use(
-    "*",
-    bodyLimit({
-      maxSize: 2 * 1024 * 1024,
-      onError: (c) => c.json({ error: "Request exceeds 2 MiB" }, 413),
-    }),
-  )
+  .use("*", adminBodyLimit)
   .use("*", async (c, next) => {
     if (
       ["POST", "PUT", "PATCH"].includes(c.req.method) &&

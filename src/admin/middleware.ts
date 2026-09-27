@@ -3,6 +3,7 @@ import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { BodyTooLargeError } from "../gateway/http/body.ts";
+import { errorMessage, logError } from "../shared/log.ts";
 import {
   adminChallenge,
   authenticateAdmin,
@@ -56,7 +57,16 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
       500,
     );
   }
-  console.error({ event: "admin.operation.failed", name: error.name });
+  logError("admin.operation.failed", {
+    name: error.name,
+    error: errorMessage(error),
+    // Frames only: the stack's leading lines repeat the unredacted message.
+    stack: error.stack
+      ?.split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("at "))
+      .slice(0, 10),
+  });
   return context.json(
     {
       error:

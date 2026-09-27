@@ -21,6 +21,7 @@ data/
 .tmp*
 refs/
 .mcp.json
+skills-lock.json
 
 # Browser test artifacts
 console/test-results/

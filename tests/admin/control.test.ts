@@ -1163,7 +1163,16 @@ for (const target of ["provider", "search"]) {
     await bindings.CODY_DB.prepare(
       "UPDATE control_state SET draft_payload = 'unreadable' WHERE id = 1",
     ).run();
+    errors.mockClear();
     expect((await call(path, "POST", { version: 1 })).status).toBe(503);
+    expect(errors).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "admin.operation.failed",
+        name: expect.any(String),
+        error: expect.any(String),
+        stack: expect.any(Array),
+      }),
+    );
   });
 }
 
