@@ -5,11 +5,11 @@ import {
 
 import { z } from "zod";
 import {
-  codexDraftProviderSchema,
+  claudeDraftProviderSchema,
   nameSchema,
 } from "../../../../src/config/schema";
 import type {
-  CodexProviderConfig,
+  ClaudeProviderConfig,
   GatewayConfig,
 } from "../../../../src/config/types";
 
@@ -23,31 +23,32 @@ export {
   newAccount,
   type AccountFormValues,
 } from "../oauth-accounts/form-options";
-export function newCodexProvider(): CodexProviderConfig {
+export function newClaudeProvider(): ClaudeProviderConfig {
   return {
-    type: ProviderType.Codex,
-    id: "codex",
+    type: ProviderType.Claude,
+    id: "claude",
     priority: 100,
     disabled: true,
     models: [],
     credentials: [],
-    supports_websocket: true,
+    supports_websocket: false,
     supports_context_management: false,
-    supports_web_search: true,
+    supports_web_search: false,
     anthropic_1m_context: false,
     emulate_claude_code: false,
     account_selection: CodexAccountSelection.RoundRobin,
-    auto_consume_resets: false,
+    allow_extra_usage: false,
   };
 }
-export function codexProvider(config: GatewayConfig): CodexProviderConfig {
+export function claudeProvider(config: GatewayConfig): ClaudeProviderConfig {
   return (
-    config.providers.find((provider) => provider.type === ProviderType.Codex) ??
-    newCodexProvider()
+    config.providers.find(
+      (provider) => provider.type === ProviderType.Claude,
+    ) ?? newClaudeProvider()
   );
 }
 
-export const settingsEditorSchema = codexDraftProviderSchema
+export const settingsEditorSchema = claudeDraftProviderSchema
   .omit({
     id: true,
     type: true,
@@ -81,7 +82,7 @@ export const settingsEditorSchema = codexDraftProviderSchema
 export type SettingsFormValues = z.input<typeof settingsEditorSchema>;
 
 export function settingsFormValues(
-  provider: CodexProviderConfig,
+  provider: ClaudeProviderConfig,
 ): SettingsFormValues {
   return {
     priority: provider.priority,
@@ -93,7 +94,7 @@ export function settingsFormValues(
     supports_web_search: provider.supports_web_search,
     supports_context_management: provider.supports_context_management,
     account_selection: provider.account_selection,
-    auto_consume_resets: provider.auto_consume_resets,
+    allow_extra_usage: provider.allow_extra_usage,
     routes: Object.entries(provider.model_routes ?? {}).map(
       ([alias, route]) => ({
         rowId: crypto.randomUUID(),
@@ -104,11 +105,11 @@ export function settingsFormValues(
   };
 }
 export function applySettings(
-  provider: CodexProviderConfig,
+  provider: ClaudeProviderConfig,
   value: SettingsFormValues,
-): CodexProviderConfig {
+): ClaudeProviderConfig {
   const { routes, ...settings } = settingsEditorSchema.parse(value);
-  return codexDraftProviderSchema.parse({
+  return claudeDraftProviderSchema.parse({
     ...provider,
     ...settings,
     model_routes: Object.fromEntries(
@@ -118,9 +119,9 @@ export function applySettings(
 }
 
 export function applyAccount(
-  provider: CodexProviderConfig,
+  provider: ClaudeProviderConfig,
   value: AccountFormValues,
-): CodexProviderConfig {
+): ClaudeProviderConfig {
   const { rowId: _rowId, ...credential } = accountEditorSchema.parse(value);
   const index = provider.credentials.findIndex(
     (entry) => entry.id === credential.id,
@@ -128,15 +129,15 @@ export function applyAccount(
   const credentials = [...provider.credentials];
   if (index === -1) credentials.push(credential);
   else credentials[index] = credential;
-  return codexDraftProviderSchema.parse({ ...provider, credentials });
+  return claudeDraftProviderSchema.parse({ ...provider, credentials });
 }
 
 /** Toggles one account without opening its editor. */
 export function setAccountDisabled(
-  provider: CodexProviderConfig,
+  provider: ClaudeProviderConfig,
   id: string,
   disabled: boolean,
-): CodexProviderConfig {
+): ClaudeProviderConfig {
   return {
     ...provider,
     credentials: provider.credentials.map((credential) =>
@@ -146,10 +147,10 @@ export function setAccountDisabled(
 }
 
 export function moveAccount(
-  provider: CodexProviderConfig,
+  provider: ClaudeProviderConfig,
   id: string,
   direction: -1 | 1,
-): CodexProviderConfig {
+): ClaudeProviderConfig {
   const index = provider.credentials.findIndex(
     (credential) => credential.id === id,
   );

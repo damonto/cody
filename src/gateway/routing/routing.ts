@@ -1,3 +1,4 @@
+import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
 
@@ -85,6 +86,7 @@ export interface TargetSelection {
 }
 
 export interface ProviderSelection extends TargetSelection {
+  claudeQuota?: { allBlocked: boolean; until: number | undefined };
   target: ModelProviderTarget | undefined;
 }
 
@@ -350,8 +352,15 @@ function withoutCredentials<T extends RoutedProvider>(
   });
 }
 
+function usesRoundRobin(provider: ProviderConfig): boolean {
+  return (
+    "account_selection" in provider &&
+    provider.account_selection === CodexAccountSelection.RoundRobin
+  );
+}
+
 /**
- * The account a new binding should use. Codex round robin rotates across the
+ * The account a new binding should use. Native round robin rotates across the
  * top-priority accounts; everything else fills the first candidate. Session
  * bindings allocate their rotation inside the affinity object instead.
  */
@@ -363,11 +372,7 @@ async function preferredCandidate(
   const routed =
     selection &&
     candidates.find(({ provider }) => provider.id === selection.provider_id);
-  if (
-    !selection ||
-    routed?.provider.type !== ProviderType.Codex ||
-    routed.provider.account_selection !== CodexAccountSelection.RoundRobin
-  )
+  if (!selection || !routed || !usesRoundRobin(routed.provider))
     return selection;
   const priority = Math.max(
     ...routed.credentials.map((credential) => credential.priority),
@@ -395,6 +400,7 @@ function affinityCandidates(
     provider_id: provider.id,
     priority: provider.priority,
     supports_context_management: provider.supports_context_management,
+    retain_available_account: provider.type === ProviderType.Claude,
     credentials: credentials.map((credential) => ({
       credential_id: credential.id,
       priority: credential.priority,
@@ -437,9 +443,17 @@ export async function selectAvailableProviderWithDetails(
   route: ModelRoute,
   options: ProviderSelectionOptions = {},
 ): Promise<ProviderSelection> {
+  const quota =
+    options.scope === HealthScope.Catalog
+      ? { route, allBlocked: false, until: undefined }
+      : await claudeQuotaRoute(
+          env,
+          route,
+          options.excludedCredentials ?? new Set(),
+        );
   const selection = await selectAvailableTargetWithDetails(
     env,
-    route.targets,
+    quota.route.targets,
     options,
   );
   const target = selection.target;
@@ -448,6 +462,7 @@ export async function selectAvailableProviderWithDetails(
     route.targets.find(({ provider }) => provider.id === target.provider.id);
   return {
     ...selection,
+    claudeQuota: { allBlocked: quota.allBlocked, until: quota.until },
     target:
       target && routed
         ? {
@@ -506,11 +521,7 @@ export async function selectAvailableTargetWithDetails(
         identity.object_name,
       ).resolve(candidates, chooseAffinityCandidate(candidates), identity, {
         roundRobinProviderIds: availability.candidates
-          .filter(
-            ({ provider }) =>
-              provider.type === ProviderType.Codex &&
-              provider.account_selection === CodexAccountSelection.RoundRobin,
-          )
+          .filter(({ provider }) => usesRoundRobin(provider))
           .map(({ provider }) => provider.id),
         contextManagement,
         ...(options.initialProviderIds === undefined

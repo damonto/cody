@@ -20,6 +20,7 @@ export type ProviderConnection = z.output<typeof connectionSchema>;
 export const oauthProviderTypeSchema = z.enum([
   ProviderType.Antigravity,
   ProviderType.Codex,
+  ProviderType.Claude,
 ]);
 export type OAuthProviderType = z.output<typeof oauthProviderTypeSchema>;
 export const proxyConfigurationSchema = z.object({
@@ -105,15 +106,41 @@ export const quotaSnapshotSchema = z.object({
     })
     .nullable()
     .optional(),
+  claude_limits: z
+    .array(z.object({ model: z.string().nullable(), until: z.number() }))
+    .optional(),
+  extra_usage: z
+    .object({
+      is_enabled: z.boolean(),
+      monthly_limit: z.number().nonnegative().nullable(),
+      disabled_reason: z.string().nullable().optional(),
+      currency: z
+        .string()
+        .regex(/^[A-Z]{3}$/)
+        .optional(),
+      used_credits: z.number().nullable(),
+      utilization: z.number().nullable(),
+    })
+    .nullable()
+    .optional(),
   reset_credits: resetCreditsSchema.nullable().optional(),
 });
 export type QuotaSnapshot = z.output<typeof quotaSnapshotSchema>;
+export const claudeAccountSchema = z.object({
+  account_id: z.string(),
+  organization_id: z.string(),
+  organization_name: z.string().nullable(),
+  subscription_type: z.string().nullable(),
+  rate_limit_tier: z.string().nullable(),
+});
 export const accountViewSchema = z.object({
+  generation: z.number().optional(),
   account_ref: z.uuid(),
   provider_id: identifierSchema,
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
   project_id: z.string().nullable(),
+  claude: claudeAccountSchema.nullable().optional(),
   codex: z
     .object({
       account_id: z.string(),
@@ -148,6 +175,11 @@ export const sessionViewSchema = z.object({
 });
 export type SessionView = z.output<typeof sessionViewSchema>;
 export const resolvedOAuthSchema = z.union([
+  z.object({
+    token: z.string().min(1),
+    claude_organization_id: z.string().min(1),
+    generation: z.number(),
+  }),
   z.object({ token: z.string().min(1), project_id: z.string().min(1) }),
   z.object({
     token: z.string().min(1),
@@ -172,6 +204,11 @@ export const accountHealthSchema = z.object({
   available: z.boolean(),
   cooling_until: z.number().nullable(),
   cooldown_reason: z.enum(HealthCooldownReason).nullable(),
+  quota_blocks: z
+    .array(
+      z.object({ model: z.string().nullable(), until: z.number().nullable() }),
+    )
+    .optional(),
 });
 export type AccountHealth = z.output<typeof accountHealthSchema>;
 

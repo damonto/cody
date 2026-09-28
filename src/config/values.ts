@@ -4,6 +4,7 @@ export const ProviderType = {
   AiGateway: "ai_gateway",
   Antigravity: "antigravity",
   Codex: "codex",
+  Claude: "claude",
 } as const;
 
 export type ProviderType = (typeof ProviderType)[keyof typeof ProviderType];

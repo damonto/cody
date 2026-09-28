@@ -1,4 +1,12 @@
 import {
+  ClaudeClient,
+  CLAUDE_REDIRECT_URI,
+  authorizationUrl as claudeAuthorizationUrl,
+  parseProfile as parseClaudeProfile,
+  parseModels as parseClaudeModels,
+  parseUsage as parseClaudeUsage,
+} from "../claude/api.ts";
+import {
   OAuthAccountViewStatus,
   OAuthFlow,
   OAuthSessionStatus,
@@ -114,6 +122,8 @@ const storedSchema = z.object({
   identity: identitySchema.nullable(),
   project_id: z.string().nullable(),
   codex: accountViewSchema.shape.codex,
+  claude: accountViewSchema.shape.claude,
+  claude_quota_revision: z.number().default(0),
   error: z.string().nullable(),
   session: sessionSchema.nullable(),
   models: accountViewSchema.shape.models,
@@ -247,12 +257,14 @@ export class ProviderOAuthAccountCore {
             : account.status
         : account.status;
     return {
+      generation: account.generation,
       account_ref: account.account_ref,
       provider_id: account.provider_id,
       status,
       email: account.identity?.email ?? null,
       project_id: account.project_id,
       codex: account.codex,
+      claude: account.claude,
       expires_at: account.tokens?.expires_at ?? null,
       error: account.error,
       models: account.models,
@@ -323,7 +335,9 @@ export class ProviderOAuthAccountCore {
             ? CODEX_VERIFICATION_URI
             : account.provider_type === ProviderType.Codex
               ? codexAuthorizationUrl(session.state, session.challenge)
-              : antigravityAuthorizationUrl(session.state, session.challenge),
+              : account.provider_type === ProviderType.Claude
+                ? claudeAuthorizationUrl(session.state, session.challenge)
+                : antigravityAuthorizationUrl(session.state, session.challenge),
       flow: session.flow,
       user_code:
         device && session.status === OAuthSessionStatus.Pending
@@ -344,6 +358,13 @@ export class ProviderOAuthAccountCore {
   ): Promise<AntigravityClient> {
     const [send, signal] = await this.outbound(connection, config);
     return new AntigravityClient(send, signal);
+  }
+  private async claude(
+    connection?: ProviderConnection,
+    config?: ProxyConfiguration,
+  ): Promise<ClaudeClient> {
+    const [send, signal] = await this.outbound(connection, config);
+    return new ClaudeClient(send, signal);
   }
   private async codex(
     connection?: ProviderConnection,
@@ -461,6 +482,7 @@ export class ProviderOAuthAccountCore {
         identity: null,
         project_id: null,
         codex: null,
+        claude_quota_revision: 0,
         error: null,
         session: null,
         models: [],
@@ -579,6 +601,15 @@ export class ProviderOAuthAccountCore {
         409,
       );
     const codex = this.requireAccount().provider_type === ProviderType.Codex;
+    const claude = this.requireAccount().provider_type === ProviderType.Claude;
+    if (claude && !URL.canParse(redirect)) {
+      const [code, state, extra] = redirect.trim().split("#");
+      if (!code || !state || extra)
+        throw new OAuthError(
+          "Paste the Claude authorization code including its state",
+        );
+      redirect = `${CLAUDE_REDIRECT_URI}?${new URLSearchParams({ code, state }).toString()}`;
+    }
     const url = URL.parse(redirect);
     const callbackState = url?.searchParams.get("state") ?? "";
     const onboardingSuffix = ".onboarding_entrypoint=life_sciences";
@@ -589,7 +620,11 @@ export class ProviderOAuthAccountCore {
     if (
       !url ||
       `${url.origin}${url.pathname}` !==
-        (codex ? CODEX_REDIRECT_URI : ANTIGRAVITY_REDIRECT_URI) ||
+        (codex
+          ? CODEX_REDIRECT_URI
+          : claude
+            ? CLAUDE_REDIRECT_URI
+            : ANTIGRAVITY_REDIRECT_URI) ||
       url.username ||
       url.password ||
       url.hash ||
@@ -620,9 +655,13 @@ export class ProviderOAuthAccountCore {
           ? await (
               await this.codex(session.connection)
             ).exchange(code, session.verifier, CODEX_REDIRECT_URI)
-          : await (
-              await this.antigravity(session.connection)
-            ).exchange(code, session.verifier);
+          : claude
+            ? await (
+                await this.claude(session.connection)
+              ).exchange(code, session.verifier, session.state)
+            : await (
+                await this.antigravity(session.connection)
+              ).exchange(code, session.verifier);
         await this.updateGeneration(generation, (account) => {
           const pending = this.ownedSession(account, id, actor);
           if (
@@ -684,6 +723,8 @@ export class ProviderOAuthAccountCore {
       return;
     if (snapshot.provider_type === ProviderType.Codex)
       return this.initializeCodex(snapshot, session, session.tokens);
+    if (snapshot.provider_type === ProviderType.Claude)
+      return this.initializeClaude(snapshot, session, session.tokens);
     const client = await this.antigravity(session.connection);
     let identity = session.identity;
     let project: string | null = null;
@@ -821,6 +862,54 @@ export class ProviderOAuthAccountCore {
       pending.verifier = "";
     });
   }
+  private async initializeClaude(
+    snapshot: Stored,
+    session: Session,
+    tokens: NonNullable<Session["tokens"]>,
+  ): Promise<void> {
+    const profile = parseClaudeProfile(
+      await (
+        await this.claude(session.connection)
+      ).profile(tokens.access_token),
+    );
+    if (snapshot.identity && snapshot.identity.id !== profile.identity.id)
+      throw new OAuthError(
+        "This is a different Claude account or organization; add it as a new account",
+      );
+    await this.updateGeneration(snapshot.generation, (account) => {
+      const pending = account.session;
+      if (
+        !pending ||
+        pending.id !== session.id ||
+        pending.status !== OAuthSessionStatus.Initializing ||
+        !pending.tokens
+      )
+        throw new OAuthError("Authorization was cancelled", 409);
+      if (Date.now() >= pending.expires_at)
+        throw new OAuthError("Authorization session expired", 410);
+      const refreshToken =
+        pending.tokens.refresh_token ?? account.tokens?.refresh_token;
+      if (!refreshToken)
+        throw new OAuthError(
+          "Claude did not return a refresh token; authorize again",
+        );
+      account.tokens = { ...pending.tokens, refresh_token: refreshToken };
+      account.identity = profile.identity;
+      account.claude = profile.claude;
+      account.connection = pending.connection;
+      account.status = OAuthAccountStatus.Ready;
+      account.error = null;
+      account.generation++;
+      account.quota = emptyQuota();
+      account.models = [];
+      account.models_updated_at = null;
+      account.models_error = null;
+      pending.status = OAuthSessionStatus.Complete;
+      pending.tokens = null;
+      pending.state = "";
+      pending.verifier = "";
+    });
+  }
   private active() {
     const account = this.requireAccount();
     if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
@@ -830,11 +919,21 @@ export class ProviderOAuthAccountCore {
         "oauth_account_unavailable",
       );
     let credential:
-      { account_id: string; is_fedramp?: boolean } | { project_id: string };
+      | { account_id: string; is_fedramp?: boolean }
+      | { project_id: string }
+      | { claude_organization_id: string; generation: number };
     if (account.provider_type === ProviderType.Codex && account.codex) {
       credential = {
         account_id: account.codex.account_id,
         ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
+      };
+    } else if (
+      account.provider_type === ProviderType.Claude &&
+      account.claude
+    ) {
+      credential = {
+        claude_organization_id: account.claude.organization_id,
+        generation: account.generation,
       };
     } else if (
       account.provider_type === ProviderType.Antigravity &&
@@ -882,6 +981,14 @@ export class ProviderOAuthAccountCore {
             ).refresh(refreshToken, snapshot.tokens);
             // A refreshed id_token may carry a new plan or renewal date.
             if (result.id_token) claims = parseIdToken(result.id_token);
+          } else if (
+            this.requireAccount().provider_type === ProviderType.Claude
+          ) {
+            // The refresh grant is already bound to this identity. Do not lose
+            // a rotated refresh token to a subsequent profile lookup failure.
+            result = await (
+              await this.claude(connection, config)
+            ).refresh(refreshToken, this.requireAccount().claude ?? undefined);
           } else
             result = await (
               await this.antigravity(connection, config)
@@ -935,17 +1042,19 @@ export class ProviderOAuthAccountCore {
       try {
         const token = await this.resolve();
         const models =
-          "account_id" in token
-            ? parseCodexModels(
-                await (
-                  await this.codex()
-                ).models(token.token, token.account_id),
-              )
-            : parseAntigravityModels(
-                await (
-                  await this.antigravity()
-                ).models(token.token, token.project_id),
-              );
+          "claude_organization_id" in token
+            ? parseClaudeModels(await (await this.claude()).models(token.token))
+            : "account_id" in token
+              ? parseCodexModels(
+                  await (
+                    await this.codex()
+                  ).models(token.token, token.account_id),
+                )
+              : parseAntigravityModels(
+                  await (
+                    await this.antigravity()
+                  ).models(token.token, token.project_id),
+                );
         await this.updateGeneration(generation, (account) => {
           account.models = models;
           account.models_updated_at = Date.now();
@@ -965,6 +1074,28 @@ export class ProviderOAuthAccountCore {
     await this.shareRefresh("quota", generation, async () => {
       try {
         const token = await this.resolve();
+        if ("claude_organization_id" in token) {
+          const revision = this.requireAccount().claude_quota_revision;
+          const usage = parseClaudeUsage(
+            await (await this.claude()).usage(token.token),
+          );
+          await this.updateGeneration(generation, (account) => {
+            if (account.claude_quota_revision !== revision) return;
+            account.quota = {
+              ...account.quota,
+              ...usage,
+              updated_at: Date.now(),
+              last_error: null,
+              stale: false,
+              subscription: {
+                tier_id: account.claude?.subscription_type ?? null,
+                tier_name: account.claude?.rate_limit_tier ?? null,
+                credits: [],
+              },
+            };
+          });
+          return;
+        }
         if ("account_id" in token)
           return await this.refreshCodexQuota(
             generation,
@@ -1121,6 +1252,66 @@ export class ProviderOAuthAccountCore {
   }
   private async dispatch(command: z.output<typeof accountCommandSchema>) {
     switch (command.action) {
+      case "claude_usage":
+        if (this.requireAccount().provider_type !== ProviderType.Claude)
+          throw new OAuthError("Only available for Claude", 400);
+        await this.updateGeneration(command.generation, (account) => {
+          account.claude_quota_revision++;
+          if (
+            command.extra_usage_disabled_reason !== undefined &&
+            account.quota.extra_usage
+          )
+            account.quota.extra_usage.disabled_reason =
+              command.extra_usage_disabled_reason;
+          for (const group of command.groups) {
+            const index = account.quota.groups.findIndex(
+              (previous) => previous.id === group.id,
+            );
+            if (index === -1) account.quota.groups.push(group);
+            else {
+              const previous = account.quota.groups[index];
+              const previousReset = Date.parse(
+                previous.buckets[0]?.reset_at ?? "",
+              );
+              const nextReset = Date.parse(group.buckets[0]?.reset_at ?? "");
+              if (
+                !Number.isFinite(previousReset) ||
+                nextReset > previousReset ||
+                (nextReset === previousReset &&
+                  (group.buckets[0]?.used_percent ?? 0) >=
+                    (previous.buckets[0]?.used_percent ?? 0))
+              )
+                account.quota.groups[index] = group;
+            }
+          }
+        });
+        return this.view();
+      case "claude_limit":
+        if (this.requireAccount().provider_type !== ProviderType.Claude)
+          throw new OAuthError("Only available for Claude", 400);
+        await this.updateGeneration(command.generation, (account) => {
+          account.claude_quota_revision++;
+          const limits = (account.quota.claude_limits ?? []).filter(
+            (limit) => limit.until > Date.now(),
+          );
+          for (const observation of [
+            command,
+            ...(command.additional_limits ?? []),
+          ]) {
+            const existing = limits.find(
+              (limit) => limit.model === observation.model,
+            );
+            if (existing)
+              existing.until = Math.max(existing.until, observation.until);
+            else
+              limits.push({
+                model: observation.model,
+                until: observation.until,
+              });
+          }
+          account.quota.claude_limits = limits;
+        });
+        return this.view();
       case "start":
         return this.start(
           command.account_ref,

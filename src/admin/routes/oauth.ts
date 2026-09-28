@@ -1,3 +1,4 @@
+import { quotaBlocks } from "../../providers/claude/limits.ts";
 import { ConsumeResetCode, OAuthFlow } from "../../providers/oauth/values.ts";
 import { ProviderType } from "../../config/values.ts";
 
@@ -247,7 +248,8 @@ export const oauthRoutes = new Hono<AdminContext>()
       );
       const items = await mapWithConcurrency(
         provider?.type === ProviderType.Antigravity ||
-          provider?.type === ProviderType.Codex
+          provider?.type === ProviderType.Codex ||
+          provider?.type === ProviderType.Claude
           ? provider.credentials
           : [],
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -257,7 +259,17 @@ export const oauthRoutes = new Hono<AdminContext>()
             providerId,
             credential.id,
           );
+          const quota =
+            providerId === ProviderType.Claude
+              ? await reply(
+                  c.env.PROVIDER_OAUTH_ACCOUNT.getByName(
+                    credential.auth.account_ref,
+                  ).run({ action: "view" }),
+                  accountViewSchema,
+                )
+              : undefined;
           return accountHealthSchema.parse({
+            ...(quota ? { quota_blocks: quotaBlocks(quota.quota) } : {}),
             credential_id: credential.id,
             account_ref: credential.auth.account_ref,
             available: health.available,

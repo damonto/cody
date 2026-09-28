@@ -35,6 +35,7 @@ export interface ProviderRequest {
 }
 
 export interface PreparedUpstreamRequest {
+  readonly oauthGeneration?: number;
   readonly url: string;
   readonly headers: Headers;
   readonly method?: string;

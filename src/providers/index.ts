@@ -8,6 +8,7 @@ import type {
 import { createUpstreamTransport } from "../gateway/transport/index.ts";
 import { aiGatewayAdapter } from "./ai-gateway.ts";
 import { antigravityAdapter } from "./antigravity/index.ts";
+import { claudeAdapter } from "./claude/index.ts";
 import { codexAdapter } from "./codex/index.ts";
 import { resolveCredential } from "./credentials.ts";
 import type {
@@ -22,6 +23,7 @@ const adapters = {
   ai_gateway: aiGatewayAdapter,
   antigravity: antigravityAdapter,
   codex: codexAdapter,
+  claude: claudeAdapter,
 } satisfies {
   [Type in ProviderType]: ProviderAdapter<
     Extract<ProviderConfig, { type: Type }>
@@ -38,6 +40,8 @@ export function providerSupportsEndpoint(
       return adapters.ai_gateway.supports(provider, endpoint, transport);
     case ProviderType.Antigravity:
       return adapters.antigravity.supports(provider, endpoint, transport);
+    case ProviderType.Claude:
+      return adapters.claude.supports(provider, endpoint, transport);
     case ProviderType.Codex:
       return adapters.codex.supports(provider, endpoint, transport);
   }
@@ -71,7 +75,11 @@ export async function prepareProviderRequest(
             resolved.type === CredentialAuthType.OAuth &&
             resolved.provider === ProviderType.Codex
           ? await adapters.codex.prepare(provider, resolved, input, context)
-          : undefined;
+          : provider.type === ProviderType.Claude &&
+              resolved.type === CredentialAuthType.OAuth &&
+              resolved.provider === ProviderType.Claude
+            ? await adapters.claude.prepare(provider, resolved, input, context)
+            : undefined;
   if (!prepared)
     throw new Error("Provider and credential authentication do not match");
   return {

@@ -99,6 +99,7 @@ const providerNavigation = [
   { path: "/providers/ai-gateway", title: "AI Gateway" },
   { path: "/providers/antigravity", title: "Antigravity" },
   { path: "/providers/codex", title: "Codex" },
+  { path: "/providers/claude", title: "Claude" },
 ];
 
 function publishedConfigurationLabel(

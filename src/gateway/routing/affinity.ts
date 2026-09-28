@@ -23,6 +23,8 @@ export interface AffinityProviderCandidate {
   priority: number;
   credentials: AffinityCredentialCandidate[];
   supports_context_management?: boolean;
+  /** Existing native sessions retain usable accounts across priority changes. */
+  retain_available_account?: boolean;
 }
 
 export interface SessionAffinityRecord {
@@ -189,7 +191,10 @@ export function resolveStoredAffinity(
   const highestCredentialPriority = Math.max(
     ...provider.credentials.map((candidate) => candidate.priority),
   );
-  if (credential.priority < highestCredentialPriority) {
+  if (
+    !provider.retain_available_account &&
+    credential.priority < highestCredentialPriority
+  ) {
     return {
       selection: choosePreferredCredential(provider, preferred),
       status: SessionAffinityStatus.Rebound,

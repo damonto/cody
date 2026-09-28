@@ -1,3 +1,8 @@
+import { CredentialAuthType } from "../../config/values.ts";
+import {
+  claudeUsageLimit,
+  responseQuotaObservation,
+} from "../../providers/claude/limits.ts";
 import {
   ProviderAvailabilityReason,
   HealthFailureScope,
@@ -424,8 +429,7 @@ export async function handleInference(
       { code: "model_not_found", requestId },
     );
   }
-  // Codex alone may resend a request on another account, and only when the
-  // upstream reports an exhausted quota before any byte reaches the client.
+  // Native account limits may switch within the selected provider before output.
   const excludedCredentials = new Set<string>();
   const accountSwitches: {
     credential_id: string;
@@ -434,19 +438,33 @@ export async function handleInference(
   }[] = [];
   let exhausted: Response | undefined;
   let resetConsumed = false;
+  let lockedProvider: string | undefined;
   for (;;) {
-    const selection = await selectAvailableProviderWithDetails(env, route, {
-      contextManagement,
-      excludedCredentials,
-      ...(sessionId
-        ? {
-            session: {
-              clientId: client.id,
-              sessionId,
-            },
-          }
-        : {}),
-    });
+    const routeForSelection = {
+      ...route,
+      targets: lockedProvider
+        ? route.targets.filter(
+            (target) => target.provider.id === lockedProvider,
+          )
+        : route.targets,
+    };
+    const selection = await selectAvailableProviderWithDetails(
+      env,
+      routeForSelection,
+      {
+        contextManagement,
+        excludedCredentials,
+        ...(sessionId
+          ? {
+              session: {
+                clientId: client.id,
+                sessionId,
+              },
+            }
+          : {}),
+      },
+    );
+    const claude = selection.claudeQuota;
     const target = selection.target;
     const routing = {
       candidate_providers: candidateProviders,
@@ -496,7 +514,7 @@ export async function handleInference(
           continue;
       }
       if (exhausted) {
-        requestLog?.warn({ outcome: "codex_accounts_exhausted" });
+        requestLog?.warn({ outcome: "accounts_exhausted" });
         meter?.diagnostic("usage_limit_reached");
         return exhausted;
       }
@@ -536,6 +554,20 @@ export async function handleInference(
             requestId,
           },
         );
+      }
+      if (claude?.allBlocked) {
+        const response = apiError(
+          protocol,
+          429,
+          `Claude subscription quota exhausted${claude.until ? ` until ${new Date(claude.until).toISOString()}` : ""}`,
+          { code: "usage_limit_reached", requestId },
+        );
+        if (claude.until)
+          response.headers.set(
+            "retry-after",
+            String(Math.max(1, Math.ceil((claude.until - Date.now()) / 1000))),
+          );
+        return response;
       }
       const quotaResetsAt = codexQuotaResetsAt(
         route.targets,
@@ -642,7 +674,11 @@ export async function handleInference(
     };
     // The meter freezes its first selection, so Codex waits until no account
     // switch can follow.
-    if (provider.type !== ProviderType.Codex) meter?.select(meterTarget);
+    if (
+      provider.type !== ProviderType.Codex &&
+      provider.type !== ProviderType.Claude
+    )
+      meter?.select(meterTarget);
     headers.delete("content-length");
     const modelRewritten = payload.model !== upstreamModel;
     if (modelRewritten) {
@@ -664,6 +700,7 @@ export async function handleInference(
         originalText,
       );
     let usageLimit: CodexUsageLimit | undefined;
+    let claudeLimit: ReturnType<typeof claudeUsageLimit>;
     const startedAt = performance.now();
     const result = await fetchWithConfiguredRetries(
       () =>
@@ -684,6 +721,14 @@ export async function handleInference(
                 prepared.retryUsage
                   ? prepared.retryUsage(response)
                   : retryResponseUsage(response, protocol),
+            }
+          : {}),
+        ...(provider.type === ProviderType.Claude
+          ? {
+              isTerminal: async (response: Response) => {
+                claudeLimit = claudeUsageLimit(response, upstreamModel);
+                return claudeLimit !== undefined;
+              },
             }
           : {}),
         ...(provider.type === ProviderType.Codex
@@ -713,6 +758,54 @@ export async function handleInference(
         },
       },
     );
+    if (
+      result.response &&
+      provider.type === ProviderType.Claude &&
+      selectedCredential.auth.type === CredentialAuthType.OAuth &&
+      prepared.oauthGeneration !== undefined
+    ) {
+      const observation = responseQuotaObservation(result.response.headers);
+      if (observation)
+        await env.PROVIDER_OAUTH_ACCOUNT.getByName(
+          selectedCredential.auth.account_ref,
+        )
+          .run({
+            action: "claude_usage",
+            ...observation,
+            generation: prepared.oauthGeneration,
+          })
+          .catch(() => undefined);
+    }
+    if (
+      result.response &&
+      claudeLimit &&
+      selectedCredential.auth.type === CredentialAuthType.OAuth &&
+      prepared.oauthGeneration !== undefined
+    ) {
+      const saved = await env.PROVIDER_OAUTH_ACCOUNT.getByName(
+        selectedCredential.auth.account_ref,
+      )
+        .run({
+          action: "claude_limit",
+          generation: prepared.oauthGeneration,
+          ...claudeLimit,
+        })
+        .catch(() => undefined);
+      if (saved?.ok) {
+        lockedProvider = provider.id;
+        excludedCredentials.add(
+          credentialKey(provider.id, selectedCredential.id),
+        );
+        accountSwitches.push({
+          credential_id: selectedCredential.id,
+          code: "usage_limit_reached",
+          resets_at: claudeLimit.until,
+        });
+        exhausted = result.response;
+        continue;
+      }
+      requestLog?.warn({ outcome: "claude_quota_write_failed" });
+    }
     if (result.response && usageLimit) {
       // Awaited: the next selection must already see this account cooling.
       await recordCredentialQuotaCooldown(
@@ -733,7 +826,11 @@ export async function handleInference(
       exhausted = result.response;
       continue;
     }
-    if (provider.type === ProviderType.Codex) meter?.select(meterTarget);
+    if (
+      provider.type === ProviderType.Codex ||
+      provider.type === ProviderType.Claude
+    )
+      meter?.select(meterTarget);
     meter?.recordAttempts(result.attempts);
     const upstreamDurationMs = elapsedMs(startedAt);
     if (!result.response) {

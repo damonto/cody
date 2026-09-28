@@ -4,6 +4,7 @@ import { OAuthFlow } from "./values.ts";
 import { z } from "zod";
 import {
   connectionSchema,
+  quotaGroupSchema,
   oauthProviderTypeSchema,
   proxyConfigurationSchema,
 } from "./schema.ts";
@@ -15,6 +16,21 @@ const sessionOwner = {
 
 /** Required fields are checked both at RPC call sites and at the runtime boundary. */
 export const accountCommandSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("claude_usage"),
+    extra_usage_disabled_reason: z.string().nullable().optional(),
+    generation: z.number(),
+    groups: z.array(quotaGroupSchema),
+  }),
+  z.strictObject({
+    action: z.literal("claude_limit"),
+    generation: z.number(),
+    model: z.string().nullable(),
+    until: z.number(),
+    additional_limits: z
+      .array(z.object({ model: z.string().nullable(), until: z.number() }))
+      .optional(),
+  }),
   z.strictObject({
     action: z.literal("start"),
     account_ref: z.uuid(),

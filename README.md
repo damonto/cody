@@ -245,3 +245,17 @@ npm run typecheck
 npm run lint
 npm run format:check
 ```
+
+## Claude accounts
+
+The Claude provider balances the operator's own Claude subscriptions for native Claude Code clients. Add accounts under **Providers → Claude**, authorize in the browser, then paste the returned `code#state` or the complete official callback URL. Discover and select models in Settings, enable the provider, grant the client API key access to `claude`, and publish the draft.
+
+Messages (including SSE), count-tokens and model discovery use the official Anthropic endpoint. Requests retain their prompts, tools, thinking signatures, metadata, beta headers and unknown fields. Only account authentication and explicitly configured model aliases change. Claude remote sessions, files, WebSocket and Resets are not supported in this version.
+
+`account_selection` defaults to `round_robin`, distributing new sessions among the highest-priority available accounts. `session_affinity` fills the first available account in priority/configuration order. Both retain each Claude session's account until it becomes unavailable for the requested model. Opus-specific exhaustion does not disable Sonnet. Ordinary rate limits do not trigger account switching; explicit subscription quota rejection may switch accounts before any response reaches the client. Streams are never replayed.
+
+Cards show the account/organization, reported subscription tier, usage windows, natural recovery times, Extra Usage and health. Extra Usage amounts are converted from upstream minor units; a null monthly limit means unlimited, and an upstream disabled reason prevents paid routing. Both named usage windows and active model-scoped `limits` are supported. Unknown fields remain unknown. Quotas refresh on demand with a 60-second cache; unavailable or stale quota data is not treated as free capacity.
+
+`allow_extra_usage` defaults to `false`. When enabled, the gateway may select accounts with confirmed existing Extra Usage capacity after all subscription candidates are exhausted. It never enables billing, purchases credits or changes upstream limits. This is a routing preference, not a billing cap: concurrent traffic can cross upstream subscription limits before the next observation.
+
+D1 and PostgreSQL require migration `0009_claude_oauth_accounts.sql`; SQLite and libSQL reuse the D1 migration. Use the existing platform deployment/migration commands. OAuth tokens remain encrypted outside configuration snapshots.

@@ -42,7 +42,7 @@ test("an account needs a ChatGPT authorization before it can be saved", () => {
     [
       {
         path: ["auth", "account_ref"],
-        message: "Authorize or select a ChatGPT account before saving.",
+        message: "Authorize or select an account before saving.",
       },
     ],
   );

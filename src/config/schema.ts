@@ -219,6 +219,7 @@ export const oauthCredentialSchema = credentialSchema.extend({
 export const NATIVE_PROVIDER_IDS: readonly string[] = [
   ProviderType.Antigravity,
   ProviderType.Codex,
+  ProviderType.Claude,
 ];
 const oauthCredentials = z
   .array(oauthCredentialSchema)
@@ -305,7 +306,7 @@ function publishable<
         context.addIssue({
           code: "custom",
           path: ["credentials"],
-          message: `add ${label === "Codex" ? "a" : "an"} ${label} account before enabling the provider`,
+          message: `add ${label === "Antigravity" ? "an" : "a"} ${label} account before enabling the provider`,
         });
     })
     .meta({
@@ -343,10 +344,32 @@ export const codexProviderSchema = publishable(
   codexDraftProviderSchema,
   "Codex",
 );
+export const claudeDraftProviderSchema = aiGatewayProviderSchema
+  .omit({ base_url: true })
+  .extend({
+    models: nameList,
+    credentials: oauthCredentials,
+    supports_websocket: z.literal(false).default(false),
+    supports_web_search: z.literal(false).default(false),
+    supports_context_management: z.literal(false).default(false),
+    anthropic_1m_context: z.literal(false).default(false),
+    emulate_claude_code: z.literal(false).default(false),
+    type: z.literal(ProviderType.Claude),
+    id: z.literal(ProviderType.Claude),
+    account_selection: codexAccountSelectionSchema.default(
+      CodexAccountSelection.RoundRobin,
+    ),
+    allow_extra_usage: boolean.default(false),
+  });
+export const claudeProviderSchema = publishable(
+  claudeDraftProviderSchema,
+  "Claude",
+);
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
   antigravityProviderSchema,
   codexProviderSchema,
+  claudeProviderSchema,
 ]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
@@ -411,6 +434,7 @@ const draftShape = shape.extend({
       aiGatewayProviderSchema,
       antigravityDraftProviderSchema,
       codexDraftProviderSchema,
+      claudeDraftProviderSchema,
     ]),
   ),
 });
@@ -419,6 +443,7 @@ function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [type, label] of [
     [ProviderType.Antigravity, "Antigravity"],
     [ProviderType.Codex, "Codex"],
+    [ProviderType.Claude, "Claude"],
   ] as const) {
     if (
       config.providers.filter((provider) => provider.type === type).length > 1

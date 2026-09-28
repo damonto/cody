@@ -109,6 +109,7 @@
     {
       "id": "antigravity",
       "type": "antigravity",
+      "account_selection": "round_robin",
       "priority": 50,
       "disabled": true,
       "proxy_group": "US",
@@ -124,6 +125,16 @@
       "auto_consume_resets": false,
       "models": [],
       "credentials": []
+    },
+    {
+      "type": "claude",
+      "id": "claude",
+      "disabled": true,
+      "priority": 100,
+      "models": [],
+      "credentials": [],
+      "account_selection": "round_robin",
+      "allow_extra_usage": false
     }
   ],
   "api_keys": [

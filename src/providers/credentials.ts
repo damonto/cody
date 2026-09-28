@@ -34,7 +34,15 @@ export interface ResolvedCodexOAuth {
   readonly is_fedramp?: boolean;
   readonly account_ref: string;
 }
-export type ResolvedOAuth = ResolvedAntigravityOAuth | ResolvedCodexOAuth;
+export interface ResolvedClaudeOAuth {
+  readonly generation: number;
+  readonly type: typeof CredentialAuthType.OAuth;
+  readonly provider: typeof ProviderType.Claude;
+  readonly token: string;
+  readonly account_ref: string;
+}
+export type ResolvedOAuth =
+  ResolvedAntigravityOAuth | ResolvedCodexOAuth | ResolvedClaudeOAuth;
 export type ResolvedCredential = ResolvedApiKey | ResolvedOAuth;
 export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
   ResolvedCredential,
@@ -80,7 +88,9 @@ const oauthResolver: CredentialResolver<
     const provider = context?.provider.type;
     if (
       !context ||
-      (provider !== ProviderType.Antigravity && provider !== ProviderType.Codex)
+      (provider !== ProviderType.Antigravity &&
+        provider !== ProviderType.Codex &&
+        provider !== ProviderType.Claude)
     )
       throw new OAuthError("OAuth account storage is unavailable", 503);
     const token = await accountReply(
@@ -93,6 +103,15 @@ const oauthResolver: CredentialResolver<
     );
     context.requestLog?.registerSensitiveValues([token.token]);
     const account_ref = auth.account_ref;
+    if (provider === ProviderType.Claude)
+      return {
+        type: CredentialAuthType.OAuth,
+        provider,
+        token: token.token,
+        account_ref,
+        generation: z.object({ generation: z.number() }).parse(token)
+          .generation,
+      };
     if (provider === ProviderType.Codex) {
       const { account_id, is_fedramp } = codexResolution.parse(token);
       return {
