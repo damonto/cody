@@ -1,3 +1,7 @@
+import {
+  recordXaiLimit,
+  xaiQuotaResponse,
+} from "../../providers/xai/availability.ts";
 import { CredentialAuthType } from "../../config/values.ts";
 import {
   antigravityQuotaResetsAt,
@@ -18,19 +22,14 @@ import { RequestOutcome } from "../../telemetry/values.ts";
 import { ProviderType } from "../../config/values.ts";
 import { ProviderTransport } from "../../providers/transport-values.ts";
 
-import type { NormalizedUsage } from "../../billing/types.ts";
 import type { Bindings } from "../../platform/bindings.ts";
-import type {
-  ClientApiKeyConfig,
-  GatewayConfig,
-  ProviderRetryConfig,
-} from "../../config/types.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
 import type {
   AccountLimit,
-  PreparedProviderRequest,
+  PreparedProviderResult,
 } from "../../providers/types.ts";
 import {
   bounded,
@@ -50,7 +49,6 @@ import {
   type HealthExecutionContext,
 } from "../health/health.ts";
 import { requestProtocol, type InferencePath } from "../protocol.ts";
-import { SocksProxyError } from "../proxies/errors.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   credentialKey,
@@ -72,9 +70,13 @@ import {
   contextManagementRequested,
   contextManagementSessionMatches,
 } from "../sessions/context-management-protocol.ts";
-import type { UpstreamFetch } from "../transport/index.ts";
 import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import { rewriteModel } from "./model-rewrite.ts";
+import {
+  fetchWithConfiguredRetries,
+  type UpstreamRetryOptions,
+  type UpstreamAttemptLog,
+} from "./upstream-retry.ts";
 import { apiError } from "./http.ts";
 import {
   hasJsonUpstreamError,
@@ -92,170 +94,6 @@ export type { InferencePath } from "../protocol.ts";
 
 const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
-
-export interface UpstreamRetryOptions {
-  send?: UpstreamFetch;
-  wait?: (delayMs: number) => Promise<void>;
-  onResponse?: (response: Response, attempt: number) => Promise<void> | void;
-  /** A terminal response is returned as it is, whatever the retry policy. */
-  isTerminal?: (response: Response) => Promise<boolean> | boolean;
-  attemptTimeoutMs?: number;
-  /** Shared pre-response deadline across an Antigravity account-switch chain. */
-  deadline?: number;
-  observeDiscardedResponse?: (
-    response: Response,
-  ) => Promise<NormalizedUsage | null>;
-}
-
-interface UpstreamAttemptLog {
-  attempt: number;
-  status?: number;
-  duration_ms: number;
-  retry_delay_ms?: number;
-  error?: string;
-  usage?: NormalizedUsage | null;
-}
-
-export interface FetchWithRetriesResult {
-  response?: Response;
-  attempts: UpstreamAttemptLog[];
-  error?: unknown;
-}
-
-function wait(delayMs: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-export class UpstreamAttemptTimeoutError extends Error {
-  constructor(readonly timeoutMs: number) {
-    super(`upstream request timed out after ${timeoutMs} ms`);
-    this.name = "UpstreamAttemptTimeoutError";
-  }
-}
-
-async function fetchAttempt(
-  request: Request,
-  timeoutMs: number | undefined,
-  send: UpstreamFetch,
-): Promise<Response> {
-  request.signal.throwIfAborted();
-  if (timeoutMs === undefined) {
-    return send(request);
-  }
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new RangeError("attemptTimeoutMs must be a positive finite number");
-  }
-
-  const timeoutController = new AbortController();
-  let timeoutError: UpstreamAttemptTimeoutError | undefined;
-  const timeout = setTimeout(() => {
-    timeoutError = new UpstreamAttemptTimeoutError(timeoutMs);
-    timeoutController.abort(timeoutError);
-  }, timeoutMs);
-  const signal = AbortSignal.any([request.signal, timeoutController.signal]);
-
-  try {
-    return await send(new Request(request, { signal }));
-  } catch (error) {
-    if (
-      timeoutError &&
-      !request.signal.aborted &&
-      !(error instanceof SocksProxyError)
-    ) {
-      throw timeoutError;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export async function fetchWithConfiguredRetries(
-  makeRequest: () => Request,
-  retry: ProviderRetryConfig | undefined,
-  retryOptions: UpstreamRetryOptions,
-): Promise<FetchWithRetriesResult> {
-  const attempts: UpstreamAttemptLog[] = [];
-  for (let attemptIndex = 0; ; attemptIndex += 1) {
-    const attemptStartedAt = performance.now();
-    let response: Response;
-    let request: Request;
-    try {
-      request = makeRequest();
-      const remaining =
-        retryOptions.deadline === undefined
-          ? retryOptions.attemptTimeoutMs
-          : retryOptions.deadline - Date.now();
-      if (remaining !== undefined && remaining <= 0)
-        throw new UpstreamAttemptTimeoutError(
-          retryOptions.attemptTimeoutMs ?? 0,
-        );
-      response = await fetchAttempt(
-        request,
-        remaining,
-        retryOptions.send ?? ((request) => fetch(request)),
-      );
-    } catch (error) {
-      attempts.push({
-        attempt: attemptIndex + 1,
-        duration_ms: elapsedMs(attemptStartedAt),
-        error: errorMessage(error),
-      });
-      return { attempts, error };
-    }
-
-    const attempt: UpstreamAttemptLog = {
-      attempt: attemptIndex + 1,
-      status: response.status,
-      duration_ms: elapsedMs(attemptStartedAt),
-    };
-    attempts.push(attempt);
-    await retryOptions.onResponse?.(response, attemptIndex + 1);
-    const terminal = (await retryOptions.isTerminal?.(response)) === true;
-    const delayMs = retry?.delays_ms[attemptIndex];
-    if (
-      terminal ||
-      retry === undefined ||
-      delayMs === undefined ||
-      !retry.status_codes.includes(response.status)
-    ) {
-      return { response, attempts };
-    }
-
-    if (retryOptions.observeDiscardedResponse) {
-      try {
-        attempt.usage = await retryOptions.observeDiscardedResponse(response);
-      } catch {
-        attempt.usage = null;
-      }
-    }
-    await discardBody(response.body);
-    try {
-      request.signal.throwIfAborted();
-      const boundedDelay =
-        retryOptions.deadline === undefined
-          ? delayMs
-          : Math.max(0, Math.min(delayMs, retryOptions.deadline - Date.now()));
-      attempt.retry_delay_ms = boundedDelay;
-      if (retryOptions.wait) await retryOptions.wait(boundedDelay);
-      else await wait(boundedDelay, request.signal);
-      request.signal.throwIfAborted();
-    } catch (error) {
-      return { attempts, error };
-    }
-  }
-}
 
 function nonBlankString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
@@ -482,6 +320,7 @@ export async function handleInference(
       routeForSelection,
       {
         contextManagement,
+        skipXaiQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
         ...(sessionId
           ? {
@@ -611,6 +450,8 @@ export async function handleInference(
           },
         );
       }
+      if (selection.xaiQuota?.allBlocked)
+        return xaiQuotaResponse(protocol, selection.xaiQuota.until, requestId);
       if (claude?.allBlocked) {
         const response = apiError(
           protocol,
@@ -669,18 +510,19 @@ export async function handleInference(
       },
     });
 
-    let prepared: PreparedProviderRequest;
+    let preparation: PreparedProviderResult;
     try {
       if (
-        provider.type === ProviderType.Antigravity &&
+        (provider.type === ProviderType.Antigravity ||
+          provider.type === ProviderType.Xai) &&
         rawBody.byteLength > 16 * 1024 * 1024
       )
         throw new ProviderRequestError(
-          "Antigravity requests must not exceed 16 MiB",
+          "Native provider requests must not exceed 16 MiB",
           413,
           "request_too_large",
         );
-      prepared = await prepareProviderRequest(
+      preparation = await prepareProviderRequest(
         provider,
         selectedCredential,
         {
@@ -715,6 +557,8 @@ export async function handleInference(
         { code, requestId },
       );
     }
+    if (preparation.kind === "local") return preparation.response;
+    const prepared = preparation;
     const { headers } = prepared;
     requestLog?.set({
       upstream: {
@@ -733,7 +577,8 @@ export async function handleInference(
     if (
       provider.type !== ProviderType.Codex &&
       provider.type !== ProviderType.Antigravity &&
-      provider.type !== ProviderType.Claude
+      provider.type !== ProviderType.Claude &&
+      provider.type !== ProviderType.Xai
     )
       meter?.select(meterTarget);
     headers.delete("content-length");
@@ -757,7 +602,7 @@ export async function handleInference(
         originalText,
       );
     let usageLimit: CodexUsageLimit | undefined;
-    let antigravityLimit: AccountLimit | undefined;
+    let nativeLimit: AccountLimit | undefined;
     let claudeLimit: ReturnType<typeof claudeUsageLimit>;
     const startedAt = performance.now();
     const result = await fetchWithConfiguredRetries(
@@ -772,7 +617,8 @@ export async function handleInference(
       provider.retry,
       {
         ...retryOptions,
-        ...(provider.type === ProviderType.Antigravity &&
+        ...((provider.type === ProviderType.Antigravity ||
+          provider.type === ProviderType.Xai) &&
         accountDeadline !== undefined
           ? { deadline: accountDeadline }
           : {}),
@@ -780,9 +626,10 @@ export async function handleInference(
           const response = await (retryOptions.send ?? prepared.send)(
             upstreamRequest,
           );
-          antigravityLimit = undefined;
+          nativeLimit = undefined;
           if (
-            provider.type !== ProviderType.Antigravity ||
+            (provider.type !== ProviderType.Antigravity &&
+              provider.type !== ProviderType.Xai) ||
             !prepared.inspectResponse
           )
             return response;
@@ -792,18 +639,25 @@ export async function handleInference(
               if (selectedCredential.auth.type === CredentialAuthType.OAuth) {
                 await scheduleHealthUpdate(
                   context,
-                  recordAntigravityLimit(
-                    env,
-                    selectedCredential.auth.account_ref,
-                    upstreamModel,
-                    limit,
-                  ),
+                  provider.type === ProviderType.Xai
+                    ? recordXaiLimit(
+                        env,
+                        selectedCredential.auth.account_ref,
+                        prepared.oauthGeneration,
+                        limit,
+                      )
+                    : recordAntigravityLimit(
+                        env,
+                        selectedCredential.auth.account_ref,
+                        upstreamModel,
+                        limit,
+                      ),
                 );
               }
             },
             upstreamRequest.signal,
           );
-          antigravityLimit = inspected.accountLimit;
+          nativeLimit = inspected.accountLimit;
           return inspected.response;
         },
         ...(meter
@@ -822,8 +676,9 @@ export async function handleInference(
               },
             }
           : {}),
-        ...(provider.type === ProviderType.Antigravity
-          ? { isTerminal: () => antigravityLimit !== undefined }
+        ...(provider.type === ProviderType.Antigravity ||
+        provider.type === ProviderType.Xai
+          ? { isTerminal: () => nativeLimit !== undefined }
           : {}),
         ...(provider.type === ProviderType.Codex
           ? {
@@ -861,16 +716,24 @@ export async function handleInference(
     meter?.recordAttempts(logicalAttempts);
     if (
       result.response &&
-      antigravityLimit &&
+      nativeLimit &&
       selectedCredential.auth.type === CredentialAuthType.OAuth
     ) {
       try {
-        await recordAntigravityLimit(
-          env,
-          selectedCredential.auth.account_ref,
-          upstreamModel,
-          antigravityLimit,
-        );
+        if (provider.type === ProviderType.Xai)
+          await recordXaiLimit(
+            env,
+            selectedCredential.auth.account_ref,
+            prepared.oauthGeneration,
+            nativeLimit,
+          );
+        else
+          await recordAntigravityLimit(
+            env,
+            selectedCredential.auth.account_ref,
+            upstreamModel,
+            nativeLimit,
+          );
       } catch {
         await discardBody(result.response.body);
         return apiError(
@@ -886,13 +749,26 @@ export async function handleInference(
       );
       accountSwitches.push({
         credential_id: selectedCredential.id,
-        ...antigravityLimit,
+        ...nativeLimit,
       });
       // Keep raw upstream statuses for attempt logs, including HTTP 200 SSE errors.
+      if (provider.type === ProviderType.Xai) {
+        if (!prepared.transformResponse) {
+          await discardBody(result.response.body);
+          return apiError(protocol, 500, "xAI response adapter is missing", {
+            requestId,
+          });
+        }
+        exhausted = result.response.ok
+          ? xaiQuotaResponse(protocol, nativeLimit.resets_at, requestId)
+          : await prepared.transformResponse(result.response);
+        if (result.response.ok) await discardBody(result.response.body);
+        continue;
+      }
       await discardBody(result.response.body);
       exhausted = antigravityQuotaResponse(
         protocol,
-        antigravityLimit.resets_at,
+        nativeLimit.resets_at,
         requestId,
       );
       continue;
@@ -968,7 +844,8 @@ export async function handleInference(
     if (
       provider.type === ProviderType.Codex ||
       provider.type === ProviderType.Antigravity ||
-      provider.type === ProviderType.Claude
+      provider.type === ProviderType.Claude ||
+      provider.type === ProviderType.Xai
     )
       meter?.select(meterTarget);
     const upstreamDurationMs = elapsedMs(startedAt);

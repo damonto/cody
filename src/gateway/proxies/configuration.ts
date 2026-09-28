@@ -31,7 +31,8 @@ export function effectiveProxyGroup(
 
 /** Send connection fingerprints to coordination storage without sending credentials. */
 export async function proxyGroupSnapshot(
-  config: Pick<GatewayConfig, "revision">,
+  config: Pick<GatewayConfig, "revision"> &
+    Partial<Pick<GatewayConfig, "providers">>,
   group: ProxyGroupConfig,
 ): Promise<ProxyGroupSnapshot> {
   const encoder = new TextEncoder();
@@ -39,6 +40,9 @@ export async function proxyGroupSnapshot(
     id: group.id,
     revision: config.revision ?? 0,
     strategy: group.strategy,
+    ...(config.providers === undefined
+      ? {}
+      : { owners: proxyGroupOwners(config.providers, group.id) }),
     proxies: await Promise.all(
       group.proxies.map(async (node) => {
         const bytes = encoder.encode(
@@ -60,4 +64,25 @@ export async function proxyGroupSnapshot(
       }),
     ),
   };
+}
+
+/** Keep disabled owners too: toggling availability must not change their exit IP. */
+function proxyGroupOwners(
+  providers: GatewayConfig["providers"],
+  groupId: string,
+): ProxyOwner[] {
+  const owners = new Map<string, ProxyOwner>();
+  for (const provider of providers) {
+    for (const credential of provider.credentials) {
+      const reference = effectiveProxyGroup(provider, credential);
+      if (reference?.groupId === groupId) {
+        owners.set(proxyOwnerKey(reference.owner), reference.owner);
+      }
+    }
+  }
+  return [...owners.values()];
+}
+
+export function proxyOwnerKey(owner: ProxyOwner): string {
+  return JSON.stringify([owner.provider_id, owner.credential_id ?? null]);
 }

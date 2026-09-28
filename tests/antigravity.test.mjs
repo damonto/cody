@@ -219,6 +219,7 @@ test("JSON Schema exposes native singleton, reserved ID and readiness rules", ()
       ["antigravity", 0, 1],
       ["codex", 0, 1],
       ["claude", 0, 1],
+      ["xai", 0, 1],
     ],
   );
   const gateway = providers.items.oneOf.find(
@@ -228,7 +229,7 @@ test("JSON Schema exposes native singleton, reserved ID and readiness rules", ()
     (entry) => entry.properties.type.const === "antigravity",
   );
   assert.deepEqual(gateway.properties.id.not, {
-    enum: ["antigravity", "codex", "claude"],
+    enum: ["antigravity", "codex", "claude", "xai"],
   });
   assert.equal(native.properties.id.const, "antigravity");
   assert.equal(native.properties.models.minItems ?? 0, 0);

@@ -13,6 +13,7 @@ const Overview = lazy(() => import("@/pages/overview"));
 const Requests = lazy(() => import("@/pages/requests"));
 const Providers = lazy(() => import("@/pages/providers"));
 const Antigravity = lazy(() => import("@/pages/antigravity"));
+const Xai = lazy(() => import("@/pages/xai"));
 const Claude = lazy(() => import("@/pages/claude"));
 const Codex = lazy(() => import("@/pages/codex"));
 const Proxies = lazy(() => import("@/pages/proxies"));
@@ -28,6 +29,7 @@ const pages = [
   ["providers/antigravity", Antigravity],
   ["providers/codex", Codex],
   ["providers/claude", Claude],
+  ["providers/xai", Xai],
   ["proxies", Proxies],
   ["clients", Clients],
   ["pricing", Pricing],

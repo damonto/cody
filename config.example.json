@@ -40,6 +40,7 @@
       },
       "retry": {
         "status_codes": [429],
+        "error_codes": ["rate_limit_exceeded"],
         "delays_ms": [250, 500, 1000]
       },
       "type": "ai_gateway",
@@ -130,6 +131,16 @@
     {
       "type": "claude",
       "id": "claude",
+      "disabled": true,
+      "priority": 100,
+      "models": [],
+      "credentials": [],
+      "account_selection": "round_robin",
+      "allow_extra_usage": false
+    },
+    {
+      "type": "xai",
+      "id": "xai",
       "disabled": true,
       "priority": 100,
       "models": [],

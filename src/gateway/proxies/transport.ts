@@ -20,7 +20,8 @@ import type { ProxyLease } from "./schema.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ProxyTransportContext {
-  readonly config: Pick<GatewayConfig, "proxy_groups" | "revision">;
+  readonly config: Pick<GatewayConfig, "proxy_groups" | "revision"> &
+    Partial<Pick<GatewayConfig, "providers">>;
   readonly env: Pick<Bindings, "PROXY_GROUP" | "UPSTREAM_HTTP">;
   readonly context?: HealthExecutionContext | undefined;
   readonly requestLog?: RequestLogContext | undefined;

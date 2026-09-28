@@ -87,6 +87,12 @@ export const retrySchema = z
       .max(20, "must contain at most 20 items")
       .refine(unique, "must not contain duplicates")
       .meta({ uniqueItems: true }),
+    error_codes: z
+      .array(nameSchema)
+      .max(20, "must contain at most 20 items")
+      .refine(unique, "must not contain duplicates")
+      .meta({ uniqueItems: true })
+      .optional(),
     delays_ms: z
       .array(
         integer
@@ -97,8 +103,9 @@ export const retrySchema = z
   })
   .refine(
     (value) =>
-      (value.status_codes.length === 0) === (value.delays_ms.length === 0),
-    "status_codes and delays_ms must both be empty or both be non-empty",
+      (value.status_codes.length === 0 && !value.error_codes?.length) ===
+      (value.delays_ms.length === 0),
+    "status_codes or error_codes must be non-empty exactly when delays_ms is non-empty",
   )
   .meta({
     // JSON Schema cannot derive a Zod refinement. Keep its equivalent beside the rule.
@@ -106,12 +113,20 @@ export const retrySchema = z
       {
         properties: {
           status_codes: { maxItems: 0 },
+          error_codes: { maxItems: 0 },
           delays_ms: { maxItems: 0 },
         },
       },
       {
         properties: {
           status_codes: { minItems: 1 },
+          delays_ms: { minItems: 1 },
+        },
+      },
+      {
+        required: ["error_codes"],
+        properties: {
+          error_codes: { minItems: 1 },
           delays_ms: { minItems: 1 },
         },
       },
@@ -220,6 +235,7 @@ export const NATIVE_PROVIDER_IDS: readonly string[] = [
   ProviderType.Antigravity,
   ProviderType.Codex,
   ProviderType.Claude,
+  ProviderType.Xai,
 ];
 const oauthCredentials = z
   .array(oauthCredentialSchema)
@@ -372,11 +388,18 @@ export const claudeProviderSchema = publishable(
   claudeDraftProviderSchema,
   "Claude",
 );
+export const xaiDraftProviderSchema = claudeDraftProviderSchema.extend({
+  type: z.literal(ProviderType.Xai),
+  id: z.literal(ProviderType.Xai),
+  disabled: boolean.default(true),
+});
+export const xaiProviderSchema = publishable(xaiDraftProviderSchema, "xAI");
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
   antigravityProviderSchema,
   codexProviderSchema,
   claudeProviderSchema,
+  xaiProviderSchema,
 ]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
@@ -442,6 +465,7 @@ const draftShape = shape.extend({
       antigravityDraftProviderSchema,
       codexDraftProviderSchema,
       claudeDraftProviderSchema,
+      xaiDraftProviderSchema,
     ]),
   ),
 });
@@ -451,6 +475,7 @@ function validateIdentities(config: Configuration, context: z.RefinementCtx) {
     [ProviderType.Antigravity, "Antigravity"],
     [ProviderType.Codex, "Codex"],
     [ProviderType.Claude, "Claude"],
+    [ProviderType.Xai, "xAI"],
   ] as const) {
     if (
       config.providers.filter((provider) => provider.type === type).length > 1
@@ -607,10 +632,5 @@ export function configurationError(error: z.ZodError): string {
   }
   if (issue.path.length === 1 && issue.path[0] === "$schema")
     return `configuration.$schema ${issue.message}`;
-  if (
-    issue.message ===
-    "status_codes and delays_ms must both be empty or both be non-empty"
-  )
-    return `${path}.status_codes and ${path}.delays_ms must both be empty or both be non-empty`;
   return `${path} ${issue.message}`;
 }

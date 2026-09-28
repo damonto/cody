@@ -43,7 +43,7 @@ import {
   findClientApiKeyByDigest,
   forwardableWebSocketHeaders,
 } from "../http/http.ts";
-import { UpstreamAttemptTimeoutError } from "../http/proxy.ts";
+import { UpstreamAttemptTimeoutError } from "../http/upstream-retry.ts";
 import {
   credentialKey,
   resolveModelRoute,

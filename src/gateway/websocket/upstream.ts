@@ -17,7 +17,7 @@ import {
 import {
   fetchWithConfiguredRetries,
   type FetchWithRetriesResult,
-} from "../http/proxy.ts";
+} from "../http/upstream-retry.ts";
 import type { ProxyFailure } from "../proxies/errors.ts";
 import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
@@ -104,6 +104,8 @@ export class UpstreamWebSocket {
           requestId: state.request_id,
         },
       );
+      if (prepared.kind === "local")
+        throw new Error("Unexpected local provider response");
       const result = await fetchWithConfiguredRetries(
         () =>
           new Request(prepared.url, {

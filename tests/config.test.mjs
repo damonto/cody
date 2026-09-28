@@ -489,6 +489,21 @@ test("parseConfig accepts empty retry arrays to disable an explicit policy", () 
   assert.deepEqual(config.providers[0].retry, input.providers[0].retry);
 });
 
+test("parseConfig accepts error-only and combined retry policies", () => {
+  for (const status_codes of [[], [429]]) {
+    const input = validConfig();
+    input.providers[0].retry = {
+      status_codes,
+      error_codes: ["rate_limit_exceeded"],
+      delays_ms: [1000, 2000],
+    };
+    assert.deepEqual(
+      parseConfig(input).providers[0].retry,
+      input.providers[0].retry,
+    );
+  }
+});
+
 test("parseConfig rejects invalid retry policies", () => {
   const cases = [
     [
@@ -508,8 +523,36 @@ test("parseConfig rejects invalid retry policies", () => {
       { status_codes: [429], delays_ms: Array.from({ length: 11 }, () => 0) },
     ],
     [
-      "providers[0].retry.status_codes and providers[0].retry.delays_ms must both be empty or both be non-empty",
+      "providers[0].retry status_codes or error_codes must be non-empty exactly when delays_ms is non-empty",
       { status_codes: [429], delays_ms: [] },
+    ],
+    [
+      "providers[0].retry status_codes or error_codes must be non-empty exactly when delays_ms is non-empty",
+      { status_codes: [], error_codes: ["rate_limit_exceeded"], delays_ms: [] },
+    ],
+    [
+      "providers[0].retry status_codes or error_codes must be non-empty exactly when delays_ms is non-empty",
+      { status_codes: [], error_codes: [], delays_ms: [1000] },
+    ],
+    [
+      "providers[0].retry.error_codes must not contain duplicates",
+      {
+        status_codes: [],
+        error_codes: ["rate_limit_exceeded", " rate_limit_exceeded "],
+        delays_ms: [1000],
+      },
+    ],
+    [
+      "providers[0].retry.error_codes[0] must be a non-empty string",
+      { status_codes: [], error_codes: [" "], delays_ms: [1000] },
+    ],
+    [
+      "providers[0].retry.error_codes must contain at most 20 items",
+      {
+        status_codes: [],
+        error_codes: Array.from({ length: 21 }, (_, i) => `error_${i}`),
+        delays_ms: [1000],
+      },
     ],
   ];
 

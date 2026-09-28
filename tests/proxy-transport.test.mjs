@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createUpstreamTransport } from "../src/gateway/transport/index.ts";
-import { fetchWithConfiguredRetries } from "../src/gateway/http/proxy.ts";
+import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.ts";
 import { chooseProxy } from "../src/gateway/proxies/policy.ts";
 import {
   SocksProxyError,
@@ -289,25 +289,34 @@ test("unavailable groups and failed health writes fail closed without direct fet
   assert.equal(f.selections.length, 1);
 });
 
-test("a deadline while confirming proxy health returns a state error before selecting an alternate", async () => {
+test("a deadline while confirming proxy health returns a state error before selecting an alternate", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const request = new Request("http://upstream.test/");
   const f = transportFixture(request, {
     connectTimeoutMs: 100,
     dial: async () => bad().socket,
   });
   let release;
+  let observed;
+  const observing = new Promise((resolve) => {
+    observed = resolve;
+  });
   f.stub.observe = () =>
     new Promise((resolve) => {
       release = resolve;
+      observed();
     });
   try {
-    await assert.rejects(f.transport.send(request), (error) => {
+    const rejected = assert.rejects(f.transport.send(request), (error) => {
       assert.equal(f.transport.proxyFailure(error)?.status, 503);
       return (
         error instanceof ProxyUnavailableError &&
         error.code === "proxy_state_unavailable"
       );
     });
+    await observing;
+    t.mock.timers.tick(100);
+    await rejected;
     assert.equal(f.selections.length, 1);
   } finally {
     release?.();

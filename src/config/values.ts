@@ -5,6 +5,7 @@ export const ProviderType = {
   Antigravity: "antigravity",
   Codex: "codex",
   Claude: "claude",
+  Xai: "xai",
 } as const;
 
 export type ProviderType = (typeof ProviderType)[keyof typeof ProviderType];

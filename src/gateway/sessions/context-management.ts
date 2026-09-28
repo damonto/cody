@@ -12,7 +12,7 @@ import { errorMessage, type RequestLogContext } from "../../shared/log.ts";
 import type { HealthExecutionContext } from "../health/health.ts";
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { apiError } from "../http/http.ts";
-import { fetchWithConfiguredRetries } from "../http/proxy.ts";
+import { fetchWithConfiguredRetries } from "../http/upstream-retry.ts";
 import { requestProtocol, type ContextManagementPath } from "../protocol.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
@@ -133,6 +133,8 @@ export async function handleContextManagement(
     },
     { config, env, context, requestLog, requestId },
   );
+  if (prepared.kind === "local")
+    throw new Error("Unexpected local provider response");
   const { headers } = prepared;
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");

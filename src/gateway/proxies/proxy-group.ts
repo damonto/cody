@@ -2,6 +2,13 @@ import { ProxyStrategy } from "../../config/values.ts";
 
 import { DurableObject } from "cloudflare:workers";
 import { identifierSchema } from "../../config/schema.ts";
+import { proxyOwnerKey } from "./configuration.ts";
+import {
+  bindingOwnersSchema,
+  reconcileBindingOwners,
+  type BindingOwners,
+  type BindingOwnersSync,
+} from "./binding-owners.ts";
 import {
   chooseProxy,
   currentProxyHealth,
@@ -41,7 +48,24 @@ export class ProxyGroup extends DurableObject<Env> {
     CREATE TABLE IF NOT EXISTS proxy_bindings (
       owner TEXT PRIMARY KEY, provider_id TEXT NOT NULL, credential_id TEXT, proxy_id TEXT NOT NULL, created_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS proxy_bindings_node ON proxy_bindings(proxy_id);`);
+    CREATE INDEX IF NOT EXISTS proxy_bindings_node ON proxy_bindings(proxy_id);
+    CREATE TABLE IF NOT EXISTS proxy_binding_owners (
+      id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, keys TEXT NOT NULL
+    );`);
+  }
+
+  private bindingOwners(): BindingOwners | undefined {
+    const row = this.ctx.storage.sql
+      .exec<{ revision: number; keys: string }>(
+        "SELECT revision, keys FROM proxy_binding_owners WHERE id = 1",
+      )
+      .toArray()[0];
+    return row
+      ? bindingOwnersSchema.parse({
+          revision: row.revision,
+          keys: JSON.parse(row.keys),
+        })
+      : undefined;
   }
 
   private rows(): NodeRow[] {
@@ -69,7 +93,7 @@ export class ProxyGroup extends DurableObject<Env> {
     return health;
   }
 
-  private sync(group: ProxyGroupSnapshot): boolean {
+  private sync(group: ProxyGroupSnapshot): BindingOwnersSync {
     const sql = this.ctx.storage.sql;
     const signature = JSON.stringify([
       group.id,
@@ -86,7 +110,23 @@ export class ProxyGroup extends DurableObject<Env> {
       group.revision < previous.revision &&
       signature !== previous.signature
     ) {
-      return false;
+      return { status: "stale_configuration" };
+    }
+    const oldOwners = this.bindingOwners();
+    const result = reconcileBindingOwners(group, oldOwners);
+    if (result.status === "stale_configuration") return result;
+    if (result.prune) {
+      sql.exec(
+        "DELETE FROM proxy_bindings WHERE owner NOT IN (SELECT value FROM json_each(?))",
+        JSON.stringify(result.owners.keys),
+      );
+    }
+    if (result.write) {
+      sql.exec(
+        "INSERT INTO proxy_binding_owners (id, revision, keys) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, keys = excluded.keys",
+        result.owners.revision,
+        JSON.stringify(result.owners.keys),
+      );
     }
     if (previous?.signature === signature) {
       if (group.revision > previous.revision) {
@@ -95,7 +135,7 @@ export class ProxyGroup extends DurableObject<Env> {
           group.revision,
         );
       }
-      return true;
+      return result;
     }
     const existing = new Map(this.rows().map((row) => [row.id, row]));
     const incoming = new Set(group.proxies.map((node) => node.id));
@@ -134,15 +174,14 @@ export class ProxyGroup extends DurableObject<Env> {
       group.strategy,
       signature,
     );
-    return true;
+    return result;
   }
 
   select(value: unknown): ProxySelection {
     const { group, owner, exclude } = proxySelectInputSchema.parse(value);
     return this.ctx.storage.transactionSync(() => {
-      if (!this.sync(group)) {
-        return { status: "stale_configuration" };
-      }
+      const synced = this.sync(group);
+      if (synced.status === "stale_configuration") return synced;
       const now = Date.now();
       const nodes = this.rows().map((node) => ({
         ...node,
@@ -151,10 +190,12 @@ export class ProxyGroup extends DurableObject<Env> {
       const healthy = nodes.filter(
         (node) => !node.disabled && node.state.cooling_until === null,
       );
-      const key = JSON.stringify([
-        owner.provider_id,
-        owner.credential_id ?? null,
-      ]);
+      const key = proxyOwnerKey(owner);
+      const owners = synced.owners;
+      // Draft OAuth calls can connect without resurrecting a published binding.
+      const mayBind = owners === undefined || owners.keys.includes(key);
+      if (group.owners !== undefined && !mayBind)
+        return { status: "unavailable" };
       const bound =
         group.strategy === ProxyStrategy.Sticky
           ? this.ctx.storage.sql
@@ -172,7 +213,7 @@ export class ProxyGroup extends DurableObject<Env> {
               healthy.filter((node) => !exclude.includes(node.id)),
               group.strategy,
             );
-      if (group.strategy === ProxyStrategy.Sticky && !existing) {
+      if (group.strategy === ProxyStrategy.Sticky && !existing && mayBind) {
         this.ctx.storage.sql.exec(
           "DELETE FROM proxy_bindings WHERE owner = ?",
           key,
@@ -230,7 +271,7 @@ export class ProxyGroup extends DurableObject<Env> {
   getStatus(value: unknown): ProxyGroupStatus {
     const group = proxyGroupSnapshotSchema.parse(value);
     return this.ctx.storage.transactionSync(() => {
-      if (!this.sync(group)) {
+      if (this.sync(group).status === "stale_configuration") {
         throw new Error("Proxy configuration is stale");
       }
       const now = Date.now();
@@ -266,7 +307,7 @@ export class ProxyGroup extends DurableObject<Env> {
     const group = proxyGroupSnapshotSchema.parse(value);
     const id = identifierSchema.parse(proxyId);
     return this.ctx.storage.transactionSync(() => {
-      if (!this.sync(group)) {
+      if (this.sync(group).status === "stale_configuration") {
         throw new Error("Proxy configuration is stale");
       }
       if (!group.proxies.some((node) => node.id === id)) {

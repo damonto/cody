@@ -14,7 +14,8 @@ import {
 import type { Bindings, ProxyGroupObject } from "../../platform/bindings.ts";
 
 interface ProxyGroupClientOptions {
-  readonly config: Pick<GatewayConfig, "revision">;
+  readonly config: Pick<GatewayConfig, "revision"> &
+    Partial<Pick<GatewayConfig, "providers">>;
   readonly namespace: Bindings["PROXY_GROUP"];
   readonly context?: HealthExecutionContext | undefined;
   readonly requestId?: string | undefined;

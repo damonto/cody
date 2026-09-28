@@ -41,6 +41,9 @@ export interface ProviderRequest {
 export interface AccountLimit {
   readonly code: string;
   readonly resets_at: number;
+  readonly model?: string | null;
+  readonly kind?: "subscription" | "spending";
+  readonly reset_source?: "upstream" | "fallback";
 }
 
 export interface InspectedResponse {
@@ -65,8 +68,17 @@ export interface PreparedUpstreamRequest {
   readonly retryUsage?: (response: Response) => Promise<NormalizedUsage | null>;
 }
 
+export interface PreparedLocalResponse {
+  readonly kind: "local";
+  readonly response: Response;
+}
+export type PreparedProviderResult =
+  PreparedProviderRequest | PreparedLocalResponse;
+
 export interface PreparedProviderRequest
-  extends PreparedUpstreamRequest, UpstreamTransport {}
+  extends PreparedUpstreamRequest, UpstreamTransport {
+  readonly kind: "upstream";
+}
 
 /** Adapters prepare one upstream attempt. Retries and health remain in the gateway. */
 export interface ProviderAdapter<
@@ -78,6 +90,10 @@ export interface ProviderAdapter<
     endpoint: ProviderEndpoint,
     transport: ProviderTransport,
   ): boolean;
+  local?(
+    provider: Provider,
+    input: ProviderRequest,
+  ): Promise<Response | undefined>;
   prepare(
     provider: Provider,
     credential: ResolvedCredentialForProvider<Provider["type"]>,

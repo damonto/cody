@@ -355,6 +355,14 @@ export function CodexSettingsForm({
                           <codes.NumberListField label="Retry HTTP status codes" />
                         )}
                       </form.AppField>
+                      <form.AppField name="retry.error_codes">
+                        {(codes) => (
+                          <codes.StringListField
+                            label="Retry error codes"
+                            hint="Optional JSON or early SSE error codes, e.g. rate_limit_exceeded. Quota limits follow account switching rules."
+                          />
+                        )}
+                      </form.AppField>
                       <form.AppField name="retry.delays_ms">
                         {(delays) => (
                           <delays.NumberListField label="Retry delays (milliseconds)" />

@@ -21,6 +21,7 @@ export const oauthProviderTypeSchema = z.enum([
   ProviderType.Antigravity,
   ProviderType.Codex,
   ProviderType.Claude,
+  ProviderType.Xai,
 ]);
 export type OAuthProviderType = z.output<typeof oauthProviderTypeSchema>;
 export const proxyConfigurationSchema = z.object({
@@ -91,6 +92,11 @@ export const resetCreditsSchema = z.object({
   error: z.string().nullable(),
 });
 export type ResetCredits = z.output<typeof resetCreditsSchema>;
+export const xaiLimitSchema = z.object({
+  model: z.string().nullable(),
+  until: z.number(),
+  kind: z.enum(["subscription", "spending"]),
+});
 export const quotaSnapshotSchema = z.object({
   groups: z.array(quotaGroupSchema),
   subscription: subscriptionSchema.nullable(),
@@ -105,6 +111,17 @@ export const quotaSnapshotSchema = z.object({
       balance: z.string().nullable(),
     })
     .nullable()
+    .optional(),
+  xai_limits: z.array(xaiLimitSchema).optional(),
+  xai_billing: z
+    .object({
+      monthly_limit: z.number().nullable(),
+      included_used: z.number().nullable(),
+      billing_period_end: z.string().nullable(),
+      products: z.array(
+        z.object({ product: z.string(), used_percent: z.number().nullable() }),
+      ),
+    })
     .optional(),
   claude_limits: z
     .array(z.object({ model: z.string().nullable(), until: z.number() }))
@@ -140,6 +157,10 @@ export const accountViewSchema = z.object({
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
   project_id: z.string().nullable(),
+  xai: z
+    .object({ subject: z.string().min(1) })
+    .nullable()
+    .optional(),
   claude: claudeAccountSchema.nullable().optional(),
   codex: z
     .object({
@@ -175,6 +196,11 @@ export const sessionViewSchema = z.object({
 });
 export type SessionView = z.output<typeof sessionViewSchema>;
 export const resolvedOAuthSchema = z.union([
+  z.object({
+    token: z.string().min(1),
+    xai_subject: z.string().min(1),
+    generation: z.number(),
+  }),
   z.object({
     token: z.string().min(1),
     claude_organization_id: z.string().min(1),

@@ -19,7 +19,7 @@ import {
   providerSupportsEndpoint,
 } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
-import type { PreparedProviderRequest } from "../../providers/types.ts";
+import type { PreparedProviderResult } from "../../providers/types.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
@@ -272,9 +272,9 @@ async function fetchCatalogResponse(
 }
 
 async function prepareCatalogWithinDeadline(
-  operation: Promise<PreparedProviderRequest>,
+  operation: Promise<PreparedProviderResult>,
   signal: AbortSignal,
-): Promise<PreparedProviderRequest> {
+): Promise<PreparedProviderResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -306,7 +306,7 @@ async function fetchProviderModels(
   // A provider may serve either dialect, so it cannot declare one.
   const protocol = requestProtocol(request, "models");
   const startedAt = performance.now();
-  let prepared: PreparedProviderRequest | undefined;
+  let prepared: PreparedProviderResult | undefined;
   try {
     prepared = await prepareCatalogWithinDeadline(
       prepareProviderRequest(
@@ -322,6 +322,10 @@ async function fetchProviderModels(
       ),
       request.signal,
     );
+    if (prepared.kind === "local") {
+      const models = parseUpstreamModels(await prepared.response.json());
+      return { provider, success: models !== null, models: models ?? [] };
+    }
     const result = await fetchCatalogResponse(
       prepared.url,
       {
@@ -411,7 +415,8 @@ async function fetchProviderModels(
       models: filteredModels,
     };
   } catch (error) {
-    const proxyError = prepared?.proxyFailure(error);
+    const proxyError =
+      prepared?.kind !== "local" ? prepared?.proxyFailure(error) : undefined;
     const upstream = {
       provider_id: provider.id,
       credential_id: key.id,

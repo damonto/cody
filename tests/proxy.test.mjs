@@ -1,3 +1,4 @@
+import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers/promises";
@@ -14,7 +15,6 @@ import {
 } from "../src/gateway/http/http.ts";
 import {
   handleInference,
-  fetchWithConfiguredRetries,
   sessionIdForInference,
   upstreamBody,
 } from "../src/gateway/http/proxy.ts";
@@ -1012,6 +1012,69 @@ test("inference retries configured HTTP statuses with the same request", async (
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("inference retries HTTP 200 stream errors and meters only the final outcome", async () => {
+  const fixture = inferenceFixture({
+    status_codes: [],
+    error_codes: ["rate_limit_exceeded"],
+    delays_ms: [0],
+  });
+  const events = [];
+  const meter = new RequestMeter({
+    requestId: "stream-retry",
+    endpoint: "responses",
+    method: "POST",
+    protocol: "openai",
+    sink: { send: async (event) => events.push(event) },
+  });
+  meter.configure(fixture.config);
+  meter.authenticate(fixture.client.id);
+  const requests = [];
+  const finalBody =
+    'data: {"type":"response.completed","response":{"id":"resp_success","model":"model","status":"completed","usage":{"input_tokens":20,"output_tokens":5}}}\n\n';
+  const response = await handleInference(
+    inferenceRequest(),
+    fixture.env,
+    fixture.config,
+    fixture.client,
+    "responses",
+    "stream-retry",
+    undefined,
+    {
+      send: async (upstream) => {
+        requests.push({
+          authorization: upstream.headers.get("authorization"),
+          url: upstream.url,
+          body: await upstream.text(),
+        });
+        return new Response(
+          requests.length === 1
+            ? 'data: {"type":"response.created","response":{"output":[]}}\n\ndata: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"rate_limit_exceeded"},"usage":{"input_tokens":10,"output_tokens":0}}}\n\n'
+            : finalBody,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    },
+    undefined,
+    meter,
+  );
+  assert.equal(await meter.response(response).text(), finalBody);
+  await meter.drain();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(requests[0].authorization, "Bearer provider-secret-key");
+  const finished = events.at(-1);
+  assert.equal(finished.outcome, "success");
+  assert.equal(finished.diagnostic_code, null);
+  assert.equal(finished.response_id, "resp_success");
+  assert.deepEqual(
+    finished.attempts.map((attempt) => attempt.status),
+    [200, 200],
+  );
+  assert.equal(finished.attempts[0].retry_delay_ms, 0);
+  assert.equal(finished.attempts[0].usage.tokens.input_tokens, 10);
+  assert.deepEqual(fixture.calls, { failure: 0, keyFailure: 0, success: 1 });
 });
 
 test("inference uses the next configured key only after a manual configuration change", async () => {

@@ -13,6 +13,8 @@ export const proxyGroupSnapshotSchema = z.strictObject({
   id: identifierSchema,
   revision: timestamp,
   strategy: proxyStrategySchema,
+  // Only full configuration snapshots are authoritative for binding ownership.
+  owners: z.array(proxyOwnerSchema).optional(),
   proxies: z
     .array(
       z.strictObject({

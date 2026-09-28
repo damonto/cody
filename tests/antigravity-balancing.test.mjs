@@ -13,7 +13,7 @@ import { antigravityModelAvailability } from "../src/providers/antigravity/avail
 import {
   fetchWithConfiguredRetries,
   UpstreamAttemptTimeoutError,
-} from "../src/gateway/http/proxy.ts";
+} from "../src/gateway/http/upstream-retry.ts";
 import {
   newAntigravityProvider,
   applySettings,

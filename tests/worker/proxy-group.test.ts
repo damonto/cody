@@ -1,11 +1,25 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { expect, test } from "vitest";
+import { proxyBindingLifecycle } from "../helpers/proxy-binding-lifecycle.ts";
 import type {
   ProxyGroupSnapshot,
   ProxyLease,
   ProxyOwner,
 } from "../../src/gateway/proxies/schema.ts";
+
+test("published ownership changes prune only obsolete bindings and fence stale requests", async () => {
+  const id = `ownership-${crypto.randomUUID()}`;
+  const stub = env.PROXY_GROUP.getByName(id);
+  await proxyBindingLifecycle(
+    stub,
+    async () => {
+      await evictDurableObject(stub);
+      return env.PROXY_GROUP.getByName(id);
+    },
+    id,
+  );
+});
 
 function fixture(strategy: ProxyGroupSnapshot["strategy"] = "sticky") {
   const group: ProxyGroupSnapshot = {

@@ -1,3 +1,4 @@
+import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
 import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
@@ -87,6 +88,7 @@ export interface TargetSelection {
 }
 
 export interface ProviderSelection extends TargetSelection {
+  xaiQuota?: { allBlocked: boolean; until: number | undefined };
   claudeQuota?: { allBlocked: boolean; until: number | undefined };
   target: ModelProviderTarget | undefined;
 }
@@ -95,6 +97,7 @@ export interface ProviderSelectionOptions {
   /** Real models resolved per provider; catalogs do not consult inference quotas. */
   upstreamModels?: ReadonlyMap<string, string>;
   scope?: HealthScope;
+  skipXaiQuota?: boolean;
   contextManagement?: boolean;
   initialProviderIds?: readonly string[];
   /** Credentials this logical request already tried, keyed by `credentialKey`. */
@@ -431,7 +434,8 @@ function affinityCandidates(
     supports_context_management: provider.supports_context_management,
     retain_available_account:
       provider.type === ProviderType.Antigravity ||
-      provider.type === ProviderType.Claude,
+      provider.type === ProviderType.Claude ||
+      provider.type === ProviderType.Xai,
     credentials: credentials.map((credential) => ({
       credential_id: credential.id,
       priority: credential.priority,
@@ -482,9 +486,17 @@ export async function selectAvailableProviderWithDetails(
           route,
           options.excludedCredentials ?? new Set(),
         );
+  const xai =
+    options.scope === HealthScope.Catalog || options.skipXaiQuota
+      ? { route: quota.route, allBlocked: false, until: undefined }
+      : await xaiQuotaRoute(
+          env,
+          quota.route,
+          options.excludedCredentials ?? new Set(),
+        );
   const selection = await selectAvailableTargetWithDetails(
     env,
-    quota.route.targets,
+    xai.route.targets,
     {
       ...options,
       upstreamModels: new Map(
@@ -501,6 +513,7 @@ export async function selectAvailableProviderWithDetails(
     route.targets.find(({ provider }) => provider.id === target.provider.id);
   return {
     ...selection,
+    xaiQuota: { allBlocked: xai.allBlocked, until: xai.until },
     claudeQuota: { allBlocked: quota.allBlocked, until: quota.until },
     target:
       target && routed

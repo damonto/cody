@@ -6,7 +6,7 @@ import {
   effectiveProxyGroup,
   createUpstreamFetch,
 } from "../src/gateway/transport/index.ts";
-import { fetchWithConfiguredRetries } from "../src/gateway/http/proxy.ts";
+import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.ts";
 import { openSocksTunnel } from "../src/gateway/transport/socks.ts";
 import { tlsProxyFixture } from "./helpers/socks-fixture.mjs";
 import { memoryProxy } from "./helpers/memory-socks.mjs";

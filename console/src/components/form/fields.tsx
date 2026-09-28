@@ -143,11 +143,11 @@ function ListInput({
   );
 }
 export function StringListField(props: FieldProps) {
-  const field = useFieldContext<string[]>();
+  const field = useFieldContext<string[] | undefined>();
   return (
     <ListInput
       {...props}
-      value={field.state.value}
+      value={field.state.value ?? []}
       onChange={field.handleChange}
     />
   );

@@ -85,6 +85,14 @@ export const CapabilityFields = withForm({
                       />
                     )}
                   </form.AppField>
+                  <form.AppField name="retry.error_codes">
+                    {(codes) => (
+                      <codes.StringListField
+                        label="Retry error codes"
+                        hint="Optional, e.g. rate_limit_exceeded. Match JSON or early SSE errors, including HTTP 200, before output starts. Separate with commas or newlines."
+                      />
+                    )}
+                  </form.AppField>
                   <form.AppField name="retry.delays_ms">
                     {(delays) => (
                       <delays.NumberListField

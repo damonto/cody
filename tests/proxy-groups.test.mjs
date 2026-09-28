@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { config } from "./admin/fixtures.ts";
+import { proxyGroupSnapshot } from "../src/gateway/proxies/configuration.ts";
+import { reconcileBindingOwners } from "../src/gateway/proxies/binding-owners.ts";
 import {
   chooseProxy,
   freshProxyHealth,
@@ -7,6 +10,64 @@ import {
   observeProxyHealth,
   PROXY_COOLDOWN_MS,
 } from "../src/gateway/proxies/policy.ts";
+
+test("unrelated revisions and owner ordering do not rescan bindings, but advance the fence", () => {
+  const a = { provider_id: "a" };
+  const b = { provider_id: "b" };
+  const group = { revision: 1, owners: [a, b] };
+  const first = reconcileBindingOwners(group);
+  const reordered = reconcileBindingOwners(
+    { ...group, owners: [b, a, a] },
+    first.owners,
+  );
+  assert.equal(reordered.write, false);
+  assert.equal(reordered.prune, false);
+  const newer = reconcileBindingOwners({ ...group, revision: 2 }, first.owners);
+  assert.equal(newer.write, true);
+  assert.equal(newer.prune, false);
+  assert.equal(newer.owners.revision, 2);
+  assert.equal(
+    reconcileBindingOwners({ revision: 1, owners: [a] }, newer.owners).status,
+    "stale_configuration",
+  );
+  assert.equal(
+    reconcileBindingOwners({ revision: 3, owners: [a] }, newer.owners).prune,
+    true,
+  );
+});
+
+test("binding owners follow inheritance, overrides, direct access and removals", async () => {
+  const input = config();
+  const provider = input.providers[0];
+  provider.proxy_group = "old";
+  provider.credentials = [
+    ...["one", "two"].map((id) => ({ ...provider.credentials[0], id })),
+    { ...provider.credentials[0], id: "override", proxy_group: "old" },
+    { ...provider.credentials[0], id: "direct", proxy_group: null },
+  ];
+  const group = { id: "old", strategy: "sticky", proxies: [] };
+  const owners = async () => (await proxyGroupSnapshot(input, group)).owners;
+  assert.deepEqual(await owners(), [
+    { provider_id: "provider" },
+    { provider_id: "provider", credential_id: "override" },
+  ]);
+  provider.disabled = true;
+  provider.credentials.forEach((credential) => {
+    credential.disabled = true;
+  });
+  assert.equal((await owners()).length, 2);
+  provider.proxy_group = "new";
+  assert.deepEqual(await owners(), [
+    { provider_id: "provider", credential_id: "override" },
+  ]);
+  provider.credentials = provider.credentials.filter(
+    (credential) => credential.id !== "override",
+  );
+  assert.deepEqual(await owners(), []);
+  provider.proxy_group = "old";
+  input.providers = [];
+  assert.deepEqual(await owners(), []);
+});
 
 test("random and sticky ignore priority; priority chooses only the highest tier", () => {
   const nodes = [

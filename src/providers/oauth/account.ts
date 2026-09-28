@@ -1,3 +1,5 @@
+import { XaiClient, xaiDeviceSchema, xaiIdentity } from "../xai/api.ts";
+import { xaiModels } from "../xai/models.ts";
 import {
   ClaudeClient,
   CLAUDE_REDIRECT_URI,
@@ -109,6 +111,7 @@ const sessionSchema = z.object({
   next_at: z.number(),
   flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   // Device authorization polls the issuer from the alarm until approval.
+  xai_device: xaiDeviceSchema.optional(),
   device_auth_id: z.string().nullable().default(null),
   user_code: z.string().nullable().default(null),
   poll_interval_ms: z.number().default(5000),
@@ -125,6 +128,7 @@ const storedSchema = z.object({
   project_id: z.string().nullable(),
   codex: accountViewSchema.shape.codex,
   claude: accountViewSchema.shape.claude,
+  xai: accountViewSchema.shape.xai,
   claude_quota_revision: z.number().default(0),
   error: z.string().nullable(),
   session: sessionSchema.nullable(),
@@ -183,10 +187,14 @@ export class ProviderOAuthAccountCore {
     if (!this.account) throw new OAuthError("Account does not exist", 404);
     return this.account;
   }
-  private change(update: (previous: Stored | null) => Stored): Promise<void> {
+  private change(
+    update: (previous: Stored | null) => Stored | Promise<Stored>,
+  ): Promise<void> {
     const operation = this.mutations.then(async () => {
       configureLogging(this.env.LOG_LEVEL);
-      const next = update(this.account ? structuredClone(this.account) : null);
+      const next = await update(
+        this.account ? structuredClone(this.account) : null,
+      );
       const encrypted = await encryptConfig(
         next,
         this.env.CONFIG_ENCRYPTION_KEY,
@@ -214,16 +222,16 @@ export class ProviderOAuthAccountCore {
   }
   private async updateGeneration(
     generation: number,
-    update: (account: Stored) => void,
+    update: (account: Stored) => void | Promise<void>,
   ): Promise<void> {
-    await this.change((account) => {
+    await this.change(async (account) => {
       if (!account || account.generation !== generation)
         throw new OAuthError(
           "Account changed during the operation; try again",
           409,
           "account_changed",
         );
-      update(account);
+      await update(account);
       return account;
     });
   }
@@ -267,6 +275,7 @@ export class ProviderOAuthAccountCore {
       project_id: account.project_id,
       codex: account.codex,
       claude: account.claude,
+      xai: account.xai,
       expires_at: account.tokens?.expires_at ?? null,
       error: account.error,
       models: account.models,
@@ -315,6 +324,8 @@ export class ProviderOAuthAccountCore {
         account.generation++;
         current.status = OAuthSessionStatus.Expired;
         current.tokens = null;
+        current.xai_device = undefined;
+        current.user_code = null;
         current.verifier = "";
         current.state = "";
       }
@@ -334,7 +345,9 @@ export class ProviderOAuthAccountCore {
         session.status !== OAuthSessionStatus.Pending
           ? null
           : device
-            ? CODEX_VERIFICATION_URI
+            ? (session.xai_device?.verification_uri_complete ??
+              session.xai_device?.verification_uri ??
+              CODEX_VERIFICATION_URI)
             : account.provider_type === ProviderType.Codex
               ? codexAuthorizationUrl(session.state, session.challenge)
               : account.provider_type === ProviderType.Claude
@@ -345,7 +358,11 @@ export class ProviderOAuthAccountCore {
         device && session.status === OAuthSessionStatus.Pending
           ? session.user_code
           : null,
-      verification_uri: device ? CODEX_VERIFICATION_URI : null,
+      verification_uri: device
+        ? (session.xai_device?.verification_uri_complete ??
+          session.xai_device?.verification_uri ??
+          CODEX_VERIFICATION_URI)
+        : null,
       error: session.error,
       can_retry:
         session.status === OAuthSessionStatus.Error &&
@@ -364,6 +381,13 @@ export class ProviderOAuthAccountCore {
       signal,
       await antigravityVersion(this.env.CODY_CONFIG_KV, this.ctx),
     );
+  }
+  private async xai(
+    connection?: ProviderConnection,
+    config?: ProxyConfiguration,
+  ): Promise<XaiClient> {
+    const [send, signal] = await this.outbound(connection, config);
+    return new XaiClient(send, signal);
   }
   private async claude(
     connection?: ProviderConnection,
@@ -434,8 +458,14 @@ export class ProviderOAuthAccountCore {
     providerType: OAuthProviderType,
     flow: OAuthFlow,
   ): Promise<SessionView> {
-    if (flow === OAuthFlow.Device && providerType !== ProviderType.Codex)
+    if (
+      flow === OAuthFlow.Device &&
+      providerType !== ProviderType.Codex &&
+      providerType !== ProviderType.Xai
+    )
       throw new OAuthError("Device authorization is only available for Codex");
+    if (providerType === ProviderType.Xai && flow !== OAuthFlow.Device)
+      throw new OAuthError("xAI requires device authorization", 400);
     const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const challenge = base64url(
       new Uint8Array(
@@ -515,6 +545,21 @@ export class ProviderOAuthAccountCore {
   private async requestDeviceCode(id: string, actor: string): Promise<void> {
     const generation = this.requireAccount().generation;
     try {
+      if (this.requireAccount().provider_type === ProviderType.Xai) {
+        const grant = await (
+          await this.xai(this.session(id, actor).connection)
+        ).startDevice();
+        await this.updateGeneration(generation, (account) => {
+          const pending = this.ownedSession(account, id, actor);
+          pending.xai_device = grant;
+          pending.user_code = grant.user_code;
+          pending.expires_at =
+            Date.now() + Math.min(grant.expires_in, 1800) * 1000;
+          pending.poll_interval_ms = Math.max(5, grant.interval) * 1000;
+          pending.next_at = Date.now() + pending.poll_interval_ms;
+        });
+        return;
+      }
       const grant = await (
         await this.codex(this.session(id, actor).connection)
       ).startDevice();
@@ -541,6 +586,36 @@ export class ProviderOAuthAccountCore {
     const snapshot = structuredClone(this.requireAccount());
     const session = snapshot.session;
     if (!session || !devicePending(session)) return;
+    if (snapshot.provider_type === ProviderType.Xai) {
+      if (!session.xai_device) return;
+      const result = await (
+        await this.xai(session.connection)
+      ).pollDevice(session.xai_device);
+      await this.updateGeneration(snapshot.generation, (account) => {
+        const pending = account.session;
+        if (
+          !pending ||
+          pending.id !== session.id ||
+          !devicePending(pending) ||
+          Date.now() >= pending.expires_at
+        )
+          throw new OAuthError(
+            "Authorization session is no longer active",
+            410,
+          );
+        if (result.tokens) {
+          pending.tokens = result.tokens;
+          pending.status = OAuthSessionStatus.Initializing;
+          pending.xai_device = undefined;
+          pending.user_code = null;
+          pending.next_at = Date.now();
+        } else {
+          if (result.slow) pending.poll_interval_ms += 5000;
+          pending.next_at = Date.now() + pending.poll_interval_ms;
+        }
+      });
+      return;
+    }
     if (!session.device_auth_id || !session.user_code) return;
     const client = await this.codex(session.connection);
     const approved = await client.pollDevice({
@@ -717,6 +792,8 @@ export class ProviderOAuthAccountCore {
       account.generation++;
       session.status = OAuthSessionStatus.Cancelled;
       session.tokens = null;
+      session.xai_device = undefined;
+      session.user_code = null;
       session.verifier = "";
       session.state = "";
       return account;
@@ -727,6 +804,8 @@ export class ProviderOAuthAccountCore {
     const session = snapshot.session;
     if (!session?.tokens || session.status !== OAuthSessionStatus.Initializing)
       return;
+    if (snapshot.provider_type === ProviderType.Xai)
+      return this.initializeXai(snapshot, session, session.tokens);
     if (snapshot.provider_type === ProviderType.Codex)
       return this.initializeCodex(snapshot, session, session.tokens);
     if (snapshot.provider_type === ProviderType.Claude)
@@ -916,6 +995,50 @@ export class ProviderOAuthAccountCore {
       pending.verifier = "";
     });
   }
+  private async initializeXai(
+    snapshot: Stored,
+    session: Session,
+    tokens: NonNullable<Session["tokens"]>,
+  ): Promise<void> {
+    const claims = xaiIdentity(tokens);
+    if (snapshot.identity && snapshot.identity.id !== claims.sub)
+      throw new OAuthError(
+        "This is a different xAI account; add a new account",
+        400,
+      );
+    await this.updateGeneration(snapshot.generation, (account) => {
+      const pending = account.session;
+      if (
+        !pending ||
+        pending.id !== session.id ||
+        pending.status !== OAuthSessionStatus.Initializing ||
+        Date.now() >= pending.expires_at
+      )
+        throw new OAuthError("Authorization session is no longer active", 410);
+      const refresh_token =
+        tokens.refresh_token ?? account.tokens?.refresh_token;
+      if (!refresh_token)
+        throw new OAuthError(
+          "xAI did not return a refresh token; authorize again",
+        );
+      account.tokens = { ...tokens, refresh_token };
+      account.identity = { id: claims.sub, email: claims.email ?? null };
+      account.xai = { subject: claims.sub };
+      account.connection = pending.connection;
+      account.status = OAuthAccountStatus.Ready;
+      account.error = null;
+      account.generation++;
+      account.quota = emptyQuota();
+      account.models = xaiModels();
+      account.models_updated_at = Date.now();
+      account.models_error = null;
+      pending.status = OAuthSessionStatus.Complete;
+      pending.tokens = null;
+      pending.xai_device = undefined;
+      pending.state = "";
+      pending.verifier = "";
+    });
+  }
   private active() {
     const account = this.requireAccount();
     if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
@@ -927,8 +1050,14 @@ export class ProviderOAuthAccountCore {
     let credential:
       | { account_id: string; is_fedramp?: boolean }
       | { project_id: string }
+      | { xai_subject: string; generation: number }
       | { claude_organization_id: string; generation: number };
-    if (account.provider_type === ProviderType.Codex && account.codex) {
+    if (account.provider_type === ProviderType.Xai && account.xai) {
+      credential = {
+        xai_subject: account.xai.subject,
+        generation: account.generation,
+      };
+    } else if (account.provider_type === ProviderType.Codex && account.codex) {
       credential = {
         account_id: account.codex.account_id,
         ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
@@ -981,7 +1110,13 @@ export class ProviderOAuthAccountCore {
             );
           let result: z.output<typeof tokenSchema>;
           let claims: ReturnType<typeof parseIdToken> | null = null;
-          if (this.requireAccount().provider_type === ProviderType.Codex) {
+          if ("xai_subject" in snapshot.credential) {
+            result = await (
+              await this.xai(connection, config)
+            ).refresh(snapshot.tokens, snapshot.credential.xai_subject);
+          } else if (
+            this.requireAccount().provider_type === ProviderType.Codex
+          ) {
             result = await (
               await this.codex(connection, config)
             ).refresh(refreshToken, snapshot.tokens);
@@ -1046,7 +1181,17 @@ export class ProviderOAuthAccountCore {
     const generation = this.requireAccount().generation;
     return this.shareRefresh("models", generation, async () => {
       try {
+        if (this.requireAccount().provider_type === ProviderType.Xai) {
+          await this.updateGeneration(generation, (account) => {
+            account.models = xaiModels();
+            account.models_updated_at = Date.now();
+            account.models_error = null;
+          });
+          return;
+        }
         const token = await this.resolve();
+        if ("xai_subject" in token)
+          throw new OAuthError("Unexpected account type", 500);
         const models =
           "claude_organization_id" in token
             ? parseClaudeModels(await (await this.claude()).models(token.token))
@@ -1080,6 +1225,15 @@ export class ProviderOAuthAccountCore {
     await this.shareRefresh("quota", generation, async () => {
       try {
         const token = await this.resolve();
+        if ("xai_subject" in token) {
+          const usage = await (
+            await this.xai()
+          ).quota(token.token, token.xai_subject);
+          await this.updateGeneration(generation, (account) => {
+            account.quota = { ...usage, xai_limits: account.quota.xai_limits };
+          });
+          return;
+        }
         if ("claude_organization_id" in token) {
           const revision = this.requireAccount().claude_quota_revision;
           const usage = parseClaudeUsage(
@@ -1258,6 +1412,41 @@ export class ProviderOAuthAccountCore {
   }
   private async dispatch(command: z.output<typeof accountCommandSchema>) {
     switch (command.action) {
+      case "xai_auth_invalid":
+        if (this.requireAccount().provider_type !== ProviderType.Xai)
+          throw new OAuthError("Only available for xAI", 400);
+        await this.updateGeneration(command.generation, async (account) => {
+          if (
+            !account.tokens ||
+            !(await equalSecret(account.tokens.access_token, command.token))
+          )
+            return;
+          account.status = OAuthAccountStatus.NeedsReauthorization;
+          account.error = "Reconnect this xAI account";
+        });
+        return this.view();
+      case "xai_limit":
+        if (this.requireAccount().provider_type !== ProviderType.Xai)
+          throw new OAuthError("Only available for xAI", 400);
+        await this.updateGeneration(command.generation, (account) => {
+          const limits = (account.quota.xai_limits ?? []).filter(
+            (limit) => limit.until > Date.now(),
+          );
+          const previous = limits.find(
+            (limit) =>
+              limit.model === command.model && limit.kind === command.kind,
+          );
+          if (previous)
+            previous.until = Math.max(previous.until, command.until);
+          else
+            limits.push({
+              model: command.model,
+              until: command.until,
+              kind: command.kind,
+            });
+          account.quota.xai_limits = limits;
+        });
+        return this.view();
       case "claude_usage":
         if (this.requireAccount().provider_type !== ProviderType.Claude)
           throw new OAuthError("Only available for Claude", 400);

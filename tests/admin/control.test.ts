@@ -272,6 +272,52 @@ test("proxy runtime endpoints expose published health and bindings, mask secrets
   ).toBe(404);
 });
 
+test("proxy bindings follow publication, not draft proxy edits", async () => {
+  const input = config();
+  const group = {
+    id: `binding-${crypto.randomUUID()}`,
+    strategy: "sticky" as const,
+    proxies: [
+      {
+        id: "node",
+        url: "socks5://proxy.test:1080",
+        priority: 1,
+        disabled: false,
+      },
+    ],
+  };
+  input.proxy_groups = [group];
+  input.providers[0].proxy_group = group.id;
+  input.providers[0].credentials.push({
+    ...input.providers[0].credentials[0],
+    id: "override",
+    proxy_group: group.id,
+  });
+  const saved = await control().save(input, 0, "tester");
+  const revision = await control().createRevision(saved.version, "tester");
+  await control().publishRevision(revision);
+  const snapshot = await proxyGroupSnapshot({ ...input, revision }, group);
+  const stub = bindings.PROXY_GROUP.getByName(group.id);
+  for (const owner of snapshot.owners!)
+    await stub.select({ group: snapshot, owner });
+  const live = async () => {
+    const response = await call("/console/api/runtime/proxy-groups");
+    expect(response.status).toBe(200);
+    return proxyGroupsStatusSchema.parse(await response.json()).items[0]
+      .bindings;
+  };
+  const original = await live();
+  expect(original).toHaveLength(2);
+  delete input.providers[0].proxy_group;
+  const draft = await control().save(input, saved.version, "tester");
+  expect(await live()).toEqual(original);
+  const next = await control().createRevision(draft.version, "tester");
+  await control().publishRevision(next);
+  expect(await live()).toEqual(
+    original.filter((binding) => binding.credential_id === "override"),
+  );
+});
+
 test("unresolved proxy group references can be saved but cannot be published", async () => {
   const input = config();
   input.providers[0].proxy_group = "missing";

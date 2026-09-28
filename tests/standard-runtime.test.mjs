@@ -34,6 +34,7 @@ import {
   recordAntigravityLimit,
 } from "../src/providers/antigravity/availability.ts";
 import { nextRotationCredential } from "../src/gateway/health/health.ts";
+import { proxyBindingLifecycle } from "./helpers/proxy-binding-lifecycle.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -717,6 +718,18 @@ for (const [name, open] of Object.entries(databases)) {
         assert.equal(
           (await stub.select(input)).lease.proxy_id,
           next.lease.proxy_id,
+        );
+      },
+    );
+
+    await t.test(
+      "published proxy owners prune stale bindings across runtimes",
+      async () => {
+        const id = `ownership-${crypto.randomUUID()}`;
+        await proxyBindingLifecycle(
+          env.PROXY_GROUP.getByName(id),
+          async () => second.bindings.PROXY_GROUP.getByName(id),
+          id,
         );
       },
     );

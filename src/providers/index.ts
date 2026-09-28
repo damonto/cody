@@ -1,3 +1,4 @@
+import { xaiAdapter } from "./xai/index.ts";
 import { ProviderType, CredentialAuthType } from "../config/values.ts";
 import { ProviderTransport } from "./transport-values.ts";
 
@@ -12,7 +13,7 @@ import { claudeAdapter } from "./claude/index.ts";
 import { codexAdapter } from "./codex/index.ts";
 import { resolveCredential } from "./credentials.ts";
 import type {
-  PreparedProviderRequest,
+  PreparedProviderResult,
   ProviderAdapter,
   ProviderEndpoint,
   ProviderRequest,
@@ -24,6 +25,7 @@ const adapters = {
   antigravity: antigravityAdapter,
   codex: codexAdapter,
   claude: claudeAdapter,
+  xai: xaiAdapter,
 } satisfies {
   [Type in ProviderType]: ProviderAdapter<
     Extract<ProviderConfig, { type: Type }>
@@ -36,6 +38,8 @@ export function providerSupportsEndpoint(
   transport: ProviderTransport = ProviderTransport.Http,
 ): boolean {
   switch (provider.type) {
+    case ProviderType.Xai:
+      return adapters.xai.supports(provider, endpoint, transport);
     case ProviderType.AiGateway:
       return adapters.ai_gateway.supports(provider, endpoint, transport);
     case ProviderType.Antigravity:
@@ -53,11 +57,15 @@ export async function prepareProviderRequest(
   credential: ProviderCredentialConfig,
   input: ProviderRequest,
   context?: ProviderRuntimeContext,
-): Promise<PreparedProviderRequest> {
+): Promise<PreparedProviderResult> {
   if (!providerSupportsEndpoint(provider, input.endpoint, input.transport)) {
     throw new Error(
       `Provider ${provider.id} does not support this endpoint and transport`,
     );
+  }
+  if (provider.type === ProviderType.Xai) {
+    const response = await xaiAdapter.local?.(provider, input);
+    if (response) return { kind: "local", response };
   }
   const resolved = await resolveCredential(
     credential,
@@ -79,10 +87,15 @@ export async function prepareProviderRequest(
               resolved.type === CredentialAuthType.OAuth &&
               resolved.provider === ProviderType.Claude
             ? await adapters.claude.prepare(provider, resolved, input, context)
-            : undefined;
+            : provider.type === ProviderType.Xai &&
+                resolved.type === CredentialAuthType.OAuth &&
+                resolved.provider === ProviderType.Xai
+              ? await adapters.xai.prepare(provider, resolved, input, context)
+              : undefined;
   if (!prepared)
     throw new Error("Provider and credential authentication do not match");
   return {
+    kind: "upstream",
     ...prepared,
     ...createUpstreamTransport(
       provider,

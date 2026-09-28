@@ -41,8 +41,19 @@ export interface ResolvedClaudeOAuth {
   readonly token: string;
   readonly account_ref: string;
 }
+export interface ResolvedXaiOAuth {
+  readonly type: typeof CredentialAuthType.OAuth;
+  readonly provider: typeof ProviderType.Xai;
+  readonly token: string;
+  readonly subject: string;
+  readonly account_ref: string;
+  readonly generation: number;
+}
 export type ResolvedOAuth =
-  ResolvedAntigravityOAuth | ResolvedCodexOAuth | ResolvedClaudeOAuth;
+  | ResolvedAntigravityOAuth
+  | ResolvedCodexOAuth
+  | ResolvedClaudeOAuth
+  | ResolvedXaiOAuth;
 export type ResolvedCredential = ResolvedApiKey | ResolvedOAuth;
 export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
   ResolvedCredential,
@@ -90,7 +101,8 @@ const oauthResolver: CredentialResolver<
       !context ||
       (provider !== ProviderType.Antigravity &&
         provider !== ProviderType.Codex &&
-        provider !== ProviderType.Claude)
+        provider !== ProviderType.Claude &&
+        provider !== ProviderType.Xai)
     )
       throw new OAuthError("OAuth account storage is unavailable", 503);
     const token = await accountReply(
@@ -103,6 +115,19 @@ const oauthResolver: CredentialResolver<
     );
     context.requestLog?.registerSensitiveValues([token.token]);
     const account_ref = auth.account_ref;
+    if (provider === ProviderType.Xai) {
+      const value = z
+        .object({ xai_subject: z.string(), generation: z.number() })
+        .parse(token);
+      return {
+        type: CredentialAuthType.OAuth,
+        provider,
+        token: token.token,
+        account_ref,
+        subject: value.xai_subject,
+        generation: value.generation,
+      };
+    }
     if (provider === ProviderType.Claude)
       return {
         type: CredentialAuthType.OAuth,
