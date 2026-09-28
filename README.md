@@ -30,7 +30,7 @@ npm install
 npm run dev:cloudflare
 ```
 
-Open `http://localhost:8788/console/`. The gateway endpoint is `http://localhost:8788/v1`.
+Open `http://127.0.0.1:5173/console/` for the console with hot reload. The gateway endpoint is `http://127.0.0.1:8787/v1`. The command starts both Vite and the local Worker; Ctrl+C stops both.
 
 The first run creates `.dev.vars` with a new encryption key and a local database. Keep `.dev.vars`: if the key is lost, startup stops instead of replacing it, because existing data can only be read with the original key.
 
@@ -87,7 +87,7 @@ npm run start:node
 
 Open `http://127.0.0.1:8787/console/`. The gateway endpoint is `http://127.0.0.1:8787/v1`. The default `ADMIN_AUTH_MODE=local` signs you in automatically and only works while the server listens on `127.0.0.1`.
 
-For development, `npm run dev:node` builds the console and restarts the server when source files change.
+For development, `npm run dev:node` starts Vite with console hot reload and restarts the Node server when backend source files change. Open `http://127.0.0.1:5173/console/`; the gateway stays on `http://127.0.0.1:8787/v1`. Keep `HOST=127.0.0.1` and `PORT=8787` in `.env` to match the console proxy. Ctrl+C stops both processes.
 
 ### Run in production
 
@@ -161,6 +161,14 @@ Set token prices in **Model pricing** and your reporting time zone in **Settings
 To reuse a configuration, use **Settings → Export JSON** and **Settings → Import JSON**. Include secrets only when moving to another deployment; Antigravity and Codex accounts are not exported and must be signed in again. See [config.example.json](config.example.json) for the format.
 
 Keep the encryption key unchanged for the life of a deployment and never commit it, `.env`, `.dev.vars` or configuration files with secrets.
+
+### Balance Antigravity accounts
+
+Antigravity Settings offers `round_robin` (the default) and `session_affinity` (fill first). Round robin distributes new sessions across the highest-priority available accounts; fill first selects by priority and configuration order. Both retain an available account for the session, including after another account recovers. Without a session ID, each request uses the selected allocation strategy. Existing configurations without `account_selection` use round robin for new bindings.
+
+An explicit quota exhaustion or an account rate limit with a recovery time cools only that account's real upstream model. The gateway switches to another account of the same provider before returning output, including when the first SSE event reports the limit. Unknown 429s and capacity errors follow the configured retry policy on the same account. Each account is visited at most once per request; after output starts, limits end the stream and affect subsequent requests. When all accounts are limited, the gateway returns a protocol-appropriate 429 with `Retry-After`.
+
+Model cooldowns and rotation survive restarts on all runtimes. Account cards show affected models and recovery times. Signed history can move between configured accounts of the same provider while retaining client/model isolation, original native signatures and tool-call pairing. Removing a source account from the configuration also removes permission to replay its signed history on other accounts.
 
 ## Use with clients
 

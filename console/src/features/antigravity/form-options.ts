@@ -1,4 +1,5 @@
 import {
+  CodexAccountSelection,
   CredentialAuthType,
   ProviderType,
 } from "../../../../src/config/values.ts";
@@ -38,6 +39,7 @@ export function newAntigravityProvider(): AntigravityProviderConfig {
   return {
     type: ProviderType.Antigravity,
     id: "antigravity",
+    account_selection: CodexAccountSelection.RoundRobin,
     priority: 100,
     disabled: true,
     models: [],
@@ -100,6 +102,7 @@ export function settingsFormValues(
 ): SettingsFormValues {
   return {
     priority: provider.priority,
+    account_selection: provider.account_selection,
     disabled: provider.disabled,
     proxy_group: provider.proxy_group,
     models: [...provider.models],

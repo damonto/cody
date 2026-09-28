@@ -7,11 +7,11 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev:cloudflare": "node scripts/setup-local.mjs && npm run build:console && wrangler dev --local",
+    "dev:cloudflare": "node scripts/setup-local.mjs && concurrently --kill-others --names gateway,console \"wrangler dev --local --assets console/public\" \"npm run dev:console\"",
     "build:cloudflare": "npm run build:console && wrangler deploy --dry-run",
     "deploy:cloudflare": "npm run build:console && node scripts/deploy.mjs",
     "types:cloudflare": "wrangler types --include-runtime=false --strict-vars=false",
-    "dev:node": "npm run build:console && node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "dev:node": "concurrently --kill-others --names gateway,console \"node --env-file-if-exists=.env --import tsx --watch src/server.ts\" \"npm run dev:console\"",
     "build:node": "npm run build:console && node scripts/build-standard.mjs node",
     "start:node": "node --env-file-if-exists=.env dist/server.mjs",
     "deploy:node": "npm run build:node && npm run db:migrate",
@@ -46,6 +46,7 @@
     "@types/node": "24.13.4",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
+    "concurrently": "^10.0.5",
     "esbuild": "^0.28.1",
     "oxlint": "^1.82.0",
     "oxlint-tsgolint": "^7.0.2001",

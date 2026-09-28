@@ -1,4 +1,5 @@
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+import { CodexAccountSelection } from "../../../../src/config/values.ts";
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -104,6 +105,42 @@ export function AntigravitySettingsForm({
             </form.AppField>
             <form.AppField name="proxy_group">
               {(field) => <field.ProxyGroupField groups={groups} />}
+            </form.AppField>
+            <form.AppField name="account_selection">
+              {(field) => (
+                <div className="space-y-2">
+                  <Label>Account selection</Label>
+                  <Choice
+                    label="Account selection"
+                    value={
+                      field.state.value ?? CodexAccountSelection.RoundRobin
+                    }
+                    onChange={(value) =>
+                      field.handleChange(
+                        value === CodexAccountSelection.SessionAffinity
+                          ? CodexAccountSelection.SessionAffinity
+                          : CodexAccountSelection.RoundRobin,
+                      )
+                    }
+                    options={[
+                      {
+                        value: CodexAccountSelection.RoundRobin,
+                        label: "Round robin",
+                      },
+                      {
+                        value: CodexAccountSelection.SessionAffinity,
+                        label: "Session affinity (fill first)",
+                      },
+                    ]}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Round robin spreads new sessions across accounts. Fill first
+                    uses the first available account. Both keep a session on its
+                    account until it becomes unavailable for the requested
+                    model, then switch automatically.
+                  </p>
+                </div>
+              )}
             </form.AppField>
           </TabsContent>
           <TabsContent

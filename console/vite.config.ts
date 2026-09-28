@@ -9,6 +9,13 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
-    proxy: { [ADMIN_API_PATH]: { target: "http://localhost:8788" } },
+    host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
+    // Preserve Host so authentication redirects and mutation origins use Vite's URL.
+    proxy: {
+      [ADMIN_API_PATH]: { target: "http://127.0.0.1:8787" },
+      [`${CONSOLE_PATH}/auth`]: { target: "http://127.0.0.1:8787" },
+    },
   },
 });

@@ -29,6 +29,11 @@ import {
 } from "../src/platform/standard/sql/postgres.ts";
 import { sessionAffinityIdentity } from "../src/gateway/routing/affinity.ts";
 import { clearConfigCacheForTests } from "../src/config/store.ts";
+import {
+  antigravityModelAvailability,
+  recordAntigravityLimit,
+} from "../src/providers/antigravity/availability.ts";
+import { nextRotationCredential } from "../src/gateway/health/health.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -311,6 +316,66 @@ for (const [name, open] of Object.entries(databases)) {
       clearConfigCacheForTests();
     });
     const env = runtime.bindings;
+
+    await t.test(
+      "Antigravity model limits and rotation survive a Redis restart",
+      async () => {
+        const account = crypto.randomUUID();
+        const until = Date.now() + 120_000;
+        await Promise.all([
+          recordAntigravityLimit(env, account, "gemini", {
+            code: "QUOTA_EXHAUSTED",
+            resets_at: until,
+          }),
+          recordAntigravityLimit(second.bindings, account, "gemini", {
+            code: "RATE_LIMIT_EXCEEDED",
+            resets_at: until - 60_000,
+          }),
+        ]);
+        assert.equal(
+          await nextRotationCredential(env, "antigravity", ["a", "b"], true),
+          "a",
+        );
+        await runtime.tasks.drain();
+        await second.tasks.drain();
+        const restarted = await createRuntime({
+          target: "node",
+          root: ROOT,
+          source: settings,
+          resources: { ...resources, redis: new MemoryRedis() },
+        });
+        try {
+          const status = await antigravityModelAvailability(
+            restarted.bindings,
+            account,
+            "gemini",
+          );
+          assert.equal(status.available, false);
+          assert.equal(status.cooling_until, until);
+          assert.equal(
+            (
+              await antigravityModelAvailability(
+                restarted.bindings,
+                account,
+                "claude",
+              )
+            ).available,
+            true,
+          );
+          assert.equal(
+            await nextRotationCredential(
+              restarted.bindings,
+              "antigravity",
+              ["a", "b"],
+              true,
+            ),
+            "b",
+          );
+        } finally {
+          await restarted.close();
+        }
+      },
+    );
 
     await t.test(
       "concurrent session allocation rotates across shared durable accounts",

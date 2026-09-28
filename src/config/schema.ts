@@ -272,11 +272,15 @@ export const aiGatewayProviderSchema = z.strictObject({
   retry: retrySchema.optional(),
   model_routes: routes(providerRouteSchema).optional(),
 });
+export const codexAccountSelectionSchema = z.enum(CodexAccountSelection);
 export const antigravityDraftProviderSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
     type: z.literal(ProviderType.Antigravity),
     id: z.literal(ProviderType.Antigravity),
+    account_selection: codexAccountSelectionSchema.default(
+      CodexAccountSelection.RoundRobin,
+    ),
     models: nameList,
     credentials: oauthCredentials,
     supports_websocket: z.literal(false).default(false),
@@ -323,7 +327,6 @@ export const antigravityProviderSchema = publishable(
   antigravityDraftProviderSchema,
   "Antigravity",
 );
-export const codexAccountSelectionSchema = z.enum(CodexAccountSelection);
 export const codexDraftProviderSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({

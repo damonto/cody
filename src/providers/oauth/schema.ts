@@ -199,6 +199,15 @@ export const consumeResetReplySchema = z.object({
 
 /** Inference availability of one published OAuth credential, for account cards. */
 export const accountHealthSchema = z.object({
+  model_cooldowns: z
+    .array(
+      z.object({
+        model: z.string(),
+        until: z.number().nullable(),
+        reason: z.enum(["quota", "unavailable"]),
+      }),
+    )
+    .optional(),
   credential_id: identifierSchema,
   account_ref: z.uuid(),
   available: z.boolean(),

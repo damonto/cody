@@ -94,17 +94,25 @@ export function sameVisiblePart(left: NativePart, right: NativePart): boolean {
       : { text: part.text ?? "", thought: part.thought === true };
   return canonical(visible(left)) === canonical(visible(right));
 }
-export async function openPart(value: string, scope: ReplayScope, key: string) {
+export async function openPart(
+  value: string,
+  scope: ReplayScope,
+  key: string,
+  accountRefs?: readonly string[],
+) {
   try {
+    if (accountRefs && !accountRefs.includes(scope.account_ref))
+      throw new Error("Target account is outside the pool");
     if (!value.startsWith(PREFIX) || value.length > 2 * 1024 * 1024)
       throw new Error("Invalid envelope");
     const replay = replaySchema.parse(
       await decryptConfig(atob(value.slice(PREFIX.length)), key),
     );
     if (
-      Object.entries(scope).some(
-        ([field, expected]) =>
-          replay.scope[field as keyof ReplayScope] !== expected,
+      Object.entries(scope).some(([field, expected]) =>
+        field === "account_ref" && accountRefs
+          ? !accountRefs.includes(replay.scope.account_ref)
+          : replay.scope[field as keyof ReplayScope] !== expected,
       )
     )
       throw new Error("Wrong scope");

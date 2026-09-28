@@ -27,6 +27,8 @@ export interface ProxyTransportContext {
   readonly requestId?: string | undefined;
   readonly clientSignal: AbortSignal;
   readonly socks?: SocksFetchOptions;
+  /** Account switches share the one node-switch allowance for each group. */
+  readonly proxySwitches?: Set<string>;
 }
 
 type ProxyPhase = "selecting" | "recording_health" | SocksStage;
@@ -183,7 +185,11 @@ export function createProxyTransport(
               error.scope === "proxy"
                 ? state.observe(lease, "failure", eventId)
                 : Promise.resolve(true);
-            if (switchReason !== undefined || signal.aborted) {
+            if (
+              switchReason !== undefined ||
+              runtime.proxySwitches?.has(reference.groupId) ||
+              signal.aborted
+            ) {
               if (awaitHealth) {
                 await failure;
               }
@@ -198,6 +204,7 @@ export function createProxyTransport(
             try {
               selected = await select(signal);
               switchReason = reason;
+              runtime.proxySwitches?.add(reference.groupId);
             } catch (selectionError) {
               if (
                 selectionError instanceof ProxyUnavailableError &&

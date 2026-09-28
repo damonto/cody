@@ -156,6 +156,10 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
     async (route) => {
       const request = route.request();
       const url = new URL(request.url());
+      if (url.pathname === "/console/api/provider-accounts/health") {
+        await route.fulfill({ json: { items: [] } });
+        return;
+      }
       if (url.pathname === "/console/api/provider-accounts") {
         await route.fulfill({
           json: {
@@ -242,6 +246,55 @@ async function authorize(dialog: Locator) {
     dialog.getByRole("button", { name: "Save account", exact: true }),
   ).toBeEnabled();
 }
+
+test("Antigravity saves account selection and displays per-model cooldowns", async ({
+  page,
+}) => {
+  const ready = account();
+  await mockApi(page, configured([ready]));
+  await mockOAuth(page, [ready]);
+  await page.route("**/console/api/provider-accounts/health?*", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            credential_id: "account-1",
+            account_ref: ready.account_ref,
+            available: true,
+            cooling_until: null,
+            cooldown_reason: null,
+            model_cooldowns: [
+              {
+                model: "gemini-real",
+                reason: "quota",
+                until: Date.now() + 60_000,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/console/providers/antigravity");
+  await expect(
+    page.getByText(/gemini-real: Quota \/ rate limit until/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("combobox", { name: "Account selection" }),
+  ).toHaveText("Round robin");
+  await dialog.getByRole("combobox", { name: "Account selection" }).click();
+  await page
+    .getByRole("option", { name: "Session affinity (fill first)" })
+    .click();
+  await dialog.getByRole("button", { name: "Save settings" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    dialog.getByRole("combobox", { name: "Account selection" }),
+  ).toHaveText("Session affinity (fill first)");
+});
 
 test("Providers lists only implemented providers and Antigravity is a fixed account page", async ({
   page,

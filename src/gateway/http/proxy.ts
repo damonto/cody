@@ -1,5 +1,10 @@
 import { CredentialAuthType } from "../../config/values.ts";
 import {
+  antigravityQuotaResetsAt,
+  antigravityQuotaResponse,
+  recordAntigravityLimit,
+} from "../../providers/antigravity/availability.ts";
+import {
   claudeUsageLimit,
   responseQuotaObservation,
 } from "../../providers/claude/limits.ts";
@@ -23,7 +28,10 @@ import type {
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
-import type { PreparedProviderRequest } from "../../providers/types.ts";
+import type {
+  AccountLimit,
+  PreparedProviderRequest,
+} from "../../providers/types.ts";
 import {
   bounded,
   elapsedMs,
@@ -92,6 +100,8 @@ export interface UpstreamRetryOptions {
   /** A terminal response is returned as it is, whatever the retry policy. */
   isTerminal?: (response: Response) => Promise<boolean> | boolean;
   attemptTimeoutMs?: number;
+  /** Shared pre-response deadline across an Antigravity account-switch chain. */
+  deadline?: number;
   observeDiscardedResponse?: (
     response: Response,
   ) => Promise<NormalizedUsage | null>;
@@ -183,9 +193,17 @@ export async function fetchWithConfiguredRetries(
     let request: Request;
     try {
       request = makeRequest();
+      const remaining =
+        retryOptions.deadline === undefined
+          ? retryOptions.attemptTimeoutMs
+          : retryOptions.deadline - Date.now();
+      if (remaining !== undefined && remaining <= 0)
+        throw new UpstreamAttemptTimeoutError(
+          retryOptions.attemptTimeoutMs ?? 0,
+        );
       response = await fetchAttempt(
         request,
-        retryOptions.attemptTimeoutMs,
+        remaining,
         retryOptions.send ?? ((request) => fetch(request)),
       );
     } catch (error) {
@@ -215,7 +233,11 @@ export async function fetchWithConfiguredRetries(
       return { response, attempts };
     }
 
-    attempt.retry_delay_ms = delayMs;
+    const boundedDelay =
+      retryOptions.deadline === undefined
+        ? delayMs
+        : Math.max(0, Math.min(delayMs, retryOptions.deadline - Date.now()));
+    attempt.retry_delay_ms = boundedDelay;
     if (retryOptions.observeDiscardedResponse) {
       try {
         attempt.usage = await retryOptions.observeDiscardedResponse(response);
@@ -226,8 +248,8 @@ export async function fetchWithConfiguredRetries(
     await discardBody(response.body);
     try {
       request.signal.throwIfAborted();
-      if (retryOptions.wait) await retryOptions.wait(delayMs);
-      else await wait(delayMs, request.signal);
+      if (retryOptions.wait) await retryOptions.wait(boundedDelay);
+      else await wait(boundedDelay, request.signal);
       request.signal.throwIfAborted();
     } catch (error) {
       return { attempts, error };
@@ -431,6 +453,7 @@ export async function handleInference(
   }
   // Native account limits may switch within the selected provider before output.
   const excludedCredentials = new Set<string>();
+  const proxySwitches = new Set<string>();
   const accountSwitches: {
     credential_id: string;
     code: string;
@@ -439,6 +462,11 @@ export async function handleInference(
   let exhausted: Response | undefined;
   let resetConsumed = false;
   let lockedProvider: string | undefined;
+  const accountDeadline =
+    retryOptions.attemptTimeoutMs === undefined
+      ? undefined
+      : Date.now() + retryOptions.attemptTimeoutMs;
+  let antigravityExhausted = false;
   for (;;) {
     const routeForSelection = {
       ...route,
@@ -498,6 +526,19 @@ export async function handleInference(
       requestLog?.set({ routing });
     }
     if (!target) {
+      if (
+        antigravityExhausted ||
+        routeForSelection.targets.some(
+          (target) => target.provider.type === ProviderType.Antigravity,
+        )
+      ) {
+        const until = antigravityQuotaResetsAt(routeForSelection, selection);
+        if (until !== undefined) {
+          if (exhausted) await discardBody(exhausted.body);
+          meter?.diagnostic("usage_limit_reached");
+          return antigravityQuotaResponse(protocol, until, requestId);
+        }
+      }
       if (!resetConsumed) {
         resetConsumed = true;
         if (
@@ -637,7 +678,7 @@ export async function handleInference(
           clientId: client.id,
           sessionId,
         },
-        { config, env, context, requestLog, requestId },
+        { config, env, context, requestLog, requestId, proxySwitches },
       );
     } catch (error) {
       const status = error instanceof ProviderRequestError ? error.status : 503;
@@ -676,6 +717,7 @@ export async function handleInference(
     // switch can follow.
     if (
       provider.type !== ProviderType.Codex &&
+      provider.type !== ProviderType.Antigravity &&
       provider.type !== ProviderType.Claude
     )
       meter?.select(meterTarget);
@@ -700,6 +742,7 @@ export async function handleInference(
         originalText,
       );
     let usageLimit: CodexUsageLimit | undefined;
+    let antigravityLimit: AccountLimit | undefined;
     let claudeLimit: ReturnType<typeof claudeUsageLimit>;
     const startedAt = performance.now();
     const result = await fetchWithConfiguredRetries(
@@ -714,7 +757,40 @@ export async function handleInference(
       provider.retry,
       {
         ...retryOptions,
-        send: retryOptions.send ?? prepared.send,
+        ...(provider.type === ProviderType.Antigravity &&
+        accountDeadline !== undefined
+          ? { deadline: accountDeadline }
+          : {}),
+        send: async (upstreamRequest) => {
+          const response = await (retryOptions.send ?? prepared.send)(
+            upstreamRequest,
+          );
+          antigravityLimit = undefined;
+          if (
+            provider.type !== ProviderType.Antigravity ||
+            !prepared.inspectResponse
+          )
+            return response;
+          const inspected = await prepared.inspectResponse(
+            response,
+            async (limit) => {
+              if (selectedCredential.auth.type === CredentialAuthType.OAuth) {
+                await scheduleHealthUpdate(
+                  context,
+                  recordAntigravityLimit(
+                    env,
+                    selectedCredential.auth.account_ref,
+                    upstreamModel,
+                    limit,
+                  ),
+                );
+              }
+            },
+            upstreamRequest.signal,
+          );
+          antigravityLimit = inspected.accountLimit;
+          return inspected.response;
+        },
         ...(meter
           ? {
               observeDiscardedResponse: (response: Response) =>
@@ -730,6 +806,9 @@ export async function handleInference(
                 return claudeLimit !== undefined;
               },
             }
+          : {}),
+        ...(provider.type === ProviderType.Antigravity
+          ? { isTerminal: () => antigravityLimit !== undefined }
           : {}),
         ...(provider.type === ProviderType.Codex
           ? {
@@ -758,6 +837,46 @@ export async function handleInference(
         },
       },
     );
+    if (
+      result.response &&
+      antigravityLimit &&
+      selectedCredential.auth.type === CredentialAuthType.OAuth
+    ) {
+      try {
+        await recordAntigravityLimit(
+          env,
+          selectedCredential.auth.account_ref,
+          upstreamModel,
+          antigravityLimit,
+        );
+      } catch {
+        await discardBody(result.response.body);
+        return apiError(
+          protocol,
+          503,
+          "The account quota store is unavailable",
+          { code: "quota_state_unavailable", requestId },
+        );
+      }
+      lockedProvider = provider.id;
+      antigravityExhausted = true;
+      excludedCredentials.add(
+        credentialKey(provider.id, selectedCredential.id),
+      );
+      accountSwitches.push({
+        credential_id: selectedCredential.id,
+        ...antigravityLimit,
+      });
+      meter?.recordAttempts(result.attempts);
+      // Keep raw upstream statuses for attempt logs, including HTTP 200 SSE errors.
+      await discardBody(result.response.body);
+      exhausted = antigravityQuotaResponse(
+        protocol,
+        antigravityLimit.resets_at,
+        requestId,
+      );
+      continue;
+    }
     if (
       result.response &&
       provider.type === ProviderType.Claude &&
@@ -828,6 +947,7 @@ export async function handleInference(
     }
     if (
       provider.type === ProviderType.Codex ||
+      provider.type === ProviderType.Antigravity ||
       provider.type === ProviderType.Claude
     )
       meter?.select(meterTarget);

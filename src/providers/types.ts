@@ -34,7 +34,23 @@ export interface ProviderRequest {
   readonly sessionId?: string | undefined;
 }
 
+export interface AccountLimit {
+  readonly code: string;
+  readonly resets_at: number;
+}
+
+export interface InspectedResponse {
+  readonly response: Response;
+  readonly accountLimit?: AccountLimit;
+}
+
 export interface PreparedUpstreamRequest {
+  /** Inspect before returning any bytes; observe later stream limits without replay. */
+  readonly inspectResponse?: (
+    response: Response,
+    onStreamLimit: (limit: AccountLimit) => Promise<void>,
+    signal: AbortSignal,
+  ) => Promise<InspectedResponse>;
   readonly oauthGeneration?: number;
   readonly url: string;
   readonly headers: Headers;

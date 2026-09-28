@@ -390,6 +390,11 @@
                   "required": ["model"],
                   "additionalProperties": false
                 }
+              },
+              "account_selection": {
+                "default": "round_robin",
+                "type": "string",
+                "enum": ["round_robin", "session_affinity"]
               }
             },
             "required": [

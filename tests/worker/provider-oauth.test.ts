@@ -46,6 +46,19 @@ import {
 } from "../../src/providers/oauth/schema.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
 import {
+  resolveModelRoute,
+  selectAvailableProviderWithDetails,
+} from "../../src/gateway/routing/routing.ts";
+import {
+  antigravityModelAvailability,
+  antigravityQuotaObjectName,
+  recordAntigravityLimit,
+} from "../../src/providers/antigravity/availability.ts";
+import { sealPart } from "../../src/providers/antigravity/replay.ts";
+import { listCoolingHealth } from "../../src/gateway/health/health.ts";
+import { handleHealthClear } from "../../src/gateway/health/handlers.ts";
+import { RequestLogContext } from "../../src/shared/log.ts";
+import {
   handleModels,
   clearModelsCacheForTests,
 } from "../../src/gateway/catalog/models.ts";
@@ -1444,4 +1457,362 @@ test("batch quotas retain successful account results alongside missing-account e
     .parse(await response.json());
   expect(payload.items[0].account?.quota.stale).toBe(false);
   expect(payload.items[1].error).toBeTruthy();
+});
+
+async function balancingPool() {
+  const accounts = [];
+  for (const name of ["pool-a", "pool-b"]) {
+    const account = await start({
+      provider_id: "antigravity",
+      credential_id: `${name}-${crypto.randomUUID()}`,
+    });
+    await complete(account.stub, account.session, name);
+    await initialize(account.stub);
+    accounts.push(account);
+  }
+  const config = settings(accounts[0].connection, accounts[0].ref);
+  const provider = config.providers[0];
+  if (provider.type !== "antigravity") throw new Error("Expected Antigravity");
+  provider.credentials.push({
+    id: accounts[1].connection.credential_id,
+    priority: 100,
+    disabled: false,
+    auth: { type: "oauth", account_ref: accounts[1].ref },
+  });
+  provider.models.push("another-model");
+  return { accounts, config, provider };
+}
+function quotaError(delay = "60s") {
+  return {
+    error: {
+      code: 429,
+      status: "RESOURCE_EXHAUSTED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          reason: "QUOTA_EXHAUSTED",
+        },
+        {
+          "@type": "type.googleapis.com/google.rpc.RetryInfo",
+          retryDelay: delay,
+        },
+      ],
+    },
+  };
+}
+function inferenceRecords() {
+  return records.filter((record) =>
+    /:(?:streamG|g)enerateContent/.test(record.url),
+  );
+}
+
+test("Antigravity account switches retain the logical request's proxy switch allowance", async () => {
+  const { config, provider } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  const selected = { ...group(), strategy: "priority" as const };
+  config.proxy_groups = [selected];
+  provider.proxy_group = selected.id;
+  const sent: string[] = [];
+  vi.mocked(socksFetch).mockImplementation(async (request, proxy) => {
+    sent.push(`${request.headers.get("authorization")}:${proxy.url}`);
+    if (proxy.url === "socks5://a.test:1080")
+      throw new SocksProxyError("SOCKS5 connection failed");
+    return Response.json(quotaError(), { status: 429 });
+  });
+  const response = await infer(config);
+  expect(response.status).toBe(502);
+  await response.text();
+  expect(sent).toEqual([
+    "Bearer access-pool-a:socks5://a.test:1080",
+    "Bearer access-pool-a:socks5://b.test:1080",
+    "Bearer access-pool-b:socks5://a.test:1080",
+  ]);
+});
+
+test("Antigravity round robin rotates new sessions once, including concurrent binding and eviction", async () => {
+  const { config, provider } = await balancingPool();
+  const route = resolveModelRoute(config, config.api_keys[0], "alias");
+  const session = { clientId: "client", sessionId: crypto.randomUUID() };
+  const first = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      selectAvailableProviderWithDetails(env, route, { session }),
+    ),
+  );
+  expect(new Set(first.map((result) => result.target?.credential.id))).toEqual(
+    new Set([provider.credentials[0].id]),
+  );
+  await evictDurableObject(env.HEALTH.getByName("rotation:antigravity"));
+  const second = await selectAvailableProviderWithDetails(env, route, {
+    session: { ...session, sessionId: crypto.randomUUID() },
+  });
+  expect(second.target?.credential.id).toBe(provider.credentials[1].id);
+  expect(
+    (await selectAvailableProviderWithDetails(env, route, { session })).target
+      ?.credential.id,
+  ).toBe(provider.credentials[0].id);
+  expect(
+    (await selectAvailableProviderWithDetails(env, route)).target?.credential
+      .id,
+  ).toBe(provider.credentials[0].id);
+});
+
+test("Antigravity fill first retains its replacement after recovery and isolates real model cooldowns", async () => {
+  const { config, provider, accounts } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  provider.credentials[1].priority = 50;
+  const route = resolveModelRoute(config, config.api_keys[0], "alias");
+  const session = { clientId: "client", sessionId: crypto.randomUUID() };
+  const select = () =>
+    selectAvailableProviderWithDetails(env, route, { session });
+  expect((await select()).target?.credential.id).toBe(
+    provider.credentials[0].id,
+  );
+  const limit = { code: "QUOTA_EXHAUSTED", resets_at: Date.now() + 60_000 };
+  await recordAntigravityLimit(env, accounts[0].ref, "native-model", limit);
+  const quota = env.HEALTH.getByName(
+    antigravityQuotaObjectName(accounts[0].ref, "native-model"),
+  );
+  await evictDurableObject(quota);
+  expect(await listCoolingHealth(env, [provider])).toEqual([
+    expect.objectContaining({
+      credential_id: provider.credentials[0].id,
+      model: "native-model",
+      reason: "quota",
+    }),
+  ]);
+  expect(await listCoolingHealth(env, [provider], "catalog")).toEqual([]);
+  expect((await select()).target?.credential.id).toBe(
+    provider.credentials[1].id,
+  );
+  const other = resolveModelRoute(config, config.api_keys[0], "another-model");
+  expect(
+    (await selectAvailableProviderWithDetails(env, other)).target?.credential
+      .id,
+  ).toBe(provider.credentials[0].id);
+  await handleHealthClear(
+    env,
+    config,
+    config.api_keys[0],
+    new URL("https://gateway.test/health/antigravity"),
+    "antigravity",
+    provider.credentials[0].id,
+    new RequestLogContext(
+      "clear-quota",
+      new Request("https://gateway.test/health/antigravity"),
+    ),
+  );
+  expect((await select()).target?.credential.id).toBe(
+    provider.credentials[1].id,
+  );
+  expect(
+    (await selectAvailableProviderWithDetails(env, route)).target?.credential
+      .id,
+  ).toBe(provider.credentials[0].id);
+});
+
+for (const stream of [false, true]) {
+  test(`Antigravity ${stream ? "first SSE event" : "HTTP 429"} limit changes auth before output and stops configured retries`, async () => {
+    const { config, provider, accounts } = await balancingPool();
+    provider.account_selection = "session_affinity";
+    provider.retry = { status_codes: [429], delays_ms: [1, 1] };
+    override = (request) => {
+      if (
+        !/:(?:streamG|g)enerateContent/.test(request.url) ||
+        request.headers.get("authorization") !== "Bearer access-pool-a"
+      )
+        return;
+      return stream
+        ? new Response(
+            `: keepalive\n\ndata: ${JSON.stringify(quotaError())}\n\n`,
+            { headers: { "content-type": "text/event-stream" } },
+          )
+        : Response.json(quotaError(), { status: 429 });
+    };
+    const response = await infer(config, "messages", {
+      model: "alias",
+      stream,
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("hello");
+    expect(inferenceRecords().map((record) => record.authorization)).toEqual([
+      "Bearer access-pool-a",
+      "Bearer access-pool-b",
+    ]);
+    expect(
+      (await antigravityModelAvailability(env, accounts[0].ref, "native-model"))
+        .available,
+    ).toBe(false);
+    expect(
+      (
+        await antigravityModelAvailability(
+          env,
+          accounts[0].ref,
+          "another-model",
+        )
+      ).available,
+    ).toBe(true);
+  });
+}
+
+test("Antigravity exhausted chain stays on its provider and returns a dialect-correct retry time", async () => {
+  const { config, provider } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  config.providers.push(
+    parseConfig({
+      providers: [
+        {
+          type: "ai_gateway",
+          id: "fallback",
+          base_url: "https://fallback.test",
+          models: ["native-model"],
+          credentials: [
+            {
+              id: "key",
+              auth: { type: "api_key", api_key: "fallback" },
+              priority: 1,
+              disabled: false,
+            },
+          ],
+          priority: 1,
+          disabled: false,
+        },
+      ],
+      api_keys: [{ id: "x", api_key: "x", providers: ["fallback"] }],
+    }).providers[0],
+  );
+  config.api_keys[0].providers.push("fallback");
+  override = (request) =>
+    /:(?:streamG|g)enerateContent/.test(request.url)
+      ? Response.json(
+          quotaError(
+            request.headers.get("authorization") === "Bearer access-pool-a"
+              ? "30s"
+              : "120s",
+          ),
+          { status: 429 },
+        )
+      : undefined;
+  const response = await infer(config, "messages");
+  expect(response.status).toBe(429);
+  expect(Number(response.headers.get("retry-after"))).toBeLessThanOrEqual(30);
+  expect(await response.json()).toMatchObject({
+    type: "error",
+    error: { type: "rate_limit_error" },
+  });
+  expect(inferenceRecords()).toHaveLength(2);
+  expect(records.some((record) => record.url.includes("fallback.test"))).toBe(
+    false,
+  );
+  config.providers.pop();
+  config.api_keys[0].providers.pop();
+  const again = await infer(config);
+  expect(again.status).toBe(429);
+  expect(inferenceRecords()).toHaveLength(2);
+});
+
+test("Antigravity late stream limits cool the model without replaying generated content", async () => {
+  const { config, provider, accounts } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  override = (request) => {
+    if (!request.url.includes(":streamGenerateContent")) return;
+    const frames = [
+      {
+        response: {
+          candidates: [{ content: { parts: [{ text: "started" }] } }],
+        },
+      },
+      quotaError(),
+    ];
+    return new Response(
+      frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  const response = await infer(config, "messages", {
+    model: "alias",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }],
+  });
+  const text = await response.text();
+  expect(text).toContain("rate_limit_error");
+  expect(inferenceRecords()).toHaveLength(1);
+  expect(
+    (await antigravityModelAvailability(env, accounts[0].ref, "native-model"))
+      .available,
+  ).toBe(false);
+});
+
+test("Antigravity account switching replays signed tool history without changing its native parts", async () => {
+  const { config, provider, accounts } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  const part = {
+    functionCall: { name: "read", args: { path: "a.txt" }, id: "native-call" },
+    thoughtSignature: "original-native-signature",
+  };
+  const signature = await sealPart(
+    part,
+    "previous",
+    {
+      client_id: "client",
+      provider_id: "antigravity",
+      account_ref: accounts[0].ref,
+      model: "native-model",
+    },
+    env.CONFIG_ENCRYPTION_KEY,
+    "client-call",
+  );
+  override = (request) =>
+    /:(?:streamG|g)enerateContent/.test(request.url) &&
+    request.headers.get("authorization") === "Bearer access-pool-a"
+      ? Response.json(quotaError(), { status: 429 })
+      : undefined;
+  const response = await infer(config, "messages", {
+    model: "alias",
+    tools: [
+      {
+        name: "read",
+        input_schema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+        },
+      },
+    ],
+    messages: [
+      { role: "user", content: "read a.txt" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "client-call",
+            name: "read",
+            input: { path: "a.txt" },
+          },
+          { type: "thinking", thinking: "", signature },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "client-call",
+            content: "contents",
+          },
+        ],
+      },
+    ],
+  });
+  expect(response.status).toBe(200);
+  await response.text();
+  const sent = inferenceRecords();
+  expect(sent).toHaveLength(2);
+  for (const record of sent) {
+    const payload = JSON.parse(record.body);
+    expect(payload.request.contents[1].parts[0]).toEqual(part);
+    expect(payload.request.contents[2].parts[0].functionResponse.id).toBe(
+      "native-call",
+    );
+  }
 });

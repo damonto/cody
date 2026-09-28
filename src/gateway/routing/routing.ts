@@ -1,8 +1,9 @@
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
+import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
 
-import { HealthScope } from "../health/values.ts";
+import { HealthScope, ProviderAvailabilityReason } from "../health/values.ts";
 import { type ProviderTransport } from "../../providers/transport-values.ts";
 
 import {
@@ -91,6 +92,8 @@ export interface ProviderSelection extends TargetSelection {
 }
 
 export interface ProviderSelectionOptions {
+  /** Real models resolved per provider; catalogs do not consult inference quotas. */
+  upstreamModels?: ReadonlyMap<string, string>;
   scope?: HealthScope;
   contextManagement?: boolean;
   initialProviderIds?: readonly string[];
@@ -282,14 +285,22 @@ async function evaluateAvailability<T extends RoutedProvider>(
   env: Bindings,
   routedProviders: T[],
   scope: HealthScope,
+  upstreamModels?: ReadonlyMap<string, string>,
 ): Promise<RouteAvailability<T>> {
   const checks = await mapWithConcurrency(
     routedProviders,
     PROVIDER_FAN_OUT_CONCURRENCY,
-    async ({ provider }): Promise<ProviderSelectionCheck> => ({
-      provider_id: provider.id,
-      ...(await getProviderAvailability(env, provider.id, scope)),
-    }),
+    async ({ provider }): Promise<ProviderSelectionCheck> => {
+      const health = await getProviderAvailability(env, provider.id, scope);
+      return {
+        provider_id: provider.id,
+        ...health,
+        ...(provider.type === ProviderType.Antigravity &&
+        health.reason === ProviderAvailabilityReason.HealthReadFailed
+          ? { available: false }
+          : {}),
+      };
+    },
   );
   const availableProviderIds = new Set(
     checks.filter((check) => check.available).map((check) => check.provider_id),
@@ -305,11 +316,29 @@ async function evaluateAvailability<T extends RoutedProvider>(
     async ({
       provider,
       credential: key,
-    }): Promise<CredentialSelectionCheck> => ({
-      provider_id: provider.id,
-      credential_id: key.id,
-      ...(await getCredentialAvailability(env, provider.id, key.id, scope)),
-    }),
+    }): Promise<CredentialSelectionCheck> => {
+      let health = await getCredentialAvailability(
+        env,
+        provider.id,
+        key.id,
+        scope,
+      );
+      const model = upstreamModels?.get(provider.id);
+      if (
+        provider.type === ProviderType.Antigravity &&
+        scope === HealthScope.Inference
+      ) {
+        if (health.reason === ProviderAvailabilityReason.HealthReadFailed)
+          health = { ...health, available: false };
+        if (health.available && model && key.auth.type === "oauth")
+          health = await antigravityModelAvailability(
+            env,
+            key.auth.account_ref,
+            model,
+          );
+      }
+      return { provider_id: provider.id, credential_id: key.id, ...health };
+    },
   );
   const availableCredentialIds = new Set(
     credentialChecks
@@ -400,7 +429,9 @@ function affinityCandidates(
     provider_id: provider.id,
     priority: provider.priority,
     supports_context_management: provider.supports_context_management,
-    retain_available_account: provider.type === ProviderType.Claude,
+    retain_available_account:
+      provider.type === ProviderType.Antigravity ||
+      provider.type === ProviderType.Claude,
     credentials: credentials.map((credential) => ({
       credential_id: credential.id,
       priority: credential.priority,
@@ -454,7 +485,15 @@ export async function selectAvailableProviderWithDetails(
   const selection = await selectAvailableTargetWithDetails(
     env,
     quota.route.targets,
-    options,
+    {
+      ...options,
+      upstreamModels: new Map(
+        route.targets.map((target) => [
+          target.provider.id,
+          target.upstreamModel,
+        ]),
+      ),
+    },
   );
   const target = selection.target;
   const routed =
@@ -486,6 +525,7 @@ export async function selectAvailableTargetWithDetails(
       ? providers.filter(({ provider }) => provider.supports_context_management)
       : providers,
     options.scope ?? HealthScope.Inference,
+    options.upstreamModels,
   );
   const availability = {
     ...evaluated,

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   accountsOptions,
+  accountHealthOptions,
   quotaQueryKey,
   refreshAccountQuota,
 } from "@/features/oauth-accounts/api";
@@ -40,6 +41,7 @@ export function AntigravityAccounts({
   onRemove: (id: string) => void;
 }) {
   const cache = useQueryClient();
+  const health = useQuery(accountHealthOptions("antigravity"));
   const refs = provider.credentials.map(
     (credential) => credential.auth.account_ref,
   );
@@ -124,6 +126,12 @@ export function AntigravityAccounts({
         {query.error && (
           <ErrorNotice error={query.error} retry={() => void query.refetch()} />
         )}
+        {health.error && (
+          <ErrorNotice
+            error={health.error}
+            retry={() => void health.refetch()}
+          />
+        )}
         {!provider.credentials.length && (
           <Empty title="No Google accounts">
             Authorize a Google account with Antigravity access to start
@@ -132,6 +140,11 @@ export function AntigravityAccounts({
         )}
         {provider.credentials.map((credential, index) => {
           const account = accounts.get(credential.auth.account_ref);
+          const cooldown = health.data?.find(
+            (entry) =>
+              entry.credential_id === credential.id &&
+              entry.account_ref === credential.auth.account_ref,
+          );
           const label = account?.email ?? `Google account ${index + 1}`;
           return (
             <div
@@ -148,7 +161,23 @@ export function AntigravityAccounts({
                       <Badge variant="outline">Disabled</Badge>
                     )}
                     <span>Priority {credential.priority}</span>
+                    {cooldown && !cooldown.available && (
+                      <Badge variant="outline">Account cooling down</Badge>
+                    )}
                   </div>
+                  {cooldown?.model_cooldowns?.map((block) => (
+                    <p
+                      key={block.model}
+                      className="mt-1 text-xs text-muted-foreground"
+                    >
+                      {block.model}:{" "}
+                      {block.reason === "quota"
+                        ? "Quota / rate limit"
+                        : "Quota status unavailable"}
+                      {block.until !== null &&
+                        ` until ${new Date(block.until).toLocaleString()}`}
+                    </p>
+                  ))}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button

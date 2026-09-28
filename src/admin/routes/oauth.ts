@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
+import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
 import { configurationSchema, identifierSchema } from "../../config/schema.ts";
 import {
   clearCredentialHealth,
@@ -269,6 +270,32 @@ export const oauthRoutes = new Hono<AdminContext>()
                 )
               : undefined;
           return accountHealthSchema.parse({
+            ...(provider?.type === ProviderType.Antigravity
+              ? {
+                  model_cooldowns: (
+                    await mapWithConcurrency(
+                      provider.models,
+                      PROVIDER_FAN_OUT_CONCURRENCY,
+                      async (model) => {
+                        const status = await antigravityModelAvailability(
+                          c.env,
+                          credential.auth.account_ref,
+                          model,
+                        );
+                        return {
+                          model,
+                          available: status.available,
+                          until: status.cooling_until ?? null,
+                          reason:
+                            status.cooldown_reason === "quota"
+                              ? "quota"
+                              : "unavailable",
+                        };
+                      },
+                    )
+                  ).filter((status) => !status.available),
+                }
+              : {}),
             ...(quota ? { quota_blocks: quotaBlocks(quota.quota) } : {}),
             credential_id: credential.id,
             account_ref: credential.auth.account_ref,

@@ -9,7 +9,8 @@
     "required": ["CONFIG_ENCRYPTION_KEY"],
   },
   "dev": {
-    "port": 8788,
+    "ip": "127.0.0.1",
+    "port": 8787,
   },
   "assets": {
     "directory": "./console/dist",

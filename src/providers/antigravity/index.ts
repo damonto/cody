@@ -16,6 +16,7 @@ import {
 } from "./api.ts";
 import { translateRequest } from "./request.ts";
 import { convertResponse, translatedUsage } from "./response.ts";
+import { inspectAntigravityResponse } from "./inspect.ts";
 
 export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
   type: ProviderType.Antigravity,
@@ -93,6 +94,7 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
       scope,
       context.env.CONFIG_ENCRYPTION_KEY,
       input.sessionId,
+      provider.credentials.map((account) => account.auth.account_ref),
     );
     const protocol = requestProtocol(input.request, endpoint);
     const stream = payload.stream === true;
@@ -118,6 +120,9 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
     );
     return {
       url: `${ANTIGRAVITY_BASE}/v1internal:${method}`,
+      ...(["responses", "messages"].includes(endpoint)
+        ? { inspectResponse: inspectAntigravityResponse }
+        : {}),
       headers,
       method: "POST",
       body,

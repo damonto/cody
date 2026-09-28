@@ -211,6 +211,7 @@ export async function translateRequest(
   scope: ReplayScope,
   key: string,
   sessionId?: string,
+  replayAccountRefs?: readonly string[],
 ): Promise<TranslatedRequest> {
   if (payload.previous_response_id)
     throw new ProviderRequestError(
@@ -241,6 +242,7 @@ export async function translateRequest(
       string(value, "thinking signature"),
       scope,
       key,
+      replayAccountRefs,
     );
     if (decoded.attachment === "previous") {
       const content = current;
