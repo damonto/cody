@@ -25,7 +25,7 @@ import { AccountQuota } from "./quota";
 import {
   useAuthorization,
   type AuthorizationOptions,
-} from "./use-authorization";
+} from "@/features/oauth-accounts/use-authorization";
 
 export function Authorization({
   rowId,
@@ -85,7 +85,7 @@ export function Authorization({
             submit.reset();
             retry.reset();
             cancel.reset();
-            start.mutate();
+            start.mutate("pkce");
           }}
         >
           {start.isPending

@@ -99,7 +99,7 @@ function maskKeys(config: Draft["config"]): Draft["config"] {
     })),
     api_keys: config.api_keys.map((client) => ({ ...client, api_key: secret })),
     providers: config.providers.map((provider) =>
-      provider.type === "antigravity"
+      provider.type !== "ai_gateway"
         ? provider
         : {
             ...provider,

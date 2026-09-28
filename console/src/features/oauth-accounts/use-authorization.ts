@@ -5,6 +5,7 @@ import {
   connectionSchema,
   sessionViewSchema,
   type AccountView,
+  type OAuthProviderType,
   type ProviderConnection,
   type SessionView,
 } from "../../../../src/providers/oauth/schema";
@@ -20,7 +21,7 @@ import {
 
 export interface AuthorizationOptions {
   accountRef: string;
-  connection: ProviderConnection & { provider_id: "antigravity" };
+  connection: ProviderConnection & { provider_id: OAuthProviderType };
   version: number;
   draftVersion: number;
   onAuthorized: (ref: string) => void;
@@ -59,7 +60,7 @@ export function useAuthorization({
     setId(value.id);
   };
   const start = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (flow: "pkce" | "device" = "pkce") => {
       if (version !== draftVersion)
         throw new Error(
           "The draft changed. Your form is retained; reopen it from the latest draft before starting authorization.",
@@ -72,6 +73,7 @@ export function useAuthorization({
               ...parsed,
               provider_id: connection.provider_id,
               version,
+              flow,
               ...(accountRef ? { account_ref: accountRef } : {}),
             },
           }),

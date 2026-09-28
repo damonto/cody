@@ -16,7 +16,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { accountsOptions, quotaQueryKey, refreshAccountQuota } from "./api";
+import {
+  accountsOptions,
+  quotaQueryKey,
+  refreshAccountQuota,
+} from "@/features/oauth-accounts/api";
 import { AccountQuota } from "./quota";
 
 export function AntigravityAccounts({

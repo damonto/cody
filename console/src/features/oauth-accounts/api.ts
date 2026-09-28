@@ -1,13 +1,17 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { read, rpc } from "@/lib/api";
 import {
+  accountHealthSchema,
   accountViewSchema,
+  consumeResetReplySchema,
   sessionViewSchema,
   type AccountView,
 } from "../../../../src/providers/oauth/schema";
 
+const QUOTAS = "provider-quotas";
+/** Quota views scoped to a provider and its current account references. */
 export const quotaQueryKey = (providerIds: readonly string[]) =>
-  ["antigravity-quotas", ...providerIds] as const;
+  [QUOTAS, ...providerIds] as const;
 
 export const accountsOptions = (providerId: string) =>
   queryOptions({
@@ -103,7 +107,7 @@ export async function cacheAccounts(
 ): Promise<void> {
   const providers = new Set(updates.map((account) => account.provider_id));
   const quotaQueries = cache.getQueryCache().findAll({
-    queryKey: ["antigravity-quotas"],
+    queryKey: [QUOTAS],
     predicate: (query) =>
       query.queryKey
         .slice(1)
@@ -178,3 +182,46 @@ export const sessionOptions = (id: string) =>
     enabled: !!id,
     retry: false,
   });
+
+/** Published inference cooldowns of each account, keyed by credential ID. */
+export const accountHealthOptions = (providerId: "antigravity" | "codex") =>
+  queryOptions({
+    queryKey: ["provider-account-health", providerId],
+    queryFn: async ({ signal }) => {
+      const result = await read(
+        rpc["provider-accounts"].health.$get(
+          { query: { provider_id: providerId } },
+          { init: { signal } },
+        ),
+      );
+      return result.items.map((item) => accountHealthSchema.parse(item));
+    },
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  });
+export async function refreshResetCredits(ref: string) {
+  return accountViewSchema.parse(
+    await read(
+      rpc["provider-accounts"][":ref"]["reset-credits"].$get({
+        param: { ref },
+      }),
+    ),
+  );
+}
+export async function consumeResetCredit(
+  ref: string,
+  redeemRequestId: string,
+  creditId?: string,
+) {
+  return consumeResetReplySchema.parse(
+    await read(
+      rpc["provider-accounts"][":ref"]["reset-credits"].consume.$post({
+        param: { ref },
+        json: {
+          redeem_request_id: redeemRequestId,
+          ...(creditId ? { credit_id: creditId } : {}),
+        },
+      }),
+    ),
+  );
+}

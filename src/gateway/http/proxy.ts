@@ -20,6 +20,7 @@ import { retryResponseUsage } from "../../telemetry/retry.ts";
 import {
   healthFailureScope,
   recordCredentialFailure,
+  recordCredentialQuotaCooldown,
   recordProviderFailure,
   recordProviderSuccess,
   scheduleHealthUpdate,
@@ -29,9 +30,20 @@ import { requestProtocol, type InferencePath } from "../protocol.ts";
 import { SocksProxyError } from "../proxies/errors.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
+  credentialKey,
   resolveModelRoute,
   selectAvailableProviderWithDetails,
 } from "../routing/routing.ts";
+import {
+  codexUsageLimit,
+  codexUsageLimitResponse,
+  type CodexUsageLimit,
+} from "../../providers/codex/limits.ts";
+import {
+  blockedCodexQuotaResetsAt,
+  codexQuotaResetsAt,
+  restoreCodexAccount,
+} from "../../providers/codex/exhaustion.ts";
 import {
   codexTurnMetadata,
   contextManagementRequested,
@@ -62,6 +74,8 @@ export interface UpstreamRetryOptions {
   send?: UpstreamFetch;
   wait?: (delayMs: number) => Promise<void>;
   onResponse?: (response: Response, attempt: number) => Promise<void> | void;
+  /** A terminal response is returned as it is, whatever the retry policy. */
+  isTerminal?: (response: Response) => Promise<boolean> | boolean;
   attemptTimeoutMs?: number;
   observeDiscardedResponse?: (
     response: Response,
@@ -175,8 +189,10 @@ export async function fetchWithConfiguredRetries(
     };
     attempts.push(attempt);
     await retryOptions.onResponse?.(response, attemptIndex + 1);
+    const terminal = (await retryOptions.isTerminal?.(response)) === true;
     const delayMs = retry?.delays_ms[attemptIndex];
     if (
+      terminal ||
       retry === undefined ||
       delayMs === undefined ||
       !retry.status_codes.includes(response.status)
@@ -398,332 +414,430 @@ export async function handleInference(
       { code: "model_not_found", requestId },
     );
   }
-  const selection = await selectAvailableProviderWithDetails(env, route, {
-    contextManagement,
-    ...(sessionId
-      ? {
-          session: {
-            clientId: client.id,
-            sessionId,
-          },
-        }
-      : {}),
-  });
-  const target = selection.target;
-  const routing = {
-    candidate_providers: candidateProviders,
-    checked_available_providers: selection.checks
-      .filter((check) => check.available)
-      .map((check) => check.provider_id),
-    provider_checks: selection.checks,
-    credential_checks: selection.credentialChecks,
-    ...(selection.affinity ? { affinity: selection.affinity } : {}),
-    ...(target
-      ? {
-          selected_provider: target.provider.id,
-          selected_credential_id: target.credential.id,
-        }
-      : {}),
-  };
-  if (
-    selection.checks.some((check) => check.reason === "health_read_failed") ||
-    selection.credentialChecks.some(
-      (check) => check.reason === "health_read_failed",
-    ) ||
-    selection.affinity?.status === "failed"
-  ) {
-    requestLog?.warn({ routing });
-  } else {
-    requestLog?.set({ routing });
-  }
-  if (!target) {
-    if (selection.affinity?.status === "forbidden") {
-      return apiError(
-        protocol,
-        403,
-        "This context session belongs to another client",
-        { code: "context_session_forbidden", requestId },
-      );
-    }
-    if (selection.affinity?.status === "failed") {
-      return apiError(
-        protocol,
-        503,
-        "The session binding store is unavailable",
-        {
-          type: "server_error",
-          code: "session_affinity_unavailable",
-          requestId,
-        },
-      );
-    }
-    if (selection.affinity?.status === "blocked") {
-      return apiError(
-        protocol,
-        503,
-        "The context session binding is unavailable",
-        {
-          type: "server_error",
-          code: "context_session_unavailable",
-          requestId,
-        },
-      );
-    }
-    requestLog?.warn({ outcome: "provider_cooling_down" });
-    return apiError(
-      protocol,
-      503,
-      `No healthy provider is currently available for model ${payload.model}`,
-      { type: "server_error", code: "provider_cooling_down", requestId },
-    );
-  }
-  const { provider, credential: selectedCredential } = target;
-  if (
-    (contextManagement || selection.affinity?.context_management) &&
-    !contextManagementSessionMatches(payload, sessionId)
-  ) {
-    return apiError(
-      protocol,
-      400,
-      "Context management session ids must match",
-      { code: "invalid_context_management_request", requestId },
-    );
-  }
-  const upstreamModel = target.upstreamModel;
-  meter?.requestedModel(payload.model);
-  requestLog?.set({
-    model: {
-      requested: bounded(payload.model, 160),
-      upstream: bounded(upstreamModel, 160),
-      route_applied: target.routeApplied,
-    },
-  });
-
-  let prepared: PreparedProviderRequest;
-  try {
-    if (
-      provider.type === "antigravity" &&
-      rawBody.byteLength > 16 * 1024 * 1024
-    )
-      throw new ProviderRequestError(
-        "Antigravity requests must not exceed 16 MiB",
-        413,
-        "request_too_large",
-      );
-    prepared = await prepareProviderRequest(
-      provider,
-      selectedCredential,
-      {
-        request,
-        endpoint: upstreamPath,
-        transport: "http",
-        protocol,
-        payload,
-        model: upstreamModel,
-        clientId: client.id,
-        sessionId,
-      },
-      { config, env, context, requestLog, requestId },
-    );
-  } catch (error) {
-    const status = error instanceof ProviderRequestError ? error.status : 503;
-    const code =
-      error instanceof ProviderRequestError
-        ? error.code
-        : "oauth_account_unavailable";
-    requestLog?.warn({
-      outcome: "provider_preparation_failed",
-      error: { code },
-    });
-    meter?.diagnostic(code);
-    return apiError(
-      protocol,
-      status,
-      error instanceof ProviderRequestError || error instanceof OAuthError
-        ? error.message
-        : "The selected provider account is unavailable",
-      { code, requestId },
-    );
-  }
-  const { headers } = prepared;
-  requestLog?.set({
-    upstream: {
-      provider_id: provider.id,
-      credential_id: selectedCredential.id,
-      model: upstreamModel,
-    },
-  });
-  meter?.select({
-    providerId: provider.id,
-    credentialId: selectedCredential.id,
-    model: upstreamModel,
-  });
-  headers.delete("content-length");
-  const modelRewritten = payload.model !== upstreamModel;
-  if (modelRewritten) {
-    headers.delete("content-md5");
-    headers.delete("digest");
-    headers.delete("content-digest");
-    headers.delete("content-encoding");
-  }
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-  const body =
-    prepared.body ??
-    upstreamBody(rawBody, payload, upstreamModel, modelRewritten, originalText);
-  const startedAt = performance.now();
-  const result = await fetchWithConfiguredRetries(
-    () =>
-      new Request(prepared.url, {
-        method: prepared.method ?? request.method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: request.signal,
-      }),
-    provider.retry,
-    {
-      ...retryOptions,
-      send: retryOptions.send ?? prepared.send,
-      ...(meter
+  // Codex alone may resend a request on another account, and only when the
+  // upstream reports an exhausted quota before any byte reaches the client.
+  const excludedCredentials = new Set<string>();
+  const accountSwitches: {
+    credential_id: string;
+    code: string;
+    resets_at: number;
+  }[] = [];
+  let exhausted: Response | undefined;
+  let resetConsumed = false;
+  for (;;) {
+    const selection = await selectAvailableProviderWithDetails(env, route, {
+      contextManagement,
+      excludedCredentials,
+      ...(sessionId
         ? {
-            observeDiscardedResponse: (response: Response) =>
-              prepared.retryUsage
-                ? prepared.retryUsage(response)
-                : retryResponseUsage(response, protocol),
+            session: {
+              clientId: client.id,
+              sessionId,
+            },
           }
         : {}),
-      onResponse: async (response, attempt) => {
-        await retryOptions.onResponse?.(response, attempt);
-        if (healthFailureScope(response.status, protocol) === "credential") {
-          await scheduleHealthUpdate(
-            context,
-            recordCredentialFailure(
-              env,
-              provider.id,
-              selectedCredential.id,
-              requestId,
-            ),
-          );
+    });
+    const target = selection.target;
+    const routing = {
+      candidate_providers: candidateProviders,
+      checked_available_providers: selection.checks
+        .filter((check) => check.available)
+        .map((check) => check.provider_id),
+      provider_checks: selection.checks,
+      credential_checks: selection.credentialChecks,
+      ...(selection.affinity ? { affinity: selection.affinity } : {}),
+      ...(target
+        ? {
+            selected_provider: target.provider.id,
+            selected_credential_id: target.credential.id,
+          }
+        : {}),
+      ...(accountSwitches.length > 0
+        ? { account_switches: accountSwitches }
+        : {}),
+    };
+    if (
+      selection.checks.some((check) => check.reason === "health_read_failed") ||
+      selection.credentialChecks.some(
+        (check) => check.reason === "health_read_failed",
+      ) ||
+      selection.affinity?.status === "failed"
+    ) {
+      requestLog?.warn({ routing });
+    } else {
+      requestLog?.set({ routing });
+    }
+    if (!target) {
+      if (!resetConsumed) {
+        resetConsumed = true;
+        if (
+          await restoreCodexAccount(
+            env,
+            config,
+            route.targets,
+            selection,
+            excludedCredentials,
+            exhausted !== undefined,
+            requestId,
+          )
+        )
+          continue;
+      }
+      if (exhausted) {
+        requestLog?.warn({ outcome: "codex_accounts_exhausted" });
+        meter?.diagnostic("usage_limit_reached");
+        return exhausted;
+      }
+      if (selection.affinity?.status === "forbidden") {
+        return apiError(
+          protocol,
+          403,
+          "This context session belongs to another client",
+          { code: "context_session_forbidden", requestId },
+        );
+      }
+      if (selection.affinity?.status === "failed") {
+        return apiError(
+          protocol,
+          503,
+          "The session binding store is unavailable",
+          {
+            type: "server_error",
+            code: "session_affinity_unavailable",
+            requestId,
+          },
+        );
+      }
+      if (selection.affinity?.status === "blocked") {
+        const resetsAt = blockedCodexQuotaResetsAt(selection);
+        if (resetsAt !== undefined) {
+          requestLog?.warn({ outcome: "usage_limit_reached" });
+          return codexUsageLimitResponse(resetsAt, requestId);
         }
+        return apiError(
+          protocol,
+          503,
+          "The context session binding is unavailable",
+          {
+            type: "server_error",
+            code: "context_session_unavailable",
+            requestId,
+          },
+        );
+      }
+      const quotaResetsAt = codexQuotaResetsAt(
+        route.targets,
+        selection,
+        excludedCredentials,
+      );
+      if (quotaResetsAt !== undefined) {
+        requestLog?.warn({ outcome: "usage_limit_reached" });
+        meter?.diagnostic("usage_limit_reached");
+        return codexUsageLimitResponse(quotaResetsAt, requestId);
+      }
+      requestLog?.warn({ outcome: "provider_cooling_down" });
+      return apiError(
+        protocol,
+        503,
+        `No healthy provider is currently available for model ${payload.model}`,
+        { type: "server_error", code: "provider_cooling_down", requestId },
+      );
+    }
+    if (exhausted) {
+      await discardBody(exhausted.body);
+      exhausted = undefined;
+    }
+    const { provider, credential: selectedCredential } = target;
+    if (
+      (contextManagement || selection.affinity?.context_management) &&
+      !contextManagementSessionMatches(payload, sessionId)
+    ) {
+      return apiError(
+        protocol,
+        400,
+        "Context management session ids must match",
+        { code: "invalid_context_management_request", requestId },
+      );
+    }
+    const upstreamModel = target.upstreamModel;
+    meter?.requestedModel(payload.model);
+    requestLog?.set({
+      model: {
+        requested: bounded(payload.model, 160),
+        upstream: bounded(upstreamModel, 160),
+        route_applied: target.routeApplied,
       },
-    },
-  );
-  meter?.recordAttempts(result.attempts);
-  const upstreamDurationMs = elapsedMs(startedAt);
-  if (!result.response) {
-    const cancelled = request.signal.aborted;
-    const proxyFailure = retryOptions.send
-      ? undefined
-      : prepared.proxyFailure(result.error);
-    const status = cancelled ? 499 : (proxyFailure?.status ?? 502);
-    const code = cancelled
-      ? "request_cancelled"
-      : (proxyFailure?.code ?? "upstream_unavailable");
-    meter?.diagnostic(code);
-    if (cancelled) meter?.finish("cancelled", status);
-    requestLog?.warn({
-      outcome: code,
+    });
+
+    let prepared: PreparedProviderRequest;
+    try {
+      if (
+        provider.type === "antigravity" &&
+        rawBody.byteLength > 16 * 1024 * 1024
+      )
+        throw new ProviderRequestError(
+          "Antigravity requests must not exceed 16 MiB",
+          413,
+          "request_too_large",
+        );
+      prepared = await prepareProviderRequest(
+        provider,
+        selectedCredential,
+        {
+          request,
+          endpoint: upstreamPath,
+          transport: "http",
+          protocol,
+          payload,
+          model: upstreamModel,
+          clientId: client.id,
+          sessionId,
+        },
+        { config, env, context, requestLog, requestId },
+      );
+    } catch (error) {
+      const status = error instanceof ProviderRequestError ? error.status : 503;
+      const code =
+        error instanceof ProviderRequestError
+          ? error.code
+          : "oauth_account_unavailable";
+      requestLog?.warn({
+        outcome: "provider_preparation_failed",
+        error: { code },
+      });
+      meter?.diagnostic(code);
+      return apiError(
+        protocol,
+        status,
+        error instanceof ProviderRequestError || error instanceof OAuthError
+          ? error.message
+          : "The selected provider account is unavailable",
+        { code, requestId },
+      );
+    }
+    const { headers } = prepared;
+    requestLog?.set({
       upstream: {
+        provider_id: provider.id,
+        credential_id: selectedCredential.id,
+        model: upstreamModel,
+      },
+    });
+    const meterTarget = {
+      providerId: provider.id,
+      credentialId: selectedCredential.id,
+      model: upstreamModel,
+    };
+    // The meter freezes its first selection, so Codex waits until no account
+    // switch can follow.
+    if (provider.type !== "codex") meter?.select(meterTarget);
+    headers.delete("content-length");
+    const modelRewritten = payload.model !== upstreamModel;
+    if (modelRewritten) {
+      headers.delete("content-md5");
+      headers.delete("digest");
+      headers.delete("content-digest");
+      headers.delete("content-encoding");
+    }
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "application/json");
+    }
+    const body =
+      prepared.body ??
+      upstreamBody(
+        rawBody,
+        payload,
+        upstreamModel,
+        modelRewritten,
+        originalText,
+      );
+    let usageLimit: CodexUsageLimit | undefined;
+    const startedAt = performance.now();
+    const result = await fetchWithConfiguredRetries(
+      () =>
+        new Request(prepared.url, {
+          method: prepared.method ?? request.method,
+          headers,
+          body,
+          redirect: "manual",
+          signal: request.signal,
+        }),
+      provider.retry,
+      {
+        ...retryOptions,
+        send: retryOptions.send ?? prepared.send,
+        ...(meter
+          ? {
+              observeDiscardedResponse: (response: Response) =>
+                prepared.retryUsage
+                  ? prepared.retryUsage(response)
+                  : retryResponseUsage(response, protocol),
+            }
+          : {}),
+        ...(provider.type === "codex"
+          ? {
+              isTerminal: async (response: Response) => {
+                usageLimit = await codexUsageLimit(response);
+                return usageLimit !== undefined;
+              },
+            }
+          : {}),
+        onResponse: async (response, attempt) => {
+          await retryOptions.onResponse?.(response, attempt);
+          if (
+            healthFailureScope(response.status, protocol, provider.type) ===
+            "credential"
+          ) {
+            await scheduleHealthUpdate(
+              context,
+              recordCredentialFailure(
+                env,
+                provider.id,
+                selectedCredential.id,
+                requestId,
+              ),
+            );
+          }
+        },
+      },
+    );
+    if (result.response && usageLimit) {
+      // Awaited: the next selection must already see this account cooling.
+      await recordCredentialQuotaCooldown(
+        env,
+        provider.id,
+        selectedCredential.id,
+        usageLimit.resets_at,
+        requestId,
+      );
+      excludedCredentials.add(
+        credentialKey(provider.id, selectedCredential.id),
+      );
+      accountSwitches.push({
+        credential_id: selectedCredential.id,
+        code: usageLimit.code,
+        resets_at: usageLimit.resets_at,
+      });
+      exhausted = result.response;
+      continue;
+    }
+    if (provider.type === "codex") meter?.select(meterTarget);
+    meter?.recordAttempts(result.attempts);
+    const upstreamDurationMs = elapsedMs(startedAt);
+    if (!result.response) {
+      const cancelled = request.signal.aborted;
+      const proxyFailure = retryOptions.send
+        ? undefined
+        : prepared.proxyFailure(result.error);
+      const status = cancelled ? 499 : (proxyFailure?.status ?? 502);
+      const code = cancelled
+        ? "request_cancelled"
+        : (proxyFailure?.code ?? "upstream_unavailable");
+      meter?.diagnostic(code);
+      if (cancelled) meter?.finish("cancelled", status);
+      requestLog?.warn({
+        outcome: code,
+        upstream: {
+          provider_id: provider.id,
+          credential_id: selectedCredential.id,
+          model: bounded(upstreamModel, 160),
+          model_rewritten: modelRewritten,
+          duration_ms: upstreamDurationMs,
+          attempts: result.attempts,
+          error: errorMessage(result.error),
+        },
+      });
+      if (!cancelled && !proxyFailure) {
+        await scheduleHealthUpdate(
+          context,
+          recordProviderFailure(env, provider.id, requestId),
+        );
+      }
+      return apiError(
+        protocol,
+        status,
+        cancelled
+          ? "The client cancelled the request"
+          : (proxyFailure?.message ??
+              "The selected upstream provider could not be reached"),
+        {
+          type: cancelled ? "invalid_request_error" : "server_error",
+          code,
+          requestId,
+        },
+      );
+    }
+
+    const upstreamResponse = result.response;
+    if (!upstreamResponse.ok) meter?.diagnostic("upstream_error");
+    if (requestLog) {
+      const upstreamBase = {
         provider_id: provider.id,
         credential_id: selectedCredential.id,
         model: bounded(upstreamModel, 160),
         model_rewritten: modelRewritten,
         duration_ms: upstreamDurationMs,
         attempts: result.attempts,
-        error: errorMessage(result.error),
-      },
-    });
-    if (!cancelled && !proxyFailure) {
+      };
+      if (upstreamResponse.ok) {
+        requestLog.set({
+          outcome: "success",
+          upstream: {
+            ...upstreamBase,
+            ...upstreamResponseFields(upstreamResponse),
+          },
+        });
+      } else {
+        requestLog.warn({
+          outcome: "upstream_error",
+          upstream: {
+            ...upstreamBase,
+            ...upstreamErrorStatusFields(upstreamResponse),
+          },
+        });
+        if (hasJsonUpstreamError(upstreamResponse)) {
+          const responseFields = upstreamResponseLogFields(upstreamResponse);
+          requestLog.defer(
+            responseFields.then((fields) => {
+              requestLog.set({
+                upstream: {
+                  ...upstreamBase,
+                  ...requestLog.limitUpstreamErrorFields(fields),
+                },
+              });
+            }),
+          );
+        }
+      }
+    }
+
+    if (upstreamResponse.ok) {
+      await scheduleHealthUpdate(
+        context,
+        recordProviderSuccess(env, provider.id, requestId),
+      );
+    } else if (
+      healthFailureScope(upstreamResponse.status, protocol, provider.type) ===
+      "provider"
+    ) {
       await scheduleHealthUpdate(
         context,
         recordProviderFailure(env, provider.id, requestId),
       );
     }
-    return apiError(
-      protocol,
-      status,
-      cancelled
-        ? "The client cancelled the request"
-        : (proxyFailure?.message ??
-            "The selected upstream provider could not be reached"),
-      {
-        type: cancelled ? "invalid_request_error" : "server_error",
-        code,
-        requestId,
-      },
-    );
-  }
-
-  const upstreamResponse = result.response;
-  if (!upstreamResponse.ok) meter?.diagnostic("upstream_error");
-  if (requestLog) {
-    const upstreamBase = {
-      provider_id: provider.id,
-      credential_id: selectedCredential.id,
-      model: bounded(upstreamModel, 160),
-      model_rewritten: modelRewritten,
-      duration_ms: upstreamDurationMs,
-      attempts: result.attempts,
-    };
-    if (upstreamResponse.ok) {
-      requestLog.set({
-        outcome: "success",
-        upstream: {
-          ...upstreamBase,
-          ...upstreamResponseFields(upstreamResponse),
-        },
-      });
-    } else {
-      requestLog.warn({
-        outcome: "upstream_error",
-        upstream: {
-          ...upstreamBase,
-          ...upstreamErrorStatusFields(upstreamResponse),
-        },
-      });
-      if (hasJsonUpstreamError(upstreamResponse)) {
-        const responseFields = upstreamResponseLogFields(upstreamResponse);
-        requestLog.defer(
-          responseFields.then((fields) => {
-            requestLog.set({
-              upstream: {
-                ...upstreamBase,
-                ...requestLog.limitUpstreamErrorFields(fields),
-              },
-            });
-          }),
-        );
-      }
+    if (!prepared.transformResponse) return upstreamResponse;
+    try {
+      return await prepared.transformResponse(upstreamResponse);
+    } catch (error) {
+      meter?.diagnostic("invalid_upstream_response");
+      return apiError(
+        protocol,
+        502,
+        error instanceof ProviderRequestError
+          ? error.message
+          : "Antigravity returned an invalid response",
+        { code: "invalid_upstream_response", requestId },
+      );
     }
-  }
-
-  if (upstreamResponse.ok) {
-    await scheduleHealthUpdate(
-      context,
-      recordProviderSuccess(env, provider.id, requestId),
-    );
-  } else if (
-    healthFailureScope(upstreamResponse.status, protocol) === "provider"
-  ) {
-    await scheduleHealthUpdate(
-      context,
-      recordProviderFailure(env, provider.id, requestId),
-    );
-  }
-  if (!prepared.transformResponse) return upstreamResponse;
-  try {
-    return await prepared.transformResponse(upstreamResponse);
-  } catch (error) {
-    meter?.diagnostic("invalid_upstream_response");
-    return apiError(
-      protocol,
-      502,
-      error instanceof ProviderRequestError
-        ? error.message
-        : "Antigravity returned an invalid response",
-      { code: "invalid_upstream_response", requestId },
-    );
   }
 }

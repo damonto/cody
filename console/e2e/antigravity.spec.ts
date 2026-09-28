@@ -108,6 +108,9 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
           status: "pending",
           expires_at: Date.now() + 600000,
           url: "https://accounts.google.com/o/oauth2/v2/auth?state=e2e-state",
+          flow: "pkce",
+          user_code: null,
+          verification_uri: null,
           error: null,
           can_retry: false,
           account: view,
@@ -256,7 +259,10 @@ test("Providers lists only implemented providers and Antigravity is a fixed acco
   await expect(
     page.getByRole("link", { name: "Antigravity", exact: true }),
   ).toBeVisible();
-  for (const name of ["Codex", "Claude", "xAI", "Grok"])
+  await expect(
+    page.getByRole("link", { name: "Codex", exact: true }),
+  ).toBeVisible();
+  for (const name of ["Claude", "xAI", "Grok"])
     await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
   await page.getByRole("link", { name: "Antigravity", exact: true }).click();
   await expect(

@@ -203,14 +203,35 @@ export const oauthCredentialSchema = credentialSchema.extend({
     account_ref: z.uuid(),
   }),
 });
+/** IDs reserved for the fixed native provider singletons. */
+export const NATIVE_PROVIDER_IDS: readonly string[] = ["antigravity", "codex"];
+const oauthCredentials = z
+  .array(oauthCredentialSchema)
+  .superRefine((credentials, context) => {
+    if (!unique(credentials.map((credential) => credential.id)))
+      context.addIssue({
+        code: "custom",
+        path: ["id"],
+        message: "values must be unique",
+      });
+    if (!unique(credentials.map((credential) => credential.auth.account_ref)))
+      context.addIssue({
+        code: "custom",
+        path: ["auth", "account_ref"],
+        message: "an account may only be attached once",
+      });
+  });
 export const aiGatewayProviderSchema = z.strictObject({
   type: z.literal("ai_gateway"),
   id: identifierSchema
-    .refine(
-      (id) => id !== "antigravity",
-      "antigravity is a reserved provider ID",
-    )
-    .meta({ not: { const: "antigravity" } }),
+    .superRefine((id, context) => {
+      if (NATIVE_PROVIDER_IDS.includes(id))
+        context.addIssue({
+          code: "custom",
+          message: `${id} is a reserved provider ID`,
+        });
+    })
+    .meta({ not: { enum: [...NATIVE_PROVIDER_IDS] } }),
   base_url: baseUrlSchema,
   proxy_group: proxyGroupReferenceSchema,
   credentials: z
@@ -241,55 +262,77 @@ export const antigravityDraftProviderSchema = aiGatewayProviderSchema
     type: z.literal("antigravity"),
     id: z.literal("antigravity"),
     models: nameList,
-    credentials: z
-      .array(oauthCredentialSchema)
-      .superRefine((credentials, context) => {
-        if (!unique(credentials.map((credential) => credential.id)))
-          context.addIssue({
-            code: "custom",
-            path: ["id"],
-            message: "values must be unique",
-          });
-        if (
-          !unique(credentials.map((credential) => credential.auth.account_ref))
-        )
-          context.addIssue({
-            code: "custom",
-            path: ["auth", "account_ref"],
-            message: "an account may only be attached once",
-          });
-      }),
+    credentials: oauthCredentials,
     supports_websocket: z.literal(false).default(false),
     supports_web_search: z.literal(false).default(false),
     supports_context_management: z.literal(false).default(false),
     anthropic_1m_context: z.literal(false).default(false),
     emulate_claude_code: z.literal(false).default(false),
   });
-export const antigravityProviderSchema = antigravityDraftProviderSchema
-  .superRefine((provider, context) => {
-    if (provider.disabled) return;
-    if (!provider.models.length)
-      context.addIssue({
-        code: "custom",
-        path: ["models"],
-        message: "select Antigravity models before enabling the provider",
-      });
-    if (!provider.credentials.length)
-      context.addIssue({
-        code: "custom",
-        path: ["credentials"],
-        message: "add an Antigravity account before enabling the provider",
-      });
-  })
-  .meta({
-    if: { properties: { disabled: { const: false } }, required: ["disabled"] },
-    then: {
-      properties: { models: { minItems: 1 }, credentials: { minItems: 1 } },
-    },
+/** Enabled native providers need models and at least one account before publication. */
+function publishable<
+  T extends z.ZodType<{
+    disabled: boolean;
+    models: string[];
+    credentials: unknown[];
+  }>,
+>(draft: T, label: string) {
+  return draft
+    .superRefine((provider, context) => {
+      if (provider.disabled) return;
+      if (!provider.models.length)
+        context.addIssue({
+          code: "custom",
+          path: ["models"],
+          message: `select ${label} models before enabling the provider`,
+        });
+      if (!provider.credentials.length)
+        context.addIssue({
+          code: "custom",
+          path: ["credentials"],
+          message: `add ${label === "Codex" ? "a" : "an"} ${label} account before enabling the provider`,
+        });
+    })
+    .meta({
+      if: {
+        properties: { disabled: { const: false } },
+        required: ["disabled"],
+      },
+      then: {
+        properties: { models: { minItems: 1 }, credentials: { minItems: 1 } },
+      },
+    });
+}
+export const antigravityProviderSchema = publishable(
+  antigravityDraftProviderSchema,
+  "Antigravity",
+);
+export const codexAccountSelectionSchema = z.enum([
+  "round_robin",
+  "session_affinity",
+]);
+export const codexDraftProviderSchema = aiGatewayProviderSchema
+  .omit({ base_url: true })
+  .extend({
+    type: z.literal("codex"),
+    id: z.literal("codex"),
+    models: nameList,
+    credentials: oauthCredentials,
+    supports_websocket: boolean.default(true),
+    supports_web_search: boolean.default(true),
+    anthropic_1m_context: z.literal(false).default(false),
+    emulate_claude_code: z.literal(false).default(false),
+    account_selection: codexAccountSelectionSchema.default("round_robin"),
+    auto_consume_resets: boolean.default(false),
   });
+export const codexProviderSchema = publishable(
+  codexDraftProviderSchema,
+  "Codex",
+);
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
   antigravityProviderSchema,
+  codexProviderSchema,
 ]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
@@ -330,13 +373,15 @@ const shape = z.strictObject({
   providers: z
     .array(providerSchema, { error: "must be a non-empty array" })
     .meta({
-      contains: {
-        type: "object",
-        properties: { type: { const: "antigravity" } },
-        required: ["type"],
-      },
-      minContains: 0,
-      maxContains: 1,
+      allOf: NATIVE_PROVIDER_IDS.map((type) => ({
+        contains: {
+          type: "object",
+          properties: { type: { const: type } },
+          required: ["type"],
+        },
+        minContains: 0,
+        maxContains: 1,
+      })),
     }),
   api_keys: z.array(clientSchema, { error: "must be a non-empty array" }),
   model_routes: routes(routeSchema).default({}),
@@ -351,20 +396,25 @@ const draftShape = shape.extend({
     z.discriminatedUnion("type", [
       aiGatewayProviderSchema,
       antigravityDraftProviderSchema,
+      codexDraftProviderSchema,
     ]),
   ),
 });
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
-  if (
-    config.providers.filter((provider) => provider.type === "antigravity")
-      .length > 1
-  )
-    context.addIssue({
-      code: "custom",
-      path: ["providers"],
-      message: "Antigravity is a fixed provider and may only be declared once",
-    });
+  for (const [type, label] of [
+    ["antigravity", "Antigravity"],
+    ["codex", "Codex"],
+  ] as const) {
+    if (
+      config.providers.filter((provider) => provider.type === type).length > 1
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["providers"],
+        message: `${label} is a fixed provider and may only be declared once`,
+      });
+  }
   for (const [path, values] of [
     [["proxy_groups", "id"], config.proxy_groups.map((group) => group.id)],
     [["providers", "id"], config.providers.map((provider) => provider.id)],

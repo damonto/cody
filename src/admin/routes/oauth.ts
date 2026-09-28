@@ -2,12 +2,19 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
-import { identifierSchema } from "../../config/schema.ts";
+import { configurationSchema, identifierSchema } from "../../config/schema.ts";
 import {
+  clearCredentialHealth,
+  getCredentialAvailability,
+} from "../../gateway/health/health.ts";
+import {
+  accountHealthSchema,
   accountReply,
   accountViewSchema,
   connectionSchema,
+  consumeResetReplySchema,
   OAuthError,
+  oauthProviderTypeSchema,
   sessionViewSchema,
 } from "../../providers/oauth/schema.ts";
 import { publishedProxyConfiguration } from "../../providers/outbound.ts";
@@ -16,15 +23,26 @@ import {
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { audit } from "../audit.ts";
-import { controlStore, type AdminContext } from "../context.ts";
+import {
+  controlStore,
+  publishedConfig,
+  type AdminContext,
+} from "../context.ts";
 import { validate } from "../validation.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
-const startSchema = connectionSchema.extend({
-  provider_id: z.literal("antigravity"),
-  account_ref: z.uuid().optional(),
-  version: z.number().int().nonnegative(),
-});
+const startSchema = connectionSchema
+  .extend({
+    // Native OAuth providers are singletons whose reserved ID is their type.
+    provider_id: oauthProviderTypeSchema,
+    account_ref: z.uuid().optional(),
+    version: z.number().int().nonnegative(),
+    flow: z.enum(["pkce", "device"]).default("pkce"),
+  })
+  .refine(
+    (input) => input.flow === "pkce" || input.provider_id === "codex",
+    "Device authorization is only available for Codex",
+  );
 const accountParam = z.object({ ref: z.uuid() });
 const sessionParam = z.object({
   id: z.string().transform((value, context) => {
@@ -54,6 +72,17 @@ async function checkedAccount(env: Bindings, ref: string, providerId?: string) {
       message: "Account does not belong to this provider",
     });
   return env.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
+}
+/** A spent reset makes the account usable again, so its inference cooldown ends now. */
+async function clearResetCooldowns(env: Bindings, ref: string): Promise<void> {
+  const raw = await env.CODY_CONFIG_KV.get(env.CONFIG_KEY ?? "gateway-config");
+  if (!raw) return;
+  const provider = configurationSchema
+    .parse(JSON.parse(raw))
+    .providers.find((provider) => provider.type === "codex");
+  for (const credential of provider?.credentials ?? [])
+    if (credential.auth.account_ref === ref)
+      await clearCredentialHealth(env, provider!.id, credential.id);
 }
 async function reply<T extends z.ZodType>(
   call: Parameters<typeof accountReply>[0],
@@ -102,6 +131,8 @@ export const oauthRoutes = new Hono<AdminContext>()
         account_ref: ref,
         actor: c.get("actor"),
         connection: connectionSchema.parse(input),
+        provider_type: input.provider_id,
+        flow: input.flow,
       }),
       sessionViewSchema,
     );
@@ -202,6 +233,39 @@ export const oauthRoutes = new Hono<AdminContext>()
       return c.json({ items });
     },
   )
+  .get(
+    "/provider-accounts/health",
+    validate("query", z.object({ provider_id: oauthProviderTypeSchema })),
+    async (c) => {
+      const providerId = c.req.valid("query").provider_id;
+      const provider = (await publishedConfig(c.env))?.providers.find(
+        (entry) => entry.type === providerId,
+      );
+      const items = await mapWithConcurrency(
+        provider?.type === "antigravity" || provider?.type === "codex"
+          ? provider.credentials
+          : [],
+        PROVIDER_FAN_OUT_CONCURRENCY,
+        async (credential) => {
+          const health = await getCredentialAvailability(
+            c.env,
+            providerId,
+            credential.id,
+          );
+          return accountHealthSchema.parse({
+            credential_id: credential.id,
+            account_ref: credential.auth.account_ref,
+            available: health.available,
+            cooling_until: health.available
+              ? null
+              : (health.cooling_until ?? null),
+            cooldown_reason: health.cooldown_reason ?? null,
+          });
+        },
+      );
+      return c.json({ items });
+    },
+  )
   .get("/provider-accounts/:ref", validate("param", accountParam), async (c) =>
     c.json(
       await reply(
@@ -289,6 +353,49 @@ export const oauthRoutes = new Hono<AdminContext>()
           accountViewSchema,
         ),
       ),
+  )
+  .get(
+    "/provider-accounts/:ref/reset-credits",
+    validate("param", accountParam),
+    async (c) =>
+      c.json(
+        await reply(
+          (await checkedAccount(c.env, c.req.valid("param").ref, "codex")).run({
+            action: "reset_credits",
+          }),
+          accountViewSchema,
+        ),
+      ),
+  )
+  .post(
+    "/provider-accounts/:ref/reset-credits/consume",
+    validate("param", accountParam),
+    validate(
+      "json",
+      z.strictObject({
+        redeem_request_id: z.uuid(),
+        credit_id: z.string().min(1).max(256).optional(),
+      }),
+    ),
+    async (c) => {
+      const ref = c.req.valid("param").ref;
+      const input = c.req.valid("json");
+      const result = await reply(
+        (await checkedAccount(c.env, ref, "codex")).run({
+          action: "consume_reset",
+          ...input,
+        }),
+        consumeResetReplySchema,
+      );
+      await audit(
+        c.env,
+        c.get("actor"),
+        `codex_reset:${ref}:${result.result.code}`,
+      );
+      if (["reset", "already_redeemed"].includes(result.result.code))
+        await clearResetCooldowns(c.env, ref);
+      return c.json(result);
+    },
   )
   .post(
     "/provider-accounts/:ref/disconnect",

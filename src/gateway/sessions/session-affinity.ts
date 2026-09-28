@@ -1,3 +1,4 @@
+import { nextRotationCredential } from "../health/health.ts";
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 import {
   affinitySelectionIsHighestPriority,
@@ -106,6 +107,79 @@ export class SessionAffinityCore {
     preferred: AffinitySelection | undefined,
     registration: SessionAffinityRegistration,
     options: SessionAffinityResolveOptions = {},
+  ): Promise<SessionAffinityResolution | undefined> {
+    if (!options.roundRobinProviderIds?.length)
+      return this.resolveBinding(candidates, preferred, registration, options);
+    // Only the new-binding path calls the shared rotation object. Serialize
+    // that short RPC with the binding write so concurrent frames in the same
+    // session cannot reserve multiple positions. No upstream I/O runs here.
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const raw = await this.ctx.storage.get<unknown>(AFFINITY_STORAGE_KEY);
+      const stored =
+        validRecord(raw) &&
+        raw.registry_name === registration.registry_name &&
+        raw.session_digest === registration.session_digest &&
+        raw.session_id === registration.session_id &&
+        raw.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
+          ? raw
+          : undefined;
+      const eligible = options.contextManagement
+        ? candidates.filter(
+            (candidate) => candidate.supports_context_management,
+          )
+        : candidates;
+      if (
+        stored &&
+        (stored.context_management ||
+          options.contextManagement ||
+          resolveStoredAffinity(stored, eligible, preferred).status === "hit")
+      )
+        return this.resolveBinding(
+          candidates,
+          preferred,
+          registration,
+          options,
+        );
+      const initial =
+        stored || options.initialProviderIds === undefined
+          ? eligible
+          : eligible.filter((candidate) =>
+              options.initialProviderIds?.includes(candidate.provider_id),
+            );
+      const selected = chooseAffinityCandidate(initial);
+      const provider = initial.find(
+        (candidate) => candidate.provider_id === selected?.provider_id,
+      );
+      if (
+        provider &&
+        options.roundRobinProviderIds?.includes(provider.provider_id)
+      ) {
+        const priority = Math.max(
+          ...provider.credentials.map((credential) => credential.priority),
+        );
+        const credentialId = await nextRotationCredential(
+          this.env,
+          provider.provider_id,
+          provider.credentials
+            .filter((credential) => credential.priority === priority)
+            .map((credential) => credential.credential_id),
+          true,
+        );
+        if (credentialId)
+          preferred = {
+            provider_id: provider.provider_id,
+            credential_id: credentialId,
+          };
+      }
+      return this.resolveBinding(candidates, preferred, registration, options);
+    });
+  }
+
+  private async resolveBinding(
+    candidates: AffinityProviderCandidate[],
+    preferred: AffinitySelection | undefined,
+    registration: SessionAffinityRegistration,
+    options: SessionAffinityResolveOptions,
   ): Promise<SessionAffinityResolution | undefined> {
     const contextManagement = options.contextManagement === true;
     const initialProviderIds = options.initialProviderIds;

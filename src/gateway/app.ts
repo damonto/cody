@@ -166,6 +166,7 @@ for (const path of [
   "chat/completions",
   "images/generations",
   "images/edits",
+  "memories/trace_summarize",
 ] as const) {
   endpoint(aliases(path), path, ["POST"], (r) => inference(path, r));
 }
@@ -197,6 +198,7 @@ gatewayRoutes.on(
     "/alpha/*",
     "/chat/*",
     "/images/*",
+    "/memories/*",
     "/models/*",
     "/health/*",
     "/sessions/*",

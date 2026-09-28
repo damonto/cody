@@ -3,6 +3,8 @@ import type {
   aiGatewayProviderSchema,
   antigravityProviderSchema,
   clientSchema,
+  codexAccountSelectionSchema,
+  codexProviderSchema,
   configurationSchema,
   credentialSchema,
   oauthCredentialSchema,
@@ -30,6 +32,13 @@ export type AiGatewayProviderConfig = z.output<typeof aiGatewayProviderSchema>;
 export type AntigravityProviderConfig = z.output<
   typeof antigravityProviderSchema
 >;
+export type CodexProviderConfig = z.output<typeof codexProviderSchema>;
+export type CodexAccountSelection = z.output<
+  typeof codexAccountSelectionSchema
+>;
+/** Native providers whose credentials are OAuth accounts. */
+export type OAuthProviderConfig =
+  AntigravityProviderConfig | CodexProviderConfig;
 export type ProviderType = ProviderConfig["type"];
 export type CredentialAuth = ProviderCredentialConfig["auth"];
 export type ClientApiKeyConfig = z.output<typeof clientSchema>;
@@ -42,7 +51,11 @@ export type WebSearchProviderConfig = Exclude<
 >;
 export type GatewayConfig = z.output<typeof configurationSchema>;
 
+/** Why a cooldown is active when it is not the ordinary failure streak. */
+export type HealthCooldownReason = "quota";
+
 export interface ProviderHealthSnapshot {
   failures: number;
   cooling_until: number | null;
+  reason?: HealthCooldownReason;
 }

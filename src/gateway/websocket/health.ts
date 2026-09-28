@@ -30,7 +30,11 @@ export class WebSocketHealth {
     status: number | undefined,
   ): Promise<void> {
     if (status === undefined) return;
-    const scope = healthFailureScope(status, "openai");
+    const scope = healthFailureScope(
+      status,
+      "openai",
+      state.selected_provider_type,
+    );
     if (
       scope === "credential" &&
       state.selected_provider_id &&

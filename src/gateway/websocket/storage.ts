@@ -1,4 +1,5 @@
 import { emptyCost } from "../../billing/calculate.ts";
+import type { ProviderType } from "../../config/types.ts";
 import type {
   ObjectStorage,
   ObjectTransaction,
@@ -33,6 +34,7 @@ export interface StoredWebSocketSession {
   header_session_id?: string;
   current_session_id?: string;
   selected_provider_id?: string;
+  selected_provider_type?: ProviderType;
   selected_credential_id?: string;
   active_response: boolean;
   response_outcome_recorded: boolean;

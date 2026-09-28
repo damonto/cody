@@ -2,7 +2,7 @@
 
 An AI API gateway with a web console, for Codex, Claude Code and other OpenAI- or Anthropic-compatible clients. It runs on Cloudflare Workers, as a Node.js server, or on Vercel.
 
-- Manage AI Gateway and Antigravity providers, upstream credentials, client API keys and model aliases in the console.
+- Manage AI Gateway, Antigravity and Codex providers, upstream credentials, client API keys and model aliases in the console.
 - Route traffic through SOCKS5 proxy groups.
 - View usage and costs for today, this week, this month and all time.
 - Inspect request timing, token usage, caching, reasoning and context information.
@@ -152,12 +152,13 @@ Other modes:
 1. Open the console and add a provider under **Providers**:
    - **AI Gateway**: any OpenAI- or Anthropic-compatible upstream, with a base URL, models and API keys.
    - **Antigravity**: sign in with Google accounts, then enable it in its **Settings** dialog.
+   - **Codex**: sign in with your own ChatGPT accounts (device code or pasted localhost callback), then choose models and enable it in its **Settings** dialog. See [Balance ChatGPT accounts](#balance-chatgpt-accounts).
 2. Create a client key under **Client keys**.
 3. Click **Publish**.
 
 Set token prices in **Model pricing** and your reporting time zone in **Settings**. Cost estimates depend on the usage your upstream providers report.
 
-To reuse a configuration, use **Settings → Export JSON** and **Settings → Import JSON**. Include secrets only when moving to another deployment; Antigravity accounts are not exported and must be signed in again. See [config.example.json](config.example.json) for the format.
+To reuse a configuration, use **Settings → Export JSON** and **Settings → Import JSON**. Include secrets only when moving to another deployment; Antigravity and Codex accounts are not exported and must be signed in again. See [config.example.json](config.example.json) for the format.
 
 Keep the encryption key unchanged for the life of a deployment and never commit it, `.env`, `.dev.vars` or configuration files with secrets.
 
@@ -190,6 +191,15 @@ refresh_interval_ms = 300000
 export OPENAI_API_KEY="your-gateway-client-key"
 codex
 ```
+
+#### Balance ChatGPT accounts
+
+The **Codex** provider spreads Codex sessions across your own ChatGPT accounts and forwards requests to ChatGPT unchanged, over HTTP and WebSocket, including search, image generation, compaction and memories. It is meant for your own Codex clients, not for sharing a subscription with others.
+
+- **Round robin** (default) gives each new session the next available account. **Session affinity** fills the first account before using the next.
+- A session keeps its account until that account runs out of quota. The account then rests until its reported reset time, and the request is resent on another account before Codex sees the error.
+- When every account is exhausted, Codex receives a usage-limit error with the earliest reset time.
+- Each account card shows the plan, the 5-hour, weekly and other quota windows, credits and available resets. **Reset** spends one reset credit after confirmation. **Use resets automatically** in **Settings** spends the earliest-expiring credit only when every account is exhausted; it is off by default.
 
 ### Claude Code
 

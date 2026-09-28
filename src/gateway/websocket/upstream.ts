@@ -1,4 +1,8 @@
 import type { GatewayConfig } from "../../config/types.ts";
+import {
+  codexUsageLimit,
+  type CodexUsageLimit,
+} from "../../providers/codex/limits.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { errorMessage, logError } from "../../shared/log.ts";
 import {
@@ -23,6 +27,8 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 interface WebSocketConnectResult extends FetchWithRetriesResult {
   readonly proxyError?: ProxyFailure | undefined;
+  /** Set when a Codex account rejected the upgrade for exhausted quota. */
+  readonly usageLimit?: CodexUsageLimit | undefined;
 }
 
 interface UpstreamHandlers {
@@ -72,6 +78,7 @@ export class UpstreamWebSocket {
   ): Promise<WebSocketConnectResult> {
     const controller = new AbortController();
     this.controller = controller;
+    let usageLimit: CodexUsageLimit | undefined;
     try {
       const prepared = await prepareProviderRequest(
         target.provider,
@@ -105,9 +112,21 @@ export class UpstreamWebSocket {
           send: prepared.send,
           wait: (delayMs) => abortableDelay(delayMs, controller.signal),
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+          ...(target.provider.type === "codex"
+            ? {
+                isTerminal: async (response: Response) => {
+                  usageLimit = await codexUsageLimit(response);
+                  return usageLimit !== undefined;
+                },
+              }
+            : {}),
           onResponse: async (response) => {
             if (
-              healthFailureScope(response.status, "openai") === "credential"
+              healthFailureScope(
+                response.status,
+                "openai",
+                target.provider.type,
+              ) === "credential"
             ) {
               await recordCredentialFailure(
                 this.env,
@@ -124,6 +143,7 @@ export class UpstreamWebSocket {
         proxyError: result.response
           ? undefined
           : prepared.proxyFailure(result.error),
+        usageLimit: result.response ? usageLimit : undefined,
       };
     } finally {
       if (this.controller === controller) this.controller = undefined;
@@ -143,10 +163,16 @@ export class UpstreamWebSocket {
   }
 
   private enqueue(
+    socket: WebSocket,
     event: "message" | "close" | "error",
     operation: () => Promise<void>,
   ): void {
-    const processing = this.events.then(operation);
+    // A socket replaced by an account switch no longer reaches the handlers,
+    // including events it queued before the switch.
+    if (this.connection !== socket) return;
+    const processing = this.events.then(() =>
+      this.connection === socket ? operation() : undefined,
+    );
     this.events = processing.catch(async (error) => {
       logError("websocket.upstream_event.failed", {
         upstream_event: event,
@@ -161,7 +187,7 @@ export class UpstreamWebSocket {
     socket.binaryType = "arraybuffer";
     socket.addEventListener("message", (event) => {
       const receivedAt = Date.now();
-      this.enqueue("message", async () => {
+      this.enqueue(socket, "message", async () => {
         const message = await normalizeMessage(event.data);
         if (message !== undefined) {
           await this.handlers.message(message, receivedAt);
@@ -169,10 +195,10 @@ export class UpstreamWebSocket {
       });
     });
     socket.addEventListener("close", (event) => {
-      this.enqueue("close", () => this.handlers.close(event));
+      this.enqueue(socket, "close", () => this.handlers.close(event));
     });
     socket.addEventListener("error", () => {
-      this.enqueue("error", () => this.handlers.error());
+      this.enqueue(socket, "error", () => this.handlers.error());
     });
 
     // Cloudflare only supports hibernation when the Durable Object is the

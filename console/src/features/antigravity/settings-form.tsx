@@ -17,7 +17,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { FieldError } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { accountsOptions, cacheAccounts, refreshModels } from "./api";
+import {
+  accountsOptions,
+  cacheAccounts,
+  refreshModels,
+} from "@/features/oauth-accounts/api";
 import {
   applySettings,
   settingsEditorSchema,

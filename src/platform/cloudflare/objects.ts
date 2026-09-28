@@ -1,3 +1,4 @@
+import type { ResetOperation } from "../../gateway/health/provider-health.ts";
 /**
  * Cloudflare Durable Object shells. Each class keeps its stable `class_name`
  * from `wrangler.jsonc` and delegates to a runtime-neutral core so the same
@@ -16,6 +17,7 @@ import { ResponsesWebSocketProxyCore } from "../../gateway/websocket/responses-w
 import type { AccountCommand } from "../../providers/oauth/commands.ts";
 import { ProviderOAuthAccountCore } from "../../providers/oauth/account.ts";
 import { UsageOutboxCore } from "../../telemetry/outbox.ts";
+import type { HealthCooldownReason } from "../../config/types.ts";
 import type { SessionAffinityResolveOptions } from "../bindings.ts";
 
 /** One object per client connection; WebSocket hibernation delivers socket events. */
@@ -64,6 +66,34 @@ export class ProviderHealth extends DurableObject<Env> {
   }
   recordImmediateFailure() {
     return this.core.recordImmediateFailure();
+  }
+  recordCooldownUntil(until: number, reason: HealthCooldownReason) {
+    return this.core.recordCooldownUntil(until, reason);
+  }
+  rotate(ids: string[], advance: boolean) {
+    return this.core.rotate(ids, advance);
+  }
+  clearQuotaCooldownUntil(until: number) {
+    return this.core.clearQuotaCooldownUntil(until);
+  }
+  claimLease(name: string, ttlMs: number) {
+    return this.core.claimLease(name, ttlMs);
+  }
+  prepareResetLease(
+    name: string,
+    owner: string,
+    operation: ResetOperation,
+    ttlMs: number,
+  ) {
+    return this.core.prepareResetLease(name, owner, operation, ttlMs);
+  }
+  releaseLease(
+    name: string,
+    owner: string,
+    holdMs: number,
+    completed: boolean,
+  ) {
+    return this.core.releaseLease(name, owner, holdMs, completed);
   }
   clear() {
     return this.core.clear();

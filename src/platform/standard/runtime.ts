@@ -158,6 +158,15 @@ export async function createRuntime(
         recordFailure: () => call((core) => core.recordFailure()),
         recordImmediateFailure: () =>
           call((core) => core.recordImmediateFailure()),
+        recordCooldownUntil: (...args) =>
+          call((core) => core.recordCooldownUntil(...args)),
+        rotate: (...args) => call((core) => core.rotate(...args)),
+        clearQuotaCooldownUntil: (until) =>
+          call((core) => core.clearQuotaCooldownUntil(until)),
+        claimLease: (...args) => call((core) => core.claimLease(...args)),
+        prepareResetLease: (...args) =>
+          call((core) => core.prepareResetLease(...args)),
+        releaseLease: (...args) => call((core) => core.releaseLease(...args)),
         clear: () => call((core) => core.clear()),
       }),
       { backend },

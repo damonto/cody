@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { connectionSchema, proxyConfigurationSchema } from "./schema.ts";
+import {
+  connectionSchema,
+  oauthProviderTypeSchema,
+  proxyConfigurationSchema,
+} from "./schema.ts";
 
 const sessionOwner = {
   actor: z.string().min(1),
@@ -13,6 +17,8 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     account_ref: z.uuid(),
     actor: sessionOwner.actor,
     connection: connectionSchema,
+    provider_type: oauthProviderTypeSchema.default("antigravity"),
+    flow: z.enum(["pkce", "device"]).default("pkce"),
   }),
   z.strictObject({
     action: z.enum(["session", "cancel", "retry"]),
@@ -28,7 +34,14 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     connection: connectionSchema,
     proxy_configuration: proxyConfigurationSchema,
   }),
-  z.strictObject({ action: z.enum(["view", "models", "disconnect"]) }),
+  z.strictObject({
+    action: z.enum(["view", "models", "disconnect", "reset_credits"]),
+  }),
+  z.strictObject({
+    action: z.literal("consume_reset"),
+    redeem_request_id: z.uuid(),
+    credit_id: z.string().min(1).max(256).optional(),
+  }),
   z.strictObject({
     action: z.literal("quota"),
     force: z.boolean().default(false),

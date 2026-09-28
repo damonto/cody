@@ -13,6 +13,7 @@ const Overview = lazy(() => import("@/pages/overview"));
 const Requests = lazy(() => import("@/pages/requests"));
 const Providers = lazy(() => import("@/pages/providers"));
 const Antigravity = lazy(() => import("@/pages/antigravity"));
+const Codex = lazy(() => import("@/pages/codex"));
 const Proxies = lazy(() => import("@/pages/proxies"));
 const Clients = lazy(() => import("@/pages/clients"));
 const Pricing = lazy(() => import("@/pages/pricing"));
@@ -24,6 +25,7 @@ const pages = [
   ["requests", Requests],
   ["providers/ai-gateway", Providers],
   ["providers/antigravity", Antigravity],
+  ["providers/codex", Codex],
   ["proxies", Proxies],
   ["clients", Clients],
   ["pricing", Pricing],

@@ -27,17 +27,22 @@ import {
   logWarn,
 } from "../../shared/log.ts";
 import { webSocketUsageSink } from "../../telemetry/delivery.ts";
-import { healthFailureScope } from "../health/health.ts";
+import {
+  healthFailureScope,
+  recordCredentialQuotaCooldown,
+} from "../health/health.ts";
 import {
   findClientApiKeyByDigest,
   forwardableWebSocketHeaders,
 } from "../http/http.ts";
 import { UpstreamAttemptTimeoutError } from "../http/proxy.ts";
 import {
+  credentialKey,
   resolveModelRoute,
   selectAvailableProviderWithDetails,
   type ModelProviderTarget,
   type ModelRoute,
+  type ProviderSelection,
 } from "../routing/routing.ts";
 import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
 import {
@@ -59,6 +64,17 @@ import {
   type ResponseCreateFrame,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
+import {
+  blockedCodexQuotaResetsAt,
+  codexQuotaResetsAt,
+  restoreCodexAccount,
+} from "../../providers/codex/exhaustion.ts";
+import {
+  codexUsageLimitEvent,
+  codexUsageLimitFromError,
+  type CodexUsageLimit,
+} from "../../providers/codex/limits.ts";
+import type { RequestMeter } from "../../telemetry/meter.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 import type {
   WebSocketHandler,
@@ -99,6 +115,42 @@ function clientDigestFrom(request: Request): string | undefined {
     : undefined;
 }
 
+/**
+ * The first response.create of a connection, kept while a Codex account that
+ * reports exhausted quota can still hand it to another account.
+ */
+interface FirstFrameAttempt {
+  readonly requestId: string;
+  readonly message: string;
+  readonly frame: ResponseCreateFrame;
+  readonly route: ModelRoute;
+  readonly sessionId: string | undefined;
+  readonly contextManagement: boolean;
+  readonly routingContext: CurrentRoutingContext;
+  readonly meter: RequestMeter | undefined;
+  readonly excluded: Set<string>;
+  switches: number;
+  resetConsumed: boolean;
+  /** The last exhausted account's error, returned when no account remains. */
+  exhausted: string | undefined;
+  target: ModelProviderTarget | undefined;
+}
+
+/** Looks up a header echoed in a Codex WebSocket error event. */
+function eventHeader(
+  payload: Record<string, unknown>,
+  name: string,
+): string | undefined {
+  const headers = payload.headers;
+  if (typeof headers !== "object" || headers === null) return undefined;
+  for (const [key, value] of Object.entries(headers))
+    if (key.toLowerCase() === name)
+      return typeof value === "string" || typeof value === "number"
+        ? String(value)
+        : undefined;
+  return undefined;
+}
+
 function requestOutcomeOnClose(code: number, outcome: string) {
   if (outcome.startsWith("client_")) return "cancelled";
   return code === 1000 ? "incomplete" : "failed";
@@ -107,6 +159,11 @@ function requestOutcomeOnClose(code: number, outcome: string) {
 export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private pendingClientBytes = 0;
   private clientMessages = Promise.resolve();
+  /** Client messages received by this instance, including the first frame. */
+  private receivedClientMessages = 0;
+  private attempt: FirstFrameAttempt | undefined;
+  /** Holds later client frames while the first frame moves to another account. */
+  private switching: Promise<void> | undefined;
   private readonly upstream: UpstreamWebSocket;
   private readonly health: WebSocketHealth;
   private readonly storage: WebSocketStorage;
@@ -261,6 +318,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     closeSocket(this.clientSocket(), code, reason);
 
     const state = transition.previous;
+    await this.settleAttempt();
     this.usage.finishAll(requestOutcomeOnClose(code, outcome), outcome);
     const fields = {
       request_id: state.request_id,
@@ -355,6 +413,40 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const payload =
       typeof message === "string" ? parseObject(message) : undefined;
     const status = payload ? errorStatus(payload) : undefined;
+    const usageLimit =
+      payload?.type === "error" &&
+      status === 429 &&
+      state.selected_provider_type === "codex"
+        ? codexUsageLimitFromError(payload, (name) =>
+            eventHeader(payload, name),
+          )
+        : undefined;
+    const attempt = this.attempt;
+    if (
+      usageLimit &&
+      typeof message === "string" &&
+      attempt &&
+      this.receivedClientMessages <= 1
+    ) {
+      // Nothing but this error has reached the upstream's reply, and the
+      // client has sent nothing else, so the first frame can move accounts.
+      await this.switchAccount(attempt, message, usageLimit);
+      return;
+    }
+    await this.settleAttempt();
+    if (
+      usageLimit &&
+      state.selected_provider_id &&
+      state.selected_credential_id
+    ) {
+      await recordCredentialQuotaCooldown(
+        this.env,
+        state.selected_provider_id,
+        state.selected_credential_id,
+        usageLimit.resets_at,
+        state.request_id,
+      );
+    }
     const meter = payload ? this.usage.observe(payload, receivedAt) : undefined;
     await this.health.observe(state, status);
 
@@ -398,14 +490,20 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       await this.health.inactive();
       // Codex frame status, as above.
       const keyFailure =
-        status !== undefined &&
-        healthFailureScope(status, "openai") === "credential";
+        usageLimit !== undefined ||
+        (status !== undefined &&
+          healthFailureScope(status, "openai", state.selected_provider_type) ===
+            "credential");
       await this.closeAll(
         1011,
         keyFailure
           ? "selected upstream key is cooling down"
           : "upstream returned an error",
-        keyFailure ? "key_cooling_down" : "upstream_error",
+        usageLimit
+          ? "usage_limit_reached"
+          : keyFailure
+            ? "key_cooling_down"
+            : "upstream_error",
       );
     }
   }
@@ -441,20 +539,19 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     );
   }
 
+  /** Returns "switch" when the account was exhausted and another may serve the frame. */
   private async connectUpstream(
-    originalMessage: string,
-    frame: ResponseCreateFrame,
-    route: ModelRoute,
+    attempt: FirstFrameAttempt,
     target: ModelProviderTarget,
-    sessionId: string | undefined,
     contextManagement: boolean,
-    config: GatewayConfig,
-  ): Promise<void> {
+  ): Promise<"switch" | undefined> {
+    const { frame, sessionId } = attempt;
     const connecting = await this.storage.transition(["routing"], (state) => ({
       ...state,
       phase: "connecting",
       ...(sessionId ? { current_session_id: sessionId } : {}),
       selected_provider_id: target.provider.id,
+      selected_provider_type: target.provider.type,
       selected_credential_id: target.credential.id,
       ...(contextManagement ? { context_management: true } : {}),
     }));
@@ -462,7 +559,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
 
-    const result = await this.upstream.connect(connecting.next, target, config);
+    const result = await this.upstream.connect(
+      connecting.next,
+      target,
+      attempt.routingContext.config,
+    );
 
     const current = await this.storage.loadSession();
     if (current?.phase !== "connecting") {
@@ -514,7 +615,24 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const response = result.response;
     const socket = response.webSocket;
     if (response.status !== 101 || !socket) {
-      if (healthFailureScope(response.status, "openai") === "provider") {
+      if (result.usageLimit) {
+        const body = await upstreamErrorText(response);
+        const routing = await this.storage.transition(
+          ["connecting"],
+          (state) => ({ ...state, phase: "routing" }),
+        );
+        if (!routing) return;
+        await this.excludeAccount(
+          attempt,
+          result.usageLimit,
+          body ?? codexUsageLimitEvent(result.usageLimit.resets_at),
+        );
+        return "switch";
+      }
+      if (
+        healthFailureScope(response.status, "openai", target.provider.type) ===
+        "provider"
+      ) {
         await this.health.fail();
       }
       const body = await upstreamErrorText(response);
@@ -572,7 +690,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
     const rewritten = rewriteResponseCreate(
-      originalMessage,
+      attempt.message,
       frame,
       target.upstreamModel,
     );
@@ -592,7 +710,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       model: bounded(target.upstreamModel, 160),
       model_rewritten: frame.model !== target.upstreamModel,
       attempts: result.attempts,
+      ...(attempt.switches > 0 ? { account_switches: attempt.switches } : {}),
     });
+    return undefined;
   }
 
   private async processFirstFrame(
@@ -711,66 +831,206 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
 
-    const selection = await selectAvailableProviderWithDetails(
-      this.env,
-      route,
-      sessionId
-        ? {
-            contextManagement,
-            session: {
-              clientId: routingContext.client.id,
-              sessionId,
-            },
-          }
-        : {},
-    );
-    if (selection.affinity?.status === "failed") {
-      logWarn("websocket.affinity.failed", {
-        request_id: claimed.next.request_id,
-        error: selection.affinity.error,
-      });
-    }
-    if (!selection.target) {
-      safeSend(
-        this.clientSocket(),
-        unavailableTargetError(selection, frame.model),
-      );
-      await this.closeAll(
-        1013,
-        "no healthy upstream provider",
-        "no_healthy_upstream",
-      );
-      return;
-    }
-    if (
-      selection.affinity?.context_management &&
-      !contextManagementSessionMatches(frame.payload, sessionId)
-    ) {
-      safeSend(
-        this.clientSocket(),
-        gatewayErrorEvent(
-          400,
-          "Context management session ids must match",
-          "invalid_context_management_request",
-        ),
-      );
-      await this.closeAll(
-        1008,
-        "inconsistent context session",
-        "invalid_context_management_request",
-      );
-      return;
-    }
-    await this.usage.select(meter, routingContext, selection.target);
-    await this.connectUpstream(
+    const attempt: FirstFrameAttempt = {
+      requestId: claimed.next.request_id,
       message,
       frame,
       route,
-      selection.target,
       sessionId,
-      contextManagement || selection.affinity?.context_management === true,
-      routingContext.config,
+      contextManagement,
+      routingContext,
+      meter,
+      excluded: new Set(),
+      switches: 0,
+      resetConsumed: false,
+      exhausted: undefined,
+      target: undefined,
+    };
+    this.attempt = attempt;
+    await this.routeFirstFrame(attempt);
+  }
+
+  /**
+   * Selects an account for the first frame and connects. Codex accounts that
+   * report exhausted quota before replying are excluded and the frame moves
+   * to the next account.
+   */
+  private async routeFirstFrame(attempt: FirstFrameAttempt): Promise<void> {
+    const { frame, route, routingContext, sessionId } = attempt;
+    for (;;) {
+      const selection = await selectAvailableProviderWithDetails(
+        this.env,
+        route,
+        {
+          excludedCredentials: attempt.excluded,
+          ...(sessionId
+            ? {
+                contextManagement: attempt.contextManagement,
+                session: {
+                  clientId: routingContext.client.id,
+                  sessionId,
+                },
+              }
+            : {}),
+        },
+      );
+      if (selection.affinity?.status === "failed") {
+        logWarn("websocket.affinity.failed", {
+          request_id: attempt.requestId,
+          error: selection.affinity.error,
+        });
+      }
+      const target = selection.target;
+      if (!target) {
+        if (!attempt.resetConsumed) {
+          attempt.resetConsumed = true;
+          if (
+            await restoreCodexAccount(
+              this.env,
+              routingContext.config,
+              route.targets,
+              selection,
+              attempt.excluded,
+              attempt.exhausted !== undefined,
+              attempt.requestId,
+            )
+          )
+            continue;
+        }
+        await this.rejectUnroutable(attempt, selection);
+        return;
+      }
+      if (
+        selection.affinity?.context_management &&
+        !contextManagementSessionMatches(frame.payload, sessionId)
+      ) {
+        safeSend(
+          this.clientSocket(),
+          gatewayErrorEvent(
+            400,
+            "Context management session ids must match",
+            "invalid_context_management_request",
+          ),
+        );
+        await this.closeAll(
+          1008,
+          "inconsistent context session",
+          "invalid_context_management_request",
+        );
+        return;
+      }
+      attempt.target = target;
+      // A Codex frame may still move accounts; it is metered once it settles.
+      if (target.provider.type !== "codex")
+        await this.usage.select(attempt.meter, routingContext, target);
+      const outcome = await this.connectUpstream(
+        attempt,
+        target,
+        attempt.contextManagement ||
+          selection.affinity?.context_management === true,
+      );
+      if (outcome !== "switch") return;
+    }
+  }
+
+  private async rejectUnroutable(
+    attempt: FirstFrameAttempt,
+    selection: ProviderSelection,
+  ): Promise<void> {
+    const status = selection.affinity?.status;
+    const resetsAt =
+      status === "blocked"
+        ? blockedCodexQuotaResetsAt(selection)
+        : status === "forbidden" || status === "failed"
+          ? undefined
+          : codexQuotaResetsAt(
+              attempt.route.targets,
+              selection,
+              attempt.excluded,
+            );
+    const exhausted =
+      attempt.exhausted ??
+      (resetsAt === undefined ? undefined : codexUsageLimitEvent(resetsAt));
+    safeSend(
+      this.clientSocket(),
+      exhausted ?? unavailableTargetError(selection, attempt.frame.model),
     );
+    await this.closeAll(
+      1013,
+      exhausted ? "codex usage limit reached" : "no healthy upstream provider",
+      exhausted ? "usage_limit_reached" : "no_healthy_upstream",
+    );
+  }
+
+  /** Cools an exhausted Codex account until its reset and keeps it out of this frame's selection. */
+  private async excludeAccount(
+    attempt: FirstFrameAttempt,
+    limit: CodexUsageLimit,
+    error: string,
+  ): Promise<void> {
+    const target = attempt.target;
+    if (!target) return;
+    // Awaited: the next selection must already see this account cooling.
+    await recordCredentialQuotaCooldown(
+      this.env,
+      target.provider.id,
+      target.credential.id,
+      limit.resets_at,
+      attempt.requestId,
+    );
+    attempt.excluded.add(
+      credentialKey(target.provider.id, target.credential.id),
+    );
+    attempt.switches += 1;
+    attempt.exhausted = error;
+    attempt.target = undefined;
+    logWarn("websocket.codex_account_exhausted", {
+      request_id: attempt.requestId,
+      provider_id: target.provider.id,
+      credential_id: target.credential.id,
+      code: limit.code,
+      resets_at: limit.resets_at,
+    });
+  }
+
+  /** Drops the exhausted upstream and resends the first frame elsewhere. */
+  private async switchAccount(
+    attempt: FirstFrameAttempt,
+    error: string,
+    limit: CodexUsageLimit,
+  ): Promise<void> {
+    let settle = (): void => {};
+    this.switching = new Promise((resolve) => {
+      settle = resolve;
+    });
+    try {
+      this.upstream.close(1000, "codex account exhausted");
+      const routing = await this.storage.transition(["open"], (state) => ({
+        ...state,
+        phase: "routing",
+        active_response: false,
+        response_outcome_recorded: false,
+      }));
+      if (!routing) return;
+      await this.excludeAccount(attempt, limit, error);
+      await this.routeFirstFrame(attempt);
+    } finally {
+      this.switching = undefined;
+      settle();
+    }
+  }
+
+  /** Ends the first frame's switch window and meters its final account. */
+  private async settleAttempt(): Promise<void> {
+    const attempt = this.attempt;
+    if (!attempt) return;
+    this.attempt = undefined;
+    if (attempt.target?.provider.type === "codex")
+      await this.usage.select(
+        attempt.meter,
+        attempt.routingContext,
+        attempt.target,
+      );
   }
 
   private async processOpenMessage(
@@ -969,8 +1229,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       );
     }
 
+    this.receivedClientMessages += 1;
     const processing = this.clientMessages.then(async () => {
       this.pendingClientBytes -= bytes;
+      while (this.switching) await this.switching;
       await this.processClientMessage(message, receivedAt);
     });
     this.clientMessages = processing.catch(async (error) => {

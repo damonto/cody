@@ -114,6 +114,16 @@
       "proxy_group": "US",
       "models": [],
       "credentials": []
+    },
+    {
+      "id": "codex",
+      "type": "codex",
+      "priority": 60,
+      "disabled": true,
+      "account_selection": "session_affinity",
+      "auto_consume_resets": false,
+      "models": [],
+      "credentials": []
     }
   ],
   "api_keys": [

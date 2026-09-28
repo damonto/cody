@@ -503,10 +503,36 @@ function codexModelIds(
   return ids;
 }
 
+/** Gate a Codex ModelInfo's history/notes extension on the provider capability. */
+function withContextManagement(
+  model: JsonObject,
+  enabled: boolean,
+): JsonObject {
+  if (
+    !isObject(model.model_messages) ||
+    !isObject(model.model_messages.token_budget)
+  ) {
+    return { ...model, supports_experimental_context: false };
+  }
+  return {
+    ...model,
+    supports_experimental_context: enabled,
+    model_messages: {
+      ...model.model_messages,
+      token_budget: {
+        ...model.model_messages.token_budget,
+        enabled,
+        use_history_notes_extension: enabled,
+      },
+    },
+  };
+}
+
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
   contextManagementModelIds: Set<string> = new Set(),
   nativeModels: JsonObject[] = [],
+  codexAccountModels: JsonObject[] = [],
 ): JsonObject[] {
   const nativeById = new Map(
     nativeModels
@@ -515,40 +541,46 @@ export function aggregateCodexModels(
       )
       .map((model) => [model.id, model]),
   );
+  // A Codex account's own ModelInfo is authoritative for its slug; route
+  // aliases reuse it under the client-facing name.
+  const accountById = new Map(
+    codexAccountModels
+      .filter(
+        (model) =>
+          typeof model.id === "string" &&
+          clientModelIds.has(model.id) &&
+          !nativeById.has(model.id) &&
+          isObject(model.codex),
+      )
+      .map((model) => [model.id as string, model.codex as JsonObject]),
+  );
+  const account = [...accountById].map(([id, model]) => {
+    const info: JsonObject = { ...model, slug: id };
+    return info.supports_experimental_context === true ||
+      isObject(info.model_messages)
+      ? withContextManagement(info, contextManagementModelIds.has(id))
+      : info;
+  });
   const standard = codexCatalogModels
     .filter(
       (model) =>
         typeof model.slug === "string" &&
         clientModelIds.has(model.slug) &&
-        !nativeById.has(model.slug),
+        !nativeById.has(model.slug) &&
+        !accountById.has(model.slug),
     )
-    .map((model) => {
-      if (model.slug !== "gpt-6-astra") {
-        return model;
-      }
-      if (
-        !isObject(model.model_messages) ||
-        !isObject(model.model_messages.token_budget)
-      ) {
-        return { ...model, supports_experimental_context: false };
-      }
-      const enabled = contextManagementModelIds.has(model.slug);
-      return {
-        ...model,
-        supports_experimental_context: enabled,
-        model_messages: {
-          ...model.model_messages,
-          token_budget: {
-            ...model.model_messages.token_budget,
-            enabled,
-            use_history_notes_extension: enabled,
-          },
-        },
-      };
-    });
+    .map((model) =>
+      model.slug === "gpt-6-astra"
+        ? withContextManagement(
+            model,
+            contextManagementModelIds.has(model.slug),
+          )
+        : model,
+    );
   // Native aliases must not inherit OpenAI-only capabilities from a matching slug.
   // Unknown limits remain null, allowing Codex's configured fallback to apply.
   return [
+    ...account,
     ...standard,
     ...[...nativeById.values()].map((model, index) => ({
       slug: model.id,
@@ -619,8 +651,11 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     // value the upstream did provide. Claude Desktop Discovery needs it.
     return { name: id, ...model, id };
   }
-  const catalog =
-    model.owned_by === "antigravity" ? undefined : codexModelBySlug.get(id);
+  const catalog = isObject(model.codex)
+    ? model.codex
+    : model.owned_by === "antigravity"
+      ? undefined
+      : codexModelBySlug.get(id);
   const inputModalities = Array.isArray(model.input_modalities)
     ? model.input_modalities
     : Array.isArray(catalog?.input_modalities)
@@ -918,6 +953,10 @@ function modelsPayload(
             results.filter(({ provider }) => provider.type === "antigravity"),
             routesByProvider,
           ),
+          aggregateStandardModels(
+            results.filter(({ provider }) => provider.type === "codex"),
+            routesByProvider,
+          ),
         ),
       };
     case "anthropic": {
@@ -930,7 +969,11 @@ function modelsPayload(
       };
     }
     case "openai":
-      return { object: "list", data: standardModels };
+      return {
+        object: "list",
+        // The raw Codex ModelInfo only serves the Codex and Anthropic shapes.
+        data: standardModels.map(({ codex: _codex, ...model }) => model),
+      };
   }
 }
 

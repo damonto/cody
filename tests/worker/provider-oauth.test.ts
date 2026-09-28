@@ -28,7 +28,7 @@ import type {
 import type {
   CredentialResolver,
   ResolvedApiKey,
-  ResolvedOAuth,
+  ResolvedAntigravityOAuth,
   ResolvedCredential,
 } from "../../src/providers/credentials.ts";
 import type { ProviderAdapter } from "../../src/providers/types.ts";
@@ -329,7 +329,7 @@ test("adapter and resolver credential types preserve their authentication discri
   >().toEqualTypeOf<ResolvedApiKey>();
   expectTypeOf<
     Parameters<ProviderAdapter<AntigravityProviderConfig>["prepare"]>[1]
-  >().toEqualTypeOf<ResolvedOAuth>();
+  >().toEqualTypeOf<ResolvedAntigravityOAuth>();
   expectTypeOf<
     Parameters<ProviderAdapter["prepare"]>[1]
   >().toEqualTypeOf<ResolvedCredential>();

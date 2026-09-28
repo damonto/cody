@@ -27,6 +27,7 @@ import {
   pgliteQueryable,
   postgresDatabase,
 } from "../src/platform/standard/sql/postgres.ts";
+import { sessionAffinityIdentity } from "../src/gateway/routing/affinity.ts";
 import { clearConfigCacheForTests } from "../src/config/store.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -310,6 +311,82 @@ for (const [name, open] of Object.entries(databases)) {
       clearConfigCacheForTests();
     });
     const env = runtime.bindings;
+
+    await t.test(
+      "concurrent session allocation rotates across shared durable accounts",
+      async () => {
+        const candidates = [
+          {
+            provider_id: "codex",
+            priority: 1,
+            supports_context_management: false,
+            credentials: [
+              { credential_id: "a", priority: 1 },
+              { credential_id: "b", priority: 1 },
+            ],
+          },
+        ];
+        const resolve = async (index) => {
+          const registration = await sessionAffinityIdentity(
+            "rotation-client",
+            `session-${index}`,
+          );
+          const bindings = index % 2 ? second.bindings : env;
+          return bindings.SESSION_AFFINITY.getByName(
+            registration.object_name,
+          ).resolve(candidates, undefined, registration, {
+            roundRobinProviderIds: ["codex"],
+          });
+        };
+        const results = await Promise.all(
+          Array.from({ length: 8 }, (_, index) => resolve(index)),
+        );
+        assert.equal(
+          results.filter((result) => result.credential_id === "a").length,
+          4,
+        );
+        assert.equal(
+          results.filter((result) => result.credential_id === "b").length,
+          4,
+        );
+        const repeated = await Promise.all(
+          Array.from({ length: 4 }, () => resolve(0)),
+        );
+        assert.ok(
+          repeated.every(
+            (result) => result.credential_id === results[0].credential_id,
+          ),
+        );
+      },
+    );
+
+    await t.test(
+      "reset leases persist across runtimes and fence former owners",
+      async () => {
+        const first = env.HEALTH.getByName("reset-lease");
+        const other = second.bindings.HEALTH.getByName("reset-lease");
+        const lease = await first.claimLease("reset", 60000);
+        assert.ok(lease);
+        const operation = {
+          credential_id: "one",
+          account_ref: crypto.randomUUID(),
+          credit_id: "credit",
+          redeem_request_id: crypto.randomUUID(),
+          cooling_until: Date.now() + 60000,
+        };
+        assert.deepEqual(
+          await first.prepareResetLease("reset", lease.owner, operation, 60000),
+          operation,
+        );
+        await first.releaseLease("reset", lease.owner, 0, false);
+        const next = await other.claimLease("reset", 60000);
+        assert.deepEqual(next.operation, operation);
+        await first.releaseLease("reset", lease.owner, 0, true);
+        assert.equal(await first.claimLease("reset", 60000), null);
+        await other.releaseLease("reset", next.owner, 0, true);
+        assert.equal((await first.claimLease("reset", 60000)).operation, null);
+      },
+    );
 
     await t.test(
       "fences writes made from stale SQL object snapshots",

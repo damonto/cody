@@ -2,6 +2,7 @@ import {
   chooseAffinityCandidate,
   sessionAffinityIdentity,
   type AffinityProviderCandidate,
+  type AffinitySelection,
 } from "./affinity.ts";
 import {
   mapWithConcurrency,
@@ -10,6 +11,7 @@ import {
 import {
   getCredentialAvailability,
   getProviderAvailability,
+  nextRotationCredential,
   type HealthScope,
   type ProviderAvailability,
 } from "../health/health.ts";
@@ -66,6 +68,9 @@ interface SelectionAffinity {
   status: "hit" | "created" | "rebound" | "failed" | "blocked" | "forbidden";
   error?: string;
   context_management?: boolean;
+  /** The binding a blocked context session is waiting for. */
+  provider_id?: string;
+  credential_id?: string;
 }
 
 export interface TargetSelection {
@@ -85,6 +90,8 @@ export interface ProviderSelectionOptions {
   scope?: HealthScope;
   contextManagement?: boolean;
   initialProviderIds?: readonly string[];
+  /** Credentials this logical request already tried, keyed by `credentialKey`. */
+  excludedCredentials?: ReadonlySet<string>;
   session?: {
     clientId: string;
     sessionId: string;
@@ -320,6 +327,65 @@ async function evaluateAvailability<T extends RoutedProvider>(
   return { candidates, checks, credentialChecks };
 }
 
+export function credentialKey(
+  providerId: string,
+  credentialId: string,
+): string {
+  return `${providerId}\u0000${credentialId}`;
+}
+
+function withoutCredentials<T extends RoutedProvider>(
+  candidates: T[],
+  excluded: ReadonlySet<string> | undefined,
+): T[] {
+  if (!excluded?.size) return candidates;
+  return candidates.flatMap((routed) => {
+    const credentials = routed.credentials.filter(
+      (credential) =>
+        !excluded.has(credentialKey(routed.provider.id, credential.id)),
+    );
+    return credentials.length > 0 ? [{ ...routed, credentials }] : [];
+  });
+}
+
+/**
+ * The account a new binding should use. Codex round robin rotates across the
+ * top-priority accounts; everything else fills the first candidate. Session
+ * bindings allocate their rotation inside the affinity object instead.
+ */
+async function preferredCandidate(
+  env: Bindings,
+  candidates: RoutedProvider[],
+): Promise<AffinitySelection | undefined> {
+  const selection = chooseAffinityCandidate(affinityCandidates(candidates));
+  const routed =
+    selection &&
+    candidates.find(({ provider }) => provider.id === selection.provider_id);
+  if (
+    !selection ||
+    routed?.provider.type !== "codex" ||
+    routed.provider.account_selection !== "round_robin"
+  )
+    return selection;
+  const priority = Math.max(
+    ...routed.credentials.map((credential) => credential.priority),
+  );
+  const credentialId = await nextRotationCredential(
+    env,
+    routed.provider.id,
+    routed.credentials
+      .filter((credential) => credential.priority === priority)
+      .map((credential) => credential.id),
+    true,
+  );
+  return credentialId
+    ? {
+        provider_id: routed.provider.id,
+        credential_id: credentialId,
+      }
+    : selection;
+}
+
 function affinityCandidates(
   candidates: RoutedProvider[],
 ): AffinityProviderCandidate[] {
@@ -355,8 +421,10 @@ function targetByIds(
 
 function selectTarget(
   candidates: RoutedProvider[],
+  preferred: AffinitySelection | undefined,
 ): ProviderTarget | undefined {
-  const selected = chooseAffinityCandidate(affinityCandidates(candidates));
+  const selected =
+    preferred ?? chooseAffinityCandidate(affinityCandidates(candidates));
   return selected
     ? targetByIds(candidates, selected.provider_id, selected.credential_id)
     : undefined;
@@ -395,13 +463,20 @@ export async function selectAvailableTargetWithDetails(
   options: ProviderSelectionOptions = {},
 ): Promise<TargetSelection> {
   const contextManagement = options.contextManagement === true;
-  const availability = await evaluateAvailability(
+  const evaluated = await evaluateAvailability(
     env,
     contextManagement
       ? providers.filter(({ provider }) => provider.supports_context_management)
       : providers,
     options.scope ?? "inference",
   );
+  const availability = {
+    ...evaluated,
+    candidates: withoutCredentials(
+      evaluated.candidates,
+      options.excludedCredentials,
+    ),
+  };
   if (availability.candidates.length === 0) {
     return {
       target: undefined,
@@ -420,7 +495,6 @@ export async function selectAvailableTargetWithDetails(
   }
   if (options.session) {
     const candidates = affinityCandidates(availability.candidates);
-    const preferred = chooseAffinityCandidate(candidates);
     try {
       const identity = await sessionAffinityIdentity(
         options.session.clientId,
@@ -428,7 +502,14 @@ export async function selectAvailableTargetWithDetails(
       );
       const resolution = await env.SESSION_AFFINITY.getByName(
         identity.object_name,
-      ).resolve(candidates, preferred, identity, {
+      ).resolve(candidates, chooseAffinityCandidate(candidates), identity, {
+        roundRobinProviderIds: availability.candidates
+          .filter(
+            ({ provider }) =>
+              provider.type === "codex" &&
+              provider.account_selection === "round_robin",
+          )
+          .map(({ provider }) => provider.id),
         contextManagement,
         ...(options.initialProviderIds === undefined
           ? {}
@@ -442,7 +523,11 @@ export async function selectAvailableTargetWithDetails(
           target: undefined,
           checks: availability.checks,
           credentialChecks: availability.credentialChecks,
-          affinity: { status: "blocked" },
+          affinity: {
+            status: "blocked",
+            provider_id: resolution.provider_id,
+            credential_id: resolution.credential_id,
+          },
         };
       }
       if (resolution.context_management) {
@@ -488,8 +573,9 @@ export async function selectAvailableTargetWithDetails(
     }
   }
 
+  const preferred = await preferredCandidate(env, availability.candidates);
   return {
-    target: selectTarget(availability.candidates),
+    target: selectTarget(availability.candidates, preferred),
     checks: availability.checks,
     credentialChecks: availability.credentialChecks,
   };

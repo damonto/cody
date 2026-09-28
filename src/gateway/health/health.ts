@@ -1,6 +1,9 @@
+import type { LeaseGrant, ResetOperation } from "./provider-health.ts";
 import type {
+  HealthCooldownReason,
   ProviderConfig,
   ProviderHealthSnapshot,
+  ProviderType,
 } from "../../config/types.ts";
 import {
   mapWithConcurrency,
@@ -44,6 +47,16 @@ const ANTHROPIC_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
   [529, "provider"],
 ]);
 
+// Codex serves one pool of ChatGPT accounts: 401/402/403 belong to the
+// account, and a 400 is the client's request rather than the shared backend.
+// Quota 429s are handled separately as timed account cooldowns.
+const CODEX_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
+  [401, "credential"],
+  [402, "credential"],
+  [403, "credential"],
+  [503, "provider"],
+]);
+
 /**
  * Resolves the health record an upstream status produces, or `undefined` when
  * the status is not counted against health at all.
@@ -51,11 +64,14 @@ const ANTHROPIC_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
 export function healthFailureScope(
   status: number,
   protocol: ApiProtocol,
+  providerType?: ProviderType,
 ): HealthFailureScope | undefined {
   return (
-    isAnthropicProtocol(protocol)
-      ? ANTHROPIC_FAILURE_SCOPES
-      : OPENAI_FAILURE_SCOPES
+    providerType === "codex"
+      ? CODEX_FAILURE_SCOPES
+      : isAnthropicProtocol(protocol)
+        ? ANTHROPIC_FAILURE_SCOPES
+        : OPENAI_FAILURE_SCOPES
   ).get(status);
 }
 
@@ -69,6 +85,7 @@ export interface StoredProviderHealthState {
   failures: number;
   failure_window_started_at: number | null;
   cooling_until: number | null;
+  reason?: HealthCooldownReason | null;
 }
 
 export interface CoolingProviderHealth extends ProviderHealthSnapshot {
@@ -90,6 +107,7 @@ export interface ProviderAvailability {
   reason: ProviderAvailabilityReason;
   failures?: number;
   cooling_until?: number | null;
+  cooldown_reason?: HealthCooldownReason;
   error?: string;
 }
 
@@ -97,6 +115,7 @@ export class ProviderHealthState {
   private failures = 0;
   private failureWindowStartedAt: number | null = null;
   private coolingUntil: number | null = null;
+  private reason: HealthCooldownReason | null = null;
 
   constructor(
     private readonly clock: () => number = () => Date.now(),
@@ -106,6 +125,7 @@ export class ProviderHealthState {
       this.failures = stored.failures;
       this.failureWindowStartedAt = stored.failure_window_started_at;
       this.coolingUntil = stored.cooling_until;
+      this.reason = stored.reason ?? null;
     }
   }
 
@@ -118,6 +138,7 @@ export class ProviderHealthState {
     if (this.coolingUntil !== null && now >= this.coolingUntil) {
       this.resetFailures();
       this.coolingUntil = null;
+      this.reason = null;
     }
     if (
       this.coolingUntil === null &&
@@ -129,6 +150,7 @@ export class ProviderHealthState {
     return {
       failures: this.failures,
       cooling_until: this.coolingUntil,
+      ...(this.reason === null ? {} : { reason: this.reason }),
     };
   }
 
@@ -149,17 +171,39 @@ export class ProviderHealthState {
       failures: this.failures,
       failure_window_started_at: this.failureWindowStartedAt,
       cooling_until: this.coolingUntil,
+      ...(this.reason === null ? {} : { reason: this.reason }),
     };
   }
 
   clear(): ProviderHealthSnapshot {
     this.resetFailures();
     this.coolingUntil = null;
+    this.reason = null;
     return this.snapshot();
   }
 
   recordSuccess(): ProviderHealthSnapshot {
+    // A request that started before the quota ran out may still succeed; only
+    // the reset time, a spent reset or a manual clear ends a quota cooldown.
+    if (this.snapshot().reason === "quota") return this.snapshot();
     return this.clear();
+  }
+
+  /** Cool down until a known instant, never shortening a longer cooldown. */
+  recordCooldownUntil(
+    until: number,
+    reason: HealthCooldownReason,
+  ): ProviderHealthSnapshot {
+    const now = this.clock();
+    this.snapshot(now);
+    if (
+      until > now &&
+      (this.coolingUntil === null || until >= this.coolingUntil)
+    ) {
+      this.coolingUntil = until;
+      this.reason = reason;
+    }
+    return this.snapshot(now);
   }
 
   recordFailure(): ProviderHealthSnapshot {
@@ -194,7 +238,10 @@ export class ProviderHealthState {
       }
       this.failures += 1;
     }
-    this.coolingUntil = now + COOLDOWN_MS;
+    if (this.coolingUntil === null || this.coolingUntil < now + COOLDOWN_MS) {
+      this.coolingUntil = now + COOLDOWN_MS;
+      this.reason = null;
+    }
     return this.snapshot(now);
   }
 }
@@ -241,6 +288,9 @@ export async function getProviderAvailability(
       reason: available ? "available" : "cooling",
       failures: snapshot.failures,
       cooling_until: snapshot.cooling_until,
+      ...(!available && snapshot.reason
+        ? { cooldown_reason: snapshot.reason }
+        : {}),
     };
   } catch (error) {
     return {
@@ -279,6 +329,9 @@ export async function getCredentialAvailability(
       reason: available ? "available" : "cooling",
       failures: snapshot.failures,
       cooling_until: snapshot.cooling_until,
+      ...(!available && snapshot.reason
+        ? { cooldown_reason: snapshot.reason }
+        : {}),
     };
   } catch (error) {
     return {
@@ -383,6 +436,113 @@ export async function recordCredentialFailure(
   }
 }
 
+/**
+ * Cools one credential until its upstream quota resets. Awaited rather than
+ * scheduled: the account switch that follows must already see the cooldown.
+ */
+export async function recordCredentialQuotaCooldown(
+  env: Bindings,
+  providerId: string,
+  credentialId: string,
+  until: number,
+  requestId?: string,
+): Promise<void> {
+  try {
+    const snapshot = await credentialHealthStub(
+      env,
+      providerId,
+      credentialId,
+      "inference",
+    ).recordCooldownUntil(until, "quota");
+    logWarn("health.credential_quota_cooldown.active", {
+      request_id: requestId,
+      provider_id: providerId,
+      credential_id: credentialId,
+      cooling_until: snapshot.cooling_until,
+    });
+  } catch (error) {
+    logWarn("health.key_update.failed", {
+      request_id: requestId,
+      provider_id: providerId,
+      credential_id: credentialId,
+      scope: "inference",
+      error: errorMessage(error),
+    });
+  }
+}
+
+function coordinationStub(env: Bindings, providerId: string) {
+  return env.HEALTH.getByName(`rotation:${providerId}`);
+}
+
+/**
+ * Picks the credential after the provider's last rotation pick. `advance`
+ * moves the cursor; a peek lets session binding commit only when it is used.
+ * Coordination failures fail closed rather than silently changing selection.
+ */
+export async function nextRotationCredential(
+  env: Bindings,
+  providerId: string,
+  credentialIds: readonly string[],
+  advance: boolean,
+): Promise<string | undefined> {
+  if (credentialIds.length <= 1) return credentialIds[0];
+  try {
+    return (
+      (await coordinationStub(env, providerId).rotate(
+        [...credentialIds],
+        advance,
+      )) ?? credentialIds[0]
+    );
+  } catch (error) {
+    logWarn("health.rotation.failed", {
+      provider_id: providerId,
+      error: errorMessage(error),
+    });
+    throw error;
+  }
+}
+
+/** Serializes provider-wide maintenance such as spending a quota reset. */
+export function claimProviderLease(
+  env: Bindings,
+  providerId: string,
+  name: string,
+  ttlMs: number,
+): Promise<LeaseGrant | null> {
+  return coordinationStub(env, providerId).claimLease(name, ttlMs);
+}
+export function prepareProviderResetLease(
+  env: Bindings,
+  providerId: string,
+  name: string,
+  owner: string,
+  operation: ResetOperation,
+  ttlMs: number,
+): Promise<ResetOperation | null> {
+  return coordinationStub(env, providerId).prepareResetLease(
+    name,
+    owner,
+    operation,
+    ttlMs,
+  );
+}
+export function releaseProviderLease(
+  env: Bindings,
+  providerId: string,
+  name: string,
+  owner: string,
+  holdMs: number,
+  completed: boolean,
+): Promise<void> {
+  return coordinationStub(env, providerId).releaseLease(
+    name,
+    owner,
+    holdMs,
+    completed,
+  );
+}
+
 export async function clearProviderHealth(
   env: Bindings,
   providerId: string,
@@ -390,6 +550,20 @@ export async function clearProviderHealth(
 ): Promise<ProviderHealthSnapshot> {
   const snapshot = await healthStub(env, providerId, scope).clear();
   return snapshot;
+}
+
+export function clearCredentialQuotaCooldownUntil(
+  env: Bindings,
+  providerId: string,
+  credentialId: string,
+  until: number,
+): Promise<boolean> {
+  return credentialHealthStub(
+    env,
+    providerId,
+    credentialId,
+    "inference",
+  ).clearQuotaCooldownUntil(until);
 }
 
 export async function clearCredentialHealth(

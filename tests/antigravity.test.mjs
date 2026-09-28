@@ -208,16 +208,27 @@ test("JSON Schema exposes native singleton, reserved ID and readiness rules", ()
     target: "draft-2020-12",
   });
   const providers = schema.properties.providers;
-  assert.equal(providers.minContains, 0);
-  assert.equal(providers.maxContains, 1);
-  assert.equal(providers.contains.properties.type.const, "antigravity");
+  // Each native provider type is its own optional singleton.
+  assert.deepEqual(
+    providers.allOf.map((rule) => [
+      rule.contains.properties.type.const,
+      rule.minContains,
+      rule.maxContains,
+    ]),
+    [
+      ["antigravity", 0, 1],
+      ["codex", 0, 1],
+    ],
+  );
   const gateway = providers.items.oneOf.find(
     (entry) => entry.properties.type.const === "ai_gateway",
   );
   const native = providers.items.oneOf.find(
     (entry) => entry.properties.type.const === "antigravity",
   );
-  assert.deepEqual(gateway.properties.id.not, { const: "antigravity" });
+  assert.deepEqual(gateway.properties.id.not, {
+    enum: ["antigravity", "codex"],
+  });
   assert.equal(native.properties.id.const, "antigravity");
   assert.equal(native.properties.models.minItems ?? 0, 0);
   assert.equal(native.properties.credentials.minItems ?? 0, 0);

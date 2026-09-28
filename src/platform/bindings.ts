@@ -1,9 +1,16 @@
+import type {
+  LeaseGrant,
+  ResetOperation,
+} from "../gateway/health/provider-health.ts";
 /**
  * Portable runtime contract. Business code programs against these types; the
  * Cloudflare Worker passes its Wrangler bindings (which satisfy them
  * structurally) and the standard backend builds them over Redis and SQL.
  */
-import type { ProviderHealthSnapshot } from "../config/types.ts";
+import type {
+  HealthCooldownReason,
+  ProviderHealthSnapshot,
+} from "../config/types.ts";
 import type {
   AffinityProviderCandidate,
   AffinitySelection,
@@ -87,14 +94,34 @@ export interface ObjectNamespace<T> {
 }
 
 export interface HealthObject {
+  clearQuotaCooldownUntil(until: number): Promise<boolean>;
   getStatus(): Promise<ProviderHealthSnapshot>;
   recordSuccess(): Promise<ProviderHealthSnapshot>;
   recordFailure(): Promise<ProviderHealthSnapshot>;
   recordImmediateFailure(): Promise<ProviderHealthSnapshot>;
+  recordCooldownUntil(
+    until: number,
+    reason: HealthCooldownReason,
+  ): Promise<ProviderHealthSnapshot>;
+  rotate(ids: string[], advance: boolean): Promise<string | null>;
+  claimLease(name: string, ttlMs: number): Promise<LeaseGrant | null>;
+  prepareResetLease(
+    name: string,
+    owner: string,
+    operation: ResetOperation,
+    ttlMs: number,
+  ): Promise<ResetOperation | null>;
+  releaseLease(
+    name: string,
+    owner: string,
+    holdMs: number,
+    completed: boolean,
+  ): Promise<void>;
   clear(): Promise<ProviderHealthSnapshot>;
 }
 
 export interface SessionAffinityResolveOptions {
+  roundRobinProviderIds?: readonly string[];
   contextManagement?: boolean;
   initialProviderIds?: readonly string[];
 }

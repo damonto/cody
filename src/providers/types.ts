@@ -3,7 +3,7 @@ import type { ProviderConfig } from "../config/types.ts";
 import type { GatewayEndpoint, ApiProtocol } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
 import type { UpstreamTransport } from "../gateway/transport/index.ts";
-import type { ResolvedCredentialFor } from "./credentials.ts";
+import type { ResolvedCredentialForProvider } from "./credentials.ts";
 import type { Bindings } from "../platform/bindings.ts";
 
 export interface ProviderRuntimeContext extends Omit<
@@ -56,7 +56,7 @@ export interface ProviderAdapter<
   ): boolean;
   prepare(
     provider: Provider,
-    credential: ResolvedCredentialFor<Provider["credentials"][number]["auth"]>,
+    credential: ResolvedCredentialForProvider<Provider["type"]>,
     input: ProviderRequest,
     context?: ProviderRuntimeContext,
   ): PreparedUpstreamRequest | Promise<PreparedUpstreamRequest>;

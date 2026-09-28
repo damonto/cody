@@ -2,6 +2,7 @@ import type {
   CredentialAuth,
   ProviderConfig,
   ProviderCredentialConfig,
+  ProviderType,
 } from "../config/types.ts";
 import {
   accountReply,
@@ -9,6 +10,7 @@ import {
   proxyConfigurationSchema,
   resolvedOAuthSchema,
 } from "./oauth/schema.ts";
+import { z } from "zod";
 import { providerConnection } from "./outbound.ts";
 import type { ProviderRuntimeContext } from "./types.ts";
 
@@ -16,17 +18,32 @@ export interface ResolvedApiKey {
   readonly type: "api_key";
   readonly token: string;
 }
-export interface ResolvedOAuth {
+export interface ResolvedAntigravityOAuth {
   readonly type: "oauth";
+  readonly provider: "antigravity";
   readonly token: string;
   readonly project_id: string;
   readonly account_ref: string;
 }
+export interface ResolvedCodexOAuth {
+  readonly type: "oauth";
+  readonly provider: "codex";
+  readonly token: string;
+  readonly account_id: string;
+  readonly is_fedramp?: boolean;
+  readonly account_ref: string;
+}
+export type ResolvedOAuth = ResolvedAntigravityOAuth | ResolvedCodexOAuth;
 export type ResolvedCredential = ResolvedApiKey | ResolvedOAuth;
 export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
   ResolvedCredential,
   { type: Auth["type"] }
 >;
+/** The credential shape each provider adapter receives after resolution. */
+export type ResolvedCredentialForProvider<Type extends ProviderType> =
+  Type extends "ai_gateway"
+    ? ResolvedApiKey
+    : Extract<ResolvedOAuth, { provider: Type }>;
 export interface CredentialContext extends ProviderRuntimeContext {
   readonly provider: ProviderConfig;
   readonly credential: ProviderCredentialConfig;
@@ -49,12 +66,18 @@ const apiKeyResolver: CredentialResolver<
   },
   sensitiveValues: (auth) => [auth.api_key],
 };
+const codexResolution = z.object({
+  account_id: z.string().min(1),
+  is_fedramp: z.boolean().optional(),
+});
+const antigravityResolution = z.object({ project_id: z.string().min(1) });
 const oauthResolver: CredentialResolver<
   Extract<CredentialAuth, { type: "oauth" }>
 > = {
   type: "oauth",
   async resolve(auth, context) {
-    if (!context || context.provider.type !== "antigravity")
+    const provider = context?.provider.type;
+    if (!context || (provider !== "antigravity" && provider !== "codex"))
       throw new OAuthError("OAuth account storage is unavailable", 503);
     const token = await accountReply(
       context.env.PROVIDER_OAUTH_ACCOUNT.getByName(auth.account_ref).run({
@@ -65,7 +88,26 @@ const oauthResolver: CredentialResolver<
       resolvedOAuthSchema,
     );
     context.requestLog?.registerSensitiveValues([token.token]);
-    return { type: "oauth", ...token, account_ref: auth.account_ref };
+    const account_ref = auth.account_ref;
+    if (provider === "codex") {
+      const { account_id, is_fedramp } = codexResolution.parse(token);
+      return {
+        type: "oauth",
+        provider,
+        token: token.token,
+        account_id,
+        ...(is_fedramp ? { is_fedramp: true } : {}),
+        account_ref,
+      };
+    }
+    const { project_id } = antigravityResolution.parse(token);
+    return {
+      type: "oauth",
+      provider,
+      token: token.token,
+      project_id,
+      account_ref,
+    };
   },
   sensitiveValues: () => [],
 };

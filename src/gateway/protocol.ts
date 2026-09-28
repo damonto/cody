@@ -29,6 +29,7 @@ export type InferencePath =
   | "chat/completions"
   | "images/generations"
   | "images/edits"
+  | "memories/trace_summarize"
   | "messages"
   | "messages/count_tokens";
 
@@ -57,6 +58,7 @@ const ENDPOINT_PROTOCOLS: Record<GatewayEndpoint, ApiProtocol | undefined> = {
   "chat/completions": "openai",
   "images/generations": "openai",
   "images/edits": "openai",
+  "memories/trace_summarize": "openai",
   models: undefined,
   health: undefined,
   sessions: undefined,
