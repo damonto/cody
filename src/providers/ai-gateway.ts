@@ -1,3 +1,7 @@
+import { ProviderType } from "../config/values.ts";
+import { ProviderTransport } from "./transport-values.ts";
+import { ApiProtocol } from "../gateway/protocol-values.ts";
+
 import type { AiGatewayProviderConfig } from "../config/types.ts";
 import {
   forwardRequestHeaders,
@@ -73,9 +77,9 @@ async function emulateClaudeCode(
 }
 
 export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
-  type: "ai_gateway",
+  type: ProviderType.AiGateway,
   supports(provider, endpoint, transport) {
-    if (transport === "websocket") {
+    if (transport === ProviderTransport.Websocket) {
       return endpoint === "responses" && provider.supports_websocket;
     }
     if (isContextManagementPath(endpoint)) {
@@ -89,7 +93,7 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
   prepare(provider, credential, input, context) {
     const { request, endpoint, transport, protocol, payload, model } = input;
     const url = upstreamUrl(provider, endpoint, new URL(request.url).search);
-    if (transport === "websocket") {
+    if (transport === ProviderTransport.Websocket) {
       return {
         url,
         headers: forwardWebSocketHeaders(request, credential.token),
@@ -100,7 +104,7 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
     // Anthropic message body for the beta to apply to.
     if (
       provider.anthropic_1m_context &&
-      protocol === "anthropic" &&
+      protocol === ApiProtocol.Anthropic &&
       endpoint !== "models" &&
       !isContextManagementPath(endpoint)
     ) {
@@ -108,7 +112,7 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
     }
     if (
       provider.emulate_claude_code &&
-      protocol === "anthropic" &&
+      protocol === ApiProtocol.Anthropic &&
       endpoint === "messages" &&
       payload !== undefined &&
       model !== undefined &&

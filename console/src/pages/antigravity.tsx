@@ -1,3 +1,5 @@
+import { ProviderType } from "../../../src/config/values.ts";
+
 import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import type { AntigravityProviderConfig } from "../../../src/config/types";
@@ -58,7 +60,7 @@ export default function Antigravity() {
       config: updateProvider(
         snapshot.config,
         snapshot.config.providers.findIndex(
-          (entry) => entry.type === "antigravity",
+          (entry) => entry.type === ProviderType.Antigravity,
         ),
         next,
       ),

@@ -1,3 +1,5 @@
+import { type HealthCooldownReason } from "../../gateway/health/values.ts";
+
 import type { ResetOperation } from "../../gateway/health/provider-health.ts";
 /**
  * Cloudflare Durable Object shells. Each class keeps its stable `class_name`
@@ -17,7 +19,7 @@ import { ResponsesWebSocketProxyCore } from "../../gateway/websocket/responses-w
 import type { AccountCommand } from "../../providers/oauth/commands.ts";
 import { ProviderOAuthAccountCore } from "../../providers/oauth/account.ts";
 import { UsageOutboxCore } from "../../telemetry/outbox.ts";
-import type { HealthCooldownReason } from "../../config/types.ts";
+
 import type { SessionAffinityResolveOptions } from "../bindings.ts";
 
 /** One object per client connection; WebSocket hibernation delivers socket events. */

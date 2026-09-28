@@ -1,3 +1,6 @@
+import { ConsumeResetCode, OAuthFlow } from "../../providers/oauth/values.ts";
+import { ProviderType } from "../../config/values.ts";
+
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -37,10 +40,11 @@ const startSchema = connectionSchema
     provider_id: oauthProviderTypeSchema,
     account_ref: z.uuid().optional(),
     version: z.number().int().nonnegative(),
-    flow: z.enum(["pkce", "device"]).default("pkce"),
+    flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   })
   .refine(
-    (input) => input.flow === "pkce" || input.provider_id === "codex",
+    (input) =>
+      input.flow === OAuthFlow.Pkce || input.provider_id === ProviderType.Codex,
     "Device authorization is only available for Codex",
   );
 const accountParam = z.object({ ref: z.uuid() });
@@ -79,7 +83,7 @@ async function clearResetCooldowns(env: Bindings, ref: string): Promise<void> {
   if (!raw) return;
   const provider = configurationSchema
     .parse(JSON.parse(raw))
-    .providers.find((provider) => provider.type === "codex");
+    .providers.find((provider) => provider.type === ProviderType.Codex);
   for (const credential of provider?.credentials ?? [])
     if (credential.auth.account_ref === ref)
       await clearCredentialHealth(env, provider!.id, credential.id);
@@ -242,7 +246,8 @@ export const oauthRoutes = new Hono<AdminContext>()
         (entry) => entry.type === providerId,
       );
       const items = await mapWithConcurrency(
-        provider?.type === "antigravity" || provider?.type === "codex"
+        provider?.type === ProviderType.Antigravity ||
+          provider?.type === ProviderType.Codex
           ? provider.credentials
           : [],
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -360,7 +365,13 @@ export const oauthRoutes = new Hono<AdminContext>()
     async (c) =>
       c.json(
         await reply(
-          (await checkedAccount(c.env, c.req.valid("param").ref, "codex")).run({
+          (
+            await checkedAccount(
+              c.env,
+              c.req.valid("param").ref,
+              ProviderType.Codex,
+            )
+          ).run({
             action: "reset_credits",
           }),
           accountViewSchema,
@@ -381,7 +392,7 @@ export const oauthRoutes = new Hono<AdminContext>()
       const ref = c.req.valid("param").ref;
       const input = c.req.valid("json");
       const result = await reply(
-        (await checkedAccount(c.env, ref, "codex")).run({
+        (await checkedAccount(c.env, ref, ProviderType.Codex)).run({
           action: "consume_reset",
           ...input,
         }),
@@ -392,7 +403,10 @@ export const oauthRoutes = new Hono<AdminContext>()
         c.get("actor"),
         `codex_reset:${ref}:${result.result.code}`,
       );
-      if (["reset", "already_redeemed"].includes(result.result.code))
+      if (
+        result.result.code === ConsumeResetCode.Reset ||
+        result.result.code === ConsumeResetCode.AlreadyRedeemed
+      )
         await clearResetCooldowns(c.env, ref);
       return c.json(result);
     },

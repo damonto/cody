@@ -1,3 +1,15 @@
+import { SessionAffinityStatus } from "./values.ts";
+
+/** Storage resolves bindings; routing adds authorization and storage errors. */
+export type ResolvedSessionAffinityStatus = Exclude<
+  SessionAffinityStatus,
+  typeof SessionAffinityStatus.Failed | typeof SessionAffinityStatus.Forbidden
+>;
+type StoredAffinityStatus = Extract<
+  SessionAffinityStatus,
+  typeof SessionAffinityStatus.Hit | typeof SessionAffinityStatus.Rebound
+>;
+
 export const SESSION_AFFINITY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE = 1000;
 
@@ -28,7 +40,7 @@ export interface SessionAffinityRecord {
 }
 
 export interface SessionAffinityResolution extends SessionAffinityRecord {
-  status: "hit" | "created" | "rebound" | "blocked";
+  status: ResolvedSessionAffinityStatus;
 }
 
 export interface AffinitySelection {
@@ -50,7 +62,7 @@ export interface StoredAffinityDecision {
   // Always present, possibly undefined: every caller computes a candidate that
   // may not exist rather than omitting the field.
   selection: AffinitySelection | undefined;
-  status: "hit" | "rebound";
+  status: StoredAffinityStatus;
 }
 
 export function chooseAffinityCandidate(
@@ -161,7 +173,7 @@ export function resolveStoredAffinity(
     (candidate) => candidate.credential_id === record.credential_id,
   );
   if (!provider || !credential) {
-    return { selection: fallback(), status: "rebound" };
+    return { selection: fallback(), status: SessionAffinityStatus.Rebound };
   }
 
   const usableProviders = candidates.filter(
@@ -171,7 +183,7 @@ export function resolveStoredAffinity(
     ...usableProviders.map((candidate) => candidate.priority),
   );
   if (provider.priority < highestProviderPriority) {
-    return { selection: fallback(), status: "rebound" };
+    return { selection: fallback(), status: SessionAffinityStatus.Rebound };
   }
 
   const highestCredentialPriority = Math.max(
@@ -180,7 +192,7 @@ export function resolveStoredAffinity(
   if (credential.priority < highestCredentialPriority) {
     return {
       selection: choosePreferredCredential(provider, preferred),
-      status: "rebound",
+      status: SessionAffinityStatus.Rebound,
     };
   }
 
@@ -189,7 +201,7 @@ export function resolveStoredAffinity(
       provider_id: record.provider_id,
       credential_id: record.credential_id,
     },
-    status: "hit",
+    status: SessionAffinityStatus.Hit,
   };
 }
 

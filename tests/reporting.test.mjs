@@ -108,6 +108,25 @@ test("report queries reject incomplete, reversed, excessive and invalid ranges",
   assert.throws(() => reportRange("custom", "UTC", 100, { from: 1, to: 101 }));
 });
 
+test("report outcome filters preserve request wire values and reject other state domains", () => {
+  for (const outcome of [
+    "pending",
+    "success",
+    "failed",
+    "cancelled",
+    "incomplete",
+  ])
+    assert.equal(reportQuerySchema.parse({ outcome }).outcome, outcome);
+  for (const outcome of [
+    "started",
+    "finished",
+    "complete",
+    "reported",
+    "error",
+  ])
+    assert.equal(reportQuerySchema.safeParse({ outcome }).success, false);
+});
+
 test("long histories use coarser buckets while short reports retain hourly detail", () => {
   const now = Date.parse("2026-09-12T04:30:00Z");
   assert.equal(reportBucketMs(reportRange("7d", "UTC", now)), HOUR_MS);

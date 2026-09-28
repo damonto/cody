@@ -1,3 +1,5 @@
+import { SessionAffinityStatus } from "../routing/values.ts";
+
 import { nextRotationCredential } from "../health/health.ts";
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 import {
@@ -132,7 +134,8 @@ export class SessionAffinityCore {
         stored &&
         (stored.context_management ||
           options.contextManagement ||
-          resolveStoredAffinity(stored, eligible, preferred).status === "hit")
+          resolveStoredAffinity(stored, eligible, preferred).status ===
+            SessionAffinityStatus.Hit)
       )
         return this.resolveBinding(
           candidates,
@@ -214,7 +217,12 @@ export class SessionAffinityCore {
                 (key) => key.credential_id === stored.credential_id,
               )
             ) {
-              return { resolution: { ...stored, status: "blocked" as const } };
+              return {
+                resolution: {
+                  ...stored,
+                  status: SessionAffinityStatus.Blocked,
+                },
+              };
             }
             const next = {
               ...stored,
@@ -222,14 +230,17 @@ export class SessionAffinityCore {
               updated_at: now,
             };
             await transaction.put(AFFINITY_STORAGE_KEY, next);
-            return { resolution: { ...next, status: "hit" as const } };
+            return {
+              resolution: { ...next, status: SessionAffinityStatus.Hit },
+            };
           }
           const decision = resolveStoredAffinity(stored, candidates, preferred);
           if (!decision.selection) {
             await transaction.delete(AFFINITY_STORAGE_KEY);
             return { resolution: undefined, obsolete: stored };
           }
-          const rotateBinding = decision.status === "rebound";
+          const rotateBinding =
+            decision.status === SessionAffinityStatus.Rebound;
           const next: SessionAffinityRecord = rotateBinding
             ? {
                 ...stored,
@@ -285,7 +296,7 @@ export class SessionAffinityCore {
         };
         await transaction.put(AFFINITY_STORAGE_KEY, next);
         return {
-          resolution: { ...next, status: "created" as const },
+          resolution: { ...next, status: SessionAffinityStatus.Created },
           ...(current ? { obsolete: current } : {}),
         };
       });

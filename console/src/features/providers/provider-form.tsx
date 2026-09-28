@@ -1,3 +1,5 @@
+import { ProviderType } from "../../../../src/config/values.ts";
+
 import { useState } from "react";
 import { useAppForm } from "@/lib/form";
 import { useSaveDraft, type Draft } from "@/lib/api";
@@ -30,7 +32,7 @@ export function ProviderForm({
   const [current] = useState(() => {
     if (index === -1) return newProvider();
     const provider = snapshot.config.providers[index];
-    if (!provider || provider.type !== "ai_gateway")
+    if (!provider || provider.type !== ProviderType.AiGateway)
       throw new Error("Provider is missing from the editing snapshot");
     return providerFormValues(provider);
   });

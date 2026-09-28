@@ -1,3 +1,8 @@
+import {
+  OAuthFlow,
+  OAuthSessionStatus,
+} from "../../../../src/providers/oauth/values.ts";
+
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { read, rpc } from "@/lib/api";
@@ -28,9 +33,9 @@ export interface AuthorizationOptions {
 }
 
 const pendingStatuses: readonly SessionView["status"][] = [
-  "pending",
-  "exchanging",
-  "initializing",
+  OAuthSessionStatus.Pending,
+  OAuthSessionStatus.Exchanging,
+  OAuthSessionStatus.Initializing,
 ];
 
 /** Owns the remote authorization lifecycle; the form only stores the stable account reference. */
@@ -60,7 +65,7 @@ export function useAuthorization({
     setId(value.id);
   };
   const start = useMutation({
-    mutationFn: async (flow: "pkce" | "device" = "pkce") => {
+    mutationFn: async (flow: OAuthFlow = OAuthFlow.Pkce) => {
       if (version !== draftVersion)
         throw new Error(
           "The draft changed. Your form is retained; reopen it from the latest draft before starting authorization.",
@@ -164,7 +169,7 @@ export function useAuthorization({
   const authorization = session.data;
   useEffect(() => {
     if (
-      authorization?.status !== "complete" ||
+      authorization?.status !== OAuthSessionStatus.Complete ||
       completed.current === authorization.id
     )
       return;

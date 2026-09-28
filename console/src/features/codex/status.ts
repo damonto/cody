@@ -1,3 +1,6 @@
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+import { HealthCooldownReason } from "../../../../src/gateway/health/values.ts";
+
 import { useEffect, useState } from "react";
 import type { CodexProviderConfig } from "../../../../src/config/types";
 import type {
@@ -43,13 +46,13 @@ export function healthBadge(
 ): HealthBadge {
   if (credential.disabled) return { text: "Disabled", tone: "muted" };
   if (!account) return { text: "Unknown", tone: "muted" };
-  if (account.status === "needs_reauthorization")
+  if (account.status === OAuthAccountViewStatus.NeedsReauthorization)
     return { text: "Reauthorize", tone: "bad" };
-  if (account.status !== "ready")
+  if (account.status !== OAuthAccountViewStatus.Ready)
     return { text: humanize(account.status), tone: "warn" };
   if (health && !health.available && health.cooling_until !== null) {
     const title = date(health.cooling_until);
-    return health.cooldown_reason === "quota"
+    return health.cooldown_reason === HealthCooldownReason.Quota
       ? {
           text: `Exhausted · back ${relative(health.cooling_until, now)}`,
           tone: "bad",

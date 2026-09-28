@@ -1,3 +1,10 @@
+import {
+  ProxyStrategy,
+  CodexAccountSelection,
+  CredentialAuthType,
+  ProviderType,
+} from "./values.ts";
+
 import { z } from "zod";
 import {
   modelPoliciesSchema,
@@ -169,7 +176,7 @@ export const proxyNodeSchema = socksProxySchema
     disabled: boolean,
   })
   .meta(socksProxySchema.meta() ?? {});
-export const proxyStrategySchema = z.enum(["random", "sticky", "priority"]);
+export const proxyStrategySchema = z.enum(ProxyStrategy);
 export const proxyGroupSchema = z.strictObject({
   id: identifierSchema,
   strategy: proxyStrategySchema,
@@ -186,7 +193,12 @@ const proxyGroupReferenceSchema = identifierSchema.nullable().optional();
 
 const credentialAuthSchema = z.discriminatedUnion(
   "type",
-  [z.strictObject({ type: z.literal("api_key"), api_key: secretSchema })],
+  [
+    z.strictObject({
+      type: z.literal(CredentialAuthType.ApiKey),
+      api_key: secretSchema,
+    }),
+  ],
   { error: "must use a supported authentication type (api_key)" },
 );
 
@@ -199,12 +211,15 @@ export const credentialSchema = z.strictObject({
 });
 export const oauthCredentialSchema = credentialSchema.extend({
   auth: z.strictObject({
-    type: z.literal("oauth"),
+    type: z.literal(CredentialAuthType.OAuth),
     account_ref: z.uuid(),
   }),
 });
 /** IDs reserved for the fixed native provider singletons. */
-export const NATIVE_PROVIDER_IDS: readonly string[] = ["antigravity", "codex"];
+export const NATIVE_PROVIDER_IDS: readonly string[] = [
+  ProviderType.Antigravity,
+  ProviderType.Codex,
+];
 const oauthCredentials = z
   .array(oauthCredentialSchema)
   .superRefine((credentials, context) => {
@@ -222,7 +237,7 @@ const oauthCredentials = z
       });
   });
 export const aiGatewayProviderSchema = z.strictObject({
-  type: z.literal("ai_gateway"),
+  type: z.literal(ProviderType.AiGateway),
   id: identifierSchema
     .superRefine((id, context) => {
       if (NATIVE_PROVIDER_IDS.includes(id))
@@ -259,8 +274,8 @@ export const aiGatewayProviderSchema = z.strictObject({
 export const antigravityDraftProviderSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
-    type: z.literal("antigravity"),
-    id: z.literal("antigravity"),
+    type: z.literal(ProviderType.Antigravity),
+    id: z.literal(ProviderType.Antigravity),
     models: nameList,
     credentials: oauthCredentials,
     supports_websocket: z.literal(false).default(false),
@@ -307,22 +322,21 @@ export const antigravityProviderSchema = publishable(
   antigravityDraftProviderSchema,
   "Antigravity",
 );
-export const codexAccountSelectionSchema = z.enum([
-  "round_robin",
-  "session_affinity",
-]);
+export const codexAccountSelectionSchema = z.enum(CodexAccountSelection);
 export const codexDraftProviderSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
-    type: z.literal("codex"),
-    id: z.literal("codex"),
+    type: z.literal(ProviderType.Codex),
+    id: z.literal(ProviderType.Codex),
     models: nameList,
     credentials: oauthCredentials,
     supports_websocket: boolean.default(true),
     supports_web_search: boolean.default(true),
     anthropic_1m_context: z.literal(false).default(false),
     emulate_claude_code: z.literal(false).default(false),
-    account_selection: codexAccountSelectionSchema.default("round_robin"),
+    account_selection: codexAccountSelectionSchema.default(
+      CodexAccountSelection.RoundRobin,
+    ),
     auto_consume_resets: boolean.default(false),
   });
 export const codexProviderSchema = publishable(
@@ -403,8 +417,8 @@ const draftShape = shape.extend({
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [type, label] of [
-    ["antigravity", "Antigravity"],
-    ["codex", "Codex"],
+    [ProviderType.Antigravity, "Antigravity"],
+    [ProviderType.Codex, "Codex"],
   ] as const) {
     if (
       config.providers.filter((provider) => provider.type === type).length > 1

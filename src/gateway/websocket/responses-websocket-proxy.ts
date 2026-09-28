@@ -1,3 +1,12 @@
+import { SessionAffinityStatus } from "../routing/values.ts";
+
+import { RequestOutcome } from "../../telemetry/values.ts";
+import { SessionPhase } from "./values.ts";
+import { ProviderType } from "../../config/values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+import { HealthFailureScope } from "../health/values.ts";
+import { ProviderTransport } from "../../providers/transport-values.ts";
+
 import { WebSocketHealth, shouldRecordUpstreamFailure } from "./health.ts";
 import {
   contextSessionIdsMatch,
@@ -10,7 +19,6 @@ import {
 import {
   LIVE_PHASES,
   WebSocketStorage,
-  type SessionPhase,
   type StoredWebSocketSession,
 } from "./storage.ts";
 import { UpstreamWebSocket } from "./upstream.ts";
@@ -152,8 +160,8 @@ function eventHeader(
 }
 
 function requestOutcomeOnClose(code: number, outcome: string) {
-  if (outcome.startsWith("client_")) return "cancelled";
-  return code === 1000 ? "incomplete" : "failed";
+  if (outcome.startsWith("client_")) return RequestOutcome.Cancelled;
+  return code === 1000 ? RequestOutcome.Incomplete : RequestOutcome.Failed;
 }
 
 export class ResponsesWebSocketProxyCore implements WebSocketHandler {
@@ -225,7 +233,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const headerSessionId = nonBlankString(request.headers.get("session-id"));
     const state: StoredWebSocketSession = {
       version: 2,
-      phase: "awaiting_first_frame",
+      phase: SessionPhase.AwaitingFirstFrame,
       request_id: requestId,
       started_at: Date.now(),
       first_frame_deadline: Date.now() + FIRST_FRAME_TIMEOUT_MS,
@@ -260,7 +268,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   async alarm(): Promise<void> {
     await this.usage.flush();
     const state = await this.storage.loadSession();
-    if (state?.phase !== "awaiting_first_frame") {
+    if (state?.phase !== SessionPhase.AwaitingFirstFrame) {
       await this.storage.scheduleAlarm();
       return;
     }
@@ -272,7 +280,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       1008,
       "response.create timeout",
       "first_frame_timeout",
-      ["awaiting_first_frame"],
+      [SessionPhase.AwaitingFirstFrame],
       gatewayErrorEvent(
         408,
         "A response.create frame was not received in time",
@@ -304,7 +312,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       expectedPhases,
       (state) => ({
         ...state,
-        phase: "closed",
+        phase: SessionPhase.Closed,
       }),
     );
     if (!transition) {
@@ -407,7 +415,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     receivedAt = Date.now(),
   ): Promise<void> {
     const state = await this.storage.loadSession();
-    if (state?.phase !== "open") {
+    if (state?.phase !== SessionPhase.Open) {
       return;
     }
     const payload =
@@ -416,7 +424,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const usageLimit =
       payload?.type === "error" &&
       status === 429 &&
-      state.selected_provider_type === "codex"
+      state.selected_provider_type === ProviderType.Codex
         ? codexUsageLimitFromError(payload, (name) =>
             eventHeader(payload, name),
           )
@@ -464,7 +472,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
 
     if (payload.type === "response.completed") {
       if (meter) {
-        this.usage.finish(meter, "success");
+        this.usage.finish(meter, RequestOutcome.Success);
       }
       await this.health.complete();
       return;
@@ -476,7 +484,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       if (meter) {
         this.usage.finish(
           meter,
-          payload.type === "response.failed" ? "failed" : "incomplete",
+          payload.type === "response.failed"
+            ? RequestOutcome.Failed
+            : RequestOutcome.Incomplete,
           status ?? null,
         );
       }
@@ -485,15 +495,18 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
     if (payload.type === "error") {
       if (meter) {
-        this.usage.finish(meter, "failed", status ?? null);
+        this.usage.finish(meter, RequestOutcome.Failed, status ?? null);
       }
       await this.health.inactive();
       // Codex frame status, as above.
       const keyFailure =
         usageLimit !== undefined ||
         (status !== undefined &&
-          healthFailureScope(status, "openai", state.selected_provider_type) ===
-            "credential");
+          healthFailureScope(
+            status,
+            ApiProtocol.Openai,
+            state.selected_provider_type,
+          ) === HealthFailureScope.Credential);
       await this.closeAll(
         1011,
         keyFailure
@@ -515,7 +528,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       await this.health.fail();
     }
     const outcome =
-      state?.phase === "connecting" && upstreamFailed
+      state?.phase === SessionPhase.Connecting && upstreamFailed
         ? "upstream_closed_during_connect"
         : upstreamFailed
           ? "upstream_closed_during_response"
@@ -546,15 +559,18 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     contextManagement: boolean,
   ): Promise<"switch" | undefined> {
     const { frame, sessionId } = attempt;
-    const connecting = await this.storage.transition(["routing"], (state) => ({
-      ...state,
-      phase: "connecting",
-      ...(sessionId ? { current_session_id: sessionId } : {}),
-      selected_provider_id: target.provider.id,
-      selected_provider_type: target.provider.type,
-      selected_credential_id: target.credential.id,
-      ...(contextManagement ? { context_management: true } : {}),
-    }));
+    const connecting = await this.storage.transition(
+      [SessionPhase.Routing],
+      (state) => ({
+        ...state,
+        phase: SessionPhase.Connecting,
+        ...(sessionId ? { current_session_id: sessionId } : {}),
+        selected_provider_id: target.provider.id,
+        selected_provider_type: target.provider.type,
+        selected_credential_id: target.credential.id,
+        ...(contextManagement ? { context_management: true } : {}),
+      }),
+    );
     if (!connecting) {
       return;
     }
@@ -566,7 +582,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     );
 
     const current = await this.storage.loadSession();
-    if (current?.phase !== "connecting") {
+    if (current?.phase !== SessionPhase.Connecting) {
       const socket = result.response?.webSocket;
       if (socket) {
         // A late upgrade has not been accepted by the upstream transport yet.
@@ -618,8 +634,8 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       if (result.usageLimit) {
         const body = await upstreamErrorText(response);
         const routing = await this.storage.transition(
-          ["connecting"],
-          (state) => ({ ...state, phase: "routing" }),
+          [SessionPhase.Connecting],
+          (state) => ({ ...state, phase: SessionPhase.Routing }),
         );
         if (!routing) return;
         await this.excludeAccount(
@@ -630,8 +646,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         return "switch";
       }
       if (
-        healthFailureScope(response.status, "openai", target.provider.type) ===
-        "provider"
+        healthFailureScope(
+          response.status,
+          ApiProtocol.Openai,
+          target.provider.type,
+        ) === HealthFailureScope.Provider
       ) {
         await this.health.fail();
       }
@@ -679,12 +698,15 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
 
-    const opened = await this.storage.transition(["connecting"], (state) => ({
-      ...state,
-      phase: "open",
-      active_response: true,
-      response_outcome_recorded: false,
-    }));
+    const opened = await this.storage.transition(
+      [SessionPhase.Connecting],
+      (state) => ({
+        ...state,
+        phase: SessionPhase.Open,
+        active_response: true,
+        response_outcome_recorded: false,
+      }),
+    );
     if (!opened) {
       this.upstream.discard(socket);
       return;
@@ -754,10 +776,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
 
     const claimed = await this.storage.transition(
-      ["awaiting_first_frame"],
+      [SessionPhase.AwaitingFirstFrame],
       (latest) => ({
         ...latest,
-        phase: "routing",
+        phase: SessionPhase.Routing,
       }),
     );
     if (!claimed) {
@@ -769,14 +791,14 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       receivedAt,
     );
     await this.storage.scheduleAlarm();
-    if ((await this.storage.loadSession())?.phase !== "routing") {
+    if ((await this.storage.loadSession())?.phase !== SessionPhase.Routing) {
       return;
     }
 
     const routingContext = await this.currentRoutingContext(claimed.next);
     if (
       !routingContext ||
-      (await this.storage.loadSession())?.phase !== "routing"
+      (await this.storage.loadSession())?.phase !== SessionPhase.Routing
     ) {
       return;
     }
@@ -809,7 +831,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       frame.model,
       {
         endpoint: "responses",
-        transport: "websocket",
+        transport: ProviderTransport.Websocket,
         requiredCapabilities: [
           "supports_websocket",
           ...(contextManagement
@@ -874,7 +896,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
             : {}),
         },
       );
-      if (selection.affinity?.status === "failed") {
+      if (selection.affinity?.status === SessionAffinityStatus.Failed) {
         logWarn("websocket.affinity.failed", {
           request_id: attempt.requestId,
           error: selection.affinity.error,
@@ -921,7 +943,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       }
       attempt.target = target;
       // A Codex frame may still move accounts; it is metered once it settles.
-      if (target.provider.type !== "codex")
+      if (target.provider.type !== ProviderType.Codex)
         await this.usage.select(attempt.meter, routingContext, target);
       const outcome = await this.connectUpstream(
         attempt,
@@ -939,9 +961,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   ): Promise<void> {
     const status = selection.affinity?.status;
     const resetsAt =
-      status === "blocked"
+      status === SessionAffinityStatus.Blocked
         ? blockedCodexQuotaResetsAt(selection)
-        : status === "forbidden" || status === "failed"
+        : status === SessionAffinityStatus.Forbidden ||
+            status === SessionAffinityStatus.Failed
           ? undefined
           : codexQuotaResetsAt(
               attempt.route.targets,
@@ -1005,12 +1028,15 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     });
     try {
       this.upstream.close(1000, "codex account exhausted");
-      const routing = await this.storage.transition(["open"], (state) => ({
-        ...state,
-        phase: "routing",
-        active_response: false,
-        response_outcome_recorded: false,
-      }));
+      const routing = await this.storage.transition(
+        [SessionPhase.Open],
+        (state) => ({
+          ...state,
+          phase: SessionPhase.Routing,
+          active_response: false,
+          response_outcome_recorded: false,
+        }),
+      );
       if (!routing) return;
       await this.excludeAccount(attempt, limit, error);
       await this.routeFirstFrame(attempt);
@@ -1025,7 +1051,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const attempt = this.attempt;
     if (!attempt) return;
     this.attempt = undefined;
-    if (attempt.target?.provider.type === "codex")
+    if (attempt.target?.provider.type === ProviderType.Codex)
       await this.usage.select(
         attempt.meter,
         attempt.routingContext,
@@ -1067,7 +1093,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           return;
         }
         const current = await this.storage.loadSession();
-        if (current?.phase !== "open") {
+        if (current?.phase !== SessionPhase.Open) {
           return;
         }
         const frame = parsedFrame.frame;
@@ -1079,7 +1105,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           frame.model,
           {
             endpoint: "responses",
-            transport: "websocket",
+            transport: ProviderTransport.Websocket,
             requiredCapabilities: [
               "supports_websocket",
               ...(contextManagement
@@ -1138,13 +1164,16 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           );
           return;
         }
-        const activated = await this.storage.transition(["open"], (latest) => ({
-          ...latest,
-          ...(sessionId ? { current_session_id: sessionId } : {}),
-          ...(activeContextManagement ? { context_management: true } : {}),
-          active_response: true,
-          response_outcome_recorded: false,
-        }));
+        const activated = await this.storage.transition(
+          [SessionPhase.Open],
+          (latest) => ({
+            ...latest,
+            ...(sessionId ? { current_session_id: sessionId } : {}),
+            ...(activeContextManagement ? { context_management: true } : {}),
+            active_response: true,
+            response_outcome_recorded: false,
+          }),
+        );
         const selectedTarget = targetFromRoute(route, current);
         if (!selectedTarget) {
           safeSend(
@@ -1197,14 +1226,14 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     receivedAt: number,
   ): Promise<void> {
     const state = await this.storage.loadSession();
-    if (!state || state.phase === "closed") {
+    if (!state || state.phase === SessionPhase.Closed) {
       return;
     }
-    if (state.phase === "awaiting_first_frame") {
+    if (state.phase === SessionPhase.AwaitingFirstFrame) {
       await this.processFirstFrame(message, receivedAt);
       return;
     }
-    if (state.phase === "open") {
+    if (state.phase === SessionPhase.Open) {
       await this.processOpenMessage(state, message, receivedAt);
     }
   }

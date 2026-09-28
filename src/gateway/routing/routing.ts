@@ -1,3 +1,9 @@
+import { SessionAffinityStatus } from "./values.ts";
+import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
+
+import { HealthScope } from "../health/values.ts";
+import { type ProviderTransport } from "../../providers/transport-values.ts";
+
 import {
   chooseAffinityCandidate,
   sessionAffinityIdentity,
@@ -12,15 +18,11 @@ import {
   getCredentialAvailability,
   getProviderAvailability,
   nextRotationCredential,
-  type HealthScope,
   type ProviderAvailability,
 } from "../health/health.ts";
 import { errorMessage } from "../../shared/log.ts";
 import { providerSupportsEndpoint } from "../../providers/index.ts";
-import type {
-  ProviderEndpoint,
-  ProviderTransport,
-} from "../../providers/types.ts";
+import type { ProviderEndpoint } from "../../providers/types.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -65,7 +67,7 @@ interface CredentialSelectionCheck extends ProviderAvailability {
 }
 
 interface SelectionAffinity {
-  status: "hit" | "created" | "rebound" | "failed" | "blocked" | "forbidden";
+  status: SessionAffinityStatus;
   error?: string;
   context_management?: boolean;
   /** The binding a blocked context session is waiting for. */
@@ -363,8 +365,8 @@ async function preferredCandidate(
     candidates.find(({ provider }) => provider.id === selection.provider_id);
   if (
     !selection ||
-    routed?.provider.type !== "codex" ||
-    routed.provider.account_selection !== "round_robin"
+    routed?.provider.type !== ProviderType.Codex ||
+    routed.provider.account_selection !== CodexAccountSelection.RoundRobin
   )
     return selection;
   const priority = Math.max(
@@ -468,7 +470,7 @@ export async function selectAvailableTargetWithDetails(
     contextManagement
       ? providers.filter(({ provider }) => provider.supports_context_management)
       : providers,
-    options.scope ?? "inference",
+    options.scope ?? HealthScope.Inference,
   );
   const availability = {
     ...evaluated,
@@ -490,7 +492,7 @@ export async function selectAvailableTargetWithDetails(
       target: undefined,
       checks: availability.checks,
       credentialChecks: availability.credentialChecks,
-      affinity: { status: "blocked" },
+      affinity: { status: SessionAffinityStatus.Blocked },
     };
   }
   if (options.session) {
@@ -506,8 +508,8 @@ export async function selectAvailableTargetWithDetails(
         roundRobinProviderIds: availability.candidates
           .filter(
             ({ provider }) =>
-              provider.type === "codex" &&
-              provider.account_selection === "round_robin",
+              provider.type === ProviderType.Codex &&
+              provider.account_selection === CodexAccountSelection.RoundRobin,
           )
           .map(({ provider }) => provider.id),
         contextManagement,
@@ -518,13 +520,13 @@ export async function selectAvailableTargetWithDetails(
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
       }
-      if (resolution.status === "blocked") {
+      if (resolution.status === SessionAffinityStatus.Blocked) {
         return {
           target: undefined,
           checks: availability.checks,
           credentialChecks: availability.credentialChecks,
           affinity: {
-            status: "blocked",
+            status: SessionAffinityStatus.Blocked,
             provider_id: resolution.provider_id,
             credential_id: resolution.credential_id,
           },
@@ -540,7 +542,7 @@ export async function selectAvailableTargetWithDetails(
             target: undefined,
             checks: availability.checks,
             credentialChecks: availability.credentialChecks,
-            affinity: { status: "forbidden" },
+            affinity: { status: SessionAffinityStatus.Forbidden },
           };
         }
       }
@@ -568,7 +570,10 @@ export async function selectAvailableTargetWithDetails(
         target: undefined,
         checks: availability.checks,
         credentialChecks: availability.credentialChecks,
-        affinity: { status: "failed", error: errorMessage(error) },
+        affinity: {
+          status: SessionAffinityStatus.Failed,
+          error: errorMessage(error),
+        },
       };
     }
   }
@@ -596,7 +601,7 @@ export async function selectAvailableCatalogTargetsWithDetails(
   const availability = await evaluateAvailability(
     env,
     routedProviders,
-    "catalog",
+    HealthScope.Catalog,
   );
   const targets = availability.candidates.flatMap(
     ({ provider, credentials }) => {
@@ -615,7 +620,7 @@ export async function targetIsAvailableForRoute(
   env: Bindings,
   route: ModelRoute,
   target: ModelProviderTarget,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<boolean> {
   const routed = route.targets.find(
     ({ provider }) => provider.id === target.provider.id,

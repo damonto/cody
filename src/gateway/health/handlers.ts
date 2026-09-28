@@ -1,3 +1,5 @@
+import { HealthScope } from "./values.ts";
+
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import type { RequestLogContext } from "../../shared/log.ts";
 import { jsonResponse, openAiError } from "../http/http.ts";
@@ -5,13 +7,14 @@ import {
   clearCredentialHealth,
   clearProviderHealth,
   listCoolingHealth,
-  type HealthScope,
 } from "./health.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 function healthScope(incomingUrl: URL): HealthScope | undefined {
-  const scope = incomingUrl.searchParams.get("scope") ?? "inference";
-  return scope === "inference" || scope === "catalog" ? scope : undefined;
+  const scope = incomingUrl.searchParams.get("scope") ?? HealthScope.Inference;
+  return scope === HealthScope.Inference || scope === HealthScope.Catalog
+    ? scope
+    : undefined;
 }
 
 function invalidHealthScope(): Response {

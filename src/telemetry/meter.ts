@@ -1,4 +1,14 @@
 import {
+  RequestOutcome,
+  UsagePhase,
+  UsageTransport,
+  ContextSource,
+} from "./values.ts";
+import { UsageStatus, BillingStatus } from "../billing/values.ts";
+import { type ApiProtocol } from "../gateway/protocol-values.ts";
+import type { TerminalRequestOutcome } from "./values.ts";
+
+import {
   calculateCost,
   emptyCost,
   priceVersion,
@@ -9,11 +19,11 @@ import {
   type NormalizedUsage,
 } from "../billing/types.ts";
 import type { GatewayConfig } from "../config/types.ts";
-import type { ApiProtocol } from "../gateway/protocol.ts";
+
 import { logWarn, type LogExecutionContext } from "../shared/log.ts";
 import { deltaSignal, generationSignal } from "./generation.ts";
 import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
-import type { AttemptRecord, RequestOutcome, UsageEvent } from "./types.ts";
+import type { AttemptRecord, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
 
 export interface UsageSink {
@@ -95,7 +105,7 @@ export class RequestMeter {
     this.data = {
       schema_version: 2,
       sequence: 0,
-      phase: "started",
+      phase: UsagePhase.Started,
       request_id: options.requestId,
       connection_id: options.connectionId ?? null,
       response_id: null,
@@ -110,9 +120,11 @@ export class RequestMeter {
       endpoint: options.endpoint,
       method: options.method,
       protocol: options.protocol,
-      transport: options.websocket ? "websocket" : "http",
+      transport: options.websocket
+        ? UsageTransport.Websocket
+        : UsageTransport.Http,
       kind: "inference",
-      outcome: "pending",
+      outcome: RequestOutcome.Pending,
       http_status: null,
       diagnostic_code: null,
       duration_ms: null,
@@ -121,7 +133,7 @@ export class RequestMeter {
       first_text_ms: null,
       context_tokens: null,
       context_window: null,
-      context_source: "unavailable",
+      context_source: ContextSource.Unavailable,
       config_revision: null,
       observation_issue: null,
       usage: this.accumulator.snapshot(),
@@ -144,7 +156,7 @@ export class RequestMeter {
         });
         return false;
       });
-    if (snapshot.phase === "finished") this.terminalDelivery = task;
+    if (snapshot.phase === UsagePhase.Finished) this.terminalDelivery = task;
     this.work.push(task);
     this.options.executionContext?.waitUntil?.(task);
     return snapshot;
@@ -296,7 +308,7 @@ export class RequestMeter {
       payload.error ||
       response?.status === "failed"
     ) {
-      this.data.outcome = "failed";
+      this.data.outcome = RequestOutcome.Failed;
       this.data.diagnostic_code =
         name(record(payload.error ?? response?.error)?.code) ||
         "upstream_stream_error";
@@ -305,17 +317,17 @@ export class RequestMeter {
       response?.status === "incomplete" ||
       payload.status === "incomplete"
     ) {
-      this.data.outcome = "incomplete";
+      this.data.outcome = RequestOutcome.Incomplete;
     }
   }
 
   finish(
-    outcome: Exclude<RequestOutcome, "pending">,
+    outcome: TerminalRequestOutcome,
     status: number | null = this.data.http_status,
   ): UsageEvent {
     if (this.finished) return structuredClone(this.data);
     this.finished = true;
-    this.data.phase = "finished";
+    this.data.phase = UsagePhase.Finished;
     this.data.sequence = 2;
     this.data.finished_at = this.now();
     this.data.duration_ms = Math.max(
@@ -324,15 +336,17 @@ export class RequestMeter {
     );
     this.data.http_status = status;
     if (
-      this.data.outcome === "pending" ||
-      outcome === "cancelled" ||
-      outcome === "failed"
+      this.data.outcome === RequestOutcome.Pending ||
+      outcome === RequestOutcome.Cancelled ||
+      outcome === RequestOutcome.Failed
     )
       this.data.outcome = outcome;
     const usage = this.accumulator.snapshot(this.policy);
     this.data.context_tokens = usage.tokens.input_tokens;
     this.data.context_source =
-      usage.tokens.input_tokens === null ? "unavailable" : "reported_input";
+      usage.tokens.input_tokens === null
+        ? ContextSource.Unavailable
+        : ContextSource.ReportedInput;
     this.data.usage = usage;
     const version = this.policy
       ? priceVersion(
@@ -343,9 +357,9 @@ export class RequestMeter {
       : null;
     try {
       this.data.billing =
-        usage.status !== "invalid"
+        usage.status !== UsageStatus.Invalid
           ? calculateCost(usage.tokens, this.policy, version)
-          : emptyCost("unknown");
+          : emptyCost(BillingStatus.Unknown);
       const last = this.data.attempts.at(-1);
       if (last) {
         last.usage = structuredClone(usage);
@@ -354,17 +368,19 @@ export class RequestMeter {
       for (const attempt of this.data.attempts.slice(0, -1)) {
         if (!attempt.usage) {
           this.data.usage.status =
-            this.data.usage.status === "invalid" ? "invalid" : "partial";
-          if (this.data.billing.status === "complete")
-            this.data.billing.status = "partial";
+            this.data.usage.status === UsageStatus.Invalid
+              ? UsageStatus.Invalid
+              : UsageStatus.Partial;
+          if (this.data.billing.status === BillingStatus.Complete)
+            this.data.billing.status = BillingStatus.Partial;
           continue;
         }
         const previousUsage = new UsageAccumulator(this.options.protocol);
         previousUsage.add(attempt.usage.raw);
         attempt.usage = previousUsage.snapshot(this.policy);
         attempt.billing =
-          attempt.usage.status === "invalid"
-            ? emptyCost("unknown")
+          attempt.usage.status === UsageStatus.Invalid
+            ? emptyCost(BillingStatus.Unknown)
             : calculateCost(attempt.usage.tokens, this.policy, version);
         for (const field of USAGE_FIELDS) {
           const previous = attempt.usage.tokens[field];
@@ -390,25 +406,28 @@ export class RequestMeter {
             this.data.billing[field] = total;
           }
         }
-        if (attempt.usage.status === "invalid")
-          this.data.usage.status = "invalid";
+        if (attempt.usage.status === UsageStatus.Invalid)
+          this.data.usage.status = UsageStatus.Invalid;
         else if (
-          attempt.usage.status !== "reported" &&
-          this.data.usage.status !== "invalid"
+          attempt.usage.status !== UsageStatus.Reported &&
+          this.data.usage.status !== UsageStatus.Invalid
         )
-          this.data.usage.status = "partial";
+          this.data.usage.status = UsageStatus.Partial;
         if (
-          attempt.billing.status !== "complete" &&
-          this.data.billing.status === "complete"
+          attempt.billing.status !== BillingStatus.Complete &&
+          this.data.billing.status === BillingStatus.Complete
         )
-          this.data.billing.status = "partial";
+          this.data.billing.status = BillingStatus.Partial;
       }
     } catch {
-      this.data.billing = emptyCost("unknown");
+      this.data.billing = emptyCost(BillingStatus.Unknown);
       this.issue("billing_calculation_failed");
     }
-    if (this.data.observation_issue && this.data.usage.status === "reported")
-      this.data.usage.status = "partial";
+    if (
+      this.data.observation_issue &&
+      this.data.usage.status === UsageStatus.Reported
+    )
+      this.data.usage.status = UsageStatus.Partial;
     return this.send(this.data);
   }
 
@@ -417,13 +436,16 @@ export class RequestMeter {
     this.wrapped = true;
     this.data.http_status = response.status;
     if (!response.body) {
-      this.finish(response.ok ? "success" : "failed", response.status);
+      this.finish(
+        response.ok ? RequestOutcome.Success : RequestOutcome.Failed,
+        response.status,
+      );
       return response;
     }
     const contentType =
       response.headers.get("content-type")?.toLowerCase() ?? "";
     const sse = contentType.includes("text/event-stream");
-    if (sse) this.data.transport = "sse";
+    if (sse) this.data.transport = UsageTransport.Sse;
     const json =
       !sse &&
       (contentType.includes("application/json") ||
@@ -477,12 +499,15 @@ export class RequestMeter {
               sse &&
               response.ok &&
               !this.streamCompleted &&
-              this.data.outcome === "pending"
+              this.data.outcome === RequestOutcome.Pending
             ) {
               this.issue("stream_ended_without_completion");
-              this.finish("incomplete", response.status);
+              this.finish(RequestOutcome.Incomplete, response.status);
             } else
-              this.finish(response.ok ? "success" : "failed", response.status);
+              this.finish(
+                response.ok ? RequestOutcome.Success : RequestOutcome.Failed,
+                response.status,
+              );
             controller.close();
           } else {
             try {
@@ -494,12 +519,12 @@ export class RequestMeter {
           }
         } catch (error) {
           this.issue("upstream_stream_read_failed");
-          this.finish("failed", response.status);
+          this.finish(RequestOutcome.Failed, response.status);
           controller.error(error);
         }
       },
       cancel: async (reason) => {
-        this.finish("cancelled", response.status);
+        this.finish(RequestOutcome.Cancelled, response.status);
         await reader.cancel(reason);
       },
     });

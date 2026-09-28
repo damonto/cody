@@ -1,8 +1,9 @@
+import { CredentialAuthType, ProviderType } from "../config/values.ts";
+
 import type {
   CredentialAuth,
   ProviderConfig,
   ProviderCredentialConfig,
-  ProviderType,
 } from "../config/types.ts";
 import {
   accountReply,
@@ -15,19 +16,19 @@ import { providerConnection } from "./outbound.ts";
 import type { ProviderRuntimeContext } from "./types.ts";
 
 export interface ResolvedApiKey {
-  readonly type: "api_key";
+  readonly type: typeof CredentialAuthType.ApiKey;
   readonly token: string;
 }
 export interface ResolvedAntigravityOAuth {
-  readonly type: "oauth";
-  readonly provider: "antigravity";
+  readonly type: typeof CredentialAuthType.OAuth;
+  readonly provider: typeof ProviderType.Antigravity;
   readonly token: string;
   readonly project_id: string;
   readonly account_ref: string;
 }
 export interface ResolvedCodexOAuth {
-  readonly type: "oauth";
-  readonly provider: "codex";
+  readonly type: typeof CredentialAuthType.OAuth;
+  readonly provider: typeof ProviderType.Codex;
   readonly token: string;
   readonly account_id: string;
   readonly is_fedramp?: boolean;
@@ -41,7 +42,7 @@ export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
 >;
 /** The credential shape each provider adapter receives after resolution. */
 export type ResolvedCredentialForProvider<Type extends ProviderType> =
-  Type extends "ai_gateway"
+  Type extends typeof ProviderType.AiGateway
     ? ResolvedApiKey
     : Extract<ResolvedOAuth, { provider: Type }>;
 export interface CredentialContext extends ProviderRuntimeContext {
@@ -58,11 +59,11 @@ export interface CredentialResolver<Auth extends CredentialAuth> {
   sensitiveValues(auth: Auth): readonly string[];
 }
 const apiKeyResolver: CredentialResolver<
-  Extract<CredentialAuth, { type: "api_key" }>
+  Extract<CredentialAuth, { type: typeof CredentialAuthType.ApiKey }>
 > = {
-  type: "api_key",
+  type: CredentialAuthType.ApiKey,
   async resolve(auth) {
-    return { type: "api_key", token: auth.api_key };
+    return { type: CredentialAuthType.ApiKey, token: auth.api_key };
   },
   sensitiveValues: (auth) => [auth.api_key],
 };
@@ -72,12 +73,15 @@ const codexResolution = z.object({
 });
 const antigravityResolution = z.object({ project_id: z.string().min(1) });
 const oauthResolver: CredentialResolver<
-  Extract<CredentialAuth, { type: "oauth" }>
+  Extract<CredentialAuth, { type: typeof CredentialAuthType.OAuth }>
 > = {
-  type: "oauth",
+  type: CredentialAuthType.OAuth,
   async resolve(auth, context) {
     const provider = context?.provider.type;
-    if (!context || (provider !== "antigravity" && provider !== "codex"))
+    if (
+      !context ||
+      (provider !== ProviderType.Antigravity && provider !== ProviderType.Codex)
+    )
       throw new OAuthError("OAuth account storage is unavailable", 503);
     const token = await accountReply(
       context.env.PROVIDER_OAUTH_ACCOUNT.getByName(auth.account_ref).run({
@@ -89,10 +93,10 @@ const oauthResolver: CredentialResolver<
     );
     context.requestLog?.registerSensitiveValues([token.token]);
     const account_ref = auth.account_ref;
-    if (provider === "codex") {
+    if (provider === ProviderType.Codex) {
       const { account_id, is_fedramp } = codexResolution.parse(token);
       return {
-        type: "oauth",
+        type: CredentialAuthType.OAuth,
         provider,
         token: token.token,
         account_id,
@@ -102,7 +106,7 @@ const oauthResolver: CredentialResolver<
     }
     const { project_id } = antigravityResolution.parse(token);
     return {
-      type: "oauth",
+      type: CredentialAuthType.OAuth,
       provider,
       token: token.token,
       project_id,
@@ -115,14 +119,14 @@ export function resolveCredential(
   credential: ProviderCredentialConfig,
   context?: CredentialContext,
 ): Promise<ResolvedCredential> {
-  return credential.auth.type === "api_key"
+  return credential.auth.type === CredentialAuthType.ApiKey
     ? apiKeyResolver.resolve(credential.auth, context)
     : oauthResolver.resolve(credential.auth, context);
 }
 export function credentialSecretValues(
   credential: ProviderCredentialConfig,
 ): readonly string[] {
-  return credential.auth.type === "api_key"
+  return credential.auth.type === CredentialAuthType.ApiKey
     ? apiKeyResolver.sensitiveValues(credential.auth)
     : oauthResolver.sensitiveValues(credential.auth);
 }

@@ -1,3 +1,4 @@
+import { RequestOutcome } from "../../../../src/telemetry/values.ts";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
@@ -211,10 +212,13 @@ export function OutcomeTimeline({
                 <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
                   {(
                     [
-                      ["success", chosen.totals.success_count],
-                      ["failed", chosen.totals.failed_count],
-                      ["cancelled", chosen.totals.cancelled_count],
-                      ["incomplete", chosen.totals.incomplete_count],
+                      [RequestOutcome.Success, chosen.totals.success_count],
+                      [RequestOutcome.Failed, chosen.totals.failed_count],
+                      [RequestOutcome.Cancelled, chosen.totals.cancelled_count],
+                      [
+                        RequestOutcome.Incomplete,
+                        chosen.totals.incomplete_count,
+                      ],
                     ] as const
                   ).map(([outcome, count]) =>
                     retained ? (

@@ -1,3 +1,5 @@
+import { UsagePhase } from "../../../src/telemetry/values.ts";
+
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Clock, Coins, Layers } from "lucide-react";
@@ -274,7 +276,7 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
     queryFn: ({ signal }) =>
       read(rpc.requests[":id"].$get({ param: { id } }, { init: { signal } })),
     refetchInterval: (query) =>
-      query.state.data?.phase === "started" ? 5_000 : false,
+      query.state.data?.phase === UsagePhase.Started ? 5_000 : false,
   });
   if (detail.isPending) return <Loading />;
   if (detail.error)

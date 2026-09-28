@@ -1,3 +1,9 @@
+import {
+  CodexAccountSelection,
+  CredentialAuthType,
+  ProviderType,
+} from "../../../../src/config/values.ts";
+
 import { z } from "zod";
 import {
   codexDraftProviderSchema,
@@ -26,12 +32,12 @@ export function newAccount(): AccountFormValues {
     id: `account-${rowId}`,
     priority: 100,
     disabled: false,
-    auth: { type: "oauth", account_ref: "" },
+    auth: { type: CredentialAuthType.OAuth, account_ref: "" },
   };
 }
 export function newCodexProvider(): CodexProviderConfig {
   return {
-    type: "codex",
+    type: ProviderType.Codex,
     id: "codex",
     priority: 100,
     disabled: true,
@@ -42,13 +48,13 @@ export function newCodexProvider(): CodexProviderConfig {
     supports_web_search: true,
     anthropic_1m_context: false,
     emulate_claude_code: false,
-    account_selection: "round_robin",
+    account_selection: CodexAccountSelection.RoundRobin,
     auto_consume_resets: false,
   };
 }
 export function codexProvider(config: GatewayConfig): CodexProviderConfig {
   return (
-    config.providers.find((provider) => provider.type === "codex") ??
+    config.providers.find((provider) => provider.type === ProviderType.Codex) ??
     newCodexProvider()
   );
 }

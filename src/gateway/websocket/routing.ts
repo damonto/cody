@@ -1,3 +1,5 @@
+import { SessionAffinityStatus } from "../routing/values.ts";
+
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import { logWarn } from "../../shared/log.ts";
 import {
@@ -92,7 +94,7 @@ export async function validateCurrentTarget(
     contextManagement,
     session: { clientId: client.id, sessionId },
   });
-  if (selection.affinity?.status === "failed") {
+  if (selection.affinity?.status === SessionAffinityStatus.Failed) {
     logWarn("websocket.affinity.failed", {
       request_id: state.request_id,
       error: selection.affinity.error,
@@ -115,19 +117,19 @@ export function unavailableTargetError(
   model: string,
 ): string {
   switch (selection.affinity?.status) {
-    case "forbidden":
+    case SessionAffinityStatus.Forbidden:
       return gatewayErrorEvent(
         403,
         "This context session belongs to another client",
         "context_session_forbidden",
       );
-    case "failed":
+    case SessionAffinityStatus.Failed:
       return gatewayErrorEvent(
         503,
         "The session binding store is unavailable",
         "session_affinity_unavailable",
       );
-    case "blocked":
+    case SessionAffinityStatus.Blocked:
       return gatewayErrorEvent(
         503,
         "The context session binding is unavailable",

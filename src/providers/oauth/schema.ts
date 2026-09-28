@@ -1,3 +1,12 @@
+import { ProviderType } from "../../config/values.ts";
+import {
+  OAuthFlow,
+  OAuthAccountViewStatus,
+  OAuthSessionStatus,
+  ConsumeResetCode,
+} from "./values.ts";
+import { HealthCooldownReason } from "../../gateway/health/values.ts";
+
 import { z } from "zod";
 import { identifierSchema, proxyGroupSchema } from "../../config/schema.ts";
 
@@ -8,7 +17,10 @@ export const connectionSchema = z.object({
   credential_proxy_group: identifierSchema.nullable().optional(),
 });
 export type ProviderConnection = z.output<typeof connectionSchema>;
-export const oauthProviderTypeSchema = z.enum(["antigravity", "codex"]);
+export const oauthProviderTypeSchema = z.enum([
+  ProviderType.Antigravity,
+  ProviderType.Codex,
+]);
 export type OAuthProviderType = z.output<typeof oauthProviderTypeSchema>;
 export const proxyConfigurationSchema = z.object({
   proxy_groups: z.array(proxyGroupSchema).default([]),
@@ -99,13 +111,7 @@ export type QuotaSnapshot = z.output<typeof quotaSnapshotSchema>;
 export const accountViewSchema = z.object({
   account_ref: z.uuid(),
   provider_id: identifierSchema,
-  status: z.enum([
-    "disconnected",
-    "authorizing",
-    "initializing",
-    "ready",
-    "needs_reauthorization",
-  ]),
+  status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
   project_id: z.string().nullable(),
   codex: z
@@ -126,22 +132,14 @@ export const accountViewSchema = z.object({
   quota: quotaSnapshotSchema,
 });
 export type AccountView = z.output<typeof accountViewSchema>;
-export const sessionStatusSchema = z.enum([
-  "pending",
-  "exchanging",
-  "initializing",
-  "complete",
-  "cancelled",
-  "expired",
-  "error",
-]);
+export const sessionStatusSchema = z.enum(OAuthSessionStatus);
 export const sessionViewSchema = z.object({
   id: z.string(),
   account_ref: z.uuid(),
   status: sessionStatusSchema,
   expires_at: z.number(),
   url: z.string().nullable(),
-  flow: z.enum(["pkce", "device"]).default("pkce"),
+  flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   user_code: z.string().nullable().default(null),
   verification_uri: z.string().nullable().default(null),
   error: z.string().nullable(),
@@ -158,7 +156,7 @@ export const resolvedOAuthSchema = z.union([
   }),
 ]);
 export const consumeResetResultSchema = z.object({
-  code: z.enum(["reset", "nothing_to_reset", "no_credit", "already_redeemed"]),
+  code: z.enum(ConsumeResetCode),
   windows_reset: z.number().int().nonnegative().default(0),
 });
 export type ConsumeResetResult = z.output<typeof consumeResetResultSchema>;
@@ -173,7 +171,7 @@ export const accountHealthSchema = z.object({
   account_ref: z.uuid(),
   available: z.boolean(),
   cooling_until: z.number().nullable(),
-  cooldown_reason: z.enum(["quota"]).nullable(),
+  cooldown_reason: z.enum(HealthCooldownReason).nullable(),
 });
 export type AccountHealth = z.output<typeof accountHealthSchema>;
 

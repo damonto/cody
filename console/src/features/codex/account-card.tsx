@@ -1,3 +1,5 @@
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { useState } from "react";
 import { MoreHorizontal, RefreshCw, RotateCcw } from "lucide-react";
 import type { CodexProviderConfig } from "../../../../src/config/types";
@@ -190,7 +192,9 @@ export function AccountCard({
         <Button
           size="sm"
           variant="ghost"
-          disabled={account?.status !== "ready" || refreshing}
+          disabled={
+            account?.status !== OAuthAccountViewStatus.Ready || refreshing
+          }
           onClick={onRefresh}
         >
           <RefreshCw />
@@ -199,7 +203,7 @@ export function AccountCard({
         <Button
           size="sm"
           variant="outline"
-          disabled={account?.status !== "ready"}
+          disabled={account?.status !== OAuthAccountViewStatus.Ready}
           onClick={() => setResetting(true)}
         >
           <RotateCcw />

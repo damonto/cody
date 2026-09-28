@@ -1,3 +1,8 @@
+import {
+  CredentialAuthType,
+  ProviderType,
+} from "../../../../src/config/values.ts";
+
 import { z } from "zod";
 import { formOptions } from "@tanstack/react-form";
 import {
@@ -44,7 +49,7 @@ export function newCredential(): ProviderFormValues["credentials"][number] {
   return {
     rowId,
     id: `credential-${rowId.slice(0, 6)}`,
-    auth: { type: "api_key", api_key: "" },
+    auth: { type: CredentialAuthType.ApiKey, api_key: "" },
     priority: 50,
     disabled: false,
   };
@@ -52,7 +57,7 @@ export function newCredential(): ProviderFormValues["credentials"][number] {
 
 export function newProvider(): ProviderFormValues {
   return {
-    type: "ai_gateway",
+    type: ProviderType.AiGateway,
     id: "",
     base_url: "",
     models: [],
@@ -60,7 +65,7 @@ export function newProvider(): ProviderFormValues {
       {
         rowId: "primary",
         id: "primary",
-        auth: { type: "api_key", api_key: "" },
+        auth: { type: CredentialAuthType.ApiKey, api_key: "" },
         priority: 100,
         disabled: false,
       },

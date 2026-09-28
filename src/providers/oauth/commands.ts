@@ -1,3 +1,6 @@
+import { ProviderType } from "../../config/values.ts";
+import { OAuthFlow } from "./values.ts";
+
 import { z } from "zod";
 import {
   connectionSchema,
@@ -17,8 +20,8 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     account_ref: z.uuid(),
     actor: sessionOwner.actor,
     connection: connectionSchema,
-    provider_type: oauthProviderTypeSchema.default("antigravity"),
-    flow: z.enum(["pkce", "device"]).default("pkce"),
+    provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
+    flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   }),
   z.strictObject({
     action: z.enum(["session", "cancel", "retry"]),

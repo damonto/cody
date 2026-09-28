@@ -1,3 +1,6 @@
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../transport-values.ts";
+
 import { z } from "zod";
 import type { AntigravityProviderConfig } from "../../config/types.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
@@ -15,10 +18,10 @@ import { translateRequest } from "./request.ts";
 import { convertResponse, translatedUsage } from "./response.ts";
 
 export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
-  type: "antigravity",
+  type: ProviderType.Antigravity,
   supports(_provider, endpoint, transport) {
     return (
-      transport === "http" &&
+      transport === ProviderTransport.Http &&
       ["responses", "messages", "messages/count_tokens", "models"].includes(
         endpoint,
       )

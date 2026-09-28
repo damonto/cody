@@ -1,3 +1,9 @@
+import {
+  OAuthFlow,
+  OAuthSessionStatus,
+  OAuthAccountViewStatus,
+} from "../../../../src/providers/oauth/values.ts";
+
 import { useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { connectionSchema } from "../../../../src/providers/oauth/schema";
@@ -29,8 +35,6 @@ import {
 } from "@/features/oauth-accounts/use-authorization";
 import { planLabel } from "./plan";
 
-type Flow = "device" | "pkce";
-
 export function Authorization({
   rowId,
   occupied,
@@ -40,7 +44,7 @@ export function Authorization({
   occupied: string[];
 }) {
   const { accountRef, connection } = options;
-  const [flow, setFlow] = useState<Flow>("device");
+  const [flow, setFlow] = useState<OAuthFlow>(OAuthFlow.Device);
   const {
     callback,
     setCallback,
@@ -65,7 +69,7 @@ export function Authorization({
     (value) =>
       value.account_ref !== accountRef && !occupied.includes(value.account_ref),
   );
-  const pending = authorization?.status === "pending";
+  const pending = authorization?.status === OAuthSessionStatus.Pending;
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -80,20 +84,21 @@ export function Authorization({
       <Tabs
         value={flow}
         onValueChange={(value) => {
-          if (value === "device" || value === "pkce") setFlow(value);
+          if (value === OAuthFlow.Device || value === OAuthFlow.Pkce)
+            setFlow(value);
         }}
       >
         <TabsList>
-          <TabsTrigger value="device" disabled={!!active}>
+          <TabsTrigger value={OAuthFlow.Device} disabled={!!active}>
             Device code
           </TabsTrigger>
-          <TabsTrigger value="pkce" disabled={!!active}>
+          <TabsTrigger value={OAuthFlow.Pkce} disabled={!!active}>
             Paste callback URL
           </TabsTrigger>
         </TabsList>
       </Tabs>
       <p className="text-xs text-muted-foreground">
-        {flow === "device"
+        {flow === OAuthFlow.Device
           ? "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first."
           : "Sign in in this browser, then paste the localhost address the browser was sent to."}
       </p>
@@ -125,7 +130,10 @@ export function Authorization({
             <Button
               type="button"
               variant="outline"
-              disabled={view?.status !== "ready" || refresh.isPending}
+              disabled={
+                view?.status !== OAuthAccountViewStatus.Ready ||
+                refresh.isPending
+              }
               onClick={() =>
                 refresh.mutate({ ref: accountRef, kind: "models" })
               }
@@ -135,7 +143,10 @@ export function Authorization({
             <Button
               type="button"
               variant="outline"
-              disabled={view?.status !== "ready" || refresh.isPending}
+              disabled={
+                view?.status !== OAuthAccountViewStatus.Ready ||
+                refresh.isPending
+              }
               onClick={() => refresh.mutate({ ref: accountRef, kind: "quota" })}
             >
               Refresh quota
@@ -144,7 +155,9 @@ export function Authorization({
               type="button"
               variant="ghost"
               disabled={
-                refresh.isPending || !!active || view?.status === "disconnected"
+                refresh.isPending ||
+                !!active ||
+                view?.status === OAuthAccountViewStatus.Disconnected
               }
               onClick={() => setDisconnect(true)}
             >
@@ -187,7 +200,7 @@ export function Authorization({
           <p className="text-sm font-medium">
             Authorization: {authorization.status}
           </p>
-          {pending && authorization.flow === "device" && (
+          {pending && authorization.flow === OAuthFlow.Device && (
             <>
               {authorization.user_code && (
                 <div className="flex items-center gap-2">
@@ -221,45 +234,47 @@ export function Authorization({
               </p>
             </>
           )}
-          {pending && authorization.flow === "pkce" && authorization.url && (
-            <>
-              <Button asChild type="button" variant="outline">
-                <a
-                  href={authorization.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+          {pending &&
+            authorization.flow === OAuthFlow.Pkce &&
+            authorization.url && (
+              <>
+                <Button asChild type="button" variant="outline">
+                  <a
+                    href={authorization.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open ChatGPT authorization
+                    <ExternalLink />
+                  </a>
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  After approval the browser opens a localhost page that may not
+                  load. Copy its complete URL from the address bar and paste it
+                  below. This session lasts ten minutes.
+                </p>
+                <Label htmlFor={`callback-${rowId}`}>
+                  Localhost callback URL
+                </Label>
+                <Input
+                  id={`callback-${rowId}`}
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={callback}
+                  onChange={(event) => setCallback(event.target.value)}
+                  placeholder="http://localhost:1455/auth/callback?code=…&state=…"
+                />
+                <Button
+                  type="button"
+                  disabled={!callback.trim() || submit.isPending}
+                  onClick={() => submit.mutate()}
                 >
-                  Open ChatGPT authorization
-                  <ExternalLink />
-                </a>
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                After approval the browser opens a localhost page that may not
-                load. Copy its complete URL from the address bar and paste it
-                below. This session lasts ten minutes.
-              </p>
-              <Label htmlFor={`callback-${rowId}`}>
-                Localhost callback URL
-              </Label>
-              <Input
-                id={`callback-${rowId}`}
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={callback}
-                onChange={(event) => setCallback(event.target.value)}
-                placeholder="http://localhost:1455/auth/callback?code=…&state=…"
-              />
-              <Button
-                type="button"
-                disabled={!callback.trim() || submit.isPending}
-                onClick={() => submit.mutate()}
-              >
-                Complete authorization
-              </Button>
-            </>
-          )}
-          {authorization.status === "exchanging" && (
+                  Complete authorization
+                </Button>
+              </>
+            )}
+          {authorization.status === OAuthSessionStatus.Exchanging && (
             <p className="text-xs">Exchanging the authorization code…</p>
           )}
           {authorization.error && (

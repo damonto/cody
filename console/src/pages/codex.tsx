@@ -1,3 +1,5 @@
+import { ProviderType } from "../../../src/config/values.ts";
+
 import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import type { CodexProviderConfig } from "../../../src/config/types";
@@ -58,7 +60,9 @@ export default function Codex() {
     await save.mutateAsync({
       config: updateProvider(
         snapshot.config,
-        snapshot.config.providers.findIndex((entry) => entry.type === "codex"),
+        snapshot.config.providers.findIndex(
+          (entry) => entry.type === ProviderType.Codex,
+        ),
         next,
       ),
       version: snapshot.version,

@@ -1,3 +1,5 @@
+import { ProxyStrategy } from "../../../../src/config/values.ts";
+
 import { useId, useState } from "react";
 import { proxyStrategySchema } from "../../../../src/config/schema";
 import { useAppForm } from "@/lib/form";
@@ -150,17 +152,21 @@ export function ProxyGroupEditor({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="random">Random</SelectItem>
-                          <SelectItem value="sticky">
+                          <SelectItem value={ProxyStrategy.Random}>
+                            Random
+                          </SelectItem>
+                          <SelectItem value={ProxyStrategy.Sticky}>
                             Fixed per provider / credential
                           </SelectItem>
-                          <SelectItem value="priority">Priority</SelectItem>
+                          <SelectItem value={ProxyStrategy.Priority}>
+                            Priority
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                       <FieldDescription>
-                        {field.state.value === "random"
+                        {field.state.value === ProxyStrategy.Random
                           ? "Choose any healthy node at random, ignoring Priority."
-                          : field.state.value === "sticky"
+                          : field.state.value === ProxyStrategy.Sticky
                             ? "Randomly assign a healthy node and keep it until it becomes unavailable."
                             : "Choose the highest Priority among healthy nodes; break ties randomly."}
                       </FieldDescription>

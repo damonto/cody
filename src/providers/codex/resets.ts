@@ -1,3 +1,6 @@
+import { HealthCooldownReason } from "../../gateway/health/values.ts";
+import { ConsumeResetCode } from "../oauth/values.ts";
+
 import type { CodexProviderConfig, GatewayConfig } from "../../config/types.ts";
 import {
   claimProviderLease,
@@ -61,7 +64,7 @@ export async function consumeCodexResetForExhaustion(
           );
           const coolingUntil = health.cooling_until;
           if (
-            health.cooldown_reason !== "quota" ||
+            health.cooldown_reason !== HealthCooldownReason.Quota ||
             typeof coolingUntil !== "number"
           )
             return [];
@@ -120,7 +123,7 @@ export async function consumeCodexResetForExhaustion(
           provider.id,
           credential.id,
         );
-        if (health.cooldown_reason !== "quota") {
+        if (health.cooldown_reason !== HealthCooldownReason.Quota) {
           holdMs = 0;
           return undefined;
         }
@@ -182,8 +185,8 @@ export async function consumeCodexResetForExhaustion(
       config_revision: config.revision ?? null,
     });
     if (
-      reply.result.code !== "reset" &&
-      reply.result.code !== "already_redeemed"
+      reply.result.code !== ConsumeResetCode.Reset &&
+      reply.result.code !== ConsumeResetCode.AlreadyRedeemed
     ) {
       completed = true;
       return undefined;

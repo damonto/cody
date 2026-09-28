@@ -1,3 +1,13 @@
+import {
+  ProviderAvailabilityReason,
+  HealthFailureScope,
+} from "../health/values.ts";
+import { SessionAffinityStatus } from "../routing/values.ts";
+
+import { RequestOutcome } from "../../telemetry/values.ts";
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../../providers/transport-values.ts";
+
 import type { NormalizedUsage } from "../../billing/types.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 import type {
@@ -457,11 +467,13 @@ export async function handleInference(
         : {}),
     };
     if (
-      selection.checks.some((check) => check.reason === "health_read_failed") ||
-      selection.credentialChecks.some(
-        (check) => check.reason === "health_read_failed",
+      selection.checks.some(
+        (check) => check.reason === ProviderAvailabilityReason.HealthReadFailed,
       ) ||
-      selection.affinity?.status === "failed"
+      selection.credentialChecks.some(
+        (check) => check.reason === ProviderAvailabilityReason.HealthReadFailed,
+      ) ||
+      selection.affinity?.status === SessionAffinityStatus.Failed
     ) {
       requestLog?.warn({ routing });
     } else {
@@ -488,7 +500,7 @@ export async function handleInference(
         meter?.diagnostic("usage_limit_reached");
         return exhausted;
       }
-      if (selection.affinity?.status === "forbidden") {
+      if (selection.affinity?.status === SessionAffinityStatus.Forbidden) {
         return apiError(
           protocol,
           403,
@@ -496,7 +508,7 @@ export async function handleInference(
           { code: "context_session_forbidden", requestId },
         );
       }
-      if (selection.affinity?.status === "failed") {
+      if (selection.affinity?.status === SessionAffinityStatus.Failed) {
         return apiError(
           protocol,
           503,
@@ -508,7 +520,7 @@ export async function handleInference(
           },
         );
       }
-      if (selection.affinity?.status === "blocked") {
+      if (selection.affinity?.status === SessionAffinityStatus.Blocked) {
         const resetsAt = blockedCodexQuotaResetsAt(selection);
         if (resetsAt !== undefined) {
           requestLog?.warn({ outcome: "usage_limit_reached" });
@@ -572,7 +584,7 @@ export async function handleInference(
     let prepared: PreparedProviderRequest;
     try {
       if (
-        provider.type === "antigravity" &&
+        provider.type === ProviderType.Antigravity &&
         rawBody.byteLength > 16 * 1024 * 1024
       )
         throw new ProviderRequestError(
@@ -586,7 +598,7 @@ export async function handleInference(
         {
           request,
           endpoint: upstreamPath,
-          transport: "http",
+          transport: ProviderTransport.Http,
           protocol,
           payload,
           model: upstreamModel,
@@ -630,7 +642,7 @@ export async function handleInference(
     };
     // The meter freezes its first selection, so Codex waits until no account
     // switch can follow.
-    if (provider.type !== "codex") meter?.select(meterTarget);
+    if (provider.type !== ProviderType.Codex) meter?.select(meterTarget);
     headers.delete("content-length");
     const modelRewritten = payload.model !== upstreamModel;
     if (modelRewritten) {
@@ -674,7 +686,7 @@ export async function handleInference(
                   : retryResponseUsage(response, protocol),
             }
           : {}),
-        ...(provider.type === "codex"
+        ...(provider.type === ProviderType.Codex
           ? {
               isTerminal: async (response: Response) => {
                 usageLimit = await codexUsageLimit(response);
@@ -686,7 +698,7 @@ export async function handleInference(
           await retryOptions.onResponse?.(response, attempt);
           if (
             healthFailureScope(response.status, protocol, provider.type) ===
-            "credential"
+            HealthFailureScope.Credential
           ) {
             await scheduleHealthUpdate(
               context,
@@ -721,7 +733,7 @@ export async function handleInference(
       exhausted = result.response;
       continue;
     }
-    if (provider.type === "codex") meter?.select(meterTarget);
+    if (provider.type === ProviderType.Codex) meter?.select(meterTarget);
     meter?.recordAttempts(result.attempts);
     const upstreamDurationMs = elapsedMs(startedAt);
     if (!result.response) {
@@ -734,7 +746,7 @@ export async function handleInference(
         ? "request_cancelled"
         : (proxyFailure?.code ?? "upstream_unavailable");
       meter?.diagnostic(code);
-      if (cancelled) meter?.finish("cancelled", status);
+      if (cancelled) meter?.finish(RequestOutcome.Cancelled, status);
       requestLog?.warn({
         outcome: code,
         upstream: {
@@ -818,7 +830,7 @@ export async function handleInference(
       );
     } else if (
       healthFailureScope(upstreamResponse.status, protocol, provider.type) ===
-      "provider"
+      HealthFailureScope.Provider
     ) {
       await scheduleHealthUpdate(
         context,

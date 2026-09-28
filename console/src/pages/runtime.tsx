@@ -1,3 +1,5 @@
+import { HealthScope } from "../../../src/gateway/health/values.ts";
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, ShieldCheck, Unplug } from "lucide-react";
@@ -36,7 +38,9 @@ type ClearAction =
   | { kind: "session"; sessionId: string };
 export default function Runtime() {
   const [selected, setSelected] = useState("");
-  const [scope, setScope] = useState<"inference" | "catalog">("inference");
+  const [scope, setScope] = useState<"inference" | "catalog">(
+    HealthScope.Inference,
+  );
   const [cursor, setCursor] = useState("");
   const [confirmation, setConfirmation] = useState<{
     action: ClearAction;
@@ -156,11 +160,15 @@ export default function Runtime() {
               label="Health scope"
               value={scope}
               onChange={(value) =>
-                setScope(value === "catalog" ? "catalog" : "inference")
+                setScope(
+                  value === HealthScope.Catalog
+                    ? HealthScope.Catalog
+                    : HealthScope.Inference,
+                )
               }
               options={[
-                { value: "inference", label: "Inference health" },
-                { value: "catalog", label: "Model catalog health" },
+                { value: HealthScope.Inference, label: "Inference health" },
+                { value: HealthScope.Catalog, label: "Model catalog health" },
               ]}
             />
           </div>

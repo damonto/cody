@@ -1,7 +1,9 @@
+import { ProviderType, CredentialAuthType } from "../config/values.ts";
+import { ProviderTransport } from "./transport-values.ts";
+
 import type {
   ProviderConfig,
   ProviderCredentialConfig,
-  ProviderType,
 } from "../config/types.ts";
 import { createUpstreamTransport } from "../gateway/transport/index.ts";
 import { aiGatewayAdapter } from "./ai-gateway.ts";
@@ -14,7 +16,6 @@ import type {
   ProviderEndpoint,
   ProviderRequest,
   ProviderRuntimeContext,
-  ProviderTransport,
 } from "./types.ts";
 
 const adapters = {
@@ -30,14 +31,14 @@ const adapters = {
 export function providerSupportsEndpoint(
   provider: ProviderConfig,
   endpoint: ProviderEndpoint,
-  transport: ProviderTransport = "http",
+  transport: ProviderTransport = ProviderTransport.Http,
 ): boolean {
   switch (provider.type) {
-    case "ai_gateway":
+    case ProviderType.AiGateway:
       return adapters.ai_gateway.supports(provider, endpoint, transport);
-    case "antigravity":
+    case ProviderType.Antigravity:
       return adapters.antigravity.supports(provider, endpoint, transport);
-    case "codex":
+    case ProviderType.Codex:
       return adapters.codex.supports(provider, endpoint, transport);
   }
 }
@@ -59,15 +60,16 @@ export async function prepareProviderRequest(
     context && { ...context, provider, credential },
   );
   const prepared =
-    provider.type === "ai_gateway" && resolved.type === "api_key"
+    provider.type === ProviderType.AiGateway &&
+    resolved.type === CredentialAuthType.ApiKey
       ? await adapters.ai_gateway.prepare(provider, resolved, input, context)
-      : provider.type === "antigravity" &&
-          resolved.type === "oauth" &&
-          resolved.provider === "antigravity"
+      : provider.type === ProviderType.Antigravity &&
+          resolved.type === CredentialAuthType.OAuth &&
+          resolved.provider === ProviderType.Antigravity
         ? await adapters.antigravity.prepare(provider, resolved, input, context)
-        : provider.type === "codex" &&
-            resolved.type === "oauth" &&
-            resolved.provider === "codex"
+        : provider.type === ProviderType.Codex &&
+            resolved.type === CredentialAuthType.OAuth &&
+            resolved.provider === ProviderType.Codex
           ? await adapters.codex.prepare(provider, resolved, input, context)
           : undefined;
   if (!prepared)

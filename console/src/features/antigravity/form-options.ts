@@ -1,3 +1,8 @@
+import {
+  CredentialAuthType,
+  ProviderType,
+} from "../../../../src/config/values.ts";
+
 import { z } from "zod";
 import {
   antigravityDraftProviderSchema,
@@ -26,12 +31,12 @@ export function newAccount(): AccountFormValues {
     id: `account-${rowId}`,
     priority: 100,
     disabled: false,
-    auth: { type: "oauth", account_ref: "" },
+    auth: { type: CredentialAuthType.OAuth, account_ref: "" },
   };
 }
 export function newAntigravityProvider(): AntigravityProviderConfig {
   return {
-    type: "antigravity",
+    type: ProviderType.Antigravity,
     id: "antigravity",
     priority: 100,
     disabled: true,
@@ -48,8 +53,9 @@ export function antigravityProvider(
   config: GatewayConfig,
 ): AntigravityProviderConfig {
   return (
-    config.providers.find((provider) => provider.type === "antigravity") ??
-    newAntigravityProvider()
+    config.providers.find(
+      (provider) => provider.type === ProviderType.Antigravity,
+    ) ?? newAntigravityProvider()
   );
 }
 

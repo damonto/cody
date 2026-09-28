@@ -1,3 +1,5 @@
+import { ProviderType } from "../../../src/config/values.ts";
+
 import { ProviderForm } from "@/features/providers/provider-form";
 import { removeProvider } from "@/features/providers/mutations";
 import { useState } from "react";
@@ -47,7 +49,7 @@ export default function Providers() {
     );
   const config = draft.data.config;
   const providers = config.providers.filter(
-    (provider) => provider.type === "ai_gateway",
+    (provider) => provider.type === ProviderType.AiGateway,
   );
   const edit = (index: number) =>
     setEditor({ snapshot: structuredClone(draft.data), index });

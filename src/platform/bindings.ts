@@ -1,3 +1,5 @@
+import { type HealthCooldownReason } from "../gateway/health/values.ts";
+
 import type {
   LeaseGrant,
   ResetOperation,
@@ -7,10 +9,7 @@ import type {
  * Cloudflare Worker passes its Wrangler bindings (which satisfy them
  * structurally) and the standard backend builds them over Redis and SQL.
  */
-import type {
-  HealthCooldownReason,
-  ProviderHealthSnapshot,
-} from "../config/types.ts";
+import type { ProviderHealthSnapshot } from "../config/types.ts";
 import type {
   AffinityProviderCandidate,
   AffinitySelection,

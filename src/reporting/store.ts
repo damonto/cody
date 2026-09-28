@@ -1,3 +1,5 @@
+import { UsagePhase } from "../telemetry/values.ts";
+
 import {
   HOUR_MS,
   previousRange,
@@ -112,8 +114,8 @@ export async function ingestUsage(
     !event.request_id ||
     !Number.isSafeInteger(event.started_at) ||
     ![0, 1, 2].includes(event.sequence) ||
-    (event.phase === "finished") !== (event.finished_at !== null) ||
-    (event.phase === "finished") !== (event.sequence === 2)
+    (event.phase === UsagePhase.Finished) !== (event.finished_at !== null) ||
+    (event.phase === UsagePhase.Finished) !== (event.sequence === 2)
   ) {
     throw new Error("Invalid usage event envelope");
   }
@@ -191,7 +193,7 @@ export async function ingestUsage(
       )
       .bind(...values),
   ];
-  if (event.phase === "finished") {
+  if (event.phase === UsagePhase.Finished) {
     for (const attempt of event.attempts) {
       statements.push(
         db

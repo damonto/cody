@@ -1,3 +1,5 @@
+import { type UsageStatus, type BillingStatus } from "./values.ts";
+
 import type { z } from "zod";
 import type {
   modelPolicySchema,
@@ -22,7 +24,6 @@ export const USAGE_FIELDS = [
 
 type UsageField = (typeof USAGE_FIELDS)[number];
 export type TokenUsage = Record<UsageField, number | null>;
-type UsageStatus = "reported" | "partial" | "missing" | "invalid";
 
 export interface NormalizedUsage {
   tokens: TokenUsage;
@@ -32,7 +33,7 @@ export interface NormalizedUsage {
 }
 
 export interface CostBreakdown {
-  status: "complete" | "partial" | "unpriced" | "unknown";
+  status: BillingStatus;
   currency: string;
   price_version: string | null;
   tier_index: number | null;

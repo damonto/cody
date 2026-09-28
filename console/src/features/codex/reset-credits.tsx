@@ -1,3 +1,5 @@
+import { ConsumeResetCode } from "../../../../src/providers/oauth/values.ts";
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -83,7 +85,10 @@ export function ResetCreditsDialog({
         queryKey: ["codex-reset-credits", account.account_ref],
       });
       const message = RESULT_MESSAGES[reply.result.code];
-      if (["reset", "already_redeemed"].includes(reply.result.code))
+      if (
+        reply.result.code === ConsumeResetCode.Reset ||
+        reply.result.code === ConsumeResetCode.AlreadyRedeemed
+      )
         toast.success(message);
       else toast.warning(message);
       setAttempt(null);

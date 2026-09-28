@@ -1,3 +1,5 @@
+import { ProxyStrategy } from "../../config/values.ts";
+
 import { DurableObject } from "cloudflare:workers";
 import { identifierSchema } from "../../config/schema.ts";
 import {
@@ -154,7 +156,7 @@ export class ProxyGroup extends DurableObject<Env> {
         owner.credential_id ?? null,
       ]);
       const bound =
-        group.strategy === "sticky"
+        group.strategy === ProxyStrategy.Sticky
           ? this.ctx.storage.sql
               .exec<{ proxy_id: string }>(
                 "SELECT proxy_id FROM proxy_bindings WHERE owner = ?",
@@ -170,7 +172,7 @@ export class ProxyGroup extends DurableObject<Env> {
               healthy.filter((node) => !exclude.includes(node.id)),
               group.strategy,
             );
-      if (group.strategy === "sticky" && !existing) {
+      if (group.strategy === ProxyStrategy.Sticky && !existing) {
         this.ctx.storage.sql.exec(
           "DELETE FROM proxy_bindings WHERE owner = ?",
           key,

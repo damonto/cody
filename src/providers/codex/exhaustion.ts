@@ -1,3 +1,8 @@
+import { SessionAffinityStatus } from "../../gateway/routing/values.ts";
+
+import { HealthCooldownReason } from "../../gateway/health/values.ts";
+import { ProviderType } from "../../config/values.ts";
+
 import type { GatewayConfig } from "../../config/types.ts";
 import {
   credentialKey,
@@ -16,7 +21,9 @@ export function codexQuotaResetsAt(
   selection: ProviderSelection,
   excluded: ReadonlySet<string>,
 ): number | undefined {
-  const codex = targets.find(({ provider }) => provider.type === "codex");
+  const codex = targets.find(
+    ({ provider }) => provider.type === ProviderType.Codex,
+  );
   if (!codex) return undefined;
   let earliest: number | undefined;
   for (const credential of codex.credentials) {
@@ -26,7 +33,7 @@ export function codexQuotaResetsAt(
         entry.credential_id === credential.id,
     );
     if (
-      check?.cooldown_reason !== "quota" ||
+      check?.cooldown_reason !== HealthCooldownReason.Quota ||
       typeof check.cooling_until !== "number"
     ) {
       if (excluded.has(credentialKey(codex.provider.id, credential.id)))
@@ -46,13 +53,14 @@ export function codexQuotaResetsAt(
 export function blockedCodexQuotaResetsAt(
   selection: ProviderSelection,
 ): number | undefined {
-  if (selection.affinity?.status !== "blocked") return undefined;
+  if (selection.affinity?.status !== SessionAffinityStatus.Blocked)
+    return undefined;
   const bound = selection.credentialChecks.find(
     (check) =>
       check.provider_id === selection.affinity?.provider_id &&
       check.credential_id === selection.affinity.credential_id,
   );
-  return bound?.cooldown_reason === "quota" &&
+  return bound?.cooldown_reason === HealthCooldownReason.Quota &&
     typeof bound.cooling_until === "number"
     ? bound.cooling_until
     : undefined;
@@ -73,12 +81,12 @@ export async function restoreCodexAccount(
   requestId: string,
 ): Promise<boolean> {
   const provider = targets.find(
-    ({ provider }) => provider.type === "codex",
+    ({ provider }) => provider.type === ProviderType.Codex,
   )?.provider;
   if (
-    provider?.type !== "codex" ||
+    provider?.type !== ProviderType.Codex ||
     !provider.auto_consume_resets ||
-    selection.affinity?.status === "blocked" ||
+    selection.affinity?.status === SessionAffinityStatus.Blocked ||
     (!exhausted &&
       codexQuotaResetsAt(targets, selection, excluded) === undefined)
   )

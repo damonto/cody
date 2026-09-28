@@ -1,5 +1,10 @@
+import { SessionPhase } from "./values.ts";
+import { UsagePhase, RequestOutcome } from "../../telemetry/values.ts";
+import { BillingStatus } from "../../billing/values.ts";
+import { type ProviderType } from "../../config/values.ts";
+
 import { emptyCost } from "../../billing/calculate.ts";
-import type { ProviderType } from "../../config/types.ts";
+
 import type {
   ObjectStorage,
   ObjectTransaction,
@@ -12,14 +17,13 @@ const CHECKPOINT_PREFIX = "usage:";
 const OUTBOX_PREFIX = "usage-outbox:";
 const RETRY_DELAY_MS = 10_000;
 
-export type SessionPhase =
-  "awaiting_first_frame" | "routing" | "connecting" | "open" | "closed";
+export type { SessionPhase } from "./values.ts";
 
 export const LIVE_PHASES: readonly SessionPhase[] = [
-  "awaiting_first_frame",
-  "routing",
-  "connecting",
-  "open",
+  SessionPhase.AwaitingFirstFrame,
+  SessionPhase.Routing,
+  SessionPhase.Connecting,
+  SessionPhase.Open,
 ];
 
 export interface StoredWebSocketSession {
@@ -75,7 +79,10 @@ export class WebSocketStorage {
         await transaction.get<StoredWebSocketSession>(SESSION_KEY);
       if (!current || !expectedPhases.includes(current.phase)) return undefined;
       const next = mutate(current);
-      if (current.phase === "closed" && next.phase !== "closed")
+      if (
+        current.phase === SessionPhase.Closed &&
+        next.phase !== SessionPhase.Closed
+      )
         return undefined;
       await transaction.put(SESSION_KEY, next);
       await this.updateAlarm(transaction);
@@ -144,18 +151,18 @@ export class WebSocketStorage {
           continue;
         }
         const ended: UsageEvent =
-          event.phase === "finished"
+          event.phase === UsagePhase.Finished
             ? event
             : {
                 ...event,
                 sequence: 2,
-                phase: "finished",
-                outcome: "incomplete",
+                phase: UsagePhase.Finished,
+                outcome: RequestOutcome.Incomplete,
                 finished_at: now,
                 duration_ms: Math.max(0, now - event.started_at),
                 observation_issue: "websocket_instance_restarted",
                 billing: {
-                  ...emptyCost("unknown"),
+                  ...emptyCost(BillingStatus.Unknown),
                   currency: event.billing.currency,
                 },
               };
@@ -176,7 +183,7 @@ export class WebSocketStorage {
     const session = await transaction.get<StoredWebSocketSession>(SESSION_KEY);
     const current = await transaction.getAlarm();
     let next =
-      session?.phase === "awaiting_first_frame"
+      session?.phase === SessionPhase.AwaitingFirstFrame
         ? session.first_frame_deadline
         : Infinity;
     const pending = await transaction.list({ prefix: OUTBOX_PREFIX, limit: 1 });

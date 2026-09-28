@@ -1,4 +1,6 @@
-export type ApiProtocol = "openai" | "anthropic";
+import { ApiProtocol } from "./protocol-values.ts";
+
+export type { ApiProtocol } from "./protocol-values.ts";
 
 export const CONTEXT_MANAGEMENT_PATHS = [
   "alpha/history/v2/list_windows",
@@ -40,25 +42,25 @@ export type GatewayEndpoint =
 // The dialect each endpoint is defined in. `undefined` marks the endpoints that
 // belong to neither dialect, where the client's own identity decides.
 const ENDPOINT_PROTOCOLS: Record<GatewayEndpoint, ApiProtocol | undefined> = {
-  messages: "anthropic",
-  "messages/count_tokens": "anthropic",
-  responses: "openai",
-  "responses/compact": "openai",
-  "alpha/search": "openai",
-  "alpha/history/v2/list_windows": "openai",
-  "alpha/history/v2/list_items": "openai",
-  "alpha/history/v2/read_item": "openai",
-  "alpha/history/v2/search_contents": "openai",
-  "alpha/notes/v2/list_files_by_prefix": "openai",
-  "alpha/notes/v2/read_file": "openai",
-  "alpha/notes/v2/search_contents": "openai",
-  "alpha/notes/v2/append_to_file": "openai",
-  "alpha/notes/v2/write_file": "openai",
-  "alpha/notes/v2/thread_hint": "openai",
-  "chat/completions": "openai",
-  "images/generations": "openai",
-  "images/edits": "openai",
-  "memories/trace_summarize": "openai",
+  messages: ApiProtocol.Anthropic,
+  "messages/count_tokens": ApiProtocol.Anthropic,
+  responses: ApiProtocol.Openai,
+  "responses/compact": ApiProtocol.Openai,
+  "alpha/search": ApiProtocol.Openai,
+  "alpha/history/v2/list_windows": ApiProtocol.Openai,
+  "alpha/history/v2/list_items": ApiProtocol.Openai,
+  "alpha/history/v2/read_item": ApiProtocol.Openai,
+  "alpha/history/v2/search_contents": ApiProtocol.Openai,
+  "alpha/notes/v2/list_files_by_prefix": ApiProtocol.Openai,
+  "alpha/notes/v2/read_file": ApiProtocol.Openai,
+  "alpha/notes/v2/search_contents": ApiProtocol.Openai,
+  "alpha/notes/v2/append_to_file": ApiProtocol.Openai,
+  "alpha/notes/v2/write_file": ApiProtocol.Openai,
+  "alpha/notes/v2/thread_hint": ApiProtocol.Openai,
+  "chat/completions": ApiProtocol.Openai,
+  "images/generations": ApiProtocol.Openai,
+  "images/edits": ApiProtocol.Openai,
+  "memories/trace_summarize": ApiProtocol.Openai,
   models: undefined,
   health: undefined,
   sessions: undefined,
@@ -87,16 +89,18 @@ export function requestProtocol(
   endpoint?: GatewayEndpoint,
 ): ApiProtocol {
   if (request.headers.has("anthropic-version")) {
-    return "anthropic";
+    return ApiProtocol.Anthropic;
   }
   const endpointProtocol =
     endpoint === undefined ? undefined : ENDPOINT_PROTOCOLS[endpoint];
   if (endpointProtocol !== undefined) {
     return endpointProtocol;
   }
-  return isClaudeUserAgent(request) ? "anthropic" : "openai";
+  return isClaudeUserAgent(request)
+    ? ApiProtocol.Anthropic
+    : ApiProtocol.Openai;
 }
 
 export function isAnthropicProtocol(protocol: ApiProtocol): boolean {
-  return protocol === "anthropic";
+  return protocol === ApiProtocol.Anthropic;
 }

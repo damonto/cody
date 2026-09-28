@@ -1,3 +1,7 @@
+import { SessionPhase } from "./values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+import { HealthFailureScope } from "../health/values.ts";
+
 import {
   healthFailureScope,
   recordCredentialFailure,
@@ -13,8 +17,8 @@ export function shouldRecordUpstreamFailure(
   return (
     state !== undefined &&
     !state.response_outcome_recorded &&
-    (state.phase === "connecting" ||
-      (state.phase === "open" && state.active_response))
+    (state.phase === SessionPhase.Connecting ||
+      (state.phase === SessionPhase.Open && state.active_response))
   );
 }
 
@@ -32,11 +36,11 @@ export class WebSocketHealth {
     if (status === undefined) return;
     const scope = healthFailureScope(
       status,
-      "openai",
+      ApiProtocol.Openai,
       state.selected_provider_type,
     );
     if (
-      scope === "credential" &&
+      scope === HealthFailureScope.Credential &&
       state.selected_provider_id &&
       state.selected_credential_id
     ) {
@@ -46,14 +50,14 @@ export class WebSocketHealth {
         state.selected_credential_id,
         state.request_id,
       );
-    } else if (scope === "provider") {
+    } else if (scope === HealthFailureScope.Provider) {
       await this.fail();
     }
   }
 
   async fail(): Promise<void> {
     const transition = await this.storage.transition(
-      ["connecting", "open"],
+      [SessionPhase.Connecting, SessionPhase.Open],
       (state) =>
         state.response_outcome_recorded
           ? state
@@ -74,11 +78,14 @@ export class WebSocketHealth {
   }
 
   async complete(): Promise<void> {
-    const transition = await this.storage.transition(["open"], (state) => ({
-      ...state,
-      active_response: false,
-      response_outcome_recorded: true,
-    }));
+    const transition = await this.storage.transition(
+      [SessionPhase.Open],
+      (state) => ({
+        ...state,
+        active_response: false,
+        response_outcome_recorded: true,
+      }),
+    );
     if (
       !transition ||
       transition.previous.response_outcome_recorded ||
@@ -94,7 +101,7 @@ export class WebSocketHealth {
   }
 
   async inactive(): Promise<void> {
-    await this.storage.transition(["open"], (state) => ({
+    await this.storage.transition([SessionPhase.Open], (state) => ({
       ...state,
       active_response: false,
     }));

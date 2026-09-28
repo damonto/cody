@@ -1,3 +1,5 @@
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw } from "lucide-react";
 import {
@@ -64,7 +66,8 @@ export function CodexAccounts({
       mapWithConcurrency(
         (query.data ?? []).filter(
           (account) =>
-            account.status === "ready" && (!ref || account.account_ref === ref),
+            account.status === OAuthAccountViewStatus.Ready &&
+            (!ref || account.account_ref === ref),
         ),
         PROVIDER_FAN_OUT_CONCURRENCY,
         (account) => refreshAccountQuota(account, true),
@@ -82,7 +85,9 @@ export function CodexAccounts({
                 ...account,
                 quota: {
                   ...quota,
-                  stale: account.status !== "ready" || quota.stale,
+                  stale:
+                    account.status !== OAuthAccountViewStatus.Ready ||
+                    quota.stale,
                 },
               }
             : account;
@@ -100,76 +105,71 @@ export function CodexAccounts({
   const busy = refresh.isPending || query.isFetching;
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-medium">ChatGPT accounts</h2>
-          <p className="text-sm text-muted-foreground">
-            {provider.account_selection === "round_robin"
-              ? "New sessions rotate across the highest-priority available accounts."
-              : "New sessions fill the first available account before the next."}{" "}
-            A session keeps its account until that account&apos;s quota runs
-            out.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={
-              !query.data?.some((account) => account.status === "ready") || busy
-            }
-            onClick={() => refresh.mutate(undefined)}
-          >
-            <RefreshCw />
-            Refresh all quotas
-          </Button>
-          <Button size="sm" disabled={pending} onClick={onAdd}>
-            <Plus />
-            Add ChatGPT account
-          </Button>
-        </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={
+            !query.data?.some(
+              (account) => account.status === OAuthAccountViewStatus.Ready,
+            ) || busy
+          }
+          onClick={() => refresh.mutate(undefined)}
+        >
+          <RefreshCw />
+          Refresh all quotas
+        </Button>
+        <Button size="sm" disabled={pending} onClick={onAdd}>
+          <Plus />
+          Add ChatGPT account
+        </Button>
       </div>
-      {!!refs.length && query.isPending && <Loading />}
-      {query.error && (
-        <ErrorNotice error={query.error} retry={() => void query.refetch()} />
-      )}
-      {health.error && (
-        <ErrorNotice error={health.error} retry={() => void health.refetch()} />
-      )}
-      {refresh.error && <ErrorNotice error={refresh.error} />}
-      {!provider.credentials.length ? (
-        <Empty title="No ChatGPT accounts">
-          Authorize a ChatGPT account with Codex access to start balancing
-          requests.
-        </Empty>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-          {provider.credentials.map((credential, index) => (
-            <AccountCard
-              key={credential.id}
-              credential={credential}
-              index={index}
-              count={provider.credentials.length}
-              account={accounts.get(credential.auth.account_ref)}
-              health={
-                cooldowns.get(credential.id)?.account_ref ===
-                credential.auth.account_ref
-                  ? cooldowns.get(credential.id)
-                  : undefined
-              }
-              now={now}
-              staleError={query.error?.message}
-              pending={pending}
-              refreshing={busy}
-              onRefresh={() => refresh.mutate(credential.auth.account_ref)}
-              onConfigure={() => onConfigure(credential.id)}
-              onMove={(direction) => onMove(credential.id, direction)}
-              onRemove={() => onRemove(credential.id)}
-              onToggle={(enabled) => onToggle(credential.id, !enabled)}
-            />
-          ))}
-        </div>
-      )}
+      <div className="space-y-4">
+        {!!refs.length && query.isPending && <Loading />}
+        {query.error && (
+          <ErrorNotice error={query.error} retry={() => void query.refetch()} />
+        )}
+        {health.error && (
+          <ErrorNotice
+            error={health.error}
+            retry={() => void health.refetch()}
+          />
+        )}
+        {refresh.error && <ErrorNotice error={refresh.error} />}
+        {!provider.credentials.length ? (
+          <Empty title="No ChatGPT accounts">
+            Authorize a ChatGPT account with Codex access to start balancing
+            requests.
+          </Empty>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+            {provider.credentials.map((credential, index) => (
+              <AccountCard
+                key={credential.id}
+                credential={credential}
+                index={index}
+                count={provider.credentials.length}
+                account={accounts.get(credential.auth.account_ref)}
+                health={
+                  cooldowns.get(credential.id)?.account_ref ===
+                  credential.auth.account_ref
+                    ? cooldowns.get(credential.id)
+                    : undefined
+                }
+                now={now}
+                staleError={query.error?.message}
+                pending={pending}
+                refreshing={busy}
+                onRefresh={() => refresh.mutate(credential.auth.account_ref)}
+                onConfigure={() => onConfigure(credential.id)}
+                onMove={(direction) => onMove(credential.id, direction)}
+                onRemove={() => onRemove(credential.id)}
+                onToggle={(enabled) => onToggle(credential.id, !enabled)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

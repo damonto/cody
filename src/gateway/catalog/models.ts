@@ -1,3 +1,13 @@
+import {
+  ProviderAvailabilityReason,
+  HealthFailureScope,
+  HealthScope,
+} from "../health/values.ts";
+
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../../providers/transport-values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -305,7 +315,7 @@ async function fetchProviderModels(
         {
           request,
           endpoint: "models",
-          transport: "http",
+          transport: ProviderTransport.Http,
           protocol,
         },
         { config, env, context, requestLog, requestId },
@@ -341,12 +351,17 @@ async function fetchProviderModels(
         await discardBody(result.response.body);
       }
       const failureScope = healthFailureScope(result.response.status, protocol);
-      if (failureScope === "provider") {
+      if (failureScope === HealthFailureScope.Provider) {
         await scheduleHealthUpdate(
           context,
-          recordProviderFailure(env, provider.id, requestId, "catalog"),
+          recordProviderFailure(
+            env,
+            provider.id,
+            requestId,
+            HealthScope.Catalog,
+          ),
         );
-      } else if (failureScope === "credential") {
+      } else if (failureScope === HealthFailureScope.Credential) {
         await scheduleHealthUpdate(
           context,
           recordCredentialFailure(
@@ -354,7 +369,7 @@ async function fetchProviderModels(
             provider.id,
             key.id,
             requestId,
-            "catalog",
+            HealthScope.Catalog,
           ),
         );
       }
@@ -379,7 +394,7 @@ async function fetchProviderModels(
       };
       await scheduleHealthUpdate(
         context,
-        recordProviderFailure(env, provider.id, requestId, "catalog"),
+        recordProviderFailure(env, provider.id, requestId, HealthScope.Catalog),
       );
       return { provider, success: false, models: [], upstream };
     }
@@ -388,7 +403,7 @@ async function fetchProviderModels(
     );
     await scheduleHealthUpdate(
       context,
-      recordProviderSuccess(env, provider.id, requestId, "catalog"),
+      recordProviderSuccess(env, provider.id, requestId, HealthScope.Catalog),
     );
     return {
       provider,
@@ -412,7 +427,7 @@ async function fetchProviderModels(
     ) {
       await scheduleHealthUpdate(
         context,
-        recordProviderFailure(env, provider.id, requestId, "catalog"),
+        recordProviderFailure(env, provider.id, requestId, HealthScope.Catalog),
       );
     }
     return { provider, success: false, models: [], upstream, proxyError };
@@ -629,7 +644,7 @@ function isCodexUserAgent(request: Request): boolean {
 export function modelsFormatFor(request: Request): ModelsFormat {
   // `models` is dialect-neutral, so requestProtocol resolves it from the
   // client's own identity. The Claude user-agent rule lives there, not here.
-  if (requestProtocol(request, "models") === "anthropic") {
+  if (requestProtocol(request, "models") === ApiProtocol.Anthropic) {
     return "anthropic";
   }
   return isCodexUserAgent(request) ? "codex" : "openai";
@@ -840,9 +855,11 @@ async function collectModels(
   };
   requestLog?.mergeSection("routing", routing);
   if (
-    selection.checks.some((entry) => entry.reason === "health_read_failed") ||
+    selection.checks.some(
+      (entry) => entry.reason === ProviderAvailabilityReason.HealthReadFailed,
+    ) ||
     selection.credentialChecks.some(
-      (entry) => entry.reason === "health_read_failed",
+      (entry) => entry.reason === ProviderAvailabilityReason.HealthReadFailed,
     )
   ) {
     requestLog?.warn();
@@ -950,11 +967,15 @@ function modelsPayload(
             routesByProvider,
           ),
           aggregateStandardModels(
-            results.filter(({ provider }) => provider.type === "antigravity"),
+            results.filter(
+              ({ provider }) => provider.type === ProviderType.Antigravity,
+            ),
             routesByProvider,
           ),
           aggregateStandardModels(
-            results.filter(({ provider }) => provider.type === "codex"),
+            results.filter(
+              ({ provider }) => provider.type === ProviderType.Codex,
+            ),
             routesByProvider,
           ),
         ),

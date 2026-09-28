@@ -1,3 +1,8 @@
+import { SessionAffinityStatus } from "../routing/values.ts";
+
+import { ProviderTransport } from "../../providers/transport-values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import {
   prepareProviderRequest,
@@ -99,7 +104,8 @@ export async function handleContextManagement(
     },
   });
   if (!target) {
-    const forbidden = selection.affinity?.status === "forbidden";
+    const forbidden =
+      selection.affinity?.status === SessionAffinityStatus.Forbidden;
     return apiError(
       protocol,
       forbidden ? 403 : 503,
@@ -122,8 +128,8 @@ export async function handleContextManagement(
     {
       request,
       endpoint: path,
-      transport: "http",
-      protocol: "openai",
+      transport: ProviderTransport.Http,
+      protocol: ApiProtocol.Openai,
     },
     { config, env, context, requestLog, requestId },
   );

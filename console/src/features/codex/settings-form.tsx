@@ -1,3 +1,7 @@
+import { CodexAccountSelection } from "../../../../src/config/values.ts";
+
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -56,7 +60,9 @@ export function CodexSettingsForm({
     },
   });
   const ready =
-    accounts.data?.filter((account) => account.status === "ready") ?? [];
+    accounts.data?.filter(
+      (account) => account.status === OAuthAccountViewStatus.Ready,
+    ) ?? [];
   const discover = useMutation({
     mutationFn: () =>
       mapWithConcurrency(ready, PROVIDER_FAN_OUT_CONCURRENCY, (account) =>
@@ -107,18 +113,23 @@ export function CodexSettingsForm({
                   <Label>Account selection</Label>
                   <Choice
                     label="Account selection"
-                    value={field.state.value ?? "round_robin"}
+                    value={
+                      field.state.value ?? CodexAccountSelection.RoundRobin
+                    }
                     onChange={(value) =>
                       field.handleChange(
-                        value === "session_affinity"
-                          ? "session_affinity"
-                          : "round_robin",
+                        value === CodexAccountSelection.SessionAffinity
+                          ? CodexAccountSelection.SessionAffinity
+                          : CodexAccountSelection.RoundRobin,
                       )
                     }
                     options={[
-                      { value: "round_robin", label: "Round robin" },
                       {
-                        value: "session_affinity",
+                        value: CodexAccountSelection.RoundRobin,
+                        label: "Round robin",
+                      },
+                      {
+                        value: CodexAccountSelection.SessionAffinity,
                         label: "Session affinity (fill first)",
                       },
                     ]}

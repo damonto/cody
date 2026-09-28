@@ -1,16 +1,24 @@
+import {
+  ProviderAvailabilityReason,
+  HealthCooldownReason,
+  HealthFailureScope,
+  HealthScope,
+} from "./values.ts";
+
+import { ProviderType } from "../../config/values.ts";
+import { type ApiProtocol } from "../protocol-values.ts";
+
 import type { LeaseGrant, ResetOperation } from "./provider-health.ts";
 import type {
-  HealthCooldownReason,
   ProviderConfig,
   ProviderHealthSnapshot,
-  ProviderType,
 } from "../../config/types.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { errorMessage, logWarn } from "../../shared/log.ts";
-import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
+import { isAnthropicProtocol } from "../protocol.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 export const FAILURE_THRESHOLD = 10;
@@ -18,7 +26,7 @@ export const FAILURE_WINDOW_MS = 5 * 60 * 1000;
 export const COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Which health record an upstream status produces. */
-export type HealthFailureScope = "provider" | "credential";
+export type { HealthFailureScope } from "./values.ts";
 
 // One map per protocol rather than a provider set plus a key set: a status can
 // only appear once, so recording both a provider and a key failure for the same
@@ -27,10 +35,10 @@ export type HealthFailureScope = "provider" | "credential";
 // OpenAI-compatible upstreams: 400 and 503 mean the provider is unhealthy, while
 // 402 (billing) and 403 (forbidden) are specific to the key used.
 const OPENAI_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
-  [400, "provider"],
-  [402, "credential"],
-  [403, "credential"],
-  [503, "provider"],
+  [400, HealthFailureScope.Provider],
+  [402, HealthFailureScope.Credential],
+  [403, HealthFailureScope.Credential],
+  [503, HealthFailureScope.Provider],
 ]);
 
 // Anthropic upstreams signal an unhealthy provider with 5xx statuses: 529 is
@@ -39,22 +47,22 @@ const OPENAI_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
 // without access. The failure streak threshold keeps an isolated 5xx from
 // cooling the provider down.
 const ANTHROPIC_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
-  [401, "credential"],
-  [403, "credential"],
-  [500, "provider"],
-  [502, "provider"],
-  [503, "provider"],
-  [529, "provider"],
+  [401, HealthFailureScope.Credential],
+  [403, HealthFailureScope.Credential],
+  [500, HealthFailureScope.Provider],
+  [502, HealthFailureScope.Provider],
+  [503, HealthFailureScope.Provider],
+  [529, HealthFailureScope.Provider],
 ]);
 
 // Codex serves one pool of ChatGPT accounts: 401/402/403 belong to the
 // account, and a 400 is the client's request rather than the shared backend.
 // Quota 429s are handled separately as timed account cooldowns.
 const CODEX_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
-  [401, "credential"],
-  [402, "credential"],
-  [403, "credential"],
-  [503, "provider"],
+  [401, HealthFailureScope.Credential],
+  [402, HealthFailureScope.Credential],
+  [403, HealthFailureScope.Credential],
+  [503, HealthFailureScope.Provider],
 ]);
 
 /**
@@ -67,7 +75,7 @@ export function healthFailureScope(
   providerType?: ProviderType,
 ): HealthFailureScope | undefined {
   return (
-    providerType === "codex"
+    providerType === ProviderType.Codex
       ? CODEX_FAILURE_SCOPES
       : isAnthropicProtocol(protocol)
         ? ANTHROPIC_FAILURE_SCOPES
@@ -75,7 +83,7 @@ export function healthFailureScope(
   ).get(status);
 }
 
-export type HealthScope = "inference" | "catalog";
+export type { HealthScope } from "./values.ts";
 
 export interface HealthExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -98,9 +106,6 @@ interface CoolingCredentialHealth extends ProviderHealthSnapshot {
 }
 
 export type CoolingHealth = CoolingProviderHealth | CoolingCredentialHealth;
-
-type ProviderAvailabilityReason =
-  "available" | "cooling" | "health_read_failed";
 
 export interface ProviderAvailability {
   available: boolean;
@@ -185,7 +190,8 @@ export class ProviderHealthState {
   recordSuccess(): ProviderHealthSnapshot {
     // A request that started before the quota ran out may still succeed; only
     // the reset time, a spent reset or a manual clear ends a quota cooldown.
-    if (this.snapshot().reason === "quota") return this.snapshot();
+    if (this.snapshot().reason === HealthCooldownReason.Quota)
+      return this.snapshot();
     return this.clear();
   }
 
@@ -247,7 +253,7 @@ export class ProviderHealthState {
 }
 
 function healthObjectName(providerId: string, scope: HealthScope): string {
-  return scope === "inference" ? providerId : `${providerId}:catalog`;
+  return scope === HealthScope.Inference ? providerId : `${providerId}:catalog`;
 }
 
 function healthStub(env: Bindings, providerId: string, scope: HealthScope) {
@@ -260,7 +266,7 @@ function credentialHealthObjectName(
   scope: HealthScope,
 ): string {
   const base = `key:${providerId}:${credentialId}`;
-  return scope === "inference" ? base : `${base}:catalog`;
+  return scope === HealthScope.Inference ? base : `${base}:catalog`;
 }
 
 function credentialHealthStub(
@@ -277,7 +283,7 @@ function credentialHealthStub(
 export async function getProviderAvailability(
   env: Bindings,
   providerId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<ProviderAvailability> {
   try {
     const snapshot = await healthStub(env, providerId, scope).getStatus();
@@ -285,7 +291,9 @@ export async function getProviderAvailability(
       snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     return {
       available,
-      reason: available ? "available" : "cooling",
+      reason: available
+        ? ProviderAvailabilityReason.Available
+        : ProviderAvailabilityReason.Cooling,
       failures: snapshot.failures,
       cooling_until: snapshot.cooling_until,
       ...(!available && snapshot.reason
@@ -295,7 +303,7 @@ export async function getProviderAvailability(
   } catch (error) {
     return {
       available: true,
-      reason: "health_read_failed",
+      reason: ProviderAvailabilityReason.HealthReadFailed,
       error: errorMessage(error),
     };
   }
@@ -304,7 +312,7 @@ export async function getProviderAvailability(
 export async function providerIsAvailable(
   env: Bindings,
   providerId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<boolean> {
   return (await getProviderAvailability(env, providerId, scope)).available;
 }
@@ -313,7 +321,7 @@ export async function getCredentialAvailability(
   env: Bindings,
   providerId: string,
   credentialId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<ProviderAvailability> {
   try {
     const snapshot = await credentialHealthStub(
@@ -326,7 +334,9 @@ export async function getCredentialAvailability(
       snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     return {
       available,
-      reason: available ? "available" : "cooling",
+      reason: available
+        ? ProviderAvailabilityReason.Available
+        : ProviderAvailabilityReason.Cooling,
       failures: snapshot.failures,
       cooling_until: snapshot.cooling_until,
       ...(!available && snapshot.reason
@@ -336,7 +346,7 @@ export async function getCredentialAvailability(
   } catch (error) {
     return {
       available: true,
-      reason: "health_read_failed",
+      reason: ProviderAvailabilityReason.HealthReadFailed,
       error: errorMessage(error),
     };
   }
@@ -346,7 +356,7 @@ export async function credentialIsAvailable(
   env: Bindings,
   providerId: string,
   credentialId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<boolean> {
   return (await getCredentialAvailability(env, providerId, credentialId, scope))
     .available;
@@ -357,7 +367,7 @@ async function record(
   providerId: string,
   outcome: "success" | "failure",
   requestId?: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<void> {
   try {
     const stub = healthStub(env, providerId, scope);
@@ -389,7 +399,7 @@ export function recordProviderSuccess(
   env: Bindings,
   providerId: string,
   requestId?: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<void> {
   return record(env, providerId, "success", requestId, scope);
 }
@@ -398,7 +408,7 @@ export function recordProviderFailure(
   env: Bindings,
   providerId: string,
   requestId?: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<void> {
   return record(env, providerId, "failure", requestId, scope);
 }
@@ -408,7 +418,7 @@ export async function recordCredentialFailure(
   providerId: string,
   credentialId: string,
   requestId?: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<void> {
   try {
     const snapshot = await credentialHealthStub(
@@ -452,8 +462,8 @@ export async function recordCredentialQuotaCooldown(
       env,
       providerId,
       credentialId,
-      "inference",
-    ).recordCooldownUntil(until, "quota");
+      HealthScope.Inference,
+    ).recordCooldownUntil(until, HealthCooldownReason.Quota);
     logWarn("health.credential_quota_cooldown.active", {
       request_id: requestId,
       provider_id: providerId,
@@ -546,7 +556,7 @@ export function releaseProviderLease(
 export async function clearProviderHealth(
   env: Bindings,
   providerId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<ProviderHealthSnapshot> {
   const snapshot = await healthStub(env, providerId, scope).clear();
   return snapshot;
@@ -562,7 +572,7 @@ export function clearCredentialQuotaCooldownUntil(
     env,
     providerId,
     credentialId,
-    "inference",
+    HealthScope.Inference,
   ).clearQuotaCooldownUntil(until);
 }
 
@@ -570,7 +580,7 @@ export async function clearCredentialHealth(
   env: Bindings,
   providerId: string,
   credentialId: string,
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<ProviderHealthSnapshot> {
   return credentialHealthStub(env, providerId, credentialId, scope).clear();
 }
@@ -578,7 +588,7 @@ export async function clearCredentialHealth(
 export async function listCoolingProviders(
   env: Bindings,
   providerIds: string[],
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<CoolingProviderHealth[]> {
   const statuses = await mapWithConcurrency(
     providerIds,
@@ -597,12 +607,12 @@ export async function listCoolingProviders(
 export async function listCoolingHealth(
   env: Bindings,
   providers: ProviderConfig[],
-  scope: HealthScope = "inference",
+  scope: HealthScope = HealthScope.Inference,
 ): Promise<CoolingHealth[]> {
   const descriptors = providers.flatMap((provider) => [
-    { kind: "provider" as const, provider_id: provider.id },
+    { kind: HealthFailureScope.Provider, provider_id: provider.id },
     ...provider.credentials.map((key) => ({
-      kind: "credential" as const,
+      kind: HealthFailureScope.Credential,
       provider_id: provider.id,
       credential_id: key.id,
     })),
@@ -612,7 +622,7 @@ export async function listCoolingHealth(
     PROVIDER_FAN_OUT_CONCURRENCY,
     async (descriptor): Promise<CoolingHealth> => {
       const snapshot =
-        descriptor.kind === "provider"
+        descriptor.kind === HealthFailureScope.Provider
           ? await healthStub(env, descriptor.provider_id, scope).getStatus()
           : await credentialHealthStub(
               env,
@@ -620,7 +630,7 @@ export async function listCoolingHealth(
               descriptor.credential_id,
               scope,
             ).getStatus();
-      return descriptor.kind === "provider"
+      return descriptor.kind === HealthFailureScope.Provider
         ? { provider_id: descriptor.provider_id, ...snapshot }
         : {
             provider_id: descriptor.provider_id,

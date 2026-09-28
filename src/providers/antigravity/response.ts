@@ -1,7 +1,9 @@
+import { ApiProtocol } from "../../gateway/protocol-values.ts";
+
 import { z } from "zod";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import { anthropicErrorType, apiError } from "../../gateway/http/http.ts";
-import type { ApiProtocol } from "../../gateway/protocol.ts";
+
 import { SseObserver } from "../../telemetry/stream.ts";
 import { ProviderRequestError } from "../errors.ts";
 import { object } from "./api.ts";
@@ -45,7 +47,7 @@ export function translatedUsage(
   const generated = count("candidatesTokenCount");
   if (prompt === undefined && generated === undefined) return undefined;
   const output = generated === undefined ? undefined : generated + thought;
-  return protocol === "anthropic"
+  return protocol === ApiProtocol.Anthropic
     ? {
         ...(prompt === undefined
           ? {}
@@ -106,7 +108,7 @@ class ResponseEncoder {
     const event = {
       ...data,
       type,
-      ...(this.options.protocol === "openai"
+      ...(this.options.protocol === ApiProtocol.Openai
         ? { sequence_number: this.sequence++ }
         : {}),
     };
@@ -118,7 +120,7 @@ class ResponseEncoder {
     return events;
   }
   result(status = "completed"): Wire {
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       return {
         id: this.id,
         type: "message",
@@ -165,7 +167,7 @@ class ResponseEncoder {
   private start() {
     if (this.started) return;
     this.started = true;
-    if (this.options.protocol === "openai") {
+    if (this.options.protocol === ApiProtocol.Openai) {
       this.event("response.created", { response: this.result("in_progress") });
       this.event("response.in_progress", {
         response: this.result("in_progress"),
@@ -201,7 +203,7 @@ class ResponseEncoder {
       : undefined;
     const custom = mapping?.custom ?? false;
     let wire: Wire;
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       wire =
         kind === "tool"
           ? {
@@ -249,7 +251,7 @@ class ResponseEncoder {
     };
     this.output.push(wire);
     if (kind === "tool") this.hasTools = true;
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       this.event("content_block_start", { index, content_block: wire });
     else {
       this.event("response.output_item.added", {
@@ -285,7 +287,7 @@ class ResponseEncoder {
           "Antigravity returned invalid custom tool arguments",
           502,
         );
-      if (this.options.protocol === "anthropic") {
+      if (this.options.protocol === ApiProtocol.Anthropic) {
         wire.input = args;
         this.event("content_block_delta", {
           index,
@@ -317,7 +319,7 @@ class ResponseEncoder {
         this.options.scope,
         this.options.key,
       );
-      if (this.options.protocol === "anthropic") {
+      if (this.options.protocol === ApiProtocol.Anthropic) {
         wire.thinking = text;
         wire.signature = signature;
         this.event("content_block_delta", {
@@ -340,7 +342,8 @@ class ResponseEncoder {
           part: { type: "summary_text", text },
         });
       }
-    } else if (this.options.protocol === "anthropic") wire.text = text;
+    } else if (this.options.protocol === ApiProtocol.Anthropic)
+      wire.text = text;
     else {
       wire.content = [{ type: "output_text", text, annotations: [] }];
       this.event("response.output_text.done", {
@@ -356,7 +359,7 @@ class ResponseEncoder {
         part: { type: "output_text", text, annotations: [] },
       });
     }
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       this.event("content_block_stop", { index });
     else {
       if (kind !== "thinking") wire.status = "completed";
@@ -386,7 +389,7 @@ class ResponseEncoder {
     );
     const carrierIndex = this.output.length;
     const carrier: Wire =
-      this.options.protocol === "anthropic"
+      this.options.protocol === ApiProtocol.Anthropic
         ? { type: "thinking", thinking: "", signature }
         : {
             id: `rs_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -395,7 +398,7 @@ class ResponseEncoder {
             encrypted_content: signature,
           };
     this.output.push(carrier);
-    if (this.options.protocol === "anthropic") {
+    if (this.options.protocol === ApiProtocol.Anthropic) {
       this.event("content_block_start", {
         index: carrierIndex,
         content_block: { type: "thinking", thinking: "", signature: "" },
@@ -497,7 +500,7 @@ class ResponseEncoder {
         active.part.thoughtSignature = part.thoughtSignature;
       if (part.text !== undefined) {
         active.part.text = (active.part.text ?? "") + part.text;
-        if (this.options.protocol === "anthropic")
+        if (this.options.protocol === ApiProtocol.Anthropic)
           this.event("content_block_delta", {
             index: active.index,
             delta:
@@ -536,18 +539,18 @@ class ResponseEncoder {
         502,
       );
     await this.close();
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       this.event("message_delta", {
         delta: { stop_reason: this.result().stop_reason, stop_sequence: null },
         usage: this.usage ?? { output_tokens: 0 },
       });
     this.event(
-      this.options.protocol === "anthropic"
+      this.options.protocol === ApiProtocol.Anthropic
         ? "message_stop"
         : this.finishReason === "MAX_TOKENS"
           ? "response.incomplete"
           : "response.completed",
-      this.options.protocol === "anthropic"
+      this.options.protocol === ApiProtocol.Anthropic
         ? {}
         : {
             response: this.result(
@@ -562,7 +565,7 @@ class ResponseEncoder {
       error instanceof ProviderRequestError
         ? error.message
         : "Invalid or interrupted Antigravity response";
-    if (this.options.protocol === "anthropic")
+    if (this.options.protocol === ApiProtocol.Anthropic)
       this.event("error", {
         error: {
           type: anthropicErrorType(

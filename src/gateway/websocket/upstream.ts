@@ -1,3 +1,8 @@
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../../providers/transport-values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+import { HealthFailureScope } from "../health/values.ts";
+
 import type { GatewayConfig } from "../../config/types.ts";
 import {
   codexUsageLimit,
@@ -89,8 +94,8 @@ export class UpstreamWebSocket {
             { headers: state.forwarded_headers, signal: controller.signal },
           ),
           endpoint: "responses",
-          transport: "websocket",
-          protocol: "openai",
+          transport: ProviderTransport.Websocket,
+          protocol: ApiProtocol.Openai,
         },
         {
           config,
@@ -112,7 +117,7 @@ export class UpstreamWebSocket {
           send: prepared.send,
           wait: (delayMs) => abortableDelay(delayMs, controller.signal),
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
-          ...(target.provider.type === "codex"
+          ...(target.provider.type === ProviderType.Codex
             ? {
                 isTerminal: async (response: Response) => {
                   usageLimit = await codexUsageLimit(response);
@@ -124,9 +129,9 @@ export class UpstreamWebSocket {
             if (
               healthFailureScope(
                 response.status,
-                "openai",
+                ApiProtocol.Openai,
                 target.provider.type,
-              ) === "credential"
+              ) === HealthFailureScope.Credential
             ) {
               await recordCredentialFailure(
                 this.env,

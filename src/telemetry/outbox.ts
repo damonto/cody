@@ -1,3 +1,5 @@
+import { UsagePhase } from "./values.ts";
+
 import { ingestUsage } from "../reporting/store.ts";
 import { logWarn } from "../shared/log.ts";
 import { parseUsageEvent } from "./schema.ts";
@@ -151,10 +153,10 @@ export class UsageOutboxCore {
     // must not prevent terminal records from reaching the Queue, or vice versa.
     await Promise.all([
       this.deliverProgress(
-        entries.filter((entry) => entry.event.phase !== "finished"),
+        entries.filter((entry) => entry.event.phase !== UsagePhase.Finished),
       ),
       this.deliverFinished(
-        entries.filter((entry) => entry.event.phase === "finished"),
+        entries.filter((entry) => entry.event.phase === UsagePhase.Finished),
       ),
     ]);
   }

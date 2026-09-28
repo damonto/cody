@@ -1,3 +1,5 @@
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import {
@@ -6,9 +8,8 @@ import {
 } from "../../../../src/shared/concurrency";
 import type { AccountView } from "../../../../src/providers/oauth/schema";
 import type { AntigravityProviderConfig } from "../../../../src/config/types";
-import { ErrorNotice, Loading, Status } from "@/components/common";
+import { Empty, ErrorNotice, Loading, Status } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -63,7 +64,8 @@ export function AntigravityAccounts({
       mapWithConcurrency(
         (query.data ?? []).filter(
           (account) =>
-            account.status === "ready" && (!ref || account.account_ref === ref),
+            account.status === OAuthAccountViewStatus.Ready &&
+            (!ref || account.account_ref === ref),
         ),
         PROVIDER_FAN_OUT_CONCURRENCY,
         (account) => refreshAccountQuota(account, true),
@@ -81,7 +83,9 @@ export function AntigravityAccounts({
                 ...account,
                 quota: {
                   ...quota,
-                  stale: account.status !== "ready" || quota.stale,
+                  stale:
+                    account.status !== OAuthAccountViewStatus.Ready ||
+                    quota.stale,
                 },
               }
             : account;
@@ -93,38 +97,38 @@ export function AntigravityAccounts({
     query.data?.map((account) => [account.account_ref, account]),
   );
   return (
-    <Card className="shadow-none">
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle className="text-base">Google accounts</CardTitle>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={
-              !query.data?.some((account) => account.status === "ready") ||
-              refresh.isPending ||
-              query.isFetching
-            }
-            onClick={() => refresh.mutate(undefined)}
-          >
-            <RefreshCw />
-            Refresh all quotas
-          </Button>
-          <Button size="sm" disabled={pending} onClick={onAdd}>
-            <Plus />
-            Add Google account
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <section className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={
+            !query.data?.some(
+              (account) => account.status === OAuthAccountViewStatus.Ready,
+            ) ||
+            refresh.isPending ||
+            query.isFetching
+          }
+          onClick={() => refresh.mutate(undefined)}
+        >
+          <RefreshCw />
+          Refresh all quotas
+        </Button>
+        <Button size="sm" disabled={pending} onClick={onAdd}>
+          <Plus />
+          Add Google account
+        </Button>
+      </div>
+      <div className="space-y-4">
         {!!refs.length && query.isPending && <Loading />}
         {query.error && (
           <ErrorNotice error={query.error} retry={() => void query.refetch()} />
         )}
         {!provider.credentials.length && (
-          <p className="text-sm text-muted-foreground">
-            No authorized accounts yet.
-          </p>
+          <Empty title="No Google accounts">
+            Authorize a Google account with Antigravity access to start
+            balancing requests.
+          </Empty>
         )}
         {provider.credentials.map((credential, index) => {
           const account = accounts.get(credential.auth.account_ref);
@@ -151,7 +155,7 @@ export function AntigravityAccounts({
                     size="sm"
                     variant="ghost"
                     disabled={
-                      account?.status !== "ready" ||
+                      account?.status !== OAuthAccountViewStatus.Ready ||
                       refresh.isPending ||
                       query.isFetching
                     }
@@ -225,7 +229,7 @@ export function AntigravityAccounts({
             </div>
           );
         })}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }

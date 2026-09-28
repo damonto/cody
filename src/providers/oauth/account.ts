@@ -1,3 +1,11 @@
+import {
+  OAuthAccountViewStatus,
+  OAuthFlow,
+  OAuthSessionStatus,
+  OAuthAccountStatus,
+} from "./values.ts";
+import { ProviderType, CredentialAuthType } from "../../config/values.ts";
+
 import { z } from "zod";
 import { configurationSchema } from "../../config/schema.ts";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
@@ -89,7 +97,7 @@ const sessionSchema = z.object({
   tier: z.string(),
   attempts: z.number(),
   next_at: z.number(),
-  flow: z.enum(["pkce", "device"]).default("pkce"),
+  flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   // Device authorization polls the issuer from the alarm until approval.
   device_auth_id: z.string().nullable().default(null),
   user_code: z.string().nullable().default(null),
@@ -98,9 +106,9 @@ const sessionSchema = z.object({
 const storedSchema = z.object({
   account_ref: z.uuid(),
   provider_id: z.string(),
-  provider_type: oauthProviderTypeSchema.default("antigravity"),
+  provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
   generation: z.number(),
-  status: z.enum(["disconnected", "ready", "needs_reauthorization"]),
+  status: z.enum(OAuthAccountStatus),
   connection: connectionSchema,
   tokens: tokenSchema.nullable(),
   identity: identitySchema.nullable(),
@@ -115,6 +123,12 @@ const storedSchema = z.object({
 });
 type Stored = z.output<typeof storedSchema>;
 type Session = z.output<typeof sessionSchema>;
+const terminalSessionStatuses: ReadonlySet<OAuthSessionStatus> = new Set([
+  OAuthSessionStatus.Complete,
+  OAuthSessionStatus.Cancelled,
+  OAuthSessionStatus.Expired,
+]);
+
 const emptyQuota = (): Stored["quota"] => ({
   groups: [],
   subscription: null,
@@ -123,7 +137,8 @@ const emptyQuota = (): Stored["quota"] => ({
   stale: true,
 });
 const devicePending = (session: Session): boolean =>
-  session.flow === "device" && session.status === "pending";
+  session.flow === OAuthFlow.Device &&
+  session.status === OAuthSessionStatus.Pending;
 function safeError(error: unknown): string {
   return error instanceof OAuthError
     ? error.message
@@ -166,11 +181,11 @@ export class ProviderOAuthAccountCore {
       );
       const session = next.session;
       const alarm =
-        session &&
-        !["complete", "cancelled", "expired"].includes(session.status)
+        session && !terminalSessionStatuses.has(session.status)
           ? Math.min(
               session.expires_at,
-              session.status === "initializing" || devicePending(session)
+              session.status === OAuthSessionStatus.Initializing ||
+                devicePending(session)
                 ? session.next_at
                 : session.expires_at,
             )
@@ -223,11 +238,12 @@ export class ProviderOAuthAccountCore {
     const account = this.requireAccount();
     const session = account.session;
     const status =
-      account.status === "disconnected" && session
-        ? session.status === "initializing"
-          ? "initializing"
-          : ["pending", "exchanging"].includes(session.status)
-            ? "authorizing"
+      account.status === OAuthAccountStatus.Disconnected && session
+        ? session.status === OAuthSessionStatus.Initializing
+          ? OAuthAccountViewStatus.Initializing
+          : session.status === OAuthSessionStatus.Pending ||
+              session.status === OAuthSessionStatus.Exchanging
+            ? OAuthAccountViewStatus.Authorizing
             : account.status
         : account.status;
     return {
@@ -245,7 +261,7 @@ export class ProviderOAuthAccountCore {
       quota: {
         ...account.quota,
         stale:
-          account.status !== "ready" ||
+          account.status !== OAuthAccountStatus.Ready ||
           account.quota.last_error !== null ||
           account.quota.updated_at === null ||
           Date.now() - account.quota.updated_at >= QUOTA_CACHE_TTL_MS,
@@ -271,7 +287,7 @@ export class ProviderOAuthAccountCore {
     if (
       !session ||
       Date.now() < session.expires_at ||
-      ["complete", "cancelled", "expired"].includes(session.status)
+      terminalSessionStatuses.has(session.status)
     )
       return;
     await this.change((account) => {
@@ -280,10 +296,10 @@ export class ProviderOAuthAccountCore {
       if (
         current &&
         Date.now() >= current.expires_at &&
-        !["complete", "cancelled", "expired"].includes(current.status)
+        !terminalSessionStatuses.has(current.status)
       ) {
         account.generation++;
-        current.status = "expired";
+        current.status = OAuthSessionStatus.Expired;
         current.tokens = null;
         current.verifier = "";
         current.state = "";
@@ -294,27 +310,29 @@ export class ProviderOAuthAccountCore {
   private sessionView(id: string, actor: string): SessionView {
     const session = this.session(id, actor);
     const account = this.requireAccount();
-    const device = session.flow === "device";
+    const device = session.flow === OAuthFlow.Device;
     return {
       id: `${account.account_ref}.${session.id}`,
       account_ref: account.account_ref,
       status: session.status,
       expires_at: session.expires_at,
       url:
-        session.status !== "pending"
+        session.status !== OAuthSessionStatus.Pending
           ? null
           : device
             ? CODEX_VERIFICATION_URI
-            : account.provider_type === "codex"
+            : account.provider_type === ProviderType.Codex
               ? codexAuthorizationUrl(session.state, session.challenge)
               : antigravityAuthorizationUrl(session.state, session.challenge),
       flow: session.flow,
       user_code:
-        device && session.status === "pending" ? session.user_code : null,
+        device && session.status === OAuthSessionStatus.Pending
+          ? session.user_code
+          : null,
       verification_uri: device ? CODEX_VERIFICATION_URI : null,
       error: session.error,
       can_retry:
-        session.status === "error" &&
+        session.status === OAuthSessionStatus.Error &&
         session.tokens !== null &&
         Date.now() < session.expires_at,
       account: this.view(),
@@ -331,7 +349,7 @@ export class ProviderOAuthAccountCore {
     connection?: ProviderConnection,
     config?: ProxyConfiguration,
   ): Promise<CodexClient> {
-    if (this.requireAccount().provider_type !== "codex")
+    if (this.requireAccount().provider_type !== ProviderType.Codex)
       throw new OAuthError("This operation is only available for Codex", 400);
     const [send, signal] = await this.outbound(connection, config);
     return new CodexClient(
@@ -361,7 +379,7 @@ export class ProviderOAuthAccountCore {
         );
         const credential = provider?.credentials.find(
           (credential) =>
-            credential.auth.type === "oauth" &&
+            credential.auth.type === CredentialAuthType.OAuth &&
             credential.auth.account_ref === account.account_ref,
         );
         if (provider && credential)
@@ -387,9 +405,9 @@ export class ProviderOAuthAccountCore {
     actor: string,
     connection: ProviderConnection,
     providerType: OAuthProviderType,
-    flow: "pkce" | "device",
+    flow: OAuthFlow,
   ): Promise<SessionView> {
-    if (flow === "device" && providerType !== "codex")
+    if (flow === OAuthFlow.Device && providerType !== ProviderType.Codex)
       throw new OAuthError("Device authorization is only available for Codex");
     const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const challenge = base64url(
@@ -403,12 +421,13 @@ export class ProviderOAuthAccountCore {
     const session: Session = {
       id: crypto.randomUUID(),
       actor,
-      status: "pending",
+      status: OAuthSessionStatus.Pending,
       state: base64url(crypto.getRandomValues(new Uint8Array(32))),
       verifier,
       challenge,
       expires_at:
-        Date.now() + (flow === "device" ? CODEX_DEVICE_TTL_MS : SESSION_TTL_MS),
+        Date.now() +
+        (flow === OAuthFlow.Device ? CODEX_DEVICE_TTL_MS : SESSION_TTL_MS),
       connection,
       error: null,
       tokens: null,
@@ -417,7 +436,7 @@ export class ProviderOAuthAccountCore {
       tier: "free-tier",
       attempts: 0,
       // Device sessions request their code before the first poll is scheduled.
-      next_at: flow === "device" ? Number.MAX_SAFE_INTEGER : Date.now(),
+      next_at: flow === OAuthFlow.Device ? Number.MAX_SAFE_INTEGER : Date.now(),
       flow,
       device_auth_id: null,
       user_code: null,
@@ -436,7 +455,7 @@ export class ProviderOAuthAccountCore {
         provider_id: connection.provider_id,
         provider_type: providerType,
         generation: 0,
-        status: "disconnected",
+        status: OAuthAccountStatus.Disconnected,
         connection,
         tokens: null,
         identity: null,
@@ -461,7 +480,8 @@ export class ProviderOAuthAccountCore {
     )
       .bind(accountRef, connection.provider_id, providerType, Date.now())
       .run();
-    if (flow === "device") await this.requestDeviceCode(session.id, actor);
+    if (flow === OAuthFlow.Device)
+      await this.requestDeviceCode(session.id, actor);
     return this.sessionView(session.id, actor);
   }
   private async requestDeviceCode(id: string, actor: string): Promise<void> {
@@ -511,7 +531,7 @@ export class ProviderOAuthAccountCore {
       const pending = account.session;
       if (pending?.id !== session.id || !devicePending(pending))
         throw new OAuthError("Authorization is no longer pending", 409);
-      pending.status = "exchanging";
+      pending.status = OAuthSessionStatus.Exchanging;
       pending.user_code = null;
     });
     const tokens = await client.exchange(
@@ -521,11 +541,14 @@ export class ProviderOAuthAccountCore {
     );
     await this.updateGeneration(snapshot.generation, (account) => {
       const pending = account.session;
-      if (pending?.id !== session.id || pending.status !== "exchanging")
+      if (
+        pending?.id !== session.id ||
+        pending.status !== OAuthSessionStatus.Exchanging
+      )
         throw new OAuthError("Authorization session is no longer active", 410);
       pending.tokens = tokens;
       pending.device_auth_id = null;
-      pending.status = "initializing";
+      pending.status = OAuthSessionStatus.Initializing;
       pending.next_at = Date.now();
     });
   }
@@ -537,24 +560,25 @@ export class ProviderOAuthAccountCore {
     const session = this.session(id, actor);
     const generation = this.requireAccount().generation;
     if (
-      ["expired", "cancelled"].includes(session.status) ||
+      session.status === OAuthSessionStatus.Expired ||
+      session.status === OAuthSessionStatus.Cancelled ||
       Date.now() >= session.expires_at
     )
       throw new OAuthError(
         "Authorization session expired or was cancelled; start again",
         410,
       );
-    if (session.flow === "device")
+    if (session.flow === OAuthFlow.Device)
       throw new OAuthError(
         "This session waits for device approval; no callback is needed",
         409,
       );
-    if (session.status !== "pending")
+    if (session.status !== OAuthSessionStatus.Pending)
       throw new OAuthError(
         "Authorization callback was already submitted; check the session status",
         409,
       );
-    const codex = this.requireAccount().provider_type === "codex";
+    const codex = this.requireAccount().provider_type === ProviderType.Codex;
     const url = URL.parse(redirect);
     const callbackState = url?.searchParams.get("state") ?? "";
     const onboardingSuffix = ".onboarding_entrypoint=life_sciences";
@@ -584,11 +608,11 @@ export class ProviderOAuthAccountCore {
       );
     await this.updateGeneration(generation, (account) => {
       const pending = this.ownedSession(account, id, actor);
-      if (pending.status !== "pending")
+      if (pending.status !== OAuthSessionStatus.Pending)
         throw new OAuthError("Authorization is already being processed", 409);
       if (Date.now() >= pending.expires_at)
         throw new OAuthError("Authorization session expired; start again", 410);
-      pending.status = "exchanging";
+      pending.status = OAuthSessionStatus.Exchanging;
     });
     const operation = (async () => {
       try {
@@ -602,7 +626,7 @@ export class ProviderOAuthAccountCore {
         await this.updateGeneration(generation, (account) => {
           const pending = this.ownedSession(account, id, actor);
           if (
-            pending.status !== "exchanging" ||
+            pending.status !== OAuthSessionStatus.Exchanging ||
             Date.now() >= pending.expires_at
           )
             throw new OAuthError(
@@ -611,7 +635,7 @@ export class ProviderOAuthAccountCore {
             );
           pending.tokens = tokens;
           pending.verifier = "";
-          pending.status = "initializing";
+          pending.status = OAuthSessionStatus.Initializing;
           pending.next_at = Date.now();
         });
       } catch (error) {
@@ -630,7 +654,7 @@ export class ProviderOAuthAccountCore {
     if (this.account?.generation !== generation) return;
     await this.updateGeneration(generation, (account) => {
       if (!account.session) return;
-      account.session.status = "error";
+      account.session.status = OAuthSessionStatus.Error;
       account.session.error = safeError(error);
       account.session.verifier = "";
     });
@@ -640,13 +664,13 @@ export class ProviderOAuthAccountCore {
     await this.change((account) => {
       if (!account) throw new OAuthError("Account does not exist", 404);
       const session = this.ownedSession(account, id, actor);
-      if (session.status === "complete")
+      if (session.status === OAuthSessionStatus.Complete)
         throw new OAuthError(
           "Authorization is complete; disconnect the account instead",
           409,
         );
       account.generation++;
-      session.status = "cancelled";
+      session.status = OAuthSessionStatus.Cancelled;
       session.tokens = null;
       session.verifier = "";
       session.state = "";
@@ -656,8 +680,9 @@ export class ProviderOAuthAccountCore {
   private async initialize(): Promise<void> {
     const snapshot = structuredClone(this.requireAccount());
     const session = snapshot.session;
-    if (!session?.tokens || session.status !== "initializing") return;
-    if (snapshot.provider_type === "codex")
+    if (!session?.tokens || session.status !== OAuthSessionStatus.Initializing)
+      return;
+    if (snapshot.provider_type === ProviderType.Codex)
       return this.initializeCodex(snapshot, session, session.tokens);
     const client = await this.antigravity(session.connection);
     let identity = session.identity;
@@ -700,7 +725,7 @@ export class ProviderOAuthAccountCore {
       if (
         !pending ||
         pending.id !== session.id ||
-        pending.status !== "initializing" ||
+        pending.status !== OAuthSessionStatus.Initializing ||
         !pending.tokens
       )
         throw new OAuthError("Authorization was cancelled", 409);
@@ -722,14 +747,14 @@ export class ProviderOAuthAccountCore {
         account.identity = identity;
         account.project_id = project;
         account.connection = pending.connection;
-        account.status = "ready";
+        account.status = OAuthAccountStatus.Ready;
         account.error = null;
         account.generation++;
         account.quota = emptyQuota();
         account.models = [];
         account.models_updated_at = null;
         account.models_error = null;
-        pending.status = "complete";
+        pending.status = OAuthSessionStatus.Complete;
         pending.tokens = null;
         pending.state = "";
         pending.verifier = "";
@@ -761,7 +786,7 @@ export class ProviderOAuthAccountCore {
       if (
         !pending ||
         pending.id !== session.id ||
-        pending.status !== "initializing" ||
+        pending.status !== OAuthSessionStatus.Initializing ||
         !pending.tokens
       )
         throw new OAuthError("Authorization was cancelled", 409);
@@ -783,14 +808,14 @@ export class ProviderOAuthAccountCore {
         subscription_active_until: claims.subscription_active_until,
       };
       account.connection = pending.connection;
-      account.status = "ready";
+      account.status = OAuthAccountStatus.Ready;
       account.error = null;
       account.generation++;
       account.quota = emptyQuota();
       account.models = [];
       account.models_updated_at = null;
       account.models_error = null;
-      pending.status = "complete";
+      pending.status = OAuthSessionStatus.Complete;
       pending.tokens = null;
       pending.state = "";
       pending.verifier = "";
@@ -798,7 +823,7 @@ export class ProviderOAuthAccountCore {
   }
   private active() {
     const account = this.requireAccount();
-    if (account.status !== "ready" || !account.tokens)
+    if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
       throw new OAuthError(
         "Reconnect this account before sending requests",
         503,
@@ -806,12 +831,15 @@ export class ProviderOAuthAccountCore {
       );
     let credential:
       { account_id: string; is_fedramp?: boolean } | { project_id: string };
-    if (account.provider_type === "codex" && account.codex) {
+    if (account.provider_type === ProviderType.Codex && account.codex) {
       credential = {
         account_id: account.codex.account_id,
         ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
       };
-    } else if (account.provider_type === "antigravity" && account.project_id) {
+    } else if (
+      account.provider_type === ProviderType.Antigravity &&
+      account.project_id
+    ) {
       credential = { project_id: account.project_id };
     } else {
       throw new OAuthError(
@@ -848,7 +876,7 @@ export class ProviderOAuthAccountCore {
             );
           let result: z.output<typeof tokenSchema>;
           let claims: ReturnType<typeof parseIdToken> | null = null;
-          if (this.requireAccount().provider_type === "codex") {
+          if (this.requireAccount().provider_type === ProviderType.Codex) {
             result = await (
               await this.codex(connection, config)
             ).refresh(refreshToken, snapshot.tokens);
@@ -892,7 +920,7 @@ export class ProviderOAuthAccountCore {
             await this.updateGeneration(snapshot.generation, (account) => {
               account.error = safeError(error);
               if (error instanceof OAuthError && error.code === "invalid_grant")
-                account.status = "needs_reauthorization";
+                account.status = OAuthAccountStatus.NeedsReauthorization;
             });
           throw error;
         }
@@ -1069,12 +1097,12 @@ export class ProviderOAuthAccountCore {
     await this.updateGeneration(this.requireAccount().generation, (account) => {
       const session = this.ownedSession(account, id, actor);
       if (
-        session.status !== "error" ||
+        session.status !== OAuthSessionStatus.Error ||
         !session.tokens ||
         Date.now() >= session.expires_at
       )
         throw new OAuthError("Start a new authorization session", 409);
-      session.status = "initializing";
+      session.status = OAuthSessionStatus.Initializing;
       session.error = null;
       session.attempts = 0;
       session.next_at = Date.now();
@@ -1086,7 +1114,7 @@ export class ProviderOAuthAccountCore {
       account.generation++;
       account.tokens = null;
       account.session = null;
-      account.status = "disconnected";
+      account.status = OAuthAccountStatus.Disconnected;
       account.error = null;
       return account;
     });
@@ -1183,7 +1211,7 @@ export class ProviderOAuthAccountCore {
       }
       return;
     }
-    if (session.status === "initializing") {
+    if (session.status === OAuthSessionStatus.Initializing) {
       try {
         await this.initialize();
       } catch (error) {

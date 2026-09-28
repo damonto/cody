@@ -1,3 +1,5 @@
+import { CredentialAuthType } from "../../config/values.ts";
+
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -110,7 +112,7 @@ export const configurationRoutes = new Hono<AdminContext>()
         throw new HTTPException(404, {
           message: "Provider key does not exist",
         });
-      if (key.auth.type !== "api_key")
+      if (key.auth.type !== CredentialAuthType.ApiKey)
         throw new HTTPException(400, {
           message: "OAuth tokens cannot be revealed",
         });

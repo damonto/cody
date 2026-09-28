@@ -1,3 +1,5 @@
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -56,7 +58,9 @@ export function AntigravitySettingsForm({
     },
   });
   const ready =
-    accounts.data?.filter((account) => account.status === "ready") ?? [];
+    accounts.data?.filter(
+      (account) => account.status === OAuthAccountViewStatus.Ready,
+    ) ?? [];
   const discover = useMutation({
     mutationFn: () =>
       mapWithConcurrency(ready, PROVIDER_FAN_OUT_CONCURRENCY, (account) =>

@@ -1,3 +1,6 @@
+import type { OAuthProviderType } from "../../../../src/providers/oauth/schema.ts";
+import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { read, rpc } from "@/lib/api";
 import {
@@ -72,7 +75,7 @@ export async function refreshAccountQuota(
   signal?: AbortSignal,
 ): Promise<AccountView> {
   signal?.throwIfAborted();
-  if (account.status !== "ready") return account;
+  if (account.status !== OAuthAccountViewStatus.Ready) return account;
   try {
     return await refreshQuota(account.account_ref, force, signal);
   } catch (error) {
@@ -184,7 +187,7 @@ export const sessionOptions = (id: string) =>
   });
 
 /** Published inference cooldowns of each account, keyed by credential ID. */
-export const accountHealthOptions = (providerId: "antigravity" | "codex") =>
+export const accountHealthOptions = (providerId: OAuthProviderType) =>
   queryOptions({
     queryKey: ["provider-account-health", providerId],
     queryFn: async ({ signal }) => {

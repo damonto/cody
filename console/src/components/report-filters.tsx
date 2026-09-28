@@ -1,3 +1,4 @@
+import { RequestOutcome } from "../../../src/telemetry/values.ts";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Temporal } from "@js-temporal/polyfill";
@@ -153,11 +154,11 @@ export function ReportFilters({
               options={[
                 { value: "", label: "All outcomes" },
                 ...[
-                  "success",
-                  "failed",
-                  "pending",
-                  "cancelled",
-                  "incomplete",
+                  RequestOutcome.Success,
+                  RequestOutcome.Failed,
+                  RequestOutcome.Pending,
+                  RequestOutcome.Cancelled,
+                  RequestOutcome.Incomplete,
                 ].map((value) => ({
                   value,
                   label: value[0].toUpperCase() + value.slice(1),

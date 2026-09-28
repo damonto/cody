@@ -1,3 +1,5 @@
+import { BillingStatus } from "./values.ts";
+
 import { parseRate } from "./config.ts";
 import type { CostBreakdown, ModelPolicy, TokenUsage } from "./types.ts";
 
@@ -28,7 +30,7 @@ export function tokenCost(tokens: number | null, rate: string): number | null {
 }
 
 export function emptyCost(
-  status: CostBreakdown["status"] = "unpriced",
+  status: CostBreakdown["status"] = BillingStatus.Unpriced,
 ): CostBreakdown {
   return {
     status,
@@ -49,7 +51,9 @@ export function calculateCost(
   policy: ModelPolicy | undefined,
   version: string | null = null,
 ): CostBreakdown {
-  const result = emptyCost(policy?.pricing ? "unknown" : "unpriced");
+  const result = emptyCost(
+    policy?.pricing ? BillingStatus.Unknown : BillingStatus.Unpriced,
+  );
   result.price_version = version;
   result.context_tokens = usage.input_tokens;
   if (!policy?.pricing) return result;
@@ -109,9 +113,9 @@ export function calculateCost(
   result.total_nano = known.length === 0 ? null : total;
   result.status =
     known.length === parts.length
-      ? "complete"
+      ? BillingStatus.Complete
       : known.length > 0
-        ? "partial"
-        : "unknown";
+        ? BillingStatus.Partial
+        : BillingStatus.Unknown;
   return result;
 }

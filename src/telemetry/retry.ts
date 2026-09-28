@@ -1,4 +1,6 @@
-import type { ApiProtocol } from "../gateway/protocol.ts";
+import { UsageStatus } from "../billing/values.ts";
+import { type ApiProtocol } from "../gateway/protocol-values.ts";
+
 import type { NormalizedUsage } from "../billing/types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
 
@@ -41,7 +43,7 @@ export async function retryResponseUsage(
       usage.add(record(payload?.response)?.usage);
     }
     const result = usage.snapshot();
-    return result.status === "missing" ? null : result;
+    return result.status === UsageStatus.Missing ? null : result;
   } catch {
     return null;
   } finally {

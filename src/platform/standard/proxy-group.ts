@@ -1,3 +1,5 @@
+import { ProxyStrategy } from "../../config/values.ts";
+
 /**
  * Proxy-group coordination over object storage. Mirrors the SQL-backed
  * Cloudflare Durable Object: node health, sticky bindings and the configuration
@@ -180,7 +182,7 @@ export class ProxyGroupCore implements ProxyGroupObject {
         owner.credential_id ?? null,
       ])}`;
       const bound =
-        group.strategy === "sticky"
+        group.strategy === ProxyStrategy.Sticky
           ? (await transaction.get<StoredBinding>(key))?.proxy_id
           : undefined;
       const existing = healthy.find((node) => node.id === bound);
@@ -191,7 +193,7 @@ export class ProxyGroupCore implements ProxyGroupObject {
               healthy.filter((node) => !exclude.includes(node.id)),
               group.strategy,
             );
-      if (group.strategy === "sticky" && !existing) {
+      if (group.strategy === ProxyStrategy.Sticky && !existing) {
         await transaction.delete(key);
         if (selected) {
           await transaction.put(key, {

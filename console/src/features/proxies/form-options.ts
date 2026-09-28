@@ -1,3 +1,5 @@
+import { ProxyStrategy } from "../../../../src/config/values.ts";
+
 import { formOptions } from "@tanstack/react-form";
 import { z } from "zod";
 import {
@@ -38,7 +40,7 @@ export function proxyGroupFormValues(
 ): ProxyGroupFormValues {
   return {
     id: group?.id ?? "",
-    strategy: group?.strategy ?? "random",
+    strategy: group?.strategy ?? ProxyStrategy.Random,
     proxies: (group?.proxies ?? []).map((node) => ({
       ...node,
       rowId: crypto.randomUUID(),

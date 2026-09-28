@@ -1,6 +1,9 @@
+import { type ProviderTransport } from "./transport-values.ts";
+import { type ApiProtocol } from "../gateway/protocol-values.ts";
+
 import type { NormalizedUsage } from "../billing/types.ts";
 import type { ProviderConfig } from "../config/types.ts";
-import type { GatewayEndpoint, ApiProtocol } from "../gateway/protocol.ts";
+import type { GatewayEndpoint } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
 import type { UpstreamTransport } from "../gateway/transport/index.ts";
 import type { ResolvedCredentialForProvider } from "./credentials.ts";
@@ -17,7 +20,7 @@ export interface ProviderRuntimeContext extends Omit<
 }
 
 export type ProviderEndpoint = Exclude<GatewayEndpoint, "health" | "sessions">;
-export type ProviderTransport = "http" | "websocket";
+export type { ProviderTransport } from "./transport-values.ts";
 
 export interface ProviderRequest {
   readonly request: Request;

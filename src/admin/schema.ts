@@ -1,3 +1,5 @@
+import { HealthScope } from "../gateway/health/values.ts";
+
 import { z } from "zod";
 import { modelPolicySchema, tokenCountSchema } from "../billing/schema.ts";
 import {
@@ -27,14 +29,14 @@ export const priceVersionQuerySchema = z.object({
 export const requestIdSchema = z.object({ id: z.string().min(1).max(256) });
 export const runtimeQuerySchema = z.object({
   client_id: z.string().min(1).max(256),
-  scope: z.enum(["inference", "catalog"]).optional(),
+  scope: z.enum(HealthScope).optional(),
   cursor: z.string().min(1).max(2048).optional(),
   limit: z.string().regex(/^\d+$/).optional(),
   release_context_ownership: z.enum(["true", "false"]).optional(),
 });
 export const healthListSchema = z.object({
   object: z.literal("list"),
-  scope: z.enum(["inference", "catalog"]),
+  scope: z.enum(HealthScope),
   data: z.array(
     z.object({
       provider_id: z.string(),

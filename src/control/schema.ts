@@ -1,3 +1,5 @@
+import { RevisionStatus } from "./values.ts";
+
 import { z } from "zod";
 import { tokenCountSchema } from "../billing/schema.ts";
 import { maskedConfigurationSchema } from "../config/schema.ts";
@@ -26,6 +28,6 @@ export const revisionSchema = z.object({
   created_at: tokenCountSchema,
   published_at: tokenCountSchema.nullable(),
   actor: z.string(),
-  status: z.enum(["pending", "published", "superseded"]),
+  status: z.enum(RevisionStatus),
   source_revision: tokenCountSchema.positive().nullable(),
 });

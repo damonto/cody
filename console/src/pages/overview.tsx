@@ -1,3 +1,5 @@
+import { RequestOutcome } from "../../../src/telemetry/values.ts";
+
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -154,7 +156,10 @@ export default function Overview() {
                   (bucket) => bucket.totals.requests_count,
                 )}
               >
-                <Link className={logLink} to={href({ outcome: "pending" })}>
+                <Link
+                  className={logLink}
+                  to={href({ outcome: RequestOutcome.Pending })}
+                >
                   {number(data.pending)} pending
                 </Link>
                 <p className="mt-1">
@@ -186,17 +191,23 @@ export default function Overview() {
                   ),
                 )}
               >
-                <Link className={logLink} to={href({ outcome: "failed" })}>
+                <Link
+                  className={logLink}
+                  to={href({ outcome: RequestOutcome.Failed })}
+                >
                   {number(totals.failed_count)} failed
                 </Link>
                 <p className="mt-1">
-                  <Link className={logLink} to={href({ outcome: "cancelled" })}>
+                  <Link
+                    className={logLink}
+                    to={href({ outcome: RequestOutcome.Cancelled })}
+                  >
                     {number(totals.cancelled_count)} cancelled
                   </Link>
                   {" · "}
                   <Link
                     className={logLink}
-                    to={href({ outcome: "incomplete" })}
+                    to={href({ outcome: RequestOutcome.Incomplete })}
                   >
                     {number(totals.incomplete_count)} incomplete
                   </Link>

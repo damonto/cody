@@ -1,3 +1,9 @@
+import {
+  OAuthFlow,
+  OAuthAccountViewStatus,
+  OAuthSessionStatus,
+} from "../../../../src/providers/oauth/values.ts";
+
 import { ExternalLink } from "lucide-react";
 import { ErrorNotice, Status } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -85,7 +91,7 @@ export function Authorization({
             submit.reset();
             retry.reset();
             cancel.reset();
-            start.mutate("pkce");
+            start.mutate(OAuthFlow.Pkce);
           }}
         >
           {start.isPending
@@ -99,7 +105,10 @@ export function Authorization({
             <Button
               type="button"
               variant="outline"
-              disabled={view?.status !== "ready" || refresh.isPending}
+              disabled={
+                view?.status !== OAuthAccountViewStatus.Ready ||
+                refresh.isPending
+              }
               onClick={() =>
                 refresh.mutate({ ref: accountRef, kind: "models" })
               }
@@ -109,7 +118,10 @@ export function Authorization({
             <Button
               type="button"
               variant="outline"
-              disabled={view?.status !== "ready" || refresh.isPending}
+              disabled={
+                view?.status !== OAuthAccountViewStatus.Ready ||
+                refresh.isPending
+              }
               onClick={() => refresh.mutate({ ref: accountRef, kind: "quota" })}
             >
               Refresh quota
@@ -118,7 +130,9 @@ export function Authorization({
               type="button"
               variant="ghost"
               disabled={
-                refresh.isPending || !!active || view?.status === "disconnected"
+                refresh.isPending ||
+                !!active ||
+                view?.status === OAuthAccountViewStatus.Disconnected
               }
               onClick={() => setDisconnect(true)}
             >
@@ -199,7 +213,7 @@ export function Authorization({
               </Button>
             </>
           )}
-          {authorization.status === "initializing" && (
+          {authorization.status === OAuthSessionStatus.Initializing && (
             <p className="text-xs">
               Tokens are saved. Discovering the account and initializing its
               project…

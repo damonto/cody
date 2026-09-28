@@ -1,3 +1,5 @@
+import { UsagePhase } from "./values.ts";
+
 import type { UsageSink } from "./meter.ts";
 import type { Bindings } from "../platform/bindings.ts";
 
@@ -35,7 +37,7 @@ export function webSocketUsageSink(
 ): UsageSink {
   return {
     async send(event): Promise<void> {
-      if (event.phase === "finished") {
+      if (event.phase === UsagePhase.Finished) {
         await env.USAGE_QUEUE.send(event);
       } else {
         await durableUsageSink(env, event.request_id).send(event);

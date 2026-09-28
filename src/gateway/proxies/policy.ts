@@ -1,4 +1,5 @@
-import type { ProxyStrategy } from "../../config/types.ts";
+import { ProxyStrategy } from "../../config/values.ts";
+
 import type { ProxyOutcome, StoredProxyHealth } from "./schema.ts";
 
 export const PROXY_FAILURE_THRESHOLD = 3;
@@ -82,7 +83,7 @@ export function chooseProxy<T extends { priority: number }>(
     return undefined;
   }
   const priority =
-    strategy === "priority"
+    strategy === ProxyStrategy.Priority
       ? Math.max(...candidates.map((candidate) => candidate.priority))
       : undefined;
   const eligible =

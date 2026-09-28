@@ -1,3 +1,4 @@
+import { RequestOutcome } from "../telemetry/values.ts";
 import { z } from "zod";
 import { timeZoneSchema } from "../billing/schema.ts";
 import { MAX_CUSTOM_RANGE_MS, REPORT_PERIODS } from "./ranges.ts";
@@ -27,9 +28,7 @@ export const reportQuerySchema = z
       .default("provider_id"),
     sort_by: z.enum(["requests", "tokens", "cost"]).default("requests"),
     quality: z.enum(["missing_usage", "incomplete_pricing"]).optional(),
-    outcome: z
-      .enum(["pending", "success", "failed", "cancelled", "incomplete"])
-      .optional(),
+    outcome: z.enum(RequestOutcome).optional(),
     cursor: z.string().max(2048).optional(),
     limit: z.coerce.number<string>().int().min(1).max(100).default(50),
   })

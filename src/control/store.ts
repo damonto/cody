@@ -1,3 +1,5 @@
+import { ProviderType } from "../config/values.ts";
+
 import { priceVersion } from "../billing/calculate.ts";
 import { DEFAULT_REPORTING } from "../billing/config.ts";
 import { maskedConfigurationSchema } from "../config/schema.ts";
@@ -161,7 +163,7 @@ export class ControlStore {
 
   private async validateOAuthReferences(config: GatewayConfig): Promise<void> {
     for (const provider of config.providers) {
-      if (provider.type === "ai_gateway") continue;
+      if (provider.type === ProviderType.AiGateway) continue;
       for (const credential of provider.credentials) {
         const row = await this.db
           .prepare(

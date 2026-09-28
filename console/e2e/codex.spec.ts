@@ -250,8 +250,9 @@ test("Codex is a provider page with balancing settings", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Codex", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("No ChatGPT accounts")).toBeVisible();
-  await expect(page.getByText(/New sessions rotate across/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No ChatGPT accounts" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const dialog = page.getByRole("dialog");
@@ -262,7 +263,10 @@ test("Codex is a provider page with balancing settings", async ({ page }) => {
   await expect(dialog.getByLabel("Use resets automatically")).not.toBeChecked();
   await dialog.getByRole("button", { name: "Save settings" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByText(/New sessions fill the first/)).toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    dialog.getByRole("combobox", { name: "Account selection" }),
+  ).toHaveText("Session affinity (fill first)");
 });
 
 test("account cards show plan, quota and cooldown, and spend a reset after confirmation", async ({

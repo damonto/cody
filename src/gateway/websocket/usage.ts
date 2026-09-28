@@ -1,3 +1,7 @@
+import { UsagePhase } from "../../telemetry/values.ts";
+import { ApiProtocol } from "../protocol-values.ts";
+import { type TerminalRequestOutcome } from "../../telemetry/values.ts";
+
 import { logWarn } from "../../shared/log.ts";
 import { RequestMeter, type UsageSink } from "../../telemetry/meter.ts";
 import type { UsageEvent } from "../../telemetry/types.ts";
@@ -5,8 +9,6 @@ import { record } from "../../telemetry/usage.ts";
 import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { CurrentRoutingContext } from "./routing.ts";
 import type { WebSocketStorage } from "./storage.ts";
-
-type Outcome = "success" | "failed" | "cancelled" | "incomplete";
 
 /** Owns per-generation metering and delivery; it never operates on sockets. */
 export class WebSocketUsage {
@@ -33,12 +35,13 @@ export class WebSocketUsage {
       connectionId,
       endpoint: "responses",
       method: "WS",
-      protocol: "openai",
+      protocol: ApiProtocol.Openai,
       websocket: true,
       startedAt,
       sink: {
         send: async (event) => {
-          if (event.phase === "finished") await this.storage.finish(event);
+          if (event.phase === UsagePhase.Finished)
+            await this.storage.finish(event);
           return sink.send(event);
         },
       },
@@ -88,7 +91,7 @@ export class WebSocketUsage {
 
   finish(
     meter: RequestMeter,
-    outcome: Outcome,
+    outcome: TerminalRequestOutcome,
     status: number | null = null,
   ): void {
     const event = meter.finish(outcome, status);
@@ -105,7 +108,7 @@ export class WebSocketUsage {
     this.context.waitUntil(this.settle(meter, event));
   }
 
-  finishAll(outcome: Outcome, diagnostic: string): void {
+  finishAll(outcome: TerminalRequestOutcome, diagnostic: string): void {
     for (const meter of this.meters) {
       meter.diagnostic(diagnostic);
       this.finish(meter, outcome);

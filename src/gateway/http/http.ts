@@ -1,8 +1,10 @@
+import { type ApiProtocol } from "../protocol-values.ts";
+
 import type {
   AiGatewayProviderConfig,
   ClientApiKeyConfig,
 } from "../../config/types.ts";
-import { isAnthropicProtocol, type ApiProtocol } from "../protocol.ts";
+import { isAnthropicProtocol } from "../protocol.ts";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",

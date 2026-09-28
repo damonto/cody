@@ -1,8 +1,14 @@
-import type { CostBreakdown, NormalizedUsage } from "../billing/types.ts";
-import type { ApiProtocol } from "../gateway/protocol.ts";
+import {
+  type RequestOutcome,
+  type UsagePhase,
+  type UsageTransport,
+  type ContextSource,
+} from "./values.ts";
+import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
-export type RequestOutcome =
-  "pending" | "success" | "failed" | "cancelled" | "incomplete";
+import type { CostBreakdown, NormalizedUsage } from "../billing/types.ts";
+
+export type { RequestOutcome } from "./values.ts";
 
 export interface AttemptRecord {
   attempt: number;
@@ -16,7 +22,7 @@ export interface AttemptRecord {
 export interface UsageEvent {
   schema_version: 2;
   sequence: 0 | 1 | 2;
-  phase: "started" | "finished";
+  phase: UsagePhase;
   request_id: string;
   connection_id: string | null;
   response_id: string | null;
@@ -31,7 +37,7 @@ export interface UsageEvent {
   endpoint: string;
   method: string;
   protocol: ApiProtocol;
-  transport: "http" | "sse" | "websocket";
+  transport: UsageTransport;
   kind: "inference";
   outcome: RequestOutcome;
   http_status: number | null;
@@ -43,7 +49,7 @@ export interface UsageEvent {
   first_text_ms: number | null;
   context_tokens: number | null;
   context_window: number | null;
-  context_source: "reported_input" | "unavailable";
+  context_source: ContextSource;
   config_revision: number | null;
   observation_issue: string | null;
   usage: NormalizedUsage;

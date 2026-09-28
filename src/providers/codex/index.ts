@@ -1,3 +1,6 @@
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../transport-values.ts";
+
 import type { CodexProviderConfig } from "../../config/types.ts";
 import {
   forwardRequestHeaders,
@@ -33,9 +36,9 @@ function upstreamUrl(endpoint: ProviderEndpoint, search: string): string {
  * a default client version only when the caller supplies none.
  */
 export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
-  type: "codex",
+  type: ProviderType.Codex,
   supports(provider, endpoint, transport) {
-    if (transport === "websocket")
+    if (transport === ProviderTransport.Websocket)
       return endpoint === "responses" && provider.supports_websocket;
     if (isContextManagementPath(endpoint))
       return provider.supports_context_management;
@@ -45,7 +48,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
   prepare(_provider, credential, input) {
     const url = upstreamUrl(input.endpoint, new URL(input.request.url).search);
     const headers =
-      input.transport === "websocket"
+      input.transport === ProviderTransport.Websocket
         ? forwardWebSocketHeaders(input.request, credential.token)
         : forwardRequestHeaders(input.request, credential.token);
     headers.set("chatgpt-account-id", credential.account_id);

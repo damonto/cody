@@ -1,3 +1,5 @@
+import { RevisionStatus } from "../../../src/control/values.ts";
+
 import { useState } from "react";
 import { Collapsible } from "radix-ui";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -396,7 +398,7 @@ export function Shell() {
                       variant="outline"
                       size="sm"
                       disabled={
-                        row.original.status !== "published" ||
+                        row.original.status !== RevisionStatus.Published ||
                         row.original.id === draft.data?.published_revision ||
                         publish.isPending
                       }

@@ -1,7 +1,6 @@
-import type {
-  HealthCooldownReason,
-  ProviderHealthSnapshot,
-} from "../../config/types.ts";
+import { HealthCooldownReason } from "./values.ts";
+
+import type { ProviderHealthSnapshot } from "../../config/types.ts";
 import { configureLogging } from "../../shared/log.ts";
 import {
   ProviderHealthState,
@@ -193,7 +192,10 @@ export class ProviderHealthCore {
         stored.cooling_until <= Date.now()
       )
         return true;
-      if (stored.reason !== "quota" || stored.cooling_until !== until)
+      if (
+        stored.reason !== HealthCooldownReason.Quota ||
+        stored.cooling_until !== until
+      )
         return false;
       await tx.delete(HEALTH_STORAGE_KEY);
       return true;

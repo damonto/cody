@@ -1,3 +1,12 @@
+import {
+  UsagePhase,
+  UsageTransport,
+  RequestOutcome,
+  ContextSource,
+} from "./values.ts";
+import { UsageStatus, BillingStatus } from "../billing/values.ts";
+import { ApiProtocol } from "../gateway/protocol-values.ts";
+
 import { z } from "zod";
 import type { UsageEvent } from "./types.ts";
 import { record } from "./usage.ts";
@@ -14,11 +23,11 @@ const usageSchema = z.object({
     cache_write_1h_tokens: nullableNumber,
     reasoning_tokens: nullableNumber,
   }),
-  status: z.enum(["reported", "partial", "missing", "invalid"]),
+  status: z.enum(UsageStatus),
   raw: z.record(z.string(), z.unknown()),
 });
 const costSchema = z.object({
-  status: z.enum(["complete", "partial", "unpriced", "unknown"]),
+  status: z.enum(BillingStatus),
   currency: z.string(),
   price_version: z.string().nullable(),
   tier_index: nullableNumber,
@@ -35,7 +44,7 @@ const usageEventSchema = z
   .object({
     schema_version: z.literal(2),
     sequence: z.union([z.literal(0), z.literal(1), z.literal(2)]),
-    phase: z.enum(["started", "finished"]),
+    phase: z.enum(UsagePhase),
     request_id: z.string().min(1),
     connection_id: z.string().nullable(),
     response_id: z.string().nullable(),
@@ -49,16 +58,10 @@ const usageEventSchema = z
     reported_model: z.string(),
     endpoint: z.string(),
     method: z.string(),
-    protocol: z.enum(["openai", "anthropic"]),
-    transport: z.enum(["http", "sse", "websocket"]),
+    protocol: z.enum(ApiProtocol),
+    transport: z.enum(UsageTransport),
     kind: z.literal("inference"),
-    outcome: z.enum([
-      "pending",
-      "success",
-      "failed",
-      "cancelled",
-      "incomplete",
-    ]),
+    outcome: z.enum(RequestOutcome),
     http_status: nullableNumber,
     diagnostic_code: z.string().nullable(),
     duration_ms: nullableNumber,
@@ -67,7 +70,7 @@ const usageEventSchema = z
     first_text_ms: nullableNumber,
     context_tokens: nullableNumber,
     context_window: nullableNumber,
-    context_source: z.enum(["reported_input", "unavailable"]),
+    context_source: z.enum(ContextSource),
     config_revision: nullableNumber,
     observation_issue: z.string().nullable(),
     usage: usageSchema,
@@ -85,8 +88,8 @@ const usageEventSchema = z
   })
   .refine(
     (event) =>
-      (event.phase === "finished") === (event.finished_at !== null) &&
-      (event.phase === "finished") === (event.sequence === 2),
+      (event.phase === UsagePhase.Finished) === (event.finished_at !== null) &&
+      (event.phase === UsagePhase.Finished) === (event.sequence === 2),
     "Invalid usage event envelope",
   ) satisfies z.ZodType<UsageEvent>;
 

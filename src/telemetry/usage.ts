@@ -1,10 +1,12 @@
+import { UsageStatus } from "../billing/values.ts";
+import { ApiProtocol } from "../gateway/protocol-values.ts";
+
 import {
   USAGE_FIELDS,
   type ModelPolicy,
   type NormalizedUsage,
   type TokenUsage,
 } from "../billing/types.ts";
-import type { ApiProtocol } from "../gateway/protocol.ts";
 
 export function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -71,9 +73,9 @@ export class UsageAccumulator {
     // place by add(), so a shallow copy safely isolates subsequent snapshots.
     const raw: Record<string, unknown> = { ...this.raw };
     if (Object.keys(raw).length === 0)
-      return { tokens, raw, status: "missing" };
+      return { tokens, raw, status: UsageStatus.Missing };
     let invalid = false;
-    if (this.protocol === "anthropic") {
+    if (this.protocol === ApiProtocol.Anthropic) {
       tokens.uncached_input_tokens = count(raw.input_tokens);
       tokens.output_tokens = count(raw.output_tokens);
       tokens.cache_read_tokens = count(raw.cache_read_input_tokens);
@@ -171,7 +173,11 @@ export class UsageAccumulator {
     return {
       tokens,
       raw,
-      status: invalid ? "invalid" : complete ? "reported" : "partial",
+      status: invalid
+        ? UsageStatus.Invalid
+        : complete
+          ? UsageStatus.Reported
+          : UsageStatus.Partial,
     };
   }
 }
