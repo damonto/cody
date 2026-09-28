@@ -103,6 +103,14 @@ export function AntigravitySettingsForm({
             <form.AppField name="priority">
               {(field) => <field.NumberField label="Priority" />}
             </form.AppField>
+            <form.AppField name="sensitive_words">
+              {(field) => (
+                <field.StringListField
+                  label="Sensitive words"
+                  hint="Optional words to mask with an invisible character in system instructions. Conversation messages are preserved."
+                />
+              )}
+            </form.AppField>
             <form.AppField name="proxy_group">
               {(field) => <field.ProxyGroupField groups={groups} />}
             </form.AppField>

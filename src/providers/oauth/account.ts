@@ -19,6 +19,7 @@ import { configurationSchema } from "../../config/schema.ts";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 import { configureLogging, logWarn } from "../../shared/log.ts";
+import { antigravityVersion } from "../antigravity/version.ts";
 import {
   ANTIGRAVITY_REDIRECT_URI,
   AntigravityClient,
@@ -82,6 +83,7 @@ type AccountEnv = Pick<
   | "CONFIG_KEY"
   | "CONFIG_ENCRYPTION_KEY"
   | "PROXY_GROUP"
+  | "UPSTREAM_HTTP"
 >;
 type RefreshKind = "token" | "models" | "quota";
 interface PendingRefresh {
@@ -357,7 +359,11 @@ export class ProviderOAuthAccountCore {
     config?: ProxyConfiguration,
   ): Promise<AntigravityClient> {
     const [send, signal] = await this.outbound(connection, config);
-    return new AntigravityClient(send, signal);
+    return new AntigravityClient(
+      send,
+      signal,
+      await antigravityVersion(this.env.CODY_CONFIG_KV, this.ctx),
+    );
   }
   private async claude(
     connection?: ProviderConnection,

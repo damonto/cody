@@ -15,8 +15,12 @@ export interface ProviderRuntimeContext extends Omit<
 > {
   readonly env: Pick<
     Bindings,
-    "PROXY_GROUP" | "PROVIDER_OAUTH_ACCOUNT" | "CONFIG_ENCRYPTION_KEY"
-  >;
+    | "PROXY_GROUP"
+    | "PROVIDER_OAUTH_ACCOUNT"
+    | "CONFIG_ENCRYPTION_KEY"
+    | "UPSTREAM_HTTP"
+  > &
+    Partial<Pick<Bindings, "CODY_CONFIG_KV">>;
 }
 
 export type ProviderEndpoint = Exclude<GatewayEndpoint, "health" | "sessions">;

@@ -318,6 +318,29 @@ for (const [name, open] of Object.entries(databases)) {
     const env = runtime.bindings;
 
     await t.test(
+      "public Antigravity version metadata is shared without replacing SQL configuration",
+      async () => {
+        const metadataKey = "metadata:antigravity:hub-version";
+        const snapshot = JSON.stringify({
+          version: "2.12.1",
+          expires_at: Date.now() + 60_000,
+        });
+        await env.CODY_CONFIG_KV.put(metadataKey, snapshot);
+        assert.equal(
+          await second.bindings.CODY_CONFIG_KV.get(metadataKey),
+          snapshot,
+        );
+        await env.CODY_CONFIG_KV.put(env.CONFIG_KEY, "not a configuration");
+        assert.equal(
+          await second.bindings.CODY_CONFIG_KV.get(env.CONFIG_KEY),
+          null,
+        );
+        await second.bindings.CODY_CONFIG_KV.delete(metadataKey);
+        assert.equal(await env.CODY_CONFIG_KV.get(metadataKey), null);
+      },
+    );
+
+    await t.test(
       "Antigravity model limits and rotation survive a Redis restart",
       async () => {
         const account = crypto.randomUUID();

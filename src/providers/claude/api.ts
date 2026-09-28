@@ -68,7 +68,7 @@ export function parseProfile(value: unknown) {
   };
 }
 const windowSchema = z.object({
-  utilization: z.number().finite().nonnegative().nullable(),
+  utilization: z.number().nonnegative().nullable(),
   resets_at: z.string().nullable(),
 });
 const usageSchema = z.object({

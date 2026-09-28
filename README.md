@@ -2,11 +2,11 @@
 
 An AI API gateway with a web console, for Codex, Claude Code and other OpenAI- or Anthropic-compatible clients. It runs on Cloudflare Workers, as a Node.js server, or on Vercel.
 
-- Manage AI Gateway, Antigravity and Codex providers, upstream credentials, client API keys and model aliases in the console.
+- Manage AI Gateway, Antigravity, Codex and Claude providers, credentials, client keys and model aliases in the console.
 - Route traffic through SOCKS5 proxy groups.
-- View usage and costs for today, this week, this month and all time.
-- Inspect request timing, token usage, caching, reasoning and context information.
-- Set prices by provider and model, including different rates for larger contexts.
+- Track usage, costs and request details, with custom pricing by provider and model.
+
+Keep your deployment’s encryption key safe and unchanged. Never commit it or files containing secrets, such as `.env` and `.dev.vars`.
 
 ## Choose a platform
 
@@ -30,9 +30,9 @@ npm install
 npm run dev:cloudflare
 ```
 
-Open `http://127.0.0.1:5173/console/` for the console with hot reload. The gateway endpoint is `http://127.0.0.1:8787/v1`. The command starts both Vite and the local Worker; Ctrl+C stops both.
+Open `http://127.0.0.1:5173/console/` for the console with hot reload. The gateway endpoint is `http://127.0.0.1:8787/v1`.
 
-The first run creates `.dev.vars` with a new encryption key and a local database. Keep `.dev.vars`: if the key is lost, startup stops instead of replacing it, because existing data can only be read with the original key.
+The first run creates a local database and `.dev.vars` with an encryption key. Keep this key: existing data depends on it.
 
 ### Deploy
 
@@ -58,7 +58,7 @@ The first run creates `.dev.vars` with a new encryption key and a local database
    npm run deploy:cloudflare
    ```
 
-`npm run deploy:cloudflare` builds the console, applies database migrations and deploys the Worker. `npm run build:cloudflare` builds and validates the Worker without deploying.
+`npm run deploy:cloudflare` builds the console, applies database migrations and deploys the Worker.
 
 For automatic deployments, connect the repository to [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) and use `npm run deploy:cloudflare` as the deploy command. The API token needs **D1 Edit** permission in addition to the Worker permissions.
 
@@ -87,7 +87,7 @@ npm run start:node
 
 Open `http://127.0.0.1:8787/console/`. The gateway endpoint is `http://127.0.0.1:8787/v1`. The default `ADMIN_AUTH_MODE=local` signs you in automatically and only works while the server listens on `127.0.0.1`.
 
-For development, `npm run dev:node` starts Vite with console hot reload and restarts the Node server when backend source files change. Open `http://127.0.0.1:5173/console/`; the gateway stays on `http://127.0.0.1:8787/v1`. Keep `HOST=127.0.0.1` and `PORT=8787` in `.env` to match the console proxy. Ctrl+C stops both processes.
+For development with hot reload, use `npm run dev:node` and open `http://127.0.0.1:5173/console/`. Keep `HOST=127.0.0.1` and `PORT=8787` in `.env`.
 
 ### Run in production
 
@@ -102,9 +102,9 @@ docker run -d -p 8787:8787 -v cody-data:/data --env-file .env -e DATABASE_URL=sq
 
 Inside the container, `127.0.0.1` refers to the container itself, so point `REDIS_URL` at a Redis address the container can reach.
 
-Without Docker, `npm run build:node` produces a self-contained `dist/` directory; run it with `npm run start:node`, or copy `dist/` elsewhere and run `node --env-file=.env server.mjs` there. To update a server in place, run `npm run deploy:node`, which rebuilds `dist/` and applies database migrations, then restart the server.
+Without Docker, use `npm run build:node` followed by `npm run start:node`. To update, run `npm run deploy:node`, then restart the server.
 
-Database migrations run automatically at startup; set `DATABASE_MIGRATE=false` to apply them only through `npm run deploy:node`. Behind a reverse proxy that terminates TLS, preserve the public `Host` header and set `X-Forwarded-Proto: https`.
+Behind a reverse proxy that terminates TLS, preserve the public `Host` header and set `X-Forwarded-Proto: https`.
 
 ## Vercel
 
@@ -121,12 +121,7 @@ You need a PostgreSQL or libSQL database and a Redis server that Vercel can reac
 
 Open `/console/` on your deployment URL. Keep each preview environment on its own database and `REDIS_PREFIX`, separate from production.
 
-Notes:
-
-- Requests are limited by Vercel's function duration, 300 seconds by default. Set `VERCEL_MAX_DURATION` to change it within your plan's limit.
-- Responses WebSocket is not available; clients must use HTTP.
-- Console pages and assets are public; console APIs always require sign-in.
-- To deploy a local build with `vercel deploy --prebuilt`, first run `npm run deploy:vercel` with the target database's `DATABASE_URL`.
+Vercel supports HTTP only, with a default request timeout of 300 seconds.
 
 ## Console sign-in (Node.js and Vercel)
 
@@ -147,30 +142,9 @@ Other modes:
 - `ADMIN_AUTH_MODE=access`: behind Cloudflare Access, for example through a Cloudflare Tunnel. Set `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`.
 - `ADMIN_AUTH_MODE=token`: API access only, with `ADMIN_TOKEN` of at least 16 characters sent as `Authorization: Bearer …`.
 
-## Set up the gateway
-
-1. Open the console and add a provider under **Providers**:
-   - **AI Gateway**: any OpenAI- or Anthropic-compatible upstream, with a base URL, models and API keys.
-   - **Antigravity**: sign in with Google accounts, then enable it in its **Settings** dialog.
-   - **Codex**: sign in with your own ChatGPT accounts (device code or pasted localhost callback), then choose models and enable it in its **Settings** dialog. See [Balance ChatGPT accounts](#balance-chatgpt-accounts).
-2. Create a client key under **Client keys**.
-3. Click **Publish**.
-
-Set token prices in **Model pricing** and your reporting time zone in **Settings**. Cost estimates depend on the usage your upstream providers report.
-
-To reuse a configuration, use **Settings → Export JSON** and **Settings → Import JSON**. Include secrets only when moving to another deployment; Antigravity and Codex accounts are not exported and must be signed in again. See [config.example.json](config.example.json) for the format.
-
-Keep the encryption key unchanged for the life of a deployment and never commit it, `.env`, `.dev.vars` or configuration files with secrets.
-
-### Balance Antigravity accounts
-
-Antigravity Settings offers `round_robin` (the default) and `session_affinity` (fill first). Round robin distributes new sessions across the highest-priority available accounts; fill first selects by priority and configuration order. Both retain an available account for the session, including after another account recovers. Without a session ID, each request uses the selected allocation strategy. Existing configurations without `account_selection` use round robin for new bindings.
-
-An explicit quota exhaustion or an account rate limit with a recovery time cools only that account's real upstream model. The gateway switches to another account of the same provider before returning output, including when the first SSE event reports the limit. Unknown 429s and capacity errors follow the configured retry policy on the same account. Each account is visited at most once per request; after output starts, limits end the stream and affect subsequent requests. When all accounts are limited, the gateway returns a protocol-appropriate 429 with `Retry-After`.
-
-Model cooldowns and rotation survive restarts on all runtimes. Account cards show affected models and recovery times. Signed history can move between configured accounts of the same provider while retaining client/model isolation, original native signatures and tool-call pairing. Removing a source account from the configuration also removes permission to replay its signed history on other accounts.
-
 ## Use with clients
+
+Use a client key created in the console and a model enabled in your published configuration.
 
 Other clients can use the gateway's OpenAI or Anthropic endpoints with a client key, sent as `Authorization: Bearer` or `x-api-key`.
 
@@ -200,15 +174,6 @@ export OPENAI_API_KEY="your-gateway-client-key"
 codex
 ```
 
-#### Balance ChatGPT accounts
-
-The **Codex** provider spreads Codex sessions across your own ChatGPT accounts and forwards requests to ChatGPT unchanged, over HTTP and WebSocket, including search, image generation, compaction and memories. It is meant for your own Codex clients, not for sharing a subscription with others.
-
-- **Round robin** (default) gives each new session the next available account. **Session affinity** fills the first account before using the next.
-- A session keeps its account until that account runs out of quota. The account then rests until its reported reset time, and the request is resent on another account before Codex sees the error.
-- When every account is exhausted, Codex receives a usage-limit error with the earliest reset time.
-- Each account card shows the plan, the 5-hour, weekly and other quota windows, credits and available resets. **Reset** spends one reset credit after confirmation. **Use resets automatically** in **Settings** spends the earliest-expiring credit only when every account is exhausted; it is off by default.
-
 ### Claude Code
 
 ```bash
@@ -217,33 +182,11 @@ export ANTHROPIC_API_KEY="your-gateway-client-key"
 claude --model "your-configured-model"
 ```
 
-## SOCKS5 proxies
-
-Create proxy groups, such as **US** or **UK**, on the **Proxies** page, then select a group on a provider's **Connection** tab or on an individual credential. Each group picks nodes by one of three strategies:
-
-- **Random**: any healthy node.
-- **Sticky**: a random healthy node at first, then keeps using it.
-- **Priority**: the healthy node with the highest priority.
-
-A node that fails repeatedly is paused for a few minutes. Requests never bypass a proxy by connecting directly. On Cloudflare, the proxy must be [reachable from Workers](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/).
-
 ## Move between platforms
 
-Configuration moves through **Export JSON** / **Import JSON** in the console. On Node.js you can also import a file into an empty database:
+Use **Settings → Export JSON / Import JSON** in the console to move configuration. OAuth accounts must be authorized again on the new deployment. See [config.example.json](config.example.json) for the configuration format.
 
-```bash
-npm run config:validate -- config.json
-npm run config:import -- config.json
-```
-
-To copy request history between Cloudflare D1 and a Node.js or Vercel database, in either direction:
-
-```bash
-npm run reporting:transfer -- --from d1 --to "libsql://your-database.turso.io?authToken=your-token"
-npm run reporting:transfer -- --from "postgres://user:password@host:5432/cody" --to d1
-```
-
-Both databases must already be set up. Rerunning the command only copies new requests; `--dry-run` counts without copying.
+Use `npm run reporting:transfer -- --help` for request-history transfer options between Cloudflare D1 and Node.js or Vercel databases.
 
 ## Development
 
@@ -253,17 +196,3 @@ npm run typecheck
 npm run lint
 npm run format:check
 ```
-
-## Claude accounts
-
-The Claude provider balances the operator's own Claude subscriptions for native Claude Code clients. Add accounts under **Providers → Claude**, authorize in the browser, then paste the returned `code#state` or the complete official callback URL. Discover and select models in Settings, enable the provider, grant the client API key access to `claude`, and publish the draft.
-
-Messages (including SSE), count-tokens and model discovery use the official Anthropic endpoint. Requests retain their prompts, tools, thinking signatures, metadata, beta headers and unknown fields. Only account authentication and explicitly configured model aliases change. Claude remote sessions, files, WebSocket and Resets are not supported in this version.
-
-`account_selection` defaults to `round_robin`, distributing new sessions among the highest-priority available accounts. `session_affinity` fills the first available account in priority/configuration order. Both retain each Claude session's account until it becomes unavailable for the requested model. Opus-specific exhaustion does not disable Sonnet. Ordinary rate limits do not trigger account switching; explicit subscription quota rejection may switch accounts before any response reaches the client. Streams are never replayed.
-
-Cards show the account/organization, reported subscription tier, usage windows, natural recovery times, Extra Usage and health. Extra Usage amounts are converted from upstream minor units; a null monthly limit means unlimited, and an upstream disabled reason prevents paid routing. Both named usage windows and active model-scoped `limits` are supported. Unknown fields remain unknown. Quotas refresh on demand with a 60-second cache; unavailable or stale quota data is not treated as free capacity.
-
-`allow_extra_usage` defaults to `false`. When enabled, the gateway may select accounts with confirmed existing Extra Usage capacity after all subscription candidates are exhausted. It never enables billing, purchases credits or changes upstream limits. This is a routing preference, not a billing cap: concurrent traffic can cross upstream subscription limits before the next observation.
-
-D1 and PostgreSQL require migration `0009_claude_oauth_accounts.sql`; SQLite and libSQL reuse the D1 migration. Use the existing platform deployment/migration commands. OAuth tokens remain encrypted outside configuration snapshots.

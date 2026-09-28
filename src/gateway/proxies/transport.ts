@@ -21,7 +21,7 @@ import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ProxyTransportContext {
   readonly config: Pick<GatewayConfig, "proxy_groups" | "revision">;
-  readonly env: Pick<Bindings, "PROXY_GROUP">;
+  readonly env: Pick<Bindings, "PROXY_GROUP" | "UPSTREAM_HTTP">;
   readonly context?: HealthExecutionContext | undefined;
   readonly requestLog?: RequestLogContext | undefined;
   readonly requestId?: string | undefined;

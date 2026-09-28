@@ -391,6 +391,11 @@
                   "additionalProperties": false
                 }
               },
+              "sensitive_words": {
+                "maxItems": 128,
+                "type": "array",
+                "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+              },
               "account_selection": {
                 "default": "round_robin",
                 "type": "string",

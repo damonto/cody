@@ -12,6 +12,8 @@ export interface SocksFetchOptions {
   readonly dial?: SocksDial;
   /** Extra trusted roots for local integration fixtures; never a configuration option. */
   readonly trustedCertificates?: readonly string[];
+  /** Antigravity's native client uses HTTP/1.1 without an ALPN extension. */
+  readonly omitAlpn?: boolean;
   readonly connectTimeoutMs?: number;
   readonly clientSignal?: AbortSignal;
   readonly onStage?: (stage: SocksStage) => void;
@@ -72,6 +74,7 @@ export async function socksFetch(
         connection,
         url.hostname,
         options.trustedCertificates,
+        options.omitAlpn,
       );
     }
     clearTimeout(timeout);

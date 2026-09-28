@@ -4,6 +4,7 @@ import { ConfigPublisherCore } from "../../control/publisher.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import { SessionAffinityCore } from "../../gateway/sessions/session-affinity.ts";
 import { setDirectWebSocketConnector } from "../../gateway/transport/index.ts";
+import { createAntigravityHttpConnector } from "./antigravity-http.ts";
 import { setDefaultSocksDial } from "../../gateway/transport/socks.ts";
 import { runMaintenance } from "../../maintenance.ts";
 import { ProviderOAuthAccountCore } from "../../providers/oauth/account.ts";
@@ -108,6 +109,11 @@ export async function createRuntime(
   }
   const { db, redis } = resources;
   const tasks = new TaskTracker(options.waitUntil);
+  const antigravityHttp = createAntigravityHttpConnector(
+    options.target === "vercel"
+      ? { idleTimeoutMs: 5_000, waitUntil: (promise) => tasks.track(promise) }
+      : {},
+  );
   const objects = new ObjectRuntime({
     locks: new RedisObjectLocks(redis, settings.REDIS_PREFIX),
     tasks,
@@ -116,6 +122,7 @@ export async function createRuntime(
   const durable = { backend, alarms: true };
   // The factories run only after all namespaces have been assembled.
   const env: Bindings = {
+    UPSTREAM_HTTP: { antigravity: antigravityHttp.send },
     CONFIG_ENCRYPTION_KEY: settings.CONFIG_ENCRYPTION_KEY,
     CONFIG_KEY: settings.CONFIG_KEY,
     CONFIG_CACHE_TTL_SECONDS: settings.CONFIG_CACHE_TTL_SECONDS,
@@ -146,6 +153,15 @@ export async function createRuntime(
       db,
       settings.CONFIG_ENCRYPTION_KEY,
       settings.CONFIG_KEY,
+      {
+        get: (key) => redis.get(`${settings.REDIS_PREFIX}:public:${key}`),
+        put: async (key, value) => {
+          await redis.set(`${settings.REDIS_PREFIX}:public:${key}`, value);
+        },
+        delete: async (key) => {
+          await redis.del(`${settings.REDIS_PREFIX}:public:${key}`);
+        },
+      },
     ),
     USAGE_QUEUE: new DirectIngestQueue(db),
     ASSETS: createFilesystemAssets(path.join(options.root, "console", "dist")),
@@ -297,6 +313,7 @@ export async function createRuntime(
     },
     async close() {
       await tasks.drain();
+      antigravityHttp.close();
       await resources.close();
     },
   };

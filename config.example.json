@@ -110,6 +110,7 @@
       "id": "antigravity",
       "type": "antigravity",
       "account_selection": "round_robin",
+      "sensitive_words": [],
       "priority": 50,
       "disabled": true,
       "proxy_group": "US",

@@ -278,6 +278,10 @@ export const antigravityDraftProviderSchema = aiGatewayProviderSchema
   .extend({
     type: z.literal(ProviderType.Antigravity),
     id: z.literal(ProviderType.Antigravity),
+    sensitive_words: z
+      .array(z.string().trim().min(1).max(256))
+      .max(128)
+      .optional(),
     account_selection: codexAccountSelectionSchema.default(
       CodexAccountSelection.RoundRobin,
     ),

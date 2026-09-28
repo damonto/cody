@@ -35,7 +35,7 @@ export async function publishedProxyConfiguration(
 export function providerOutbound(
   connection: ProviderConnection,
   config: ProxyConfiguration,
-  env: Pick<Bindings, "PROXY_GROUP">,
+  env: Pick<Bindings, "PROXY_GROUP" | "UPSTREAM_HTTP">,
   signal: AbortSignal,
 ) {
   return createUpstreamTransport(

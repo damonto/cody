@@ -229,6 +229,10 @@ type WorkerSettings = Pick<
 >;
 
 export interface Bindings extends Partial<WorkerSettings> {
+  /** Standard-runtime HTTP connectors; omitted by Workers, which use native fetch. */
+  readonly UPSTREAM_HTTP?: {
+    readonly antigravity: (request: Request) => Promise<Response>;
+  };
   readonly CODY_CONFIG_KV: KeyValueStore;
   readonly CODY_DB: SqlDatabase;
   readonly USAGE_QUEUE: UsageQueue;

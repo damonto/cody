@@ -3,6 +3,10 @@ import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import { logWarn } from "../../shared/log.ts";
 import {
+  ANTIGRAVITY_FALLBACK_VERSION,
+  antigravityUserAgent,
+} from "./version.ts";
+import {
   OAuthError,
   identitySchema,
   type AccountModel,
@@ -15,7 +19,7 @@ export const ANTIGRAVITY_CLIENT_ID =
 const ANTIGRAVITY_CLIENT_SECRET = "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";
 export const ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 export const ANTIGRAVITY_BASE = "https://daily-cloudcode-pa.googleapis.com";
-export const ANTIGRAVITY_USER_AGENT = "antigravity/hub/2.9.1 darwin/arm64";
+export const ANTIGRAVITY_USER_AGENT = antigravityUserAgent();
 export const ANTIGRAVITY_ONBOARD_USER_AGENT = `${ANTIGRAVITY_USER_AGENT} google-api-nodejs-client/10.3.0`;
 export const ANTIGRAVITY_GOOG_API_CLIENT = "gl-node/22.21.1";
 const SCOPES = [
@@ -186,6 +190,7 @@ export class AntigravityClient {
   constructor(
     private readonly send: UpstreamFetch,
     private readonly signal: AbortSignal = new AbortController().signal,
+    private readonly version = ANTIGRAVITY_FALLBACK_VERSION,
   ) {}
   private async json(
     url: string,
@@ -291,7 +296,7 @@ export class AntigravityClient {
           headers: {
             accept: "*/*",
             authorization: `Bearer ${token}`,
-            "user-agent": ANTIGRAVITY_USER_AGENT,
+            "user-agent": antigravityUserAgent(this.version),
           },
         },
         "Google account identity",
@@ -312,7 +317,7 @@ export class AntigravityClient {
           accept: "*/*",
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
-          "user-agent": ANTIGRAVITY_USER_AGENT,
+          "user-agent": antigravityUserAgent(this.version),
         },
         body: JSON.stringify(body),
       },
@@ -336,7 +341,7 @@ export class AntigravityClient {
           accept: "*/*",
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
-          "user-agent": ANTIGRAVITY_ONBOARD_USER_AGENT,
+          "user-agent": `${antigravityUserAgent(this.version)} google-api-nodejs-client/10.3.0`,
           "x-goog-api-client": ANTIGRAVITY_GOOG_API_CLIENT,
         },
         body: JSON.stringify({
@@ -344,7 +349,7 @@ export class AntigravityClient {
           metadata: {
             ide_type: "ANTIGRAVITY",
             ide_name: "antigravity",
-            ide_version: "2.9.1",
+            ide_version: this.version,
           },
         }),
       },

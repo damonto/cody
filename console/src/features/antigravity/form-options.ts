@@ -103,6 +103,7 @@ export function settingsFormValues(
   return {
     priority: provider.priority,
     account_selection: provider.account_selection,
+    sensitive_words: [...(provider.sensitive_words ?? [])],
     disabled: provider.disabled,
     proxy_group: provider.proxy_group,
     models: [...provider.models],

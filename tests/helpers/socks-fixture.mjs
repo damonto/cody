@@ -11,7 +11,7 @@ import {
   X509CertificateGenerator,
 } from "@peculiar/x509";
 
-async function certificates(
+export async function certificates(
   hostname = "upstream.test",
   sanHostname = hostname,
 ) {

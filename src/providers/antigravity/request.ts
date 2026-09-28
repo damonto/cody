@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProviderRequestError } from "../errors.ts";
 import { object } from "./api.ts";
+import { antigravitySystemParts } from "./request-policy.ts";
 import {
   openPart,
   sameVisiblePart,
@@ -212,6 +213,7 @@ export async function translateRequest(
   key: string,
   sessionId?: string,
   replayAccountRefs?: readonly string[],
+  sensitiveWords?: readonly string[],
 ): Promise<TranslatedRequest> {
   if (payload.previous_response_id)
     throw new ProviderRequestError(
@@ -430,6 +432,15 @@ export async function translateRequest(
         message.role === "assistant" ? "model" : "user",
       );
     }
+    // CLIProxyAPI removes Claude Code's per-request billing/fingerprint attribution.
+    for (let index = system.length - 1; index >= 0; index--) {
+      if (
+        system[index]?.text
+          ?.trimStart()
+          .startsWith("x-anthropic-billing-header:")
+      )
+        system.splice(index, 1);
+    }
   }
   if (!contents.length)
     throw new ProviderRequestError(
@@ -543,14 +554,25 @@ export async function translateRequest(
     contents,
     generationConfig: generation,
   };
-  if (system.length)
-    request.systemInstruction = { role: "user", parts: system };
   if (tools.length)
     request.tools = [
       { functionDeclarations: tools.map((tool) => tool.declaration) },
     ];
   const choice = payload.tool_choice;
   const choiceObject = object(choice);
+  const systemParts = antigravitySystemParts(
+    system,
+    endpoint !== "responses" &&
+      claude &&
+      scope.model.toLowerCase().includes("thinking") &&
+      tools.length > 0 &&
+      choice !== "none" &&
+      choiceObject.type !== "none" &&
+      ["enabled", "adaptive", "auto"].includes(String(thinking.type)),
+    sensitiveWords,
+  );
+  if (systemParts.length)
+    request.systemInstruction = { role: "user", parts: systemParts };
   if (tools.length || claude) {
     const mode =
       choice === "none" || choiceObject.type === "none"

@@ -34,6 +34,7 @@ export async function secureConnection(
   connection: Connection,
   hostname: string,
   trustedCertificates: readonly string[] = [],
+  omitAlpn = false,
 ): Promise<Connection> {
   const reader = new ByteReader(() => connection.read());
   const roots = trustedCertificates.map(loadX509FromPem);
@@ -54,7 +55,7 @@ export async function secureConnection(
     cipherSuites: [...CIPHER_SUITES],
     supportedProtocolVersions: ["TLS1_3", "TLS1_2"],
     namedCurves: ["SECP256R1", "SECP384R1"],
-    applicationLayerProtocols: ["http/1.1"],
+    applicationLayerProtocols: omitAlpn ? [] : ["http/1.1"],
     logger: SILENT_TLS_LOGGER,
     fetchCertificateBytes() {
       // A certificate must not cause a direct request outside the selected proxy.

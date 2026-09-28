@@ -42,10 +42,21 @@ export function createUpstreamTransport(
   context?: ProxyTransportContext,
 ): UpstreamTransport {
   const selection = effectiveProxyGroup(provider, credential);
+  const antigravity = provider.id === "antigravity";
+  const directAntigravity = context?.env.UPSTREAM_HTTP?.antigravity;
   return selection
-    ? createProxyTransport(selection, context)
+    ? createProxyTransport(
+        selection,
+        context && antigravity
+          ? {
+              ...context,
+              socks: { ...context.socks, omitAlpn: true },
+            }
+          : context,
+      )
     : {
-        send: directFetch,
+        send:
+          antigravity && directAntigravity ? directAntigravity : directFetch,
         proxyFailure: () => undefined,
       };
 }

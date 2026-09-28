@@ -116,6 +116,13 @@ beforeEach(async () => {
     ].map((sql) => env.CODY_DB.prepare(sql)),
   );
   await env.CODY_CONFIG_KV.delete("gateway-config");
+  await env.CODY_CONFIG_KV.put(
+    "metadata:antigravity:hub-version",
+    JSON.stringify({
+      version: "2.9.1",
+      expires_at: Date.now() + 6 * 60 * 60_000,
+    }),
+  );
   await Promise.all(
     ["antigravity", "key:antigravity:primary", "key:antigravity:one"].flatMap(
       (id) =>

@@ -4,19 +4,15 @@ import { ProviderTransport } from "../transport-values.ts";
 import { z } from "zod";
 import type { AntigravityProviderConfig } from "../../config/types.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
-import { forwardRequestHeaders } from "../../gateway/http/http.ts";
 import { requestProtocol } from "../../gateway/protocol.ts";
 import { retryResponseUsage } from "../../telemetry/retry.ts";
 import { ProviderRequestError } from "../errors.ts";
 import type { ProviderAdapter } from "../types.ts";
-import {
-  ANTIGRAVITY_BASE,
-  ANTIGRAVITY_USER_AGENT,
-  parseModels,
-} from "./api.ts";
+import { ANTIGRAVITY_BASE, parseModels } from "./api.ts";
 import { translateRequest } from "./request.ts";
 import { convertResponse, translatedUsage } from "./response.ts";
 import { inspectAntigravityResponse } from "./inspect.ts";
+import { antigravityUserAgent, antigravityVersion } from "./version.ts";
 
 export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
   type: ProviderType.Antigravity,
@@ -29,21 +25,14 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
     );
   },
   async prepare(provider, credential, input, context) {
-    const headers = forwardRequestHeaders(input.request, credential.token);
-    for (const name of [
-      "content-length",
-      "content-encoding",
-      "content-md5",
-      "digest",
-      "content-digest",
-      "anthropic-version",
-      "anthropic-beta",
-      "openai-beta",
-      "accept-encoding",
-    ])
-      headers.delete(name);
-    headers.set("content-type", "application/json");
-    headers.set("user-agent", ANTIGRAVITY_USER_AGENT);
+    // Match the native header set rather than forwarding client SDK fingerprints.
+    const headers = new Headers({
+      "content-type": "application/json",
+      authorization: `Bearer ${credential.token}`,
+      "user-agent": antigravityUserAgent(
+        await antigravityVersion(context?.env.CODY_CONFIG_KV, context?.context),
+      ),
+    });
     if (input.endpoint === "models")
       return {
         url: `${ANTIGRAVITY_BASE}/v1internal:fetchAvailableModels`,
@@ -95,6 +84,7 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
       context.env.CONFIG_ENCRYPTION_KEY,
       input.sessionId,
       provider.credentials.map((account) => account.auth.account_ref),
+      provider.sensitive_words,
     );
     const protocol = requestProtocol(input.request, endpoint);
     const stream = payload.stream === true;
