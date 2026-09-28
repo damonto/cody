@@ -58,6 +58,9 @@ import { sealPart } from "../../src/providers/antigravity/replay.ts";
 import { listCoolingHealth } from "../../src/gateway/health/health.ts";
 import { handleHealthClear } from "../../src/gateway/health/handlers.ts";
 import { RequestLogContext } from "../../src/shared/log.ts";
+import { RequestMeter } from "../../src/telemetry/meter.ts";
+import type { UsageEvent } from "../../src/telemetry/types.ts";
+import type { Bindings } from "../../src/platform/bindings.ts";
 import {
   handleModels,
   clearModelsCacheForTests,
@@ -928,6 +931,7 @@ async function infer(
   config: ReturnType<typeof parseConfig>,
   endpoint: "responses" | "messages" | "messages/count_tokens" = "responses",
   payload?: Record<string, unknown>,
+  options: { bindings?: Bindings; meter?: RequestMeter } = {},
 ) {
   const context = createExecutionContext();
   const response = await handleInference(
@@ -946,12 +950,15 @@ async function infer(
         },
       ),
     }),
-    env,
+    options.bindings ?? env,
     config,
     config.api_keys[0],
     endpoint,
     crypto.randomUUID(),
     context,
+    {},
+    undefined,
+    options.meter,
   );
   await waitOnExecutionContext(context);
   return response;
@@ -1504,6 +1511,119 @@ function inferenceRecords() {
   return records.filter((record) =>
     /:(?:streamG|g)enerateContent/.test(record.url),
   );
+}
+
+test("Antigravity reports every account attempt in the final usage event", async () => {
+  const { config, provider } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  const events: UsageEvent[] = [];
+  const meter = new RequestMeter({
+    requestId: "account-attempts",
+    endpoint: "responses",
+    method: "POST",
+    protocol: "openai",
+    sink: {
+      send: async (event) => {
+        events.push(event);
+      },
+    },
+  });
+  meter.configure(config);
+  meter.authenticate(config.api_keys[0].id);
+  override = (request) =>
+    /:(?:streamG|g)enerateContent/.test(request.url) &&
+    request.headers.get("authorization") === "Bearer access-pool-a"
+      ? Response.json(quotaError(), { status: 429 })
+      : undefined;
+  const response = await infer(config, "responses", undefined, { meter });
+  await meter.response(response).text();
+  await meter.drain();
+  expect(
+    events.at(-1)?.attempts.map((attempt) => [attempt.attempt, attempt.status]),
+  ).toEqual([
+    [1, 429],
+    [2, 200],
+  ]);
+  expect(events.at(-1)?.credential_id).toBe(provider.credentials[1].id);
+});
+
+for (const failure of ["affinity", "quota"] as const) {
+  test(`Antigravity ${failure} storage failure after a limit is not reported as exhausted quota`, async () => {
+    const { config, provider, accounts } = await balancingPool();
+    provider.account_selection = "session_affinity";
+    let exhausted = false;
+    override = (request) => {
+      if (!/:(?:streamG|g)enerateContent/.test(request.url)) return;
+      exhausted = true;
+      return Response.json(quotaError(), { status: 429 });
+    };
+    const bindings: Bindings = {
+      ...env,
+      ...(failure === "affinity"
+        ? {
+            SESSION_AFFINITY: {
+              getByName: (name: string) => {
+                const stub = env.SESSION_AFFINITY.getByName(name);
+                return new Proxy(stub, {
+                  get(target, property) {
+                    if (property === "resolve")
+                      return (...args: Parameters<typeof stub.resolve>) => {
+                        if (exhausted) throw new Error("affinity unavailable");
+                        return target.resolve(...args);
+                      };
+                    return Reflect.get(target, property);
+                  },
+                });
+              },
+            },
+          }
+        : {
+            HEALTH: {
+              getByName: (name: string) => {
+                const stub = env.HEALTH.getByName(name);
+                return new Proxy(stub, {
+                  get(target, property) {
+                    if (property === "getStatus")
+                      return () => {
+                        if (
+                          exhausted &&
+                          name ===
+                            antigravityQuotaObjectName(
+                              accounts[1].ref,
+                              "native-model",
+                            )
+                        )
+                          throw new Error("quota unavailable");
+                        return target.getStatus();
+                      };
+                    return Reflect.get(target, property);
+                  },
+                });
+              },
+            },
+          }),
+    };
+    const response = await infer(
+      config,
+      "responses",
+      {
+        model: "alias",
+        input: "hello",
+        client_metadata: { session_id: crypto.randomUUID() },
+      },
+      { bindings },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code:
+          failure === "affinity"
+            ? "session_affinity_unavailable"
+            : "quota_state_unavailable",
+      },
+    });
+    expect(inferenceRecords()).toHaveLength(1);
+  });
 }
 
 test("Antigravity account switches retain the logical request's proxy switch allowance", async () => {

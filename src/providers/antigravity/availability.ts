@@ -6,61 +6,6 @@ import {
 } from "../../gateway/health/values.ts";
 import { errorMessage } from "../../shared/log.ts";
 import type { AccountLimit } from "../types.ts";
-import type {
-  ModelRoute,
-  ProviderSelection,
-} from "../../gateway/routing/routing.ts";
-import { ProviderType } from "../../config/values.ts";
-import { apiError } from "../../gateway/http/http.ts";
-import type { ApiProtocol } from "../../gateway/protocol-values.ts";
-
-export function antigravityQuotaResetsAt(
-  route: ModelRoute,
-  selection: ProviderSelection,
-): number | undefined {
-  const provider = route.targets.find(
-    (target) => target.provider.type === ProviderType.Antigravity,
-  );
-  if (
-    !provider ||
-    !selection.checks.find(
-      (check) => check.provider_id === provider.provider.id,
-    )?.available
-  )
-    return undefined;
-  const checks = selection.credentialChecks.filter(
-    (check) => check.provider_id === provider.provider.id,
-  );
-  if (
-    !checks.length ||
-    checks.some(
-      (check) =>
-        check.available ||
-        check.cooldown_reason !== HealthCooldownReason.Quota ||
-        !check.cooling_until,
-    )
-  )
-    return undefined;
-  return Math.min(...checks.map((check) => check.cooling_until!));
-}
-
-export function antigravityQuotaResponse(
-  protocol: ApiProtocol,
-  until: number,
-  requestId: string,
-): Response {
-  const response = apiError(
-    protocol,
-    429,
-    `All available Antigravity accounts are limited for this model until ${new Date(until).toISOString()}`,
-    { code: "usage_limit_reached", requestId },
-  );
-  response.headers.set(
-    "retry-after",
-    String(Math.max(1, Math.ceil((until - Date.now()) / 1000))),
-  );
-  return response;
-}
 
 /** Physical account and real model, independent of editable credential IDs/aliases. */
 export function antigravityQuotaObjectName(

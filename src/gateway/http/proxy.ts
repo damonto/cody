@@ -2,8 +2,8 @@ import { CredentialAuthType } from "../../config/values.ts";
 import {
   antigravityQuotaResetsAt,
   antigravityQuotaResponse,
-  recordAntigravityLimit,
-} from "../../providers/antigravity/availability.ts";
+} from "../../providers/antigravity/exhaustion.ts";
+import { recordAntigravityLimit } from "../../providers/antigravity/availability.ts";
 import {
   claudeUsageLimit,
   responseQuotaObservation,
@@ -233,11 +233,6 @@ export async function fetchWithConfiguredRetries(
       return { response, attempts };
     }
 
-    const boundedDelay =
-      retryOptions.deadline === undefined
-        ? delayMs
-        : Math.max(0, Math.min(delayMs, retryOptions.deadline - Date.now()));
-    attempt.retry_delay_ms = boundedDelay;
     if (retryOptions.observeDiscardedResponse) {
       try {
         attempt.usage = await retryOptions.observeDiscardedResponse(response);
@@ -248,6 +243,11 @@ export async function fetchWithConfiguredRetries(
     await discardBody(response.body);
     try {
       request.signal.throwIfAborted();
+      const boundedDelay =
+        retryOptions.deadline === undefined
+          ? delayMs
+          : Math.max(0, Math.min(delayMs, retryOptions.deadline - Date.now()));
+      attempt.retry_delay_ms = boundedDelay;
       if (retryOptions.wait) await retryOptions.wait(boundedDelay);
       else await wait(boundedDelay, request.signal);
       request.signal.throwIfAborted();
@@ -466,7 +466,8 @@ export async function handleInference(
     retryOptions.attemptTimeoutMs === undefined
       ? undefined
       : Date.now() + retryOptions.attemptTimeoutMs;
-  let antigravityExhausted = false;
+  const logicalAttempts: UpstreamAttemptLog[] = [];
+  let attemptCount = 0;
   for (;;) {
     const routeForSelection = {
       ...route,
@@ -526,18 +527,52 @@ export async function handleInference(
       requestLog?.set({ routing });
     }
     if (!target) {
+      if (selection.affinity?.status === SessionAffinityStatus.Forbidden) {
+        if (exhausted) await discardBody(exhausted.body);
+        return apiError(
+          protocol,
+          403,
+          "This context session belongs to another client",
+          { code: "context_session_forbidden", requestId },
+        );
+      }
+      if (selection.affinity?.status === SessionAffinityStatus.Failed) {
+        if (exhausted) await discardBody(exhausted.body);
+        return apiError(
+          protocol,
+          503,
+          "The session binding store is unavailable",
+          {
+            type: "server_error",
+            code: "session_affinity_unavailable",
+            requestId,
+          },
+        );
+      }
       if (
-        antigravityExhausted ||
-        routeForSelection.targets.some(
-          (target) => target.provider.type === ProviderType.Antigravity,
+        [...selection.checks, ...selection.credentialChecks].some(
+          (check) =>
+            check.provider_id === ProviderType.Antigravity &&
+            check.reason === ProviderAvailabilityReason.HealthReadFailed,
         )
       ) {
-        const until = antigravityQuotaResetsAt(routeForSelection, selection);
-        if (until !== undefined) {
-          if (exhausted) await discardBody(exhausted.body);
-          meter?.diagnostic("usage_limit_reached");
-          return antigravityQuotaResponse(protocol, until, requestId);
-        }
+        if (exhausted) await discardBody(exhausted.body);
+        meter?.diagnostic("quota_state_unavailable");
+        return apiError(
+          protocol,
+          503,
+          "The account quota store is unavailable",
+          { code: "quota_state_unavailable", requestId },
+        );
+      }
+      const antigravityReset = antigravityQuotaResetsAt(
+        routeForSelection,
+        selection,
+      );
+      if (antigravityReset !== undefined) {
+        if (exhausted) await discardBody(exhausted.body);
+        meter?.diagnostic("usage_limit_reached");
+        return antigravityQuotaResponse(protocol, antigravityReset, requestId);
       }
       if (!resetConsumed) {
         resetConsumed = true;
@@ -558,26 +593,6 @@ export async function handleInference(
         requestLog?.warn({ outcome: "accounts_exhausted" });
         meter?.diagnostic("usage_limit_reached");
         return exhausted;
-      }
-      if (selection.affinity?.status === SessionAffinityStatus.Forbidden) {
-        return apiError(
-          protocol,
-          403,
-          "This context session belongs to another client",
-          { code: "context_session_forbidden", requestId },
-        );
-      }
-      if (selection.affinity?.status === SessionAffinityStatus.Failed) {
-        return apiError(
-          protocol,
-          503,
-          "The session binding store is unavailable",
-          {
-            type: "server_error",
-            code: "session_affinity_unavailable",
-            requestId,
-          },
-        );
       }
       if (selection.affinity?.status === SessionAffinityStatus.Blocked) {
         const resetsAt = blockedCodexQuotaResetsAt(selection);
@@ -837,6 +852,13 @@ export async function handleInference(
         },
       },
     );
+    for (const attempt of result.attempts) {
+      logicalAttempts.push({ ...attempt, attempt: ++attemptCount });
+    }
+    // Retain the final attempt even when a large account pool exceeds the log bound.
+    if (logicalAttempts.length > 20)
+      logicalAttempts.splice(0, logicalAttempts.length - 20);
+    meter?.recordAttempts(logicalAttempts);
     if (
       result.response &&
       antigravityLimit &&
@@ -859,7 +881,6 @@ export async function handleInference(
         );
       }
       lockedProvider = provider.id;
-      antigravityExhausted = true;
       excludedCredentials.add(
         credentialKey(provider.id, selectedCredential.id),
       );
@@ -867,7 +888,6 @@ export async function handleInference(
         credential_id: selectedCredential.id,
         ...antigravityLimit,
       });
-      meter?.recordAttempts(result.attempts);
       // Keep raw upstream statuses for attempt logs, including HTTP 200 SSE errors.
       await discardBody(result.response.body);
       exhausted = antigravityQuotaResponse(
@@ -951,7 +971,6 @@ export async function handleInference(
       provider.type === ProviderType.Claude
     )
       meter?.select(meterTarget);
-    meter?.recordAttempts(result.attempts);
     const upstreamDurationMs = elapsedMs(startedAt);
     if (!result.response) {
       const cancelled = request.signal.aborted;

@@ -108,12 +108,15 @@ export async function openPart(
     const replay = replaySchema.parse(
       await decryptConfig(atob(value.slice(PREFIX.length)), key),
     );
+    const source = replay.scope;
+    const accountAllowed = accountRefs
+      ? accountRefs.includes(source.account_ref)
+      : source.account_ref === scope.account_ref;
     if (
-      Object.entries(scope).some(([field, expected]) =>
-        field === "account_ref" && accountRefs
-          ? !accountRefs.includes(replay.scope.account_ref)
-          : replay.scope[field as keyof ReplayScope] !== expected,
-      )
+      !accountAllowed ||
+      source.client_id !== scope.client_id ||
+      source.provider_id !== scope.provider_id ||
+      source.model !== scope.model
     )
       throw new Error("Wrong scope");
     return replay;

@@ -129,6 +129,35 @@ test("Antigravity selection defaults to rotation and settings retain either stra
   );
 });
 
+test("discarded-response observation counts against the shared retry deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now });
+  let sends = 0;
+  const delays = [];
+  const result = await fetchWithConfiguredRetries(
+    () => new Request("https://upstream.test"),
+    { status_codes: [503], delays_ms: [200] },
+    {
+      deadline: now + 50,
+      attemptTimeoutMs: 1000,
+      send: async () => {
+        sends++;
+        return new Response("busy", { status: 503 });
+      },
+      observeDiscardedResponse: async () => {
+        t.mock.timers.tick(40);
+        return null;
+      },
+      wait: async (ms) => {
+        delays.push(ms);
+        t.mock.timers.tick(ms);
+      },
+    },
+  );
+  assert.equal(sends, 1);
+  assert.deepEqual(delays, [10]);
+  assert.ok(result.error instanceof UpstreamAttemptTimeoutError);
+});
+
 test("quota errors and timed rate limits use structured reset hints, not capacity errors", () => {
   assert.deepEqual(antigravityAccountLimit(failure(), headers, now), {
     code: "QUOTA_EXHAUSTED",
@@ -248,9 +277,26 @@ test("preflight hands off a stalled stream within its bound without losing the p
   assert.equal(await result.response.text(), 'data: {"hello":true}\n\n');
 });
 
+test("a large transport chunk cannot extend the inspection byte limit", async () => {
+  const source = stream([": heartbeat\n\n".repeat(6000), failure()]);
+  const expected = await source.clone().text();
+  const observed = [];
+  const result = await inspectAntigravityResponse(
+    source,
+    async (limit) => {
+      observed.push(limit);
+    },
+    signal(),
+  );
+  assert.equal(result.accountLimit, undefined);
+  assert.equal(await result.response.text(), expected);
+  assert.equal(observed.length, 1);
+});
+
 test("SSE preflight detects fragmented first-event limits and leaves successful streams byte-identical", async () => {
   for (const fragmented of [false, true]) {
     const response = stream([": heartbeat\r\n\r\n", failure()], fragmented);
+    const errorBytes = await response.clone().text();
     const result = await inspectAntigravityResponse(
       response,
       async () => assert.fail(),
@@ -258,7 +304,11 @@ test("SSE preflight detects fragmented first-event limits and leaves successful 
     );
     assert.equal(result.response.status, 200);
     assert.equal(result.accountLimit.code, "QUOTA_EXHAUSTED");
-    assert.deepEqual(await result.response.json(), failure());
+    assert.equal(
+      result.response.headers.get("content-type"),
+      "text/event-stream",
+    );
+    assert.equal(await result.response.text(), errorBytes);
     const success = stream(
       [
         {
@@ -322,6 +372,45 @@ test("SSE preflight cancellation releases its upstream reader", async () => {
   await assert.rejects(result, /cancelled/);
   assert.equal(cancelled, true);
   assert.equal(response.body.locked, false);
+});
+
+test("aborting after prefix inspection rejects the forwarded body and releases its reader", async () => {
+  const abort = new AbortController();
+  let cancelled = false;
+  const source = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('data: {"response":{}}\n\n'),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const result = await inspectAntigravityResponse(
+    source,
+    async () => {},
+    abort.signal,
+  );
+  abort.abort(new Error("cancelled after inspection"));
+  await assert.rejects(result.response.text(), /cancelled after inspection/);
+  assert.equal(cancelled, true);
+  assert.equal(source.body.locked, false);
+});
+
+test("malformed unrelated details do not hide a valid quota reason, and structured capacity reasons win", () => {
+  const quota = failure();
+  quota.error.details.push("unknown upstream detail");
+  assert.equal(
+    antigravityAccountLimit(quota, headers, now).code,
+    "QUOTA_EXHAUSTED",
+  );
+  const capacity = failure("MODEL_CAPACITY_EXHAUSTED");
+  capacity.error.message = "Model capacity unavailable, not quota exhausted";
+  assert.equal(antigravityAccountLimit(capacity, headers, now), undefined);
 });
 
 test("trusted replay can move inside an account pool while client, model and provenance stay checked", async () => {

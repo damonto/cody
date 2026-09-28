@@ -2,20 +2,17 @@ import { z } from "zod";
 import type { AccountLimit } from "../types.ts";
 
 export const DEFAULT_ANTIGRAVITY_COOLDOWN_MS = 15 * 60_000;
+const detailSchema = z.object({
+  "@type": z.string().optional(),
+  reason: z.string().optional(),
+  retryDelay: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
 const errorSchema = z.object({
   code: z.number().optional(),
   status: z.string().optional(),
   message: z.string().optional(),
-  details: z
-    .array(
-      z.object({
-        "@type": z.string().optional(),
-        reason: z.string().optional(),
-        retryDelay: z.string().optional(),
-        metadata: z.record(z.string(), z.unknown()).optional(),
-      }),
-    )
-    .optional(),
+  details: z.array(z.unknown()).optional(),
 });
 const envelopeSchema = z.object({
   error: z.unknown().optional(),
@@ -52,13 +49,17 @@ export function antigravityAccountLimit(
     (error.code !== undefined && error.code !== 429)
   )
     return undefined;
-  const details = error.details ?? [];
+  const details = (error.details ?? []).flatMap((value) => {
+    const parsed = detailSchema.safeParse(value);
+    return parsed.success ? [parsed.data] : [];
+  });
   const reasons = details.filter(
     (detail) => detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo",
   );
   const quota =
     reasons.some((detail) => detail.reason === "QUOTA_EXHAUSTED") ||
-    /\bquota[_ ]exhausted\b/i.test(error.message ?? "");
+    (reasons.every((detail) => !detail.reason) &&
+      /\bquota[_ ]exhausted\b/i.test(error.message ?? ""));
   const rate = reasons.some(
     (detail) => detail.reason === "RATE_LIMIT_EXCEEDED",
   );
