@@ -104,6 +104,12 @@ export class ProviderHealth extends DurableObject<Env> {
 
 export class SessionAffinity extends DurableObject<Env> {
   private readonly core: SessionAffinityCore;
+  beginXaiReplay() {
+    return this.core.beginXaiReplay();
+  }
+  commitXaiReplay(version: string, value: string | null) {
+    return this.core.commitXaiReplay(version, value);
+  }
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.core = new SessionAffinityCore(ctx, env);

@@ -11,6 +11,8 @@ import { convertResponse } from "./response.ts";
 import { inspectXaiResponse } from "./inspect.ts";
 import { xaiModels } from "./models.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
+import { historySession, prepareHistory } from "./history.ts";
+import { records } from "./json.ts";
 
 export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
   type: ProviderType.Xai,
@@ -60,13 +62,26 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
       scope,
       context.env.CONFIG_ENCRYPTION_KEY,
       provider.credentials.map((entry) => entry.auth.account_ref),
+      { injectSearch: provider.inject_x_search },
     );
     const headers = xaiHeaders(credential.token, credential.subject);
     headers.set("accept", "text/event-stream");
-    if (input.sessionId) {
+    const sessionKey = historySession(input.request, payload, input.sessionId);
+    const onCompleted = await prepareHistory(
+      context.env,
+      scope,
+      credential.generation,
+      sessionKey,
+      translated.body,
+      translated.tools,
+      provider.credentials.map((entry) => entry.auth.account_ref),
+    );
+    if (sessionKey || model.startsWith("grok-composer-")) {
       const hash = await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(`${clientId}\0${input.sessionId}`),
+        new TextEncoder().encode(
+          `${clientId}\0${sessionKey || crypto.randomUUID()}`,
+        ),
       );
       const raw = [...new Uint8Array(hash)]
         .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -112,6 +127,10 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
           scope,
           key: context.env.CONFIG_ENCRYPTION_KEY,
           tools: translated.tools,
+          search: records(translated.body.tools).some(
+            (tool) => tool.type === "x_search" || tool.type === "web_search",
+          ),
+          ...(onCompleted ? { onCompleted } : {}),
           signal: input.request.signal,
         }),
     };

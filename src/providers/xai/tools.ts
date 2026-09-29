@@ -69,6 +69,7 @@ function toolSchema(
 export function translateTools(
   value: unknown,
   anthropic: boolean,
+  reserved = 0,
 ): { definitions: Wire[]; mappings: ToolMapping[] } {
   const declared = value === undefined ? [] : requestArray(value, "tools");
   const count = declared.reduce(
@@ -79,7 +80,7 @@ export function translateTools(
         : 1),
     0,
   );
-  const fold = count > 200;
+  const fold = count + reserved > 200;
   const mappings: ToolMapping[] = [];
   const definitions: Wire[] = [];
   const names = new Set<string>();
@@ -155,6 +156,10 @@ export function translateTools(
     };
   }
   for (const tool of declared) {
+    if (["x_search", "web_search"].includes(text(tool.type))) {
+      definitions.push({ ...tool });
+      continue;
+    }
     if (tool.type !== "namespace") {
       definitions.push(add(tool).definition);
       continue;
@@ -193,7 +198,7 @@ export function translateTools(
       parameters: { type: "object", oneOf: branches },
     });
   }
-  if (definitions.length > 200)
+  if (definitions.length + reserved > 200)
     invalid("xAI supports at most 200 tools after namespace folding");
   return { definitions, mappings };
 }
@@ -202,10 +207,12 @@ export function findTool(
   name: string,
   namespace?: string,
 ): ToolMapping {
-  const candidates = mappings.filter(
+  const named = mappings.filter(
     (mapping) =>
       mapping.name === name && (!namespace || mapping.namespace === namespace),
   );
+  const exact = named.filter((mapping) => mapping.namespace === namespace);
+  const candidates = exact.length ? exact : named;
   const [match] = candidates;
   if (!match || candidates.length !== 1)
     invalid(`Unknown or ambiguous tool: ${name}`);
@@ -253,5 +260,40 @@ export function restoreTool(item: Wire, tools: readonly ToolMapping[]): Wire {
     name: mapping.name,
     ...(mapping.namespace ? { namespace: mapping.namespace } : {}),
     arguments: args,
+  };
+}
+
+export function translateToolCall(
+  item: Wire,
+  mappings: readonly ToolMapping[],
+  custom = false,
+): Wire {
+  const mapping = findTool(
+    mappings,
+    text(item.name),
+    text(item.namespace) || undefined,
+  );
+  let args: unknown = item.arguments ?? item.input;
+  if (!custom && typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      invalid("Invalid tool arguments JSON");
+    }
+  }
+  if (custom || mapping.custom)
+    args = { input: typeof args === "string" ? args : JSON.stringify(args) };
+  if (mapping.dispatcher) args = { name: mapping.name, arguments: args };
+  return {
+    type: "function_call",
+    call_id: text(item.call_id) || text(item.id),
+    name: mapping.wireName,
+    arguments:
+      !custom &&
+      !mapping.custom &&
+      !mapping.dispatcher &&
+      typeof item.arguments === "string"
+        ? item.arguments
+        : JSON.stringify(args ?? {}),
   };
 }

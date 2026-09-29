@@ -18,6 +18,7 @@ export const settingsEditorSchema = claudeDraftProviderSchema
     emulate_claude_code: true,
   })
   .extend({
+    inject_x_search: z.boolean().optional(),
     routes: z
       .array(
         z.strictObject({
@@ -45,6 +46,9 @@ export function settingsFormValues(
   provider: SubscriptionProvider,
 ): SettingsFormValues {
   return {
+    ...(provider.type === "xai"
+      ? { inject_x_search: provider.inject_x_search }
+      : {}),
     priority: provider.priority,
     disabled: provider.disabled,
     proxy_group: provider.proxy_group,
@@ -68,10 +72,14 @@ export function applySettings<Provider extends SubscriptionProvider>(
   provider: Provider,
   value: SettingsFormValues,
 ): Provider {
-  const { routes, ...settings } = settingsEditorSchema.parse(value);
+  const { routes, inject_x_search, ...settings } =
+    settingsEditorSchema.parse(value);
   return {
     ...provider,
     ...settings,
+    ...(provider.type === "xai"
+      ? { inject_x_search: inject_x_search ?? false }
+      : {}),
     model_routes: Object.fromEntries(
       routes.map(({ alias, model }) => [alias, { model }]),
     ),

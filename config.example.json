@@ -141,6 +141,7 @@
     {
       "type": "xai",
       "id": "xai",
+      "inject_x_search": false,
       "disabled": true,
       "priority": 100,
       "models": [],

@@ -34,6 +34,7 @@ export function newXaiProvider(): XaiProviderConfig {
     emulate_claude_code: false,
     account_selection: CodexAccountSelection.RoundRobin,
     allow_extra_usage: false,
+    inject_x_search: false,
   };
 }
 export function xaiProvider(config: GatewayConfig): XaiProviderConfig {

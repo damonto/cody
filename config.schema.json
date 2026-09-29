@@ -1024,7 +1024,8 @@
                 "type": "string",
                 "enum": ["round_robin", "session_affinity"]
               },
-              "allow_extra_usage": { "default": false, "type": "boolean" }
+              "allow_extra_usage": { "default": false, "type": "boolean" },
+              "inject_x_search": { "default": false, "type": "boolean" }
             },
             "required": ["type", "id", "credentials", "models", "priority"],
             "additionalProperties": false,

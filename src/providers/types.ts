@@ -17,6 +17,7 @@ export interface ProviderRuntimeContext extends Omit<
     Bindings,
     | "PROXY_GROUP"
     | "PROVIDER_OAUTH_ACCOUNT"
+    | "SESSION_AFFINITY"
     | "CONFIG_ENCRYPTION_KEY"
     | "UPSTREAM_HTTP"
   > &

@@ -203,6 +203,21 @@ test("xAI device accounts and quota survive object eviction", async () => {
   expect(view.xai?.subject).toBe(account.sub);
   expect(view.status).toBe("ready");
 });
+
+test("xAI replay storage survives Worker eviction and fences late responses", async () => {
+  const stub = env.SESSION_AFFINITY.getByName(
+    `xai-replay:${crypto.randomUUID()}`,
+  );
+  const initial = await stub.beginXaiReplay();
+  const ciphertext = "encrypted".repeat(25000);
+  expect(await stub.commitXaiReplay(initial.version, ciphertext)).toBe(true);
+  await evictDurableObject(stub);
+  const current = await stub.beginXaiReplay();
+  expect(current.value).toBe(ciphertext);
+  expect(await stub.commitXaiReplay(initial.version, "late")).toBe(false);
+  expect(await stub.commitXaiReplay(current.version, null)).toBe(true);
+  expect((await stub.beginXaiReplay()).value).toBeNull();
+});
 test("xAI switches only after persisting an explicit account model limit", async () => {
   const a = await ready(),
     b = await ready();

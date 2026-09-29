@@ -1,6 +1,7 @@
 import type { AccountLimit } from "../types.ts";
 import type { QuotaSnapshot } from "../oauth/schema.ts";
 import { object, text } from "./json.ts";
+import { xaiErrorDetails } from "./errors.ts";
 
 export interface XaiLimit extends AccountLimit {
   model: string | null;
@@ -59,10 +60,20 @@ export function xaiLimit(
   now = Date.now(),
 ): XaiLimit | undefined {
   const root = object(value);
+  if (
+    root.type !== undefined &&
+    root.type !== "error" &&
+    root.type !== "response.failed"
+  )
+    return undefined;
   const error = object(root.error ?? object(root.response).error);
-  const code = text(root.code) || text(error.code);
-  const message = text(root.error) || text(error.message) || text(root.message);
-  const free = code.includes("free-usage-exhausted");
+  const details = xaiErrorDetails(value);
+  const code = details.code.toLowerCase();
+  const message = details.messages.join(" ").toLowerCase();
+  const free =
+    code.includes("free-usage-exhausted") ||
+    message.includes("free-usage-exhausted") ||
+    message.includes("included free usage");
   const subscription = free || code.includes("subscription:usage-exhausted");
   const spending =
     code.includes("spending-limit") ||
@@ -88,9 +99,12 @@ export function xaiLimit(
     Number.isFinite(until) && until > now ? "upstream" : "fallback";
   if (reset_source === "fallback") until = now + (free ? 24 * 60 : 15) * 60000;
   return {
-    code,
+    code: details.code || "subscription:free-usage-exhausted",
     resets_at: until,
-    model: free && message.includes(model) ? model : null,
+    model:
+      free && message.split(/[^a-z0-9._-]+/).includes(model.toLowerCase())
+        ? model
+        : null,
     kind: spending ? "spending" : "subscription",
     reset_source,
   };

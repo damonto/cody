@@ -1,4 +1,5 @@
-import { object, text } from "./json.ts";
+import { object } from "./json.ts";
+import { xaiBadCredentials } from "./errors.ts";
 import { inspectResponsePrefix } from "../../gateway/http/response-prefix.ts";
 import { SseObserver } from "../../telemetry/stream.ts";
 import type { InspectedResponse } from "../types.ts";
@@ -65,13 +66,7 @@ export async function inspectXaiResponse(
         } catch {
           return chunk === undefined;
         }
-        const error = object(value);
-        if (
-          response.status === 403 &&
-          [text(error.code), text(object(error.error).code)].some((code) =>
-            code.includes("bad-credentials"),
-          )
-        )
+        if (response.status === 403 && xaiBadCredentials(value))
           await onCredentialRejected?.();
         found = xaiLimit(value, response.headers, model);
         return true;

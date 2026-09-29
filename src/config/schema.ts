@@ -392,6 +392,7 @@ export const xaiDraftProviderSchema = claudeDraftProviderSchema.extend({
   type: z.literal(ProviderType.Xai),
   id: z.literal(ProviderType.Xai),
   disabled: boolean.default(true),
+  inject_x_search: boolean.default(false),
 });
 export const xaiProviderSchema = publishable(xaiDraftProviderSchema, "xAI");
 export const providerSchema = z.discriminatedUnion("type", [

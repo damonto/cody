@@ -1,6 +1,11 @@
 import { invalid, requestArray, validateRequest } from "./validation.ts";
-import { findTool, translateTools, type ToolMapping } from "./tools.ts";
-import { object, text, type Wire } from "./json.ts";
+import {
+  findTool,
+  translateToolCall,
+  translateTools,
+  type ToolMapping,
+} from "./tools.ts";
+import { object, records, text, type Wire } from "./json.ts";
 import { openReasoning, reasoningText, type XaiScope } from "./replay.ts";
 export type { ToolMapping } from "./tools.ts";
 
@@ -46,6 +51,7 @@ export async function translateRequest(
   scope: XaiScope,
   key: string,
   accounts: readonly string[],
+  options: { injectSearch?: boolean } = {},
 ): Promise<Translation> {
   validateRequest(payload, anthropic);
   if (
@@ -59,7 +65,15 @@ export async function translateRequest(
     (Array.isArray(payload.stop_sequences) && payload.stop_sequences.length)
   )
     invalid("xAI Responses does not support stop sequences");
-  const { definitions, mappings } = translateTools(payload.tools, anthropic);
+  const inject =
+    options.injectSearch &&
+    !records(payload.tools).some((tool) => tool.type === "x_search");
+  const { definitions, mappings } = translateTools(
+    payload.tools,
+    anthropic,
+    inject ? 1 : 0,
+  );
+  if (inject) definitions.push({ type: "x_search" });
   const find = (name: string, namespace?: string) =>
     findTool(mappings, name, namespace);
   const input: Wire[] = [];
@@ -70,31 +84,7 @@ export async function translateRequest(
       content: content(value, role === "assistant"),
     });
   const call = (item: Wire, custom = false) => {
-    const mapping = find(text(item.name), text(item.namespace) || undefined);
-    const originalArguments = item.arguments;
-    let args: unknown = item.arguments ?? item.input;
-    if (!custom && typeof args === "string") {
-      try {
-        args = JSON.parse(args);
-      } catch {
-        invalid("Invalid tool arguments JSON");
-      }
-    }
-    if (custom || mapping.custom)
-      args = { input: typeof args === "string" ? args : JSON.stringify(args) };
-    if (mapping.dispatcher) args = { name: mapping.name, arguments: args };
-    input.push({
-      type: "function_call",
-      call_id: text(item.call_id) || text(item.id),
-      name: mapping.wireName,
-      arguments:
-        !custom &&
-        !mapping.custom &&
-        !mapping.dispatcher &&
-        typeof originalArguments === "string"
-          ? originalArguments
-          : JSON.stringify(args ?? {}),
-    });
+    input.push(translateToolCall(item, mappings, custom));
   };
   if (anthropic) {
     if (payload.system !== undefined) appendMessage("system", payload.system);
@@ -203,7 +193,29 @@ export async function translateRequest(
     const value = object(choice);
     if (anthropic && ["auto", "none", "any"].includes(text(value.type)))
       choice = value.type === "any" ? "required" : value.type;
-    else if (["tool", "function", "custom"].includes(text(value.type))) {
+    else if (["x_search", "web_search"].includes(text(value.type))) {
+      choice = "required";
+      const selected = definitions.filter((tool) => tool.type === value.type);
+      if (!selected.length) invalid("Forced search tool is not declared");
+      definitions.splice(0, definitions.length, ...selected);
+    } else if (value.type === "allowed_tools") {
+      const allowed = requestArray(value.tools, "tool_choice.tools").map(
+        (tool) => {
+          if (["x_search", "web_search"].includes(text(tool.type))) return tool;
+          const mapping = find(
+            text(tool.name),
+            text(tool.namespace) || undefined,
+          );
+          return { type: "function", name: mapping.wireName };
+        },
+      );
+      if (
+        options.injectSearch &&
+        !allowed.some((tool) => tool.type === "x_search")
+      )
+        allowed.push({ type: "x_search" });
+      choice = { ...value, tools: allowed };
+    } else if (["tool", "function", "custom"].includes(text(value.type))) {
       const mapping = find(
         text(value.name),
         text(value.namespace) || undefined,
@@ -223,6 +235,7 @@ export async function translateRequest(
     input,
     stream: true,
     store: false,
+    instructions: "",
     include: [
       ...new Set([
         ...(Array.isArray(payload.include) ? payload.include : []),
@@ -235,6 +248,7 @@ export async function translateRequest(
     "instructions",
     "temperature",
     "top_p",
+    "top_k",
     "parallel_tool_calls",
     "metadata",
     "text",

@@ -2,6 +2,7 @@ import { ProviderRequestError } from "../errors.ts";
 import { object, records, text, type Wire } from "./json.ts";
 import { reasoningText, sealReasoning, type XaiScope } from "./replay.ts";
 import { restoreTool, type ToolMapping } from "./tools.ts";
+import { XaiSearchFilter } from "./search.ts";
 export interface EncodingOptions {
   anthropic: boolean;
   stream: boolean;
@@ -10,6 +11,8 @@ export interface EncodingOptions {
   key: string;
   tools: ToolMapping[];
   signal?: AbortSignal;
+  search?: boolean;
+  onCompleted?: (output: Wire[]) => Promise<void>;
 }
 export function xaiUsage(value: unknown, anthropic: boolean): Wire {
   const usage = object(value);
@@ -37,9 +40,14 @@ interface Item {
   started?: boolean;
   partStarted?: boolean;
   refusal?: boolean;
+  textDone?: string;
+  thinkingDone?: string;
+  partIndex?: number;
 }
 export class ResponseEncoder {
   private readonly items = new Map<number, Item>();
+  private readonly upstreamIndexes = new Map<number, number>();
+  private readonly searchFilter = new XaiSearchFilter();
   private metadata: Wire = {
     id: `resp_${crypto.randomUUID()}`,
     object: "response",
@@ -105,6 +113,29 @@ export class ResponseEncoder {
   private mapping(item: Wire): ToolMapping | undefined {
     return this.options.tools.find((tool) => tool.wireName === item.name);
   }
+  private outputIndex(event: Wire): number {
+    const native = object(event.item);
+    const id = text(native.id) || text(native.call_id) || text(event.item_id);
+    const byId = id
+      ? [...this.items].find(([, item]) => item.native.id === id)?.[0]
+      : undefined;
+    const upstream =
+      typeof event.output_index === "number" ? event.output_index : undefined;
+    let index =
+      byId ??
+      (upstream === undefined ? undefined : this.upstreamIndexes.get(upstream));
+    if (
+      index === undefined &&
+      (!event.item || (!id && event.type !== "response.output_item.added"))
+    ) {
+      const open = [...this.items].filter(([, item]) => !item.closed);
+      if (open.length === 1) index = open[0]?.[0];
+    }
+    index ??= this.items.size;
+    if (upstream !== undefined) this.upstreamIndexes.set(upstream, index);
+    this.ensure(index, { ...(id ? { id } : {}), ...native });
+    return index;
+  }
   private openItem(index: number, item: Item): Wire[] {
     if (item.started) return [];
     const native = item.native;
@@ -150,9 +181,12 @@ export class ResponseEncoder {
           output_index: index,
           item_id: item.native.id,
           ...(thinking
-            ? { summary_index: 0, part: { type: "summary_text", text: "" } }
+            ? {
+                summary_index: item.partIndex ?? 0,
+                part: { type: "summary_text", text: "" },
+              }
             : {
-                content_index: 0,
+                content_index: item.partIndex ?? 0,
                 part: item.refusal
                   ? { type: "refusal", refusal: "" }
                   : { type: "output_text", text: "", annotations: [] },
@@ -162,21 +196,34 @@ export class ResponseEncoder {
     );
     return events;
   }
-  private async finishItem(index: number, item: Item): Promise<Wire[]> {
+  private async finishItem(
+    index: number,
+    item: Item,
+    terminal = false,
+  ): Promise<Wire[]> {
     if (item.closed) return [];
+    if (
+      !terminal &&
+      item.native.type === "reasoning" &&
+      !item.native.encrypted_content
+    )
+      return [];
     item.closed = true;
     let native = item.native;
     if (records(native.content)[0]?.type === "refusal") item.refusal = true;
     if (native.type === "reasoning") {
       const summary = records(native.summary);
-      const content = records(native.content);
-      const visible = summary.length
-        ? reasoningText(native)
-        : content.length
-          ? content.map((part) => text(part.text)).join("")
-          : item.thinking;
+      const content = records(native.content).filter(
+        (part) => part.type === "reasoning_text",
+      );
+      const visible = content.length
+        ? content.map((part) => text(part.text)).join("")
+        : (summary.length ? reasoningText(native) : "") ||
+          item.thinkingDone ||
+          item.thinking;
       native = {
         ...native,
+        content: undefined,
         summary: visible ? [{ type: "summary_text", text: visible }] : [],
       };
       if (
@@ -186,7 +233,7 @@ export class ResponseEncoder {
         item.final = {
           ...native,
           encrypted_content: await sealReasoning(
-            native,
+            item.native,
             visible,
             this.options.scope,
             this.options.key,
@@ -202,7 +249,7 @@ export class ResponseEncoder {
       item.final = restoreTool(
         {
           ...native,
-          arguments: native.arguments ?? item.arguments,
+          arguments: native.arguments || item.arguments,
         },
         this.options.tools,
       );
@@ -213,10 +260,19 @@ export class ResponseEncoder {
           ? native.content
           : [
               item.refusal
-                ? { type: "refusal", refusal: item.text }
-                : { type: "output_text", text: item.text, annotations: [] },
+                ? { type: "refusal", refusal: item.textDone ?? item.text }
+                : {
+                    type: "output_text",
+                    text: item.textDone ?? item.text,
+                    annotations: [],
+                  },
             ],
       };
+    else if (
+      native.type === "web_search_call" ||
+      native.type === "x_search_call"
+    )
+      item.final = native;
     else
       throw new ProviderRequestError(
         `Unsupported xAI output item: ${text(native.type)}`,
@@ -239,7 +295,9 @@ export class ResponseEncoder {
         const fields = {
           output_index: index,
           item_id: result.id,
-          ...(thinking ? { summary_index: 0 } : { content_index: 0 }),
+          ...(thinking
+            ? { summary_index: item.partIndex ?? 0 }
+            : { content_index: item.partIndex ?? 0 }),
         };
         if (visible.length > sent.length)
           events.push(
@@ -444,6 +502,11 @@ export class ResponseEncoder {
   }
   async accept(event: Wire): Promise<Wire[]> {
     if (this.terminal) return [];
+    if (this.options.search) {
+      const filtered = this.searchFilter.apply(event, this.options.anthropic);
+      if (!filtered) return [];
+      event = filtered;
+    }
     this.bytes += JSON.stringify(event).length;
     if (this.bytes > 32 * 1024 * 1024)
       throw new ProviderRequestError("xAI output exceeds limit", 502);
@@ -483,10 +546,16 @@ export class ResponseEncoder {
       const response = object(event.response);
       const finalOutput = records(response.output);
       for (let i = 0; i < finalOutput.length; i++)
-        this.ensure(i, finalOutput[i]);
+        this.outputIndex({ item: finalOutput[i], output_index: i });
       for (const [index, item] of [...this.items].sort(([a], [b]) => a - b))
-        events.push(...(await this.finishItem(index, item)));
+        events.push(...(await this.finishItem(index, item, true)));
       this.terminal = true;
+      if (type === "response.completed")
+        await this.options.onCompleted?.(
+          [...this.items.values()].flatMap((item) =>
+            item.final ? [item.final] : [],
+          ),
+        );
       if (this.options.anthropic) {
         const stop =
           type === "response.incomplete"
@@ -529,9 +598,8 @@ export class ResponseEncoder {
       }
       return events;
     }
-    const index =
-      typeof event.output_index === "number" ? event.output_index : 0;
     if (type === "response.output_item.added") {
+      const index = this.outputIndex(event);
       const item = this.ensure(index, object(event.item));
       if (!this.options.anthropic) {
         if (item.native.type === "function_call" && !this.mapping(item.native))
@@ -544,6 +612,7 @@ export class ResponseEncoder {
       return events;
     }
     if (type === "response.output_item.done") {
+      const index = this.outputIndex(event);
       events.push(
         ...(await this.finishItem(
           index,
@@ -558,12 +627,52 @@ export class ResponseEncoder {
         "response.function_call_arguments.done",
         "response.reasoning_text.delta",
         "response.reasoning_summary_text.delta",
+        "response.reasoning_text.done",
+        "response.reasoning_summary_text.done",
+        "response.content_part.done",
+        "response.reasoning_summary_part.done",
+        "response.output_text.done",
+        "response.refusal.done",
         "response.output_text.delta",
         "response.refusal.delta",
       ].includes(type)
     )
       return events;
+    const index = this.outputIndex(event);
     const item = this.ensure(index);
+    item.partIndex ??=
+      typeof event.summary_index === "number"
+        ? event.summary_index
+        : typeof event.content_index === "number"
+          ? event.content_index
+          : 0;
+    if (
+      type === "response.content_part.done" ||
+      type === "response.reasoning_summary_part.done"
+    ) {
+      const part = object(event.part);
+      if (part.type === "reasoning_text" || part.type === "summary_text")
+        item.thinkingDone = text(part.text);
+      else {
+        item.textDone = text(part.text) || text(part.refusal);
+        if (part.type === "refusal") item.refusal = true;
+      }
+      return events;
+    }
+    if (
+      type === "response.reasoning_text.done" ||
+      type === "response.reasoning_summary_text.done"
+    ) {
+      item.thinkingDone = text(event.text);
+      return events;
+    }
+    if (
+      type === "response.output_text.done" ||
+      type === "response.refusal.done"
+    ) {
+      item.textDone = text(event.text) || text(event.refusal);
+      return events;
+    }
     if (type === "response.refusal.delta") item.refusal = true;
     if (type === "response.function_call_arguments.delta")
       item.arguments += text(event.delta);
@@ -618,8 +727,9 @@ export class ResponseEncoder {
       events.push(
         this.event(normalized, {
           ...event,
-          ...(normalized !== type
-            ? { summary_index: event.content_index ?? 0 }
+          output_index: index,
+          ...(thinking
+            ? { summary_index: item.partIndex, content_index: undefined }
             : {}),
         }),
       );

@@ -3,6 +3,7 @@ import { apiError } from "../../gateway/http/http.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import { object, text, type Wire } from "./json.ts";
+import { xaiErrorDetails } from "./errors.ts";
 import { xaiEvents } from "./sse.ts";
 import { ResponseEncoder, type EncodingOptions } from "./response-encoder.ts";
 export { xaiUsage } from "./response-encoder.ts";
@@ -28,17 +29,13 @@ export async function convertResponse(
     } catch {
       /* safe generic error */
     }
-    const message =
-      text(object(error.error).message) ||
-      text(error.error) ||
-      "xAI upstream request failed";
+    const details = xaiErrorDetails(error);
+    const message = details.message || "xAI upstream request failed";
     const result = apiError(protocol, response.status, message, {
       code:
         response.status === 426
           ? "client_outdated"
-          : text(error.code) ||
-            text(object(error.error).code) ||
-            "upstream_error",
+          : details.code || "upstream_error",
     });
     const retryAfter = response.headers.get("retry-after");
     if (retryAfter) result.headers.set("retry-after", retryAfter);

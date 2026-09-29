@@ -198,7 +198,7 @@ test("xAI request maps Messages images and tools without injecting instructions"
     [ref],
   );
   assert.equal(result.body.max_output_tokens, 123);
-  assert.equal(result.body.instructions, undefined);
+  assert.equal(result.body.instructions, "");
   assert.equal(
     result.body.input[0].content[1].image_url,
     "data:image/png;base64,AA==",
@@ -208,7 +208,7 @@ test("xAI request maps Messages images and tools without injecting instructions"
   assert.equal(result.body.input[2].output, "result");
   for (const payload of [
     { input: "x", previous_response_id: "resp" },
-    { input: "x", tools: [{ type: "web_search" }] },
+    { input: "x", tools: [{ type: "computer_use" }] },
     { input: "x", stop: ["end"] },
   ])
     await assert.rejects(translateRequest(payload, false, scope, key, [ref]));

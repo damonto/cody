@@ -20,6 +20,12 @@ test("xAI settings default to disabled, no extra usage and no resets", async ({
   await expect(
     page.getByText("Allow Extra Usage", { exact: true }),
   ).toBeVisible();
+  const search = page.getByRole("switch", {
+    name: "Enable native X Search",
+    exact: true,
+  });
+  await expect(search).not.toBeChecked();
+  await search.click();
   await expect(
     page.getByText("Use resets automatically", { exact: true }),
   ).toHaveCount(0);
@@ -30,6 +36,10 @@ test("xAI settings default to disabled, no extra usage and no resets", async ({
     .getByRole("button", { name: "Save settings", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("switch", { name: "Enable native X Search", exact: true }),
+  ).toBeChecked();
 });
 
 test("xAI cards show native quota and paid usage without reset controls", async ({

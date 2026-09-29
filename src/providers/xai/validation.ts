@@ -117,6 +117,7 @@ const controls = z.object({
   max_tokens: z.number().int().positive().optional(),
   temperature: z.number().finite().optional(),
   top_p: z.number().min(0).max(1).optional(),
+  top_k: z.number().int().nonnegative().optional(),
   parallel_tool_calls: z.boolean().optional(),
   include: z.array(z.string()).optional(),
   reasoning: z

@@ -150,6 +150,16 @@ export function SubscriptionSettingsForm<
                 />
               )}
             </form.AppField>
+            {provider.type === "xai" && (
+              <form.AppField name="inject_x_search">
+                {(field) => (
+                  <field.ToggleField
+                    label="Enable native X Search"
+                    hint="Allow Grok to search X using its hosted search tool. Disabled by default, matching CLIProxyAPI."
+                  />
+                )}
+              </form.AppField>
+            )}
           </TabsContent>
           <TabsContent
             value="models"

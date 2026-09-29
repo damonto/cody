@@ -43,7 +43,7 @@ const grantSchema = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1).optional(),
   id_token: z.string().min(1).optional(),
-  expires_in: z.number().positive().optional(),
+  expires_in: z.number().nonnegative().optional(),
 });
 export const xaiDeviceSchema = z.object({
   device_code: z.string().min(1),
@@ -85,8 +85,10 @@ export class XaiClient {
     const timer = setTimeout(() => abort.abort(), timeout);
     const signal = AbortSignal.any([this.signal, abort.signal]);
     try {
+      const headers = new Headers(init.headers);
+      headers.set("accept", "application/json");
       const response = await this.send(
-        new Request(url, { ...init, redirect: "manual", signal }),
+        new Request(url, { ...init, headers, redirect: "manual", signal }),
       );
       const bytes = await readBodyWithinLimit(
         response.body,
@@ -101,8 +103,8 @@ export class XaiClient {
       } catch {
         /* Never expose upstream token responses. */
       }
-      if (!response.ok) {
-        const error = z.object({ error: z.string() }).safeParse(value);
+      const error = z.object({ error: z.string().min(1) }).safeParse(value);
+      if (!response.ok || error.success) {
         const code =
           error.success &&
           [
@@ -116,7 +118,7 @@ export class XaiClient {
             : "upstream_error";
         throw new OAuthError(
           `xAI account request failed (HTTP ${response.status}, ${code})`,
-          response.status,
+          response.ok ? 400 : response.status,
           code,
         );
       }
@@ -165,10 +167,9 @@ export class XaiClient {
         }).toString(),
       }),
     );
-    let expires_at =
-      result.expires_in === undefined
-        ? previous?.expires_at
-        : Date.now() + result.expires_in * 1000;
+    let expires_at = !result.expires_in
+      ? previous?.expires_at
+      : Date.now() + result.expires_in * 1000;
     if (expires_at === undefined) {
       try {
         const claim = decodeJwt(result.access_token).exp;

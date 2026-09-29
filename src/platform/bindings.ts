@@ -23,6 +23,7 @@ import type {
 } from "../gateway/proxies/schema.ts";
 import type { AccountCommand } from "../providers/oauth/commands.ts";
 import type { AccountReply } from "../providers/oauth/schema.ts";
+import type { XaiReplaySnapshot } from "../providers/xai/replay-store.ts";
 
 // ---------------------------------------------------------------------------
 // Storage primitives
@@ -131,6 +132,8 @@ export interface ClearedSessionAffinityBinding {
 }
 
 export interface SessionAffinityObject {
+  beginXaiReplay(): Promise<XaiReplaySnapshot>;
+  commitXaiReplay(version: string, value: string | null): Promise<boolean>;
   resolve(
     candidates: AffinityProviderCandidate[],
     preferred: AffinitySelection | undefined,
