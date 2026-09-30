@@ -10,6 +10,8 @@ import { handleHealthClear, handleHealthList } from "./health/handlers.ts";
 import { handleInference } from "./http/proxy.ts";
 import {
   CONTEXT_MANAGEMENT_PATHS,
+  INFERENCE_PATHS,
+  inferenceAliases,
   type GatewayEndpoint,
   type InferencePath,
 } from "./protocol.ts";
@@ -159,19 +161,8 @@ async function inference(
     r.meter,
   );
 }
-for (const path of [
-  "responses",
-  "responses/compact",
-  "alpha/search",
-  "chat/completions",
-  "images/generations",
-  "images/edits",
-  "memories/trace_summarize",
-] as const) {
-  endpoint(aliases(path), path, ["POST"], (r) => inference(path, r));
-}
-for (const path of ["messages", "messages/count_tokens"] as const) {
-  endpoint([`/v1/${path}`], path, ["POST"], (r) => inference(path, r));
+for (const path of INFERENCE_PATHS) {
+  endpoint(inferenceAliases(path), path, ["POST"], (r) => inference(path, r));
 }
 for (const path of CONTEXT_MANAGEMENT_PATHS) {
   endpoint(aliases(path), path, ["POST"], async (r) =>

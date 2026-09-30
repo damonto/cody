@@ -24,16 +24,50 @@ export function isContextManagementPath(
 }
 
 /** Inference paths the gateway forwards, relative to a provider's base URL. */
-export type InferencePath =
-  | "responses"
-  | "responses/compact"
-  | "alpha/search"
-  | "chat/completions"
-  | "images/generations"
-  | "images/edits"
-  | "memories/trace_summarize"
-  | "messages"
-  | "messages/count_tokens";
+export const INFERENCE_PATHS = [
+  "responses",
+  "responses/compact",
+  "alpha/search",
+  "chat/completions",
+  "images/generations",
+  "images/edits",
+  "memories/trace_summarize",
+  "messages",
+  "messages/count_tokens",
+] as const;
+export type InferencePath = (typeof INFERENCE_PATHS)[number];
+
+export function inferenceAliases(path: InferencePath): string[] {
+  return path === "messages" || path === "messages/count_tokens"
+    ? [`/v1/${path}`]
+    : [`/${path}`, `/v1/${path}`];
+}
+
+export type HttpExecutionEndpoint = InferencePath | ContextManagementPath;
+
+const HTTP_EXECUTION_ENDPOINTS = new Map<string, HttpExecutionEndpoint>([
+  ...INFERENCE_PATHS.flatMap((path) =>
+    inferenceAliases(path).map((alias): [string, HttpExecutionEndpoint] => [
+      alias,
+      path,
+    ]),
+  ),
+  ...CONTEXT_MANAGEMENT_PATHS.flatMap(
+    (path): [string, HttpExecutionEndpoint][] => [
+      [`/${path}`, path],
+      [`/v1/${path}`, path],
+    ],
+  ),
+]);
+
+/** Only registered HTTP inference/context routes cross the execution boundary. */
+export function httpExecutionEndpoint(
+  request: Request,
+): HttpExecutionEndpoint | undefined {
+  return request.method === "POST"
+    ? HTTP_EXECUTION_ENDPOINTS.get(new URL(request.url).pathname)
+    : undefined;
+}
 
 /** Every endpoint the gateway routes, including the non-inference ones. */
 export type GatewayEndpoint =

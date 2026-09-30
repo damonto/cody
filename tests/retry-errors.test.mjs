@@ -33,6 +33,201 @@ const sse = (body) =>
   new Response(body, {
     headers: { "content-type": "text/event-stream", "x-upstream": "preserved" },
   });
+const emptyMessage = {
+  type: "message",
+  id: "msg_empty",
+  role: "assistant",
+  status: "in_progress",
+  content: [],
+};
+const emptyReasoning = { type: "reasoning", id: "rs_empty", summary: [] };
+const emptyText = {
+  type: "output_text",
+  text: "",
+  annotations: [],
+  logprobs: [],
+};
+
+test("empty Responses lifecycle and placeholder events allow configured retries", async () => {
+  const prefixes = [
+    ...["response.created", "response.in_progress"].flatMap((type) =>
+      [undefined, null, []].map((output) =>
+        event({ type, response: { status: "in_progress", output } }),
+      ),
+    ),
+    preamble +
+      event({ type: "response.output_item.added", item: emptyMessage }),
+    preamble +
+      event({ type: "response.output_item.added", item: emptyReasoning }),
+    preamble + event({ type: "response.content_part.added", part: emptyText }),
+    preamble +
+      event({
+        type: "response.content_part.added",
+        part: { type: "refusal", refusal: "" },
+      }),
+    preamble +
+      event({
+        type: "response.reasoning_summary_part.added",
+        part: { type: "summary_text", text: "" },
+      }),
+  ];
+  for (const prefix of prefixes) {
+    const body = prefix + event(failed);
+    for (const splitChunks of [false, true]) {
+      let calls = 0;
+      const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+        send: async () => {
+          calls++;
+          const chunks = splitChunks ? [prefix, event(failed)] : [body];
+          return sse(
+            new ReadableStream({
+              pull(controller) {
+                const chunk = chunks.shift();
+                if (chunk === undefined) controller.close();
+                else controller.enqueue(new TextEncoder().encode(chunk));
+              },
+            }),
+          );
+        },
+        wait: async () => {},
+      });
+      assert.equal(calls, 3, prefix);
+      assert.equal(result.attempts[0].error, "rate_limit_exceeded");
+      assert.equal(await result.response.text(), body);
+    }
+  }
+});
+
+test("empty output snapshots on failed responses do not count as generated content", async () => {
+  for (const output of [
+    [emptyMessage],
+    [emptyReasoning],
+    [{ ...emptyMessage, content: [emptyText] }],
+    [
+      {
+        ...emptyReasoning,
+        summary: [{ type: "summary_text", text: "" }],
+        encrypted_content: null,
+      },
+    ],
+  ]) {
+    const payload = { ...failed, response: { ...failed.response, output } };
+    for (const response of [
+      Response.json(payload),
+      sse(preamble + event(payload)),
+    ]) {
+      const inspected = await inspectRetryError(
+        response,
+        new AbortController().signal,
+        policy.error_codes,
+      );
+      assert.equal(inspected.errorCode, "rate_limit_exceeded");
+      await inspected.response.body.cancel();
+    }
+  }
+});
+
+test("successful output after empty placeholders is forwarded byte for byte without replay", async () => {
+  const prefix =
+    preamble +
+    event({ type: "response.output_item.added", item: emptyMessage }) +
+    event({ type: "response.content_part.added", part: emptyText });
+  const delta = event({ type: "response.output_text.delta", delta: "hello" });
+  let source;
+  let calls = 0;
+  const response = sse(
+    new ReadableStream({
+      start(controller) {
+        source = controller;
+        controller.enqueue(new TextEncoder().encode(prefix + delta));
+      },
+    }),
+  );
+  const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+    send: async () => {
+      calls++;
+      return response;
+    },
+    wait: async () => {},
+  });
+  // An error arriving after output was committed cannot restart the request.
+  source.enqueue(new TextEncoder().encode(event(failed)));
+  source.close();
+  assert.equal(calls, 1);
+  assert.equal(await result.response.text(), prefix + delta + event(failed));
+});
+
+test("content, tools and unrecognized placeholder fields always end inspection", async () => {
+  const unsafeItems = [
+    { ...emptyMessage, content: [{ ...emptyText, text: "hello" }] },
+    { ...emptyMessage, content: [{ type: "refusal", refusal: "No" }] },
+    { ...emptyMessage, role: "user" },
+    { ...emptyMessage, status: "completed" },
+    { ...emptyMessage, audio: "opaque" },
+    {
+      ...emptyReasoning,
+      summary: [{ type: "summary_text", text: "thinking" }],
+    },
+    {
+      ...emptyReasoning,
+      content: [{ type: "reasoning_text", text: "thinking" }],
+    },
+    { ...emptyReasoning, encrypted_content: "opaque" },
+    { ...emptyReasoning, text: "unknown content field" },
+    { type: "function_call", name: "write_file", arguments: "" },
+    { type: "web_search_call", status: "in_progress" },
+    { type: "unknown" },
+  ];
+  const firstEvents = [
+    ...unsafeItems.map((item) => ({
+      type: "response.output_item.added",
+      item,
+    })),
+    ...unsafeItems.map((item) => ({
+      ...failed,
+      response: { ...failed.response, output: [item] },
+    })),
+    {
+      type: "response.content_part.added",
+      part: { ...emptyText, text: "hello" },
+    },
+    {
+      type: "response.content_part.added",
+      part: { ...emptyText, annotations: [{ type: "url_citation" }] },
+    },
+    {
+      type: "response.reasoning_summary_part.added",
+      part: { type: "summary_text", text: "thinking" },
+    },
+    { type: "response.output_item.added", item: { type: "message" } },
+    {
+      type: "response.output_item.added",
+      item: emptyMessage,
+      status: "completed",
+    },
+    {
+      type: "response.output_item.added",
+      item: emptyMessage,
+      error: { code: "other" },
+    },
+    { type: "response.created" },
+    { type: "response.completed", response: { output: [emptyMessage] } },
+    { type: "response.output_text.delta", delta: "" },
+  ];
+  for (const first of firstEvents) {
+    let calls = 0;
+    const body = preamble + event(first) + event(failed);
+    const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+      send: async () => {
+        calls++;
+        return sse(body);
+      },
+      wait: async () => {},
+    });
+    assert.equal(calls, 1, JSON.stringify(first));
+    assert.equal(await result.response.text(), body);
+  }
+});
 
 test("HTTP and SSE errors share retries, authentication, raw statuses and usage", async () => {
   const requests = [];

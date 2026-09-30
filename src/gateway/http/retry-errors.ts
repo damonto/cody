@@ -8,6 +8,45 @@ const RETRY_ERROR_INSPECTION_MS = 10_000;
 
 const codeSchema = z.string().min(1).max(256).nullish();
 const errorSchema = z.object({ code: codeSchema, type: codeSchema }).nullish();
+// Only known, empty placeholders may remain buffered. A new field or tool
+// item can carry output or start work, so it must commit the stream instead.
+const emptyArray = z.tuple([]);
+const emptyTextPart = z.strictObject({
+  type: z.literal("output_text"),
+  text: z.literal(""),
+  annotations: emptyArray.optional(),
+  logprobs: emptyArray.optional(),
+});
+const emptyRefusalPart = z.strictObject({
+  type: z.literal("refusal"),
+  refusal: z.literal(""),
+});
+const emptySummaryPart = z.strictObject({
+  type: z.literal("summary_text"),
+  text: z.literal(""),
+});
+const emptyReasoningPart = z.strictObject({
+  type: z.literal("reasoning_text"),
+  text: z.literal(""),
+});
+const emptyMessagePart = z.union([emptyTextPart, emptyRefusalPart]);
+const emptyOutputItem = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("message"),
+    id: z.string().optional(),
+    role: z.literal("assistant"),
+    status: z.literal("in_progress").optional(),
+    content: z.array(emptyMessagePart),
+  }),
+  z.strictObject({
+    type: z.literal("reasoning"),
+    id: z.string().optional(),
+    status: z.literal("in_progress").optional(),
+    summary: z.array(emptySummaryPart),
+    content: z.array(emptyReasoningPart).optional(),
+    encrypted_content: z.literal("").nullish(),
+  }),
+]);
 const responseSchema = z.object({
   status: z.string().optional(),
   output: z.array(z.unknown()).nullish(),
@@ -17,9 +56,34 @@ const envelopeSchema = responseSchema.extend({
   type: z.string().optional(),
   code: codeSchema,
   response: responseSchema.optional(),
+  item: z.unknown().optional(),
+  part: z.unknown().optional(),
 });
+type RetryEnvelope = z.infer<typeof envelopeSchema>;
 type RetryDecision =
   { kind: "inspect" } | { kind: "forward" } | { kind: "retry"; code: string };
+
+function hasOutput(output: RetryEnvelope["output"]): boolean {
+  return (
+    output?.some((item) => !emptyOutputItem.safeParse(item).success) ?? false
+  );
+}
+
+function isEmptyPreamble(payload: RetryEnvelope, type: string): boolean {
+  switch (type) {
+    case "response.created":
+    case "response.in_progress":
+      return payload.response !== undefined;
+    case "response.output_item.added":
+      return emptyOutputItem.safeParse(payload.item).success;
+    case "response.content_part.added":
+      return emptyMessagePart.safeParse(payload.part).success;
+    case "response.reasoning_summary_part.added":
+      return emptySummaryPart.safeParse(payload.part).success;
+    default:
+      return false;
+  }
+}
 
 /** Unknown or contradictory envelopes never authorize replay. */
 function classifyPayload(
@@ -32,22 +96,19 @@ function classifyPayload(
   const payload = parsed.data;
   const type = payload.type ?? event;
   const response = payload.response;
-  if (payload.output?.length || response?.output?.length)
+  if (hasOutput(payload.output) || hasOutput(response?.output))
     return { kind: "forward" };
   // An SSE event name and its JSON type must agree when both are present.
   if (event && payload.type && event !== payload.type)
     return { kind: "forward" };
-  if (
-    (type === "response.created" || type === "response.in_progress") &&
-    response?.output?.length === 0 &&
-    [payload.status, response.status].every(
+  const pending =
+    [payload.status, response?.status].every(
       (status) =>
         status === undefined || status === "queued" || status === "in_progress",
     ) &&
-    !response.error &&
-    !payload.error
-  )
-    return { kind: "inspect" };
+    !response?.error &&
+    !payload.error;
+  if (pending && isEmptyPreamble(payload, type)) return { kind: "inspect" };
   if (type && type !== "error" && type !== "response.failed")
     return { kind: "forward" };
   if (

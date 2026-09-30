@@ -1033,6 +1033,31 @@ test("inference retries HTTP 200 stream errors and meters only the final outcome
   const requests = [];
   const finalBody =
     'data: {"type":"response.completed","response":{"id":"resp_success","model":"model","status":"completed","usage":{"input_tokens":20,"output_tokens":5}}}\n\n';
+  const emptyReasoning = { type: "reasoning", id: "rs_empty", summary: [] };
+  const limitedBody = [
+    {
+      type: "response.created",
+      response: { status: "in_progress", output: null },
+    },
+    { type: "response.in_progress", response: { status: "in_progress" } },
+    { type: "response.output_item.added", item: emptyReasoning },
+    {
+      type: "response.reasoning_summary_part.added",
+      part: { type: "summary_text", text: "" },
+    },
+    {
+      type: "response.failed",
+      response: {
+        id: "resp_failed",
+        status: "failed",
+        output: [emptyReasoning],
+        error: { code: "rate_limit_exceeded" },
+        usage: { input_tokens: 10, output_tokens: 0 },
+      },
+    },
+  ]
+    .map((payload) => `data: ${JSON.stringify(payload)}\n\n`)
+    .join("");
   const response = await handleInference(
     inferenceRequest(),
     fixture.env,
@@ -1048,12 +1073,9 @@ test("inference retries HTTP 200 stream errors and meters only the final outcome
           url: upstream.url,
           body: await upstream.text(),
         });
-        return new Response(
-          requests.length === 1
-            ? 'data: {"type":"response.created","response":{"output":[]}}\n\ndata: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"rate_limit_exceeded"},"usage":{"input_tokens":10,"output_tokens":0}}}\n\n'
-            : finalBody,
-          { headers: { "content-type": "text/event-stream" } },
-        );
+        return new Response(requests.length === 1 ? limitedBody : finalBody, {
+          headers: { "content-type": "text/event-stream" },
+        });
       },
     },
     undefined,

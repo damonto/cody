@@ -2,6 +2,10 @@ import { app } from "./app.ts";
 import { runMaintenance } from "./maintenance.ts";
 import { ingestUsage } from "./reporting/store.ts";
 import { parseUsageEvent } from "./telemetry/schema.ts";
+import { httpExecutionEndpoint } from "./gateway/protocol.ts";
+import { dispatchHttpExecution } from "./platform/cloudflare/http-dispatch.ts";
+
+export { HttpExecution } from "./platform/cloudflare/http-execution.ts";
 
 export { app } from "./app.ts";
 export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
@@ -16,7 +20,16 @@ export {
 } from "./platform/cloudflare/objects.ts";
 
 export default {
-  fetch: app.fetch,
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
+    const endpoint = httpExecutionEndpoint(request);
+    return endpoint
+      ? dispatchHttpExecution(request, endpoint, env, ctx)
+      : app.fetch(request, env, ctx);
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {

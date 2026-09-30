@@ -23,6 +23,20 @@ libSQL works with [Turso](https://turso.tech/) or a self-hosted `sqld`.
 
 ## Cloudflare Workers
 
+HTTP inference and context-management requests run in a dedicated `HttpExecution`
+Durable Object per request. The entry Worker forwards request and response streams
+without parsing them; authentication, routing, provider adapters and usage
+observation run inside the object. Existing account, health and session objects
+still coordinate requests. WebSocket upgrades keep their existing path.
+Each executor accepts one request. Failed dispatches cancel that executor without
+resending inference.
+Client disconnects cancel the executor through a separate RPC, including before
+upstream headers arrive or while response writes are blocked. The executor waits
+for pending usage journal writes before completing cancellation.
+This moves inference CPU work out of the entry Worker's budget, but active HTTP
+streams consume Durable Object duration quota. Deployment adds DO migration `v10`;
+the executor does not write request bodies or tokens to its own storage.
+
 ### Run locally
 
 ```bash

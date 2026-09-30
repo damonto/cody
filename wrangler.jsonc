@@ -72,6 +72,10 @@
   "durable_objects": {
     "bindings": [
       {
+        "name": "HTTP_EXECUTION",
+        "class_name": "HttpExecution",
+      },
+      {
         "name": "HEALTH",
         "class_name": "ProviderHealth",
       },
@@ -146,6 +150,10 @@
     {
       "tag": "v9",
       "new_sqlite_classes": ["ProviderOAuthAccount"],
+    },
+    {
+      "tag": "v10",
+      "new_sqlite_classes": ["HttpExecution"],
     },
   ],
   "triggers": {
