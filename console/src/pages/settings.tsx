@@ -203,7 +203,7 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
               <field.NumberField
                 label="Request detail retention (days)"
 
-                hint="100–730 days. Cleanup runs hourly in bounded batches."
+                hint="30–730 days. Cleanup runs hourly in bounded batches."
               />
             )}
           </form.AppField>

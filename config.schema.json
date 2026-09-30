@@ -1270,7 +1270,7 @@
       "type": "object",
       "properties": {
         "time_zone": { "type": "string", "minLength": 1 },
-        "retention_days": { "type": "integer", "minimum": 100, "maximum": 730 }
+        "retention_days": { "type": "integer", "minimum": 30, "maximum": 730 }
       },
       "required": ["time_zone", "retention_days"],
       "additionalProperties": false

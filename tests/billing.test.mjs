@@ -298,10 +298,16 @@ test("policies are unique per provider and real model, with sorted complete tier
     () => parseReporting({ time_zone: "Mars", retention_days: 120 }),
     /time zone/,
   );
-  assert.throws(
-    () => parseReporting({ time_zone: "Asia/Shanghai", retention_days: 90 }),
-    /100 and 730/,
-  );
+  for (const retention_days of [30, 90, 730]) {
+    const reporting = { time_zone: "Asia/Shanghai", retention_days };
+    assert.deepEqual(parseReporting(reporting), reporting);
+  }
+  for (const retention_days of [29, 731]) {
+    assert.throws(
+      () => parseReporting({ time_zone: "Asia/Shanghai", retention_days }),
+      /30 and 730/,
+    );
+  }
 });
 
 test("contradictory usage is identified instead of silently clamped", () => {

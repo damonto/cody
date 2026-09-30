@@ -29,8 +29,8 @@ export const reportingSchema = z.strictObject({
   retention_days: z
     .number()
     .int()
-    .min(100, "Retention must be between 100 and 730 days")
-    .max(730, "Retention must be between 100 and 730 days"),
+    .min(30, "Retention must be between 30 and 730 days")
+    .max(730, "Retention must be between 30 and 730 days"),
 });
 
 export const priceTierSchema = z.strictObject({
