@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
@@ -23,6 +24,7 @@ import {
   postgresDatabase,
 } from "../src/platform/standard/sql/postgres.ts";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
+import { checkExpiredUsageCorrection } from "./helpers/expired-usage.ts";
 
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -42,6 +44,65 @@ test("placeholders are numbered outside string literals", () => {
 });
 
 for (const [dialect, create] of Object.entries(factories)) {
+  test(`${dialect}: correction migration marks historical inferred failures without changing rollups`, async () => {
+    const db = await create();
+    const directory = migrationDirectories(dialect, ROOT)[0];
+    await db.exec(
+      await readFile(`${directory}/0001_control_and_usage.sql`, "utf8"),
+    );
+    for (const [id, code, duration] of [
+      ["expired", "worker_terminated", null],
+      ["observed", "worker_terminated", 19_000],
+      ["upstream", "upstream_error", null],
+    ]) {
+      await db
+        .prepare(
+          `INSERT INTO requests (
+        request_id, event_sequence, started_at, finished_at, endpoint, protocol,
+        transport, outcome, duration_ms, usage_status, billing_status, event_json
+      ) VALUES (?, 2, ?, ?, 'responses', 'openai', 'http', 'failed', ?, 'missing', 'incomplete', ?)`,
+        )
+        .bind(
+          id,
+          Date.UTC(2026, 8, 14, 10),
+          Date.UTC(2026, 8, 14, 11),
+          duration,
+          JSON.stringify({
+            diagnostic_code: code,
+            observation_issue: "stream_abandoned",
+          }),
+        )
+        .run();
+    }
+    const before = (await db.prepare("SELECT * FROM usage_hourly").all())
+      .results;
+    await db.exec(
+      await readFile(`${directory}/0011_correct_expired_usage.sql`, "utf8"),
+    );
+    assert.deepEqual(
+      (
+        await db
+          .prepare(
+            "SELECT request_id, is_provisional FROM requests ORDER BY request_id",
+          )
+          .all()
+      ).results,
+      [
+        { request_id: "expired", is_provisional: 1 },
+        { request_id: "observed", is_provisional: 0 },
+        { request_id: "upstream", is_provisional: 0 },
+      ],
+    );
+    assert.deepEqual(
+      (await db.prepare("SELECT * FROM usage_hourly").all()).results,
+      before,
+    );
+  });
+  test(`${dialect}: late terminal usage corrects provisional failures atomically`, async () => {
+    const db = await create();
+    await applyMigrations(db, migrationDirectories(dialect, ROOT));
+    await checkExpiredUsageCorrection(db);
+  });
   test(`${dialect}: migrations apply once`, async () => {
     const db = await create();
     const first = await applyMigrations(
@@ -54,6 +115,7 @@ for (const [dialect, create] of Object.entries(factories)) {
       "0008_codex_oauth_accounts.sql",
       "0009_claude_oauth_accounts.sql",
       "0010_xai_oauth_accounts.sql",
+      "0011_correct_expired_usage.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(

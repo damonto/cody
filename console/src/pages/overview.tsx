@@ -53,7 +53,6 @@ export default function Overview() {
     queryKey: ["summary", query],
     queryFn: ({ signal }) =>
       read(rpc.summary.$get({ query }, { init: { signal } })),
-    refetchInterval: 30_000,
     placeholderData: keepPreviousData,
     enabled: !invalid,
   });

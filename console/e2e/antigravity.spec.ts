@@ -315,8 +315,11 @@ test("Providers lists only implemented providers and Antigravity is a fixed acco
   await expect(
     page.getByRole("link", { name: "Codex", exact: true }),
   ).toBeVisible();
-  for (const name of ["Claude", "xAI", "Grok"])
-    await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
+  for (const name of ["Claude", "xAI"])
+    await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Grok", exact: true }),
+  ).toHaveCount(0);
   await page.getByRole("link", { name: "Antigravity", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Antigravity", exact: true }),
@@ -898,7 +901,9 @@ test("quota refresh failures preserve last success and can be retried", async ({
   await expect(page.getByText("Stale", { exact: true })).toHaveCount(0);
 });
 
-test("quota auto-refresh pauses while the page is hidden", async ({ page }) => {
+test("quotas refresh only on demand, including after focus and reconnect", async ({
+  page,
+}) => {
   const ready = account();
   await mockApi(page, configured([ready]));
   const mock = await mockOAuth(page, [ready]);
@@ -907,17 +912,23 @@ test("quota auto-refresh pauses while the page is hidden", async ({ page }) => {
   await expect(page.getByText("75% remaining", { exact: true })).toBeVisible();
   const initial = mock.controls.quotaCalls;
   await page.clock.fastForward(300001);
-  await expect.poll(() => mock.controls.quotaCalls).toBeGreaterThan(initial);
+  expect(mock.controls.quotaCalls).toBe(initial);
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
-      get: () => "hidden",
+      get: () => "visible",
     });
     window.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("offline"));
+    window.dispatchEvent(new Event("online"));
   });
-  const visible = mock.controls.quotaCalls;
   await page.clock.fastForward(300001);
-  expect(mock.controls.quotaCalls).toBe(visible);
+  expect(mock.controls.quotaCalls).toBe(initial);
+  await page
+    .getByRole("button", { name: "Refresh all quotas", exact: true })
+    .click();
+  await expect.poll(() => mock.controls.quotaCalls).toBe(initial + 1);
 });
 
 test("a late account read cannot undo a successful disconnect", async ({
@@ -948,15 +959,9 @@ test("a late account read cannot undo a successful disconnect", async ({
   ).toBeEnabled();
   holdRead = true;
   await page.clock.fastForward(15_001);
-  await page.evaluate(() => {
-    for (const value of ["hidden", "visible"]) {
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        value,
-      });
-      window.dispatchEvent(new Event("visibilitychange"));
-    }
-  });
+  // Reopening the editor refreshes stale data; focus changes no longer fetch.
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Manage", exact: true }).click();
   await expect.poll(() => heldRead).toBe(true);
   const oldRead = await delayed.promise;
   const finished = deferred<void>();

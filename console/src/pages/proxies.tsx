@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { useDraft, type Draft } from "@/lib/api";
 import { useClearProxyHealth, useProxyGroups } from "@/features/proxies/api";
 import {
@@ -44,6 +44,14 @@ export default function Proxies() {
         title="Proxies"
         description="Manage SOCKS5 groups and select them from providers or credentials."
       >
+        <Button
+          variant="outline"
+          disabled={health.isFetching}
+          onClick={() => void health.refetch()}
+        >
+          <RefreshCw />
+          Refresh
+        </Button>
         <Button
           onClick={() =>
             setDialog({ kind: "create", snapshot: structuredClone(draft.data) })

@@ -53,8 +53,6 @@ export function XaiAccounts({
       );
     },
     enabled: refs.length > 0,
-    refetchInterval: 300_000,
-    refetchIntervalInBackground: false,
     retry: false,
   });
   const health = useQuery({

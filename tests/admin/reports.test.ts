@@ -18,6 +18,7 @@ import {
 } from "../../src/reporting/store.ts";
 import { usage } from "./fixtures.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
+import { checkExpiredUsageCorrection } from "../helpers/expired-usage.ts";
 
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
 const now = Date.UTC(2026, 8, 12, 12, 30);
@@ -47,6 +48,10 @@ beforeEach(async () => {
   );
 });
 afterEach(() => vi.restoreAllMocks());
+
+test("late terminal usage corrects provisional failures and all rollup dimensions", async () => {
+  await checkExpiredUsageCorrection(bindings.CODY_DB);
+});
 
 test("invalid first response values cannot enter request or aggregate rows", async () => {
   for (const value of [
@@ -441,11 +446,17 @@ test("abandoned pending requests are finalized as failed and rolled up", async (
   expect(result.totals.failed_count).toBe(1);
   expect(result.totals.duration_samples).toBe(0);
   expect(result.totals.duration_sum).toBe(0);
-  // A late terminal event for the expired request no longer replaces the row.
+  // A real terminal event corrects the inferred failure exactly once.
   await ingestUsage(bindings.CODY_DB, stale);
   expect((await requestDetail(bindings.CODY_DB, "stale"))?.outcome).toBe(
-    "failed",
+    "success",
   );
+  await ingestUsage(bindings.CODY_DB, stale);
+  const corrected = await summary(bindings.CODY_DB, range, {});
+  expect(corrected.totals.requests_count).toBe(1);
+  expect(corrected.totals.failed_count).toBe(0);
+  expect(corrected.totals.success_count).toBe(1);
+  expect(corrected.totals.duration_samples).toBe(1);
   expect(await expirePendingRequests(bindings.CODY_DB, 15 * 60_000, now)).toBe(
     0,
   );

@@ -20,6 +20,19 @@ beforeAll(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+async function advancePastBackoff(
+  storage: DurableObjectStorage,
+): Promise<void> {
+  const retries = await storage.get<{ until: number }>([
+    "delivery-retry:d1",
+    "delivery-retry:queue",
+  ]);
+  const now =
+    Math.max(Date.now(), ...[...retries.values()].map((retry) => retry.until)) +
+    1;
+  vi.spyOn(Date, "now").mockReturnValue(now);
+}
+
 test.each(["D1", "Queue"])(
   "%s failure retains only failed journal entries and does not block the other destination",
   async (destination) => {
@@ -69,6 +82,7 @@ test.each(["D1", "Queue"])(
       expect(await state.storage.getAlarm()).not.toBeNull();
 
       failing = false;
+      await advancePastBackoff(state.storage);
       await instance.alarm();
       expect(write).toHaveBeenCalledTimes(destination === "D1" ? 2 : 1);
       expect(send).toHaveBeenCalledTimes(destination === "Queue" ? 2 : 1);
@@ -130,6 +144,7 @@ test.each([false, true])(
         expect(
           (await state.storage.list({ prefix: "event:" })).size,
         ).toBeGreaterThan(0);
+        await advancePastBackoff(state.storage);
         await instance.alarm();
       }
       expect(delivered.flat()).toHaveLength(records.length);
@@ -300,6 +315,7 @@ test("progress survives D1 failure and eviction without Queue writes", async () 
   await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
     const bindings = Reflect.get(instance, "env") as Env;
     const send = vi.spyOn(bindings.USAGE_QUEUE, "sendBatch");
+    await advancePastBackoff(state.storage);
     await instance.alarm();
     expect(send).not.toHaveBeenCalled();
     expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
@@ -378,7 +394,7 @@ test("HTTP usage survives queue failure and eviction, then delivers the original
   vi.restoreAllMocks();
   await evictDurableObject(outbox);
   const delivered: UsageEvent[] = [];
-  await runInDurableObject(outbox, async (instance) => {
+  await runInDurableObject(outbox, async (instance, state) => {
     const bindings = Reflect.get(instance, "env") as Env;
     const send = bindings.USAGE_QUEUE.sendBatch.bind(bindings.USAGE_QUEUE);
     vi.spyOn(bindings.USAGE_QUEUE, "sendBatch").mockImplementation(
@@ -388,6 +404,7 @@ test("HTTP usage survives queue failure and eviction, then delivers the original
         return send(batch);
       },
     );
+    await advancePastBackoff(state.storage);
   });
   expect(await runDurableObjectAlarm(outbox)).toBe(true);
   expect(delivered).toEqual([event]);
@@ -420,3 +437,383 @@ test("a failed journal transaction commits neither the event nor its recovery al
     expect(await state.storage.getAlarm()).toBeNull();
   });
 });
+
+test("new records honor persisted Queue backoff while D1 remains available", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("backoff-isolation");
+  const first = usage("backoff-first", Date.now());
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    const send = vi
+      .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+      .mockRejectedValue(new Error("Queue unavailable"));
+    await instance.enqueue(first);
+    await instance.alarm();
+    expect(send).toHaveBeenCalledTimes(1);
+    const retry = await state.storage.get<{ failures: number; until: number }>(
+      "delivery-retry:queue",
+    );
+    expect(retry?.failures).toBe(1);
+  });
+  vi.restoreAllMocks();
+  await evictDurableObject(outbox);
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    const retry = await state.storage.get<{ failures: number; until: number }>(
+      "delivery-retry:queue",
+    );
+    vi.spyOn(Date, "now").mockReturnValue(retry!.until - 1);
+    const send = vi.spyOn(bindings.USAGE_QUEUE, "sendBatch").mockResolvedValue({
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+    });
+    await instance.enqueue({ ...first, request_id: "backoff-second" });
+    const progress: UsageEvent = {
+      ...first,
+      request_id: "backoff-progress",
+      sequence: 1,
+      phase: "started",
+      finished_at: null,
+      outcome: "pending",
+      duration_ms: null,
+    };
+    await instance.enqueue(progress);
+    await instance.alarm();
+    expect(send).not.toHaveBeenCalled();
+    expect(await requestDetail(bindings.CODY_DB, progress.request_id)).toEqual(
+      progress,
+    );
+    expect(await state.storage.get("delivery-retry:queue")).toEqual(retry);
+    await advancePastBackoff(state.storage);
+    await instance.alarm();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
+    expect(await state.storage.get("delivery-retry:queue")).toBeUndefined();
+  });
+});
+
+test("repeated failures back off exponentially with a bounded delay and recover", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("bounded-backoff");
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const bindings = Reflect.get(instance, "env") as Env;
+    const send = vi
+      .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+      .mockRejectedValue(new Error("Queue unavailable"));
+    const event = usage("backoff-bounded-record", Date.now());
+    await state.storage.put(`event:${event.request_id}:2`, event);
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      await state.storage.deleteAlarm();
+      await instance.alarm();
+      const retry = await state.storage.get<{
+        failures: number;
+        until: number;
+      }>("delivery-retry:queue");
+      const delay = Math.min(3_600_000, 10_000 * 2 ** (attempt - 1));
+      expect(retry?.failures).toBe(attempt);
+      expect(retry!.until - now).toBeGreaterThanOrEqual(delay * 0.75);
+      expect(retry!.until - now).toBeLessThanOrEqual(delay);
+      expect(await state.storage.getAlarm()).toBe(retry!.until);
+      await instance.alarm();
+      expect(send).toHaveBeenCalledTimes(attempt);
+      await advancePastBackoff(state.storage);
+    }
+    send.mockResolvedValue({
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+    });
+    await instance.alarm();
+    expect(await state.storage.get("delivery-retry:queue")).toBeUndefined();
+    expect(await state.storage.getAlarm()).toBeNull();
+  });
+});
+
+test.each([
+  ["queue", "Queue send failed: 10253 FreeTierLimitExceeded"],
+  ["d1", "D1_ERROR: Your account has exceeded its daily write limit"],
+] as const)(
+  "%s daily limits wait for the next UTC reset",
+  async (destination, message) => {
+    const outbox = env.USAGE_OUTBOX.getByName(`daily-limit-${destination}`);
+    const now = Date.UTC(2026, 8, 30, 10);
+    const reset = Date.UTC(2026, 9, 1);
+    await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const bindings = Reflect.get(instance, "env") as Env;
+      const operation =
+        destination === "queue"
+          ? vi
+              .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+              .mockRejectedValue(new Error(message))
+          : vi
+              .spyOn(bindings.CODY_DB, "batch")
+              .mockRejectedValue(new Error(message));
+      const finished = usage(`daily-limit-${destination}`, now);
+      const event: UsageEvent =
+        destination === "queue"
+          ? finished
+          : {
+              ...finished,
+              phase: "started",
+              sequence: 1,
+              finished_at: null,
+              outcome: "pending",
+              duration_ms: null,
+            };
+      await state.storage.put(
+        `event:${event.request_id}:${event.sequence}`,
+        event,
+      );
+      await instance.alarm();
+      const retry = await state.storage.get<{ until: number }>(
+        `delivery-retry:${destination}`,
+      );
+      expect(retry!.until).toBeGreaterThan(reset);
+      expect(retry!.until).toBeLessThanOrEqual(reset + 61_000);
+      await instance.enqueue({
+        ...event,
+        request_id: event.request_id + "-new",
+      });
+      await state.storage.deleteAlarm();
+      await instance.alarm();
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(await state.storage.getAlarm()).toBe(retry!.until);
+      expect((await state.storage.list({ prefix: "event:" })).size).toBe(2);
+    });
+  },
+);
+
+test("a retry expiring during a scan does not strand earlier progress behind Queue backoff", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("retry-expiring-mid-scan");
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const start = Date.UTC(2026, 8, 30, 10);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    const finished = usage("mid-scan", start);
+    const progress = (id: string): UsageEvent => ({
+      ...finished,
+      request_id: id,
+      phase: "started",
+      sequence: 1,
+      finished_at: null,
+      outcome: "pending",
+      duration_ms: null,
+    });
+    await state.storage.put({
+      "delivery-retry:d1": { failures: 1, until: start + 100 },
+      "event:a-progress:1": progress("a-progress"),
+      ...Object.fromEntries(
+        Array.from({ length: 24 }, (_, i) => {
+          const id = `middle-${String(i).padStart(2, "0")}`;
+          return [`event:${id}:2`, { ...finished, request_id: id }];
+        }),
+      ),
+      "event:z-progress:1": progress("z-progress"),
+    });
+    const bindings = Reflect.get(instance, "env") as Env;
+    const send = vi
+      .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+      .mockImplementation(async () => {
+        clock.mockReturnValue(start + 1000);
+        throw new Error("10253 FreeTierLimitExceeded");
+      });
+    await instance.alarm();
+    expect(await state.storage.get("event:a-progress:1")).toBeDefined();
+    expect(await state.storage.get("event:z-progress:1")).toBeUndefined();
+    expect(await state.storage.getAlarm()).toBeLessThanOrEqual(start + 11_000);
+    clock.mockReturnValue(start + 11_001);
+    await instance.alarm();
+    expect(await state.storage.get("event:a-progress:1")).toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+test.each(["d1", "queue"] as const)(
+  "%s acknowledgement failure preserves the journal and retry state atomically",
+  async (destination) => {
+    const outbox = env.USAGE_OUTBOX.getByName(`ack-failure-${destination}`);
+    await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const finished = usage(`ack-failure-${destination}`, now);
+      const event: UsageEvent =
+        destination === "queue"
+          ? finished
+          : {
+              ...finished,
+              phase: "started",
+              sequence: 1,
+              finished_at: null,
+              outcome: "pending",
+              duration_ms: null,
+            };
+      const key = `event:${event.request_id}:${event.sequence}`;
+      const retryKey = `delivery-retry:${destination}`;
+      const retry = { failures: 3, until: now - 1 };
+      await state.storage.put({ [key]: event, [retryKey]: retry });
+      const bindings = Reflect.get(instance, "env") as Env;
+      const send = vi
+        .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+        .mockResolvedValue({
+          metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+        });
+      const write = vi.spyOn(bindings.CODY_DB, "batch");
+      const transaction = state.storage.transaction.bind(state.storage);
+      let failAcknowledgement = true;
+      vi.spyOn(state.storage, "transaction").mockImplementation((operation) =>
+        transaction(async (tx) => {
+          const result = await operation(tx);
+          if (failAcknowledgement && (await tx.get(key)) === undefined) {
+            expect(await tx.get(retryKey)).toBeUndefined();
+            failAcknowledgement = false;
+            throw new Error("Local acknowledgement unavailable");
+          }
+          return result;
+        }),
+      );
+      await instance.alarm();
+      expect(failAcknowledgement).toBe(false);
+      expect(await state.storage.get(key)).toEqual(event);
+      expect(await state.storage.get(retryKey)).toEqual(retry);
+      expect(await state.storage.getAlarm()).toBe(now + 10_000);
+      await instance.alarm();
+      expect(destination === "queue" ? send : write).toHaveBeenCalledTimes(2);
+      expect(await state.storage.get(key)).toBeUndefined();
+      expect(await state.storage.get(retryKey)).toBeUndefined();
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+  },
+);
+
+test("a local failure waits for the other destination before releasing the flush", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("settle-both-destinations");
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const finished = usage("settle-finished", Date.now());
+    const key = "event:settle-progress:1";
+    await state.storage.put({
+      [key]: {
+        ...finished,
+        request_id: "settle-progress",
+        phase: "started",
+        sequence: 1,
+        finished_at: null,
+        outcome: "pending",
+        duration_ms: null,
+      },
+      "event:settle-finished:2": finished,
+    });
+    const bindings = Reflect.get(instance, "env") as Env;
+    let releaseQueue: (() => void) | undefined;
+    const queued = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const send = vi
+      .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+      .mockImplementation(async () => {
+        await queued;
+        return { metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } };
+      });
+    const write = vi.spyOn(bindings.CODY_DB, "batch");
+    const transaction = state.storage.transaction.bind(state.storage);
+    let failed = false;
+    vi.spyOn(state.storage, "transaction").mockImplementation((operation) =>
+      transaction(async (tx) => {
+        const result = await operation(tx);
+        if (!failed && (await tx.get(key)) === undefined) {
+          failed = true;
+          throw new Error("Local acknowledgement unavailable");
+        }
+        return result;
+      }),
+    );
+    let completed = false;
+    const first = instance.alarm().then(() => {
+      completed = true;
+    });
+    await expect.poll(() => failed).toBe(true);
+    const second = instance.alarm();
+    expect(completed).toBe(false);
+    releaseQueue?.();
+    await Promise.all([first, second]);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(await state.storage.get(key)).toBeDefined();
+    expect(await state.storage.get("event:settle-finished:2")).toBeUndefined();
+  });
+});
+
+test("a completed scan replaces an early recovery alarm with the persisted quota deadline", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("replace-early-alarm");
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const now = Date.now();
+    const bindings = Reflect.get(instance, "env") as Env;
+    vi.spyOn(bindings.USAGE_QUEUE, "sendBatch").mockRejectedValue(
+      new Error("Queue rejected send", { cause: { code: 10253 } }),
+    );
+    await instance.enqueue(usage("replace-early-alarm", now));
+    await instance.alarm();
+    const retry = await state.storage.get<{ until: number }>(
+      "delivery-retry:queue",
+    );
+    expect(retry!.until).toBeGreaterThan(now + 10_000);
+    expect(await state.storage.getAlarm()).toBe(retry!.until);
+  });
+});
+
+test("eligible enqueues during a scan retain a prompt wakeup behind its cursor", async () => {
+  const outbox = env.USAGE_OUTBOX.getByName("enqueue-during-flush");
+  await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const finished = usage("z-enqueue-during-flush", now);
+    const progress: UsageEvent = {
+      ...finished,
+      request_id: "a-late-progress",
+      phase: "started",
+      sequence: 1,
+      finished_at: null,
+      outcome: "pending",
+      duration_ms: null,
+    };
+    await state.storage.put(`event:${finished.request_id}:2`, finished);
+    const bindings = Reflect.get(instance, "env") as Env;
+    const send = vi
+      .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+      .mockImplementation(async () => {
+        await instance.enqueue(progress);
+        throw new Error("10253 FreeTierLimitExceeded");
+      });
+    await instance.alarm();
+    expect(await state.storage.getAlarm()).toBe(now + 10_000);
+    expect(await state.storage.get("event:a-late-progress:1")).toBeDefined();
+    await instance.alarm();
+    expect(await state.storage.get("event:a-late-progress:1")).toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await state.storage.getAlarm()).toBeGreaterThan(now + 10_000);
+  });
+});
+
+test.each([
+  { failures: "corrupt", until: Number.MAX_SAFE_INTEGER },
+  { failures: 1, until: null },
+])(
+  "malformed retry metadata cannot strand durable records (%j)",
+  async (retry) => {
+    const outbox = env.USAGE_OUTBOX.getByName(
+      `malformed-retry-${String(retry.failures)}`,
+    );
+    await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
+      const bindings = Reflect.get(instance, "env") as Env;
+      const send = vi
+        .spyOn(bindings.USAGE_QUEUE, "sendBatch")
+        .mockResolvedValue({
+          metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+        });
+      await state.storage.put("delivery-retry:queue", retry);
+      await instance.enqueue(
+        usage(`malformed-retry-${String(retry.failures)}`, Date.now()),
+      );
+      await instance.alarm();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((await state.storage.list({ prefix: "event:" })).size).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+  },
+);

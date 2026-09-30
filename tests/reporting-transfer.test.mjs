@@ -149,7 +149,11 @@ test("reporting transfer limits requests by start time and supports dry runs", a
 test("D1 endpoints read with d1 execute queries and write with one import", async () => {
   const d1 = new DatabaseSync(":memory:");
   d1.exec("PRAGMA foreign_keys = ON");
-  for (const name of ["0001_control_and_usage.sql", "0007_oauth_accounts.sql"])
+  for (const name of [
+    "0001_control_and_usage.sql",
+    "0007_oauth_accounts.sql",
+    "0011_correct_expired_usage.sql",
+  ])
     d1.exec(await readFile(path.join(ROOT, "migrations", "d1", name), "utf8"));
   const calls = [];
   const run = async (args, { capture }) => {

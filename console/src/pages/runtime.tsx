@@ -68,7 +68,6 @@ export default function Runtime() {
         ),
       ),
     enabled: !!clientId,
-    refetchInterval: 15_000,
   });
   const sessions = useQuery({
     queryKey: ["runtime-sessions", clientId, cursor],
@@ -80,7 +79,6 @@ export default function Runtime() {
         ),
       ),
     enabled: !!clientId,
-    refetchInterval: 30_000,
   });
   const clear = useMutation({
     mutationFn: (action: ClearAction) => {

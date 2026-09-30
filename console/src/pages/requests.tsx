@@ -1,8 +1,13 @@
-import { UsagePhase } from "../../../src/telemetry/values.ts";
-
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Clock, Coins, Layers } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Coins,
+  Layers,
+  RefreshCw,
+} from "lucide-react";
 import { read, rpc, params, useDraft, type UsageEvent } from "@/lib/api";
 import { compact, date, duration, label, money, number } from "@/lib/format";
 import {
@@ -48,7 +53,6 @@ export default function Requests() {
           { init: { signal } },
         ),
       ),
-    refetchInterval: 15_000,
     enabled: !invalid,
   });
   const timeZone =
@@ -275,14 +279,12 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
     queryKey: ["request", id],
     queryFn: ({ signal }) =>
       read(rpc.requests[":id"].$get({ param: { id } }, { init: { signal } })),
-    refetchInterval: (query) =>
-      query.state.data?.phase === UsagePhase.Started ? 5_000 : false,
   });
   if (detail.isPending) return <Loading />;
   if (detail.error)
     return (
       <div className="p-6">
-        <ErrorNotice error={detail.error} />
+        <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
       </div>
     );
   const item = detail.data;
@@ -290,9 +292,20 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
     <div className="space-y-5 p-6">
       <div className="flex items-center justify-between">
         <Status value={item.outcome} />
-        <span className="text-xs text-muted-foreground">
-          {item.protocol} · {item.transport}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            {item.protocol} · {item.transport}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={detail.isFetching}
+            onClick={() => void detail.refetch()}
+          >
+            <RefreshCw />
+            Refresh
+          </Button>
+        </div>
       </div>
       <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
         <code className="min-w-0 flex-1 truncate text-xs">

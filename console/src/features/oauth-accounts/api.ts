@@ -199,8 +199,6 @@ export const accountHealthOptions = (providerId: OAuthProviderType) =>
       );
       return result.items.map((item) => accountHealthSchema.parse(item));
     },
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
   });
 export async function refreshResetCredits(ref: string) {
   return accountViewSchema.parse(

@@ -123,6 +123,7 @@ export async function ingestUsage(
   const columns = [
     "request_id",
     "event_sequence",
+    "is_provisional",
     "started_at",
     "finished_at",
     "client_id",
@@ -152,6 +153,7 @@ export async function ingestUsage(
   const values = [
     event.request_id,
     event.sequence,
+    0,
     event.started_at,
     event.finished_at,
     event.client_id,
@@ -189,7 +191,8 @@ export async function ingestUsage(
         .slice(1)
         .map((column) => `${column} = excluded.${column}`)
         .join(",")}
-      WHERE excluded.event_sequence > requests.event_sequence`,
+      WHERE excluded.event_sequence > requests.event_sequence
+        OR (excluded.event_sequence = 2 AND requests.is_provisional = 1)`,
       )
       .bind(...values),
   ];
@@ -524,7 +527,8 @@ export const PENDING_REQUEST_MAX_AGE_MS = 15 * 60_000;
  * rollup triggers count it as failed, and the stored event stays consistent.
  * The true end of the request is unknown, so `finished_at` only records when
  * the row was reaped and `duration_ms` stays null to keep latency averages
- * free of cron timing.
+ * free of cron timing. A real terminal event may replace this inferred result;
+ * the correction trigger atomically moves its contribution between rollups.
  */
 export async function expirePendingRequests(
   db: SqlDatabase,
@@ -539,6 +543,7 @@ export async function expirePendingRequests(
           .prepare(
             `UPDATE requests SET
           event_sequence = 2,
+          is_provisional = 1,
           finished_at = ?,
           outcome = 'failed',
           duration_ms = NULL,
@@ -559,6 +564,7 @@ export async function expirePendingRequests(
           .prepare(
             `UPDATE requests SET
           event_sequence = 2,
+          is_provisional = 1,
           finished_at = ?1,
           outcome = 'failed',
           duration_ms = NULL,

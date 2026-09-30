@@ -57,8 +57,6 @@ export function AntigravityAccounts({
       );
     },
     enabled: refs.length > 0,
-    refetchInterval: 300_000,
-    refetchIntervalInBackground: false,
     retry: false,
   });
   const refresh = useMutation({
@@ -93,6 +91,7 @@ export function AntigravityAccounts({
             : account;
         }),
       );
+      void health.refetch();
     },
   });
   const accounts = new Map(

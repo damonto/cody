@@ -36,7 +36,6 @@ export function useProxyGroups(publishedRevision: number | null | undefined) {
         await read(rpc.runtime["proxy-groups"].$get({}, { init: { signal } })),
       ),
     enabled: publishedRevision !== undefined,
-    refetchInterval: 15_000,
   });
 }
 
