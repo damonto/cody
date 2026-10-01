@@ -20,6 +20,12 @@ beforeAll(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+function futureClockStart(): number {
+  // Mocking Date.now does not change workerd's alarm clock. Keep scheduled
+  // times in the future so storage does not clamp past alarms to real time.
+  return new Date(Date.now() + 24 * 60 * 60_000).setUTCHours(10, 0, 0, 0);
+}
+
 async function advancePastBackoff(
   storage: DurableObjectStorage,
 ): Promise<void> {
@@ -533,8 +539,8 @@ test.each([
   "%s daily limits wait for the next UTC reset",
   async (destination, message) => {
     const outbox = env.USAGE_OUTBOX.getByName(`daily-limit-${destination}`);
-    const now = Date.UTC(2026, 8, 30, 10);
-    const reset = Date.UTC(2026, 9, 1);
+    const now = futureClockStart();
+    const reset = new Date(now).setUTCHours(24, 0, 0, 0);
     await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
       vi.spyOn(Date, "now").mockReturnValue(now);
       const bindings = Reflect.get(instance, "env") as Env;
@@ -584,7 +590,7 @@ test.each([
 test("a retry expiring during a scan does not strand earlier progress behind Queue backoff", async () => {
   const outbox = env.USAGE_OUTBOX.getByName("retry-expiring-mid-scan");
   await runInDurableObject(outbox, async (instance: UsageOutbox, state) => {
-    const start = Date.UTC(2026, 8, 30, 10);
+    const start = futureClockStart();
     const clock = vi.spyOn(Date, "now").mockReturnValue(start);
     const finished = usage("mid-scan", start);
     const progress = (id: string): UsageEvent => ({

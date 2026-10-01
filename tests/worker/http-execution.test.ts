@@ -263,22 +263,30 @@ test("a failed dispatch cancels the active executor through a fresh stub without
 });
 
 test.each(["/responses", "/v1/messages"])(
-  "one executor rejects a second request for %s",
+  "one executor accepts only one concurrent request for %s",
   async (path) => {
     const upstream = vi.fn(async () =>
       Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }),
     );
     vi.stubGlobal("fetch", upstream);
     const stub = env.HTTP_EXECUTION.get(env.HTTP_EXECUTION.newUniqueId());
-    const first = stub.fetch(request(path));
-    const second = await stub.fetch(request(path));
-    expect(second.status).toBe(409);
-    expect(await second.json()).toMatchObject(
+    // The test runtime's asynchronous DO initialization may reorder fetches.
+    // Assert single execution regardless of which concurrent request arrives first.
+    const responses = await Promise.all([
+      stub.fetch(request(path)),
+      stub.fetch(request(path)),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 409,
+    ]);
+    const accepted = responses.find((response) => response.status === 200)!;
+    const rejected = responses.find((response) => response.status === 409)!;
+    expect(await rejected.json()).toMatchObject(
       path === "/responses"
         ? { error: { code: "execution_already_started" } }
         : { type: "error", error: { type: "api_error" } },
     );
-    expect(await (await first).json()).toMatchObject({
+    expect(await accepted.json()).toMatchObject({
       usage: { input_tokens: 1 },
     });
     expect(upstream).toHaveBeenCalledTimes(1);
