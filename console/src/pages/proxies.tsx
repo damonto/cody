@@ -44,22 +44,27 @@ export default function Proxies() {
         title="Proxies"
         description="Manage SOCKS5 groups and select them from providers or credentials."
       >
-        <Button
-          variant="outline"
-          disabled={health.isFetching}
-          onClick={() => void health.refetch()}
-        >
-          <RefreshCw />
-          Refresh
-        </Button>
-        <Button
-          onClick={() =>
-            setDialog({ kind: "create", snapshot: structuredClone(draft.data) })
-          }
-        >
-          <Plus />
-          Add group
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={health.isFetching}
+            onClick={() => void health.refetch()}
+          >
+            <RefreshCw />
+            Refresh
+          </Button>
+          <Button
+            onClick={() =>
+              setDialog({
+                kind: "create",
+                snapshot: structuredClone(draft.data),
+              })
+            }
+          >
+            <Plus />
+            Add group
+          </Button>
+        </div>
       </PageHeading>
       {health.error && (
         <ErrorNotice error={health.error} retry={() => void health.refetch()} />
