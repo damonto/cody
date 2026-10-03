@@ -154,7 +154,7 @@ export default function Runtime() {
               }}
               options={clients.data.items.map((client) => ({
                 value: client.id,
-                label: client.id,
+                label: names[client.id] ?? client.id,
               }))}
             />
             <Choice

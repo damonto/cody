@@ -40,7 +40,7 @@ export const CredentialFields = withForm({
             <>
               {credentials.state.value.map((credential, position) => (
                 <Card key={credential.rowId} className="shadow-none">
-                  <CardHeader className="flex-row items-center justify-between">
+                  <CardHeader className="flex flex-row items-center gap-2">
                     <CardTitle className="text-sm">
                       Credential {position + 1}
                     </CardTitle>

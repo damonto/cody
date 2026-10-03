@@ -53,7 +53,7 @@ export default function Pricing() {
               onChange={(value) => setSearch({ provider: value })}
               options={config.providers.map((entry) => ({
                 value: entry.id,
-                label: entry.id,
+                label: entry.name ?? entry.id,
               }))}
               className="w-full"
             />
