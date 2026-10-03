@@ -1,6 +1,7 @@
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { useDraft, type Draft } from "@/lib/api";
+import { useProxyResources, type ProxyResources } from "@/lib/resources";
 import { useClearProxyHealth, useProxyGroups } from "@/features/proxies/api";
 import {
   DeleteProxyDialog,
@@ -13,33 +14,46 @@ import { Empty, ErrorNotice, Loading, PageHeading } from "@/components/common";
 import { Button } from "@/components/ui/button";
 
 type ProxyDialog =
-  | { kind: "create"; snapshot: Draft }
-  | { kind: "edit"; snapshot: Draft; groupId: string }
-  | { kind: "node"; snapshot: Draft; groupId: string; proxyId?: string }
-  | { kind: "delete"; snapshot: Draft; target: ProxyDeletionTarget };
+  | { kind: "create"; snapshot: ProxyResources }
+  | { kind: "edit"; snapshot: ProxyResources; groupId: string }
+  | {
+      kind: "node";
+      snapshot: ProxyResources;
+      groupId: string;
+      proxyId?: string;
+    }
+  | {
+      kind: "delete";
+      snapshot: ProxyResources;
+      target: ProxyDeletionTarget;
+    };
 
 export default function Proxies() {
-  const draft = useDraft();
-  const health = useProxyGroups(draft.data?.published_revision);
+  const configuration = useProxyResources();
+  const health = useProxyGroups(configuration.data?.version);
   const clear = useClearProxyHealth();
   const [dialog, setDialog] = useState<ProxyDialog | null>(null);
 
-  if (draft.isPending) {
+  if (configuration.isPending) {
     return <Loading />;
   }
-  if (draft.error) {
+  if (configuration.error) {
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
   }
 
-  const config = draft.data.config;
+  const config = configuration.data;
   const liveGroups = new Map(
     health.data?.items.map((group) => [group.group_id, group]),
   );
   const closeDialog = (): void => setDialog(null);
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="Proxies"
         description="Manage SOCKS5 groups and select them from providers or credentials."
@@ -57,7 +71,7 @@ export default function Proxies() {
             onClick={() =>
               setDialog({
                 kind: "create",
-                snapshot: structuredClone(draft.data),
+                snapshot: structuredClone(configuration.data),
               })
             }
           >
@@ -70,37 +84,37 @@ export default function Proxies() {
         <ErrorNotice error={health.error} retry={() => void health.refetch()} />
       )}
       {clear.error && <ErrorNotice error={clear.error} />}
-      {!config.proxy_groups.length && (
+      {!config.groups.length && (
         <Empty title="Add your first proxy group">
           Create groups such as US or UK, then add SOCKS5 nodes.
         </Empty>
       )}
-      {config.proxy_groups.map((group) => (
+      {config.groups.map((group) => (
         <ProxyGroupCard
           key={group.id}
           group={group}
-          version={draft.data.version}
+          version={configuration.data.version}
           live={liveGroups.get(group.id)}
           timeZone={config.reporting?.time_zone}
           clearing={clear.isPending}
           addNode={() =>
             setDialog({
               kind: "node",
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               groupId: group.id,
             })
           }
           edit={() =>
             setDialog({
               kind: "edit",
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               groupId: group.id,
             })
           }
           editNode={(proxyId) =>
             setDialog({
               kind: "node",
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               groupId: group.id,
               proxyId,
             })
@@ -108,14 +122,14 @@ export default function Proxies() {
           remove={() =>
             setDialog({
               kind: "delete",
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               target: { kind: "group", groupId: group.id },
             })
           }
           removeNode={(proxyId) =>
             setDialog({
               kind: "delete",
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               target: { kind: "node", groupId: group.id, proxyId },
             })
           }

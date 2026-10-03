@@ -13,8 +13,8 @@ export async function testProxyNode(
 ) {
   const result = proxyTestResultSchema.safeParse(
     await read(
-      rpc.config["proxy-groups"][":groupId"].proxies[":proxyId"].test.$post(
-        { param: { groupId, proxyId }, json: { version } },
+      rpc["proxy-groups"][":id"].nodes[":nodeId"].test.$post(
+        { param: { id: groupId, nodeId: proxyId }, json: { version } },
         { init: { signal } },
       ),
     ),
@@ -28,14 +28,16 @@ export async function testProxyNode(
   return result.data;
 }
 
-export function useProxyGroups(publishedRevision: number | null | undefined) {
+export function useProxyGroups(
+  configurationVersion: number | null | undefined,
+) {
   return useQuery({
-    queryKey: [...PROXY_GROUPS_QUERY_KEY, publishedRevision],
+    queryKey: [...PROXY_GROUPS_QUERY_KEY, configurationVersion],
     queryFn: async ({ signal }) =>
       proxyGroupsStatusSchema.parse(
         await read(rpc.runtime["proxy-groups"].$get({}, { init: { signal } })),
       ),
-    enabled: publishedRevision !== undefined,
+    enabled: configurationVersion !== undefined,
   });
 }
 

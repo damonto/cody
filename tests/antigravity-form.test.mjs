@@ -22,13 +22,13 @@ function account() {
 
 test("the fixed provider starts disabled and needs no fabricated accounts or models", () => {
   const provider = newAntigravityProvider();
-  assert.equal(provider.id, "antigravity");
+  assert.match(provider.id, /^new-/);
   assert.equal(provider.disabled, true);
   assert.deepEqual(provider.credentials, []);
   assert.deepEqual(provider.models, []);
   assert.deepEqual(antigravityProviderSchema.parse(provider), provider);
-  assert.deepEqual(antigravityProvider({ providers: [] }), provider);
-  assert.equal(antigravityProvider({ providers: [provider] }), provider);
+  assert.deepEqual({ ...antigravityProvider(null), id: provider.id }, provider);
+  assert.equal(antigravityProvider(provider), provider);
 });
 
 test("pending accounts keep separate stable identities without inventing OAuth references", () => {

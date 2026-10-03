@@ -31,13 +31,17 @@ export function parseScope(key: string): RouteScope {
 
 // Providers whose declared models a route in this scope may target.
 export function scopeProviders(
-  config: GatewayConfig,
+  config: {
+    providers: GatewayConfig["providers"];
+    clients: GatewayConfig["api_keys"];
+    routes: GatewayConfig["model_routes"];
+  },
   scope: RouteScope,
 ): ProviderConfig[] {
   if (scope.kind === "provider")
     return config.providers.filter((provider) => provider.id === scope.id);
   if (scope.kind === "client") {
-    const client = config.api_keys.find((entry) => entry.id === scope.id);
+    const client = config.clients.find((entry) => entry.id === scope.id);
     return config.providers.filter((provider) =>
       client?.providers.includes(provider.id),
     );
@@ -46,7 +50,11 @@ export function scopeProviders(
 }
 
 export function routesFor(
-  config: GatewayConfig,
+  config: {
+    providers: GatewayConfig["providers"];
+    clients: GatewayConfig["api_keys"];
+    routes: GatewayConfig["model_routes"];
+  },
   scope: RouteScope,
 ): Record<string, ModelRouteConfig> {
   if (scope.kind === "provider")
@@ -56,22 +64,8 @@ export function routesFor(
     );
   if (scope.kind === "client")
     return (
-      config.api_keys.find((client) => client.id === scope.id)?.model_routes ??
+      config.clients.find((client) => client.id === scope.id)?.model_routes ??
       {}
     );
-  return config.model_routes;
-}
-
-export function setRoutes(
-  config: GatewayConfig,
-  scope: RouteScope,
-  routes: Record<string, ModelRouteConfig>,
-): void {
-  if (scope.kind === "provider") {
-    const provider = config.providers.find((entry) => entry.id === scope.id);
-    if (provider) provider.model_routes = routes;
-  } else if (scope.kind === "client") {
-    const client = config.api_keys.find((entry) => entry.id === scope.id);
-    if (client) client.model_routes = routes;
-  } else config.model_routes = routes;
+  return config.routes;
 }

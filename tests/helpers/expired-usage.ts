@@ -1,3 +1,4 @@
+import { requestDetails } from "../../src/reporting/details.ts";
 import assert from "node:assert/strict";
 import type { SqlDatabase } from "../../src/platform/bindings.ts";
 import { AGGREGATE_FIELDS } from "../../src/reporting/aggregates.ts";
@@ -43,10 +44,10 @@ export async function checkExpiredUsageCorrection(
 
   // The explicit provisional state, not a diagnostic string, authorizes correction.
   await db
-    .prepare("UPDATE requests SET event_json = ? WHERE request_id = ?")
+    .prepare("UPDATE requests SET details_json = ? WHERE request_id = ?")
     .bind(
-      JSON.stringify({
-        ...expired,
+      requestDetails({
+        ...expired!,
         diagnostic_code: "renamed_maintenance_diagnostic",
       }),
       finished.request_id,
@@ -66,7 +67,7 @@ export async function checkExpiredUsageCorrection(
         // Fail after the request update and trigger have run, exercising rollback.
         db
           .prepare(
-            "INSERT INTO request_attempts (request_id, attempt, duration_ms, event_json) VALUES (?, 1, 0, '{}')",
+            "INSERT INTO request_attempts (request_id, attempt, duration_ms, details_json) VALUES (?, 1, 0, '{}')",
           )
           .bind(crypto.randomUUID()),
       ]),

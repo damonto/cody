@@ -18,53 +18,27 @@ function date(value: unknown): string | null {
     ? value
     : null;
 }
-export function parseBilling(
-  primary: unknown,
-  secondary?: unknown,
-): QuotaSnapshot {
-  const unwrap = (value: unknown) => {
-    const root = record(value);
-    return record(root.config ?? root);
-  };
-  const main = unwrap(primary);
-  const legacy = unwrap(secondary);
+export function parseBilling(value: unknown): QuotaSnapshot {
+  const root = record(value);
+  const billing = record(root.config ?? root);
   const billingField = (snake: string, camel: string) =>
-    field(main, snake, camel) ?? field(legacy, snake, camel);
+    field(billing, snake, camel);
   const usageField = (snake: string, camel: string) =>
-    field(record(main.usage), snake, camel) ??
-    field(record(legacy.usage), snake, camel);
-  const groups: QuotaSnapshot["groups"] = [];
+    field(record(billing.usage), snake, camel);
   const period = record(billingField("current_period", "currentPeriod"));
-  const weekly = number(
+  const percent = number(
     billingField("credit_usage_percent", "creditUsagePercent"),
   );
-  const add = (
-    id: string,
-    label: string,
-    percent: number | null,
-    reset: string | null,
-  ) => {
-    if (percent === null) return;
-    groups.push({
-      id,
-      label,
-      buckets: [
-        {
-          id,
-          label,
-          window: id,
-          used_percent: percent,
-          remaining_fraction: Math.max(0, 1 - percent / 100),
-          reset_at: reset,
-        },
-      ],
-    });
-  };
+  if (percent === null)
+    throw new OAuthError(
+      "xAI subscription quota is unavailable",
+      503,
+      "quota_unknown",
+    );
   const window =
     typeof period.type === "string" && period.type
       ? period.type
       : "subscription";
-  add(window, "Subscription credits", weekly, date(period.end));
   const monthly = number(billingField("monthly_limit", "monthlyLimit"));
   const included =
     number(usageField("included_used", "includedUsed")) ??
@@ -74,19 +48,10 @@ export function parseBilling(
     billingField("billing_period_end", "billingPeriodEnd") ??
       field(cycle, "billing_period_end", "billingPeriodEnd"),
   );
-  // A current credits window is authoritative; the deprecated monthly window is supplemental.
-  if (weekly === null && monthly !== null && monthly > 0 && included !== null)
-    add("monthly", "Included monthly usage", (included / monthly) * 100, reset);
   const cap = number(billingField("on_demand_cap", "onDemandCap"));
   const spent =
     number(billingField("on_demand_used", "onDemandUsed")) ??
     number(usageField("on_demand_used", "onDemandUsed"));
-  if (!groups.length)
-    throw new OAuthError(
-      "xAI subscription quota is unavailable",
-      503,
-      "quota_unknown",
-    );
   const productUsage = billingField("product_usage", "productUsage");
   return {
     xai_billing: {
@@ -106,7 +71,22 @@ export function parseBilling(
         },
       ),
     },
-    groups,
+    groups: [
+      {
+        id: window,
+        label: "Subscription credits",
+        buckets: [
+          {
+            id: window,
+            label: "Subscription credits",
+            window,
+            used_percent: percent,
+            remaining_fraction: Math.max(0, 1 - percent / 100),
+            reset_at: date(period.end),
+          },
+        ],
+      },
+    ],
     subscription: null,
     updated_at: Date.now(),
     last_error: null,

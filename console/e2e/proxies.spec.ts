@@ -1,3 +1,4 @@
+import { isConfigurationMutation } from "./fixtures";
 import { expect, test } from "@playwright/test";
 import { draftFixture, mockApi } from "./fixtures";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
@@ -51,45 +52,39 @@ test("a standalone node dialog appends to the selected group and preserves its s
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Add proxy to UK");
-  await expect(dialog.getByLabel("Group ID")).toHaveCount(0);
+  await expect(dialog.getByLabel("Group name")).toHaveCount(0);
   await expect(dialog.getByLabel("Selection strategy")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(mock.current().version).toBe(1);
   await page
     .getByRole("button", { name: "Add proxy to UK", exact: true })
     .click();
-  await dialog.getByLabel("Proxy ID", { exact: true }).fill("uk-new");
+  await dialog.getByLabel("Proxy name", { exact: true }).fill("uk-new");
   await dialog.getByLabel("SOCKS5 URL").fill("socks5://new.test:1080");
   await dialog.getByLabel("Priority", { exact: true }).fill("75");
   await dialog.getByLabel("Username", { exact: true }).fill("user");
   await dialog.getByLabel("Password", { exact: true }).fill("new-password");
-  const saving = page.waitForRequest(
-    (request) =>
-      request.method() === "PUT" && request.url().endsWith("/api/config"),
+  const saving = page.waitForRequest((request) =>
+    isConfigurationMutation(request),
   );
   await dialog.getByRole("button", { name: "Add proxy", exact: true }).click();
   const body = (await saving).postDataJSON();
   expect(JSON.stringify(body)).not.toContain("rowId");
-  expect(body.config.proxy_groups[0]).toEqual(draft.config.proxy_groups[0]);
-  expect(body.config.proxy_groups[1]).toEqual({
-    id: "UK",
-    strategy: "priority",
-    proxies: [
-      {
-        id: "uk-new",
-        url: "socks5://new.test:1080",
-        priority: 75,
-        disabled: false,
-        username: "user",
-        password: "new-password",
-      },
-    ],
+  expect(body.node).toMatchObject({
+    name: "uk-new",
+    url: "socks5://new.test:1080",
+    priority: 75,
+    disabled: false,
+    username: "user",
+    password: "new-password",
   });
+  expect(body).not.toHaveProperty("config");
+  expect(body.node).not.toHaveProperty("id");
   await expect(dialog).toBeHidden();
   await expect(
     page.getByRole("row").filter({ hasText: "uk-new" }),
   ).toBeVisible();
-  expect(mock.current().published_revision).toBe(1);
+  expect(mock.current().version).toBeGreaterThan(1);
 });
 
 test("adding a node validates duplicate IDs and paired credentials and retains failed input for retry", async ({
@@ -97,8 +92,8 @@ test("adding a node validates duplicate IDs and paired credentials and retains f
 }) => {
   const mock = await mockApi(page, fixture());
   let attempts = 0;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT") {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request())) {
       attempts += 1;
       if (attempts === 1) {
         await route.fulfill({
@@ -116,14 +111,8 @@ test("adding a node validates duplicate IDs and paired credentials and retains f
     .click();
   const dialog = page.getByRole("dialog");
   const add = dialog.getByRole("button", { name: "Add proxy", exact: true });
-  await dialog.getByLabel("Proxy ID", { exact: true }).fill("us-1");
+  await dialog.getByLabel("Proxy name", { exact: true }).fill("us-new");
   await dialog.getByLabel("SOCKS5 URL").fill("socks5://new.test:1080");
-  await add.click();
-  await expect(
-    dialog.getByText("A proxy with this ID already exists in this group"),
-  ).toBeVisible();
-  expect(attempts).toBe(0);
-  await dialog.getByLabel("Proxy ID", { exact: true }).fill("us-new");
   await dialog.getByLabel("Username", { exact: true }).fill("user");
   await add.click();
   await expect(
@@ -154,8 +143,8 @@ test("adding a node keeps a stale draft open without overwriting concurrent edit
   page,
 }) => {
   const mock = await mockApi(page, fixture());
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT") {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request())) {
       expect(route.request().postDataJSON().version).toBe(1);
       await route.fulfill({
         status: 409,
@@ -194,8 +183,8 @@ test("the row editor preserves saved credentials and locks its snapshot while sa
   const waiting = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT") await waiting;
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request())) await waiting;
     await route.fallback();
   });
   await page.goto("/console/proxies");
@@ -204,10 +193,7 @@ test("the row editor preserves saved credentials and locks its snapshot while sa
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Edit proxy us-1");
-  await expect(dialog.getByLabel("Proxy ID", { exact: true })).toHaveAttribute(
-    "readonly",
-    "",
-  );
+  await expect(dialog.getByLabel("Proxy name", { exact: true })).toBeEditable();
   await expect(dialog.getByLabel("Password", { exact: true })).toHaveValue("");
   await expect(dialog.getByLabel("Password", { exact: true })).toHaveAttribute(
     "placeholder",
@@ -215,15 +201,12 @@ test("the row editor preserves saved credentials and locks its snapshot while sa
   );
   await dialog.getByLabel("SOCKS5 URL").fill("socks5://edited.test:1080");
   await dialog.getByLabel("Priority", { exact: true }).fill("65");
-  const requested = page.waitForRequest(
-    (request) =>
-      request.method() === "PUT" && request.url().endsWith("/api/config"),
+  const requested = page.waitForRequest((request) =>
+    isConfigurationMutation(request),
   );
   await dialog.getByRole("button", { name: "Save proxy", exact: true }).click();
   const body = (await requested).postDataJSON();
-  expect(body.config.proxy_groups[0].proxies[0].password).toBe(
-    SECRET_PLACEHOLDER,
-  );
+  expect(body.node.password).toBe(SECRET_PLACEHOLDER);
   expect(JSON.stringify(body)).not.toContain("rowId");
   await expect(dialog.getByLabel("SOCKS5 URL")).toBeDisabled();
   await expect(
@@ -252,8 +235,8 @@ test("the row editor preserves saved credentials and locks its snapshot while sa
 test("failed row edits remain visible and can be retried", async ({ page }) => {
   const mock = await mockApi(page, fixture());
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 503,
@@ -289,7 +272,7 @@ test("Test results preserve keyboard focus in other proxy rows", async ({
   await mockApi(page, twoNodeFixture());
   let release = () => {};
   await page.route(
-    "**/console/api/config/proxy-groups/US/proxies/us-1/test",
+    "**/console/api/proxy-groups/US/nodes/us-1/test",
     async (route) => {
       await new Promise<void>((resolve) => {
         release = resolve;
@@ -330,7 +313,7 @@ for (const width of [1280, 800]) {
     let attempt = 0;
     let release = () => {};
     await page.route(
-      "**/console/api/config/proxy-groups/US/proxies/us-1/test",
+      "**/console/api/proxy-groups/US/nodes/us-1/test",
       async (route) => {
         await new Promise<void>((resolve) => {
           release = resolve;
@@ -405,7 +388,7 @@ test("list deletion can be cancelled, removes only its node and retains the fina
   expect(mock.current().config.proxy_groups[0].proxies).toHaveLength(2);
   await first.click();
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(confirmation).toBeHidden();
   expect(
@@ -416,13 +399,13 @@ test("list deletion can be cancelled, removes only its node and retains the fina
     .getByRole("button", { name: "Delete proxy us-2 from US", exact: true })
     .click();
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(confirmation).toBeHidden();
-  expect(mock.current().config.proxy_groups).toEqual([
+  expect(mock.current().config.proxy_groups).toMatchObject([
     { id: "US", strategy: "sticky", proxies: [] },
   ]);
-  expect(mock.current().published_revision).toBe(1);
+  expect(mock.current().version).toBe(3);
   await expect(
     page.getByText("This group has no nodes.", { exact: false }),
   ).toBeVisible();
@@ -433,8 +416,8 @@ test("failed node deletion stays visible and can be retried", async ({
 }) => {
   const mock = await mockApi(page, fixture());
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 503,
@@ -448,7 +431,7 @@ test("failed node deletion stays visible and can be retried", async ({
     .click();
   const confirmation = page.getByRole("alertdialog");
   const remove = confirmation.getByRole("button", {
-    name: "Remove from draft",
+    name: "Remove from configuration",
     exact: true,
   });
   await remove.click();
@@ -464,9 +447,9 @@ test("node deletion preserves concurrent draft changes until the page is refresh
   page,
 }) => {
   const mock = await mockApi(page, fixture());
-  await page.route("**/console/api/config", async (route) => {
+  await page.route("**/console/api/**", async (route) => {
     if (
-      route.request().method() === "PUT" &&
+      isConfigurationMutation(route.request()) &&
       route.request().postDataJSON().version !== mock.current().version
     ) {
       await route.fulfill({
@@ -483,7 +466,7 @@ test("node deletion preserves concurrent draft changes until the page is refresh
   mock.current().config.proxy_groups[0].strategy = "priority";
   const confirmation = page.getByRole("alertdialog");
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(
     confirmation.getByText("Refresh this page", { exact: false }),
@@ -494,7 +477,7 @@ test("node deletion preserves concurrent draft changes until the page is refresh
     .getByRole("button", { name: "Delete proxy us-1 from US", exact: true })
     .click();
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(confirmation).toBeHidden();
   expect(mock.current().config.proxy_groups[0]).toMatchObject({
@@ -534,7 +517,7 @@ test("node tests run independently for disabled, cooling and unpublished nodes a
     release = resolve;
   });
   await page.route(
-    "**/console/api/config/proxy-groups/US/proxies/*/test",
+    "**/console/api/proxy-groups/US/nodes/*/test",
     async (route) => {
       expect(route.request().method()).toBe("POST");
       expect(route.request().postDataJSON()).toEqual({ version: 1 });
@@ -598,7 +581,7 @@ for (const failure of [
     await mockApi(page, fixture());
     let attempts = 0;
     await page.route(
-      "**/console/api/config/proxy-groups/US/proxies/us-1/test",
+      "**/console/api/proxy-groups/US/nodes/us-1/test",
       (route) => {
         attempts += 1;
         return route.fulfill(
@@ -636,7 +619,7 @@ for (const change of ["edit", "edit-node", "delete", "navigate"] as const) {
       release = resolve;
     });
     await page.route(
-      "**/console/api/config/proxy-groups/US/proxies/us-1/test",
+      "**/console/api/proxy-groups/US/nodes/us-1/test",
       async (route) => {
         await waiting;
         await route.fulfill({ json: { ip: "203.0.113.99", country: "US" } });
@@ -679,7 +662,7 @@ for (const change of ["edit", "edit-node", "delete", "navigate"] as const) {
         .click();
       const dialog = page.getByRole("alertdialog");
       await dialog
-        .getByRole("button", { name: "Remove from draft", exact: true })
+        .getByRole("button", { name: "Remove from configuration", exact: true })
         .click();
       await expect(dialog).toBeHidden();
     } else {
@@ -711,14 +694,14 @@ test("group nodes retain their values after row removal and save without form me
   await page.goto("/console/proxies");
   await page.getByRole("button", { name: "Add group", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Group ID").fill("US");
+  await dialog.getByLabel("Group name").fill("US");
   await dialog.getByRole("combobox", { name: "Selection strategy" }).click();
   await page.getByRole("option", { name: "Priority", exact: true }).click();
   await dialog.getByRole("button", { name: "Add proxy", exact: true }).click();
-  await dialog.getByLabel("Proxy ID", { exact: true }).fill("first");
+  await dialog.getByLabel("Proxy name", { exact: true }).fill("first");
   await dialog.getByLabel("SOCKS5 URL").fill("socks5://first.test:1080");
   await dialog.getByRole("button", { name: "Add proxy", exact: true }).click();
-  await dialog.getByLabel("Proxy ID", { exact: true }).nth(1).fill("second");
+  await dialog.getByLabel("Proxy name", { exact: true }).nth(1).fill("second");
   await dialog
     .getByLabel("SOCKS5 URL")
     .nth(1)
@@ -735,17 +718,24 @@ test("group nodes retain their values after row removal and save without form me
   await expect(dialog.getByLabel("SOCKS5 URL")).toHaveValue(
     "socks5://second.test:1080",
   );
-  const saving = page.waitForRequest(
-    (request) =>
-      request.method() === "PUT" && request.url().endsWith("/api/config"),
+  const saving = page.waitForRequest((request) =>
+    isConfigurationMutation(request),
   );
   await dialog.getByRole("button", { name: "Save group", exact: true }).click();
   expect(JSON.stringify((await saving).postDataJSON())).not.toContain("rowId");
   await expect(dialog).toBeHidden();
   expect(mock.current().config.proxy_groups[0]).toMatchObject({
-    id: "US",
+    id: expect.any(String),
+    name: "US",
     strategy: "priority",
-    proxies: [{ id: "second", url: "socks5://second.test:1080", priority: 80 }],
+    proxies: [
+      {
+        id: expect.any(String),
+        name: "second",
+        url: "socks5://second.test:1080",
+        priority: 80,
+      },
+    ],
   });
   await page.getByRole("button", { name: "Configure US", exact: true }).click();
   await expect(dialog.getByLabel("Password", { exact: true })).toHaveValue("");
@@ -807,8 +797,8 @@ test("an in-flight group save keeps its editing snapshot open and prevents furth
   const released = new Promise<void>((resolve) => {
     releaseSave = resolve;
   });
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT") {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request())) {
       markSaving();
       await released;
     }
@@ -853,12 +843,12 @@ test("failed group edits and deletion remain visible and retryable; live health 
   const mock = await mockApi(page, fixture());
   let failSave = true;
   let failures = 3;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && failSave) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && failSave) {
       failSave = false;
       await route.fulfill({
         status: 409,
-        json: { error: "Draft changed; retry this edit" },
+        json: { error: "ConfigurationView changed; retry this edit" },
       });
     } else await route.fallback();
   });
@@ -907,7 +897,7 @@ test("failed group edits and deletion remain visible and retryable; live health 
   await dialog.getByLabel("SOCKS5 URL").fill("socks5://updated.test:1080");
   await dialog.getByRole("button", { name: "Save group", exact: true }).click();
   await expect(
-    dialog.getByText("Draft changed; retry this edit"),
+    dialog.getByText("ConfigurationView changed; retry this edit"),
   ).toBeVisible();
   await expect(dialog.getByLabel("SOCKS5 URL")).toHaveValue(
     "socks5://updated.test:1080",
@@ -923,13 +913,13 @@ test("failed group edits and deletion remain visible and retryable; live health 
     .click();
   const confirmation = page.getByRole("alertdialog");
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(
-    confirmation.getByText("Draft changed; retry this edit"),
+    confirmation.getByText("ConfigurationView changed; retry this edit"),
   ).toBeVisible();
   await confirmation
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove from configuration", exact: true })
     .click();
   await expect(confirmation).toBeHidden();
   expect(mock.current().config.proxy_groups).toHaveLength(0);

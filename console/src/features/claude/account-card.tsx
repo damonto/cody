@@ -254,7 +254,7 @@ export function AccountCard({
               Move down
             </DropdownMenuItem>
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-              Remove from draft
+              Remove account
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

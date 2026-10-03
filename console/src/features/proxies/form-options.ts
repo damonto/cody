@@ -21,7 +21,8 @@ export const proxyGroupEditorSchema = proxyGroupSchema
 type ProxyGroupFormValues = z.input<typeof proxyGroupEditorSchema>;
 
 export const emptyProxyNode: z.input<typeof proxyNodeSchema> = {
-  id: "",
+  id: `new-${crypto.randomUUID()}`,
+  name: "",
   url: "",
   priority: 100,
   disabled: false,
@@ -39,7 +40,8 @@ export function proxyGroupFormValues(
   group?: ProxyGroupConfig,
 ): ProxyGroupFormValues {
   return {
-    id: group?.id ?? "",
+    id: group?.id ?? `new-${crypto.randomUUID()}`,
+    name: group?.name ?? "",
     strategy: group?.strategy ?? ProxyStrategy.Random,
     proxies: (group?.proxies ?? []).map((node) => ({
       ...node,
@@ -52,7 +54,8 @@ export function newProxyNode(): ProxyGroupFormValues["proxies"][number] {
   const rowId = crypto.randomUUID();
   return {
     rowId,
-    id: `proxy-${rowId.slice(0, 6)}`,
+    id: rowId,
+    name: "Proxy",
     url: "",
     priority: 100,
     disabled: false,

@@ -1,6 +1,7 @@
+import type { z } from "zod";
 import { formOptions } from "@tanstack/react-form";
-import { modelPolicySchema } from "../../../../src/billing/schema";
-import type { ModelPolicy, PriceTier } from "../../../../src/billing/types";
+import { modelPriceSchema } from "../../../../src/billing/schema";
+import type { PriceTier } from "../../../../src/billing/types";
 
 export const emptyTier = (): PriceTier => ({
   up_to_input_tokens: null,
@@ -9,8 +10,12 @@ export const emptyTier = (): PriceTier => ({
   cache_write: "",
   cache_read: "",
 });
-const defaultPolicy: ModelPolicy = { provider_id: "", model: "" };
-export const policyFormOptions = formOptions({
-  defaultValues: defaultPolicy,
-  validators: { onBlur: modelPolicySchema, onSubmit: modelPolicySchema },
+export const priceEditorSchema = modelPriceSchema;
+const defaultPrice: z.input<typeof priceEditorSchema> = {
+  provider_id: "",
+  model: "",
+};
+export const priceFormOptions = formOptions({
+  defaultValues: defaultPrice,
+  validators: { onBlur: priceEditorSchema, onSubmit: priceEditorSchema },
 });

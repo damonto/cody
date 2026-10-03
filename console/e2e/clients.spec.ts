@@ -1,9 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { draftSchema } from "../../src/admin/schema";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import { mockApi } from "./fixtures";
 
-const revealPath = "/console/api/config/clients/example-client/reveal";
+const revealPath = "/console/api/clients/example-client/reveal";
 const show = /Show Gateway API key/;
 const hide = /Hide Gateway API key/;
 const copy = /Copy client API key/;
@@ -28,6 +27,73 @@ async function clipboard(page: Page) {
 }
 const copied = (page: Page) =>
   page.evaluate(() => navigator.clipboard.readText());
+
+test("retrying a lost save response replays the original operation without creating another client", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  const version = mock.current().version;
+  await page.goto("/console/clients");
+  await page.getByRole("button", { name: "Create client" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Client name").fill("Retry client");
+  mock.loseNextSaveResponse();
+  await dialog.getByRole("button", { name: "Save client" }).click();
+  await expect(
+    dialog.getByText("Unable to complete this request"),
+  ).toBeVisible();
+  expect(mock.current().version).toBe(version + 1);
+  await dialog.getByRole("button", { name: "Save client" }).click();
+  await expect(dialog).toBeHidden();
+  expect(mock.current().version).toBe(version + 1);
+  expect(
+    mock
+      .current()
+      .config.api_keys.filter((client) => client.name === "Retry client"),
+  ).toHaveLength(1);
+  expect(
+    mock.calls.filter((call) => call === "POST /console/api/clients"),
+  ).toHaveLength(2);
+});
+
+test("renaming a saved client preserves its identity and credential", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  const initial = structuredClone(mock.current().config.api_keys[0]);
+  const key = mock.clientKey(initial.id);
+  await page.goto("/console/clients");
+  await page.getByRole("button", { name: "Edit client" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Client name").fill("Renamed client");
+  await dialog.getByRole("button", { name: "Save client" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole("row").filter({ hasText: "Renamed client" }),
+  ).toBeVisible();
+  expect(mock.current().config.api_keys[0].id).toBe(initial.id);
+  expect(mock.clientKey(initial.id)).toBe(key);
+});
+
+test("a failed client removal remains visible and retryable", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  const client = mock.current().config.api_keys[0];
+  const version = mock.current().version;
+  await page.goto("/console/clients");
+  await page.getByRole("button", { name: `Remove ${client.name}` }).click();
+  const dialog = page.getByRole("alertdialog");
+  mock.loseNextSaveResponse();
+  await dialog.getByRole("button", { name: "Remove client" }).click();
+  await expect(
+    dialog.getByText("Unable to complete this request"),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Remove client" }).click();
+  await expect(dialog).toBeHidden();
+  expect(mock.current().version).toBe(version + 1);
+  expect(mock.current().config.api_keys).toHaveLength(0);
+});
 
 test("saved client credentials stay hidden until requested and can be copied while hidden", async ({
   page,
@@ -74,10 +140,8 @@ test("viewing in the editor preserves the saved credential placeholder without a
   await dialog.getByRole("button", { name: show }).click();
   await expect(key).toHaveValue(value);
   await expect(key).toHaveAttribute("type", "text");
-  const saving = page.waitForRequest((request) => request.method() === "PUT");
   await dialog.getByRole("button", { name: "Save client" }).click();
-  const submitted = draftSchema.parse((await saving).postDataJSON());
-  expect(submitted.config.api_keys[0].api_key).toBe(SECRET_PLACEHOLDER);
+  expect(mock.current().config.api_keys[0].api_key).toBe(SECRET_PLACEHOLDER);
   await expect(dialog).toBeHidden();
   expect(mock.clientKey("example-client")).toBe(value);
   expect(mock.calls.some((call) => call.endsWith("/config/publish"))).toBe(
@@ -115,12 +179,13 @@ test("new credentials use the sk-cody prefix and remain available after saving a
   await expect(key).toHaveAttribute("type", "password");
   expect(mock.calls.some((call) => call.includes("/reveal"))).toBe(false);
 
-  await dialog.getByLabel("Client ID").fill("new-client");
+  await dialog.getByLabel("Client name").fill("new-client");
   await dialog.getByRole("button", { name: "Save client" }).click();
   await expect(dialog).toBeHidden();
   expect(
-    mock.current().config.api_keys.find((client) => client.id === "new-client")
-      ?.api_key,
+    mock
+      .current()
+      .config.api_keys.find((client) => client.name === "new-client")?.api_key,
   ).toBe(SECRET_PLACEHOLDER);
   await page.reload();
   const row = page.getByRole("row").filter({ hasText: "new-client" });

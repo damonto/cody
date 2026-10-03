@@ -41,11 +41,11 @@ export function XaiAccounts({
   const refs = provider.credentials.map(
     (credential) => credential.auth.account_ref,
   );
-  const key = quotaQueryKey(["xai", ...refs]);
+  const key = quotaQueryKey([provider.id, ...refs]);
   const query = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
-      const accounts = await cache.fetchQuery(accountsOptions("xai"));
+      const accounts = await cache.fetchQuery(accountsOptions(provider.id));
       return mapWithConcurrency(
         accounts.filter((account) => refs.includes(account.account_ref)),
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -56,7 +56,7 @@ export function XaiAccounts({
     retry: false,
   });
   const health = useQuery({
-    ...accountHealthOptions("xai"),
+    ...accountHealthOptions(provider.id),
     enabled: refs.length > 0,
   });
   const refresh = useMutation({

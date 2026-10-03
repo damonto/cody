@@ -3,10 +3,10 @@ import {
   ProviderType,
 } from "../../../../src/config/values.ts";
 
-import { xaiDraftProviderSchema } from "../../../../src/config/schema";
+import { xaiProviderFormSchema } from "../../../../src/config/schema";
 import type {
   XaiProviderConfig,
-  GatewayConfig,
+  ProviderConfig,
 } from "../../../../src/config/types";
 
 import {
@@ -22,7 +22,8 @@ export {
 export function newXaiProvider(): XaiProviderConfig {
   return {
     type: ProviderType.Xai,
-    id: "xai",
+    id: `new-${crypto.randomUUID()}`,
+    name: "Xai",
     priority: 100,
     disabled: true,
     models: [],
@@ -37,11 +38,10 @@ export function newXaiProvider(): XaiProviderConfig {
     inject_x_search: false,
   };
 }
-export function xaiProvider(config: GatewayConfig): XaiProviderConfig {
-  return (
-    config.providers.find((provider) => provider.type === ProviderType.Xai) ??
-    newXaiProvider()
-  );
+export function xaiProvider(
+  provider: ProviderConfig | null,
+): XaiProviderConfig {
+  return provider?.type === ProviderType.Xai ? provider : newXaiProvider();
 }
 
 export {
@@ -62,7 +62,7 @@ export function applyAccount(
   const credentials = [...provider.credentials];
   if (index === -1) credentials.push(credential);
   else credentials[index] = credential;
-  return xaiDraftProviderSchema.parse({ ...provider, credentials });
+  return xaiProviderFormSchema.parse({ ...provider, credentials });
 }
 
 /** Toggles one account without opening its editor. */

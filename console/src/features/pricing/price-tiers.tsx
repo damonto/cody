@@ -5,10 +5,10 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FieldError } from "@/components/ui/field";
-import { policyFormOptions } from "./form-options";
+import { priceFormOptions } from "./form-options";
 
 export const PriceTiers = withForm({
-  ...policyFormOptions,
+  ...priceFormOptions,
   render: function PriceTiers({ form }) {
     return (
       <form.AppField name="pricing.tiers" mode="array">

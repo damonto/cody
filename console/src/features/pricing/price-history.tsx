@@ -41,11 +41,10 @@ export function PriceHistory({
             </summary>
             <div className="mt-4">
               <p className="mb-2 text-xs text-muted-foreground">
-                Context window: {number(item.policy.context_window)} ·{" "}
-                {item.policy.pricing?.currency ?? "Unpriced"} / million tokens
+                {item.price.pricing?.currency ?? "Unpriced"} / million tokens
               </p>
               <DataTable
-                data={item.policy.pricing?.tiers ?? []}
+                data={item.price.pricing?.tiers ?? []}
                 columns={[
                   {
                     id: "bound",
@@ -75,9 +74,8 @@ export function PriceHistory({
           </details>
         ))
       ) : (
-        <Empty title="No published prices yet">
-          Save a model policy and publish the configuration to create the first
-          price version.
+        <Empty title="No saved prices yet">
+          Save model prices to create the first price version.
         </Empty>
       )}
     </div>

@@ -8,6 +8,7 @@ import {
 } from "../proxies/transport.ts";
 import { effectiveProxyGroup } from "../proxies/configuration.ts";
 import type { ProxyFailure } from "../proxies/errors.ts";
+import type { SocksFetchOptions } from "./socks-fetch.ts";
 export { socksFetch, type SocksFetchOptions } from "./socks-fetch.ts";
 export { effectiveProxyGroup } from "../proxies/configuration.ts";
 
@@ -36,35 +37,39 @@ export interface UpstreamTransport {
   readonly proxyFailure: (error: unknown) => ProxyFailure | undefined;
 }
 
+export interface UpstreamTransportPolicy {
+  readonly direct?: UpstreamFetch | undefined;
+  readonly socks?: Pick<SocksFetchOptions, "omitAlpn">;
+}
+
 export function createUpstreamTransport(
   provider: Pick<ProviderConfig, "id" | "proxy_group">,
   credential: Pick<ProviderCredentialConfig, "id" | "proxy_group">,
   context?: ProxyTransportContext,
+  policy: UpstreamTransportPolicy = {},
 ): UpstreamTransport {
   const selection = effectiveProxyGroup(provider, credential);
-  const antigravity = provider.id === "antigravity";
-  const directAntigravity = context?.env.UPSTREAM_HTTP?.antigravity;
   return selection
     ? createProxyTransport(
         selection,
-        context && antigravity
+        context && policy.socks
           ? {
               ...context,
-              socks: { ...context.socks, omitAlpn: true },
+              socks: { ...context.socks, ...policy.socks },
             }
           : context,
       )
     : {
-        send:
-          antigravity && directAntigravity ? directAntigravity : directFetch,
+        send: policy.direct ?? directFetch,
         proxyFailure: () => undefined,
       };
 }
 
 export function createUpstreamFetch(
-  provider: ProviderConfig,
-  credential: ProviderCredentialConfig,
+  provider: Pick<ProviderConfig, "id" | "proxy_group">,
+  credential: Pick<ProviderCredentialConfig, "id" | "proxy_group">,
   context?: ProxyTransportContext,
+  policy: UpstreamTransportPolicy = {},
 ): UpstreamFetch {
-  return createUpstreamTransport(provider, credential, context).send;
+  return createUpstreamTransport(provider, credential, context, policy).send;
 }

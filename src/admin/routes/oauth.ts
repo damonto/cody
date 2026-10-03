@@ -7,7 +7,7 @@ import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
-import { configurationSchema, identifierSchema } from "../../config/schema.ts";
+import { identifierSchema } from "../../config/schema.ts";
 import {
   clearCredentialHealth,
   getCredentialAvailability,
@@ -22,34 +22,30 @@ import {
   oauthProviderTypeSchema,
   sessionViewSchema,
 } from "../../providers/oauth/schema.ts";
-import { publishedProxyConfiguration } from "../../providers/outbound.ts";
+import { currentProxyConfiguration } from "../../providers/outbound.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { audit } from "../audit.ts";
-import {
-  controlStore,
-  publishedConfig,
-  type AdminContext,
-} from "../context.ts";
+import { controlStore, currentConfig, type AdminContext } from "../context.ts";
 import { validate } from "../validation.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 const startSchema = connectionSchema
   .extend({
-    // Native OAuth providers are singletons whose reserved ID is their type.
-    provider_id: oauthProviderTypeSchema,
+    provider_id: z.uuid(),
+    provider_type: oauthProviderTypeSchema,
     account_ref: z.uuid().optional(),
     version: z.number().int().nonnegative(),
     flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
   })
   .refine(
     (input) =>
-      input.provider_id === ProviderType.Xai
+      input.provider_type === ProviderType.Xai
         ? input.flow === OAuthFlow.Device
         : input.flow === OAuthFlow.Pkce ||
-          input.provider_id === ProviderType.Codex,
+          input.provider_type === ProviderType.Codex,
     "xAI requires device authorization; other device authorization is only available for Codex",
   );
 const accountParam = z.object({ ref: z.uuid() });
@@ -70,13 +66,22 @@ const sessionParam = z.object({
     return { account_ref, session_id };
   }),
 });
-async function checkedAccount(env: Bindings, ref: string, providerId?: string) {
+async function checkedAccount(
+  env: Bindings,
+  ref: string,
+  providerId?: string,
+  providerType?: string,
+) {
   const row = await env.CODY_DB.prepare(
-    "SELECT provider_id FROM oauth_accounts WHERE account_ref = ?",
+    "SELECT provider_id, provider_type FROM oauth_accounts WHERE account_ref = ?",
   )
     .bind(ref)
-    .first<{ provider_id: string }>();
-  if (!row || (providerId && row.provider_id !== providerId))
+    .first<{ provider_id: string; provider_type: string }>();
+  if (
+    !row ||
+    (providerId && row.provider_id !== providerId) ||
+    (providerType && row.provider_type !== providerType)
+  )
     throw new HTTPException(404, {
       message: "Account does not belong to this provider",
     });
@@ -84,11 +89,9 @@ async function checkedAccount(env: Bindings, ref: string, providerId?: string) {
 }
 /** A spent reset makes the account usable again, so its inference cooldown ends now. */
 async function clearResetCooldowns(env: Bindings, ref: string): Promise<void> {
-  const raw = await env.CODY_CONFIG_KV.get(env.CONFIG_KEY ?? "gateway-config");
-  if (!raw) return;
-  const provider = configurationSchema
-    .parse(JSON.parse(raw))
-    .providers.find((provider) => provider.type === ProviderType.Codex);
+  const provider = (await controlStore(env).committed()).providers.find(
+    (provider) => provider.type === ProviderType.Codex,
+  );
   for (const credential of provider?.credentials ?? [])
     if (credential.auth.account_ref === ref)
       await clearCredentialHealth(env, provider!.id, credential.id);
@@ -113,9 +116,24 @@ export const oauthRoutes = new Hono<AdminContext>()
     const input = c.req.valid("json");
     const store = controlStore(c.env);
     const state = await store.state();
-    if (state.draft_version !== input.version)
+    if (state.version !== input.version)
       throw new HTTPException(409, {
-        message: "The draft changed; reload before authorizing",
+        message: "The configuration changed; reload before authorizing",
+      });
+    const providerRead = await store.resource(["providers"], (rows) =>
+      rows.providers.find(
+        (provider) =>
+          provider.deleted_at === null && provider.id === input.provider_id,
+      ),
+    );
+    if (providerRead.version !== input.version)
+      throw new HTTPException(409, {
+        message: "The configuration changed; reload before authorizing",
+      });
+    const configured = providerRead.item;
+    if (!configured || configured.type !== input.provider_type)
+      throw new HTTPException(400, {
+        message: "Save this provider before authorizing an account",
       });
     const proxy =
       input.credential_proxy_group === undefined
@@ -123,12 +141,12 @@ export const oauthRoutes = new Hono<AdminContext>()
         : input.credential_proxy_group;
     if (
       proxy &&
-      !(await publishedProxyConfiguration(c.env)).proxy_groups.some(
+      !(await currentProxyConfiguration(c.env)).proxy_groups.some(
         (group) => group.id === proxy,
       )
     )
       throw new HTTPException(409, {
-        message: "Publish the selected proxy group before authorizing",
+        message: "Save the selected proxy group before authorizing",
       });
     const ref = input.account_ref ?? crypto.randomUUID();
     const account = input.account_ref
@@ -140,7 +158,7 @@ export const oauthRoutes = new Hono<AdminContext>()
         account_ref: ref,
         actor: c.get("actor"),
         connection: connectionSchema.parse(input),
-        provider_type: input.provider_id,
+        provider_type: input.provider_type,
         flow: input.flow,
       }),
       sessionViewSchema,
@@ -244,11 +262,11 @@ export const oauthRoutes = new Hono<AdminContext>()
   )
   .get(
     "/provider-accounts/health",
-    validate("query", z.object({ provider_id: oauthProviderTypeSchema })),
+    validate("query", z.object({ provider_id: identifierSchema })),
     async (c) => {
       const providerId = c.req.valid("query").provider_id;
-      const provider = (await publishedConfig(c.env))?.providers.find(
-        (entry) => entry.type === providerId,
+      const provider = (await currentConfig(c.env))?.providers.find(
+        (entry) => entry.id === providerId,
       );
       const items = await mapWithConcurrency(
         provider?.type === ProviderType.Antigravity ||
@@ -261,12 +279,12 @@ export const oauthRoutes = new Hono<AdminContext>()
         async (credential) => {
           const health = await getCredentialAvailability(
             c.env,
-            providerId,
+            provider!.id,
             credential.id,
           );
           const quota =
-            providerId === ProviderType.Claude ||
-            providerId === ProviderType.Xai
+            provider?.type === ProviderType.Claude ||
+            provider?.type === ProviderType.Xai
               ? await reply(
                   c.env.PROVIDER_OAUTH_ACCOUNT.getByName(
                     credential.auth.account_ref,
@@ -304,7 +322,7 @@ export const oauthRoutes = new Hono<AdminContext>()
             ...(quota
               ? {
                   quota_blocks:
-                    providerId === ProviderType.Xai
+                    provider?.type === ProviderType.Xai
                       ? (quota.quota.xai_limits ?? []).filter(
                           (limit) => limit.until > Date.now(),
                         )
@@ -422,6 +440,7 @@ export const oauthRoutes = new Hono<AdminContext>()
             await checkedAccount(
               c.env,
               c.req.valid("param").ref,
+              undefined,
               ProviderType.Codex,
             )
           ).run({
@@ -445,7 +464,7 @@ export const oauthRoutes = new Hono<AdminContext>()
       const ref = c.req.valid("param").ref;
       const input = c.req.valid("json");
       const result = await reply(
-        (await checkedAccount(c.env, ref, ProviderType.Codex)).run({
+        (await checkedAccount(c.env, ref, undefined, ProviderType.Codex)).run({
           action: "consume_reset",
           ...input,
         }),

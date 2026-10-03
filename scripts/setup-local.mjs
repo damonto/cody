@@ -17,10 +17,9 @@ const localDataSchema = z.tuple([
   }),
 ]);
 const localDataQuery = `SELECT (
-  EXISTS (SELECT 1 FROM control_state WHERE draft_payload IS NOT NULL)
-  OR EXISTS (SELECT 1 FROM config_revisions)
-  OR EXISTS (SELECT 1 FROM oauth_clients)
-  OR EXISTS (SELECT 1 FROM oauth_accounts)
+  EXISTS (SELECT 1 FROM oauth_accounts)
+  OR EXISTS (SELECT 1 FROM secret_versions)
+  OR EXISTS (SELECT 1 FROM config_snapshots)
 ) AS has_encrypted_data`;
 
 async function readSettings() {
@@ -90,7 +89,7 @@ try {
 
   const additions = [];
   if (settings.CONFIG_ENCRYPTION_KEY === undefined) {
-    // A replacement key cannot decrypt existing drafts, revisions, or OAuth tokens.
+    // A replacement key cannot decrypt existing secret versions or OAuth tokens.
     if (hasEncryptedData())
       throw new Error(
         "Local configuration or OAuth data already exists, but CONFIG_ENCRYPTION_KEY is missing from .dev.vars. Restore the original key; no replacement was generated.",

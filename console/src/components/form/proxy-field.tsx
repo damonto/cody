@@ -56,7 +56,7 @@ export function ProxyGroupField({
           <SelectItem value="direct">Direct connection</SelectItem>
           {groups.map((entry) => (
             <SelectItem key={entry.id} value={`group:${entry.id}`}>
-              {entry.id} · {entry.strategy}
+              {entry.name ?? entry.id} · {entry.strategy}
             </SelectItem>
           ))}
           {group && !groups.some((entry) => entry.id === group) && (

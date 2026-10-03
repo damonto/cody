@@ -1,3 +1,5 @@
+import { useReporting } from "@/lib/resources";
+import { useEntityNames } from "@/lib/api";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -8,7 +10,7 @@ import {
   Layers,
   RefreshCw,
 } from "lucide-react";
-import { read, rpc, params, useDraft, type UsageEvent } from "@/lib/api";
+import { read, rpc, params, type UsageEvent } from "@/lib/api";
 import { compact, date, duration, label, money, number } from "@/lib/format";
 import {
   CopyButton,
@@ -34,8 +36,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 
 export default function Requests() {
+  const names = useEntityNames();
   const { values, invalid } = useReportFilters();
-  const draft = useDraft();
+  const reporting = useReporting();
   const [cursor, setCursor] = useState<{ filter: string; history: string[] }>({
     filter: "",
     history: [""],
@@ -56,7 +59,7 @@ export default function Requests() {
     enabled: !invalid,
   });
   const timeZone =
-    report.data?.range?.time_zone ?? draft.data?.config.reporting?.time_zone;
+    report.data?.range?.time_zone ?? reporting.data?.item.time_zone;
   const columns = useMemo<DataColumn<UsageEvent>[]>(
     () => [
       {
@@ -81,7 +84,8 @@ export default function Requests() {
         cell: ({ row }) => (
           <div className="max-w-52">
             <p className="truncate font-medium">
-              {row.original.provider_id || "Unrouted"}
+              {names[row.original.provider_id] ??
+                (row.original.provider_id || "Unrouted")}
             </p>
             <p
               className="truncate text-xs text-muted-foreground"
@@ -162,7 +166,7 @@ export default function Requests() {
         ),
       },
     ],
-    [timeZone],
+    [timeZone, names],
   );
   return (
     <>
@@ -275,6 +279,7 @@ function Details({ rows }: { rows: Array<[string, React.ReactNode]> }) {
   );
 }
 function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
+  const names = useEntityNames();
   const detail = useQuery({
     queryKey: ["request", id],
     queryFn: ({ signal }) =>
@@ -430,9 +435,15 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
         <TabsContent value="routing">
           <Details
             rows={[
-              ["Client", item.client_id || "—"],
-              ["Provider", item.provider_id || "—"],
-              ["Credential ID", item.credential_id || "—"],
+              ["Client", names[item.client_id] ?? (item.client_id || "—")],
+              [
+                "Provider",
+                names[item.provider_id] ?? (item.provider_id || "—"),
+              ],
+              [
+                "Credential",
+                names[item.credential_id] ?? (item.credential_id || "—"),
+              ],
               ["Requested model", item.requested_model || "—"],
               ["Routed model", item.model || "—"],
               ["Reported model", item.reported_model || "—"],
@@ -509,9 +520,7 @@ function AppliedRates({
   if (price.isPending) return <Loading />;
   if (price.error) return <ErrorNotice error={price.error} />;
   const tier =
-    tierIndex === null
-      ? undefined
-      : price.data.policy.pricing?.tiers[tierIndex];
+    tierIndex === null ? undefined : price.data.price.pricing?.tiers[tierIndex];
   if (!tier) return null;
   return (
     <div className="mt-4 rounded-lg border p-4">

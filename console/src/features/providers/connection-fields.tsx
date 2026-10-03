@@ -9,7 +9,7 @@ import type { ProxyGroupConfig } from "../../../../src/config/types";
 export const ConnectionFields = withForm({
   ...providerFormOptions,
   props: { index: -1, close: () => {}, groups: new Array<ProxyGroupConfig>() },
-  render: function ConnectionFields({ form, index, close, groups }) {
+  render: function ConnectionFields({ form, close, groups }) {
     return (
       <TabsContent
         value="connection"
@@ -17,12 +17,11 @@ export const ConnectionFields = withForm({
         className="space-y-5 data-[state=inactive]:hidden"
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <form.AppField name="id">
+          <form.AppField name="name">
             {(field) => (
               <field.TextField
-                label="Provider ID"
-                readOnly={index !== -1}
-                hint="Stable identifier used by routes, clients, and historical records."
+                label="Provider name"
+                hint="A display name. Renaming does not change routing or historical associations."
               />
             )}
           </form.AppField>

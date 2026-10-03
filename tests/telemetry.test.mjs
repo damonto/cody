@@ -18,11 +18,15 @@ function fixture(protocol = "openai", websocket = false) {
   });
   meter.configure({
     revision: 7,
-    model_policies: [
+    providers: [
+      { id: "a", model_settings: { real: { context_window: 1_000_000 } } },
+    ],
+    model_prices: [
       {
         provider_id: "a",
         model: "real",
-        context_window: 1_000_000,
+        version_id: "7ad97587-e0bc-426f-b30f-048bdfcb333a",
+
         pricing: {
           currency: "USD",
           tiers: [
@@ -118,7 +122,10 @@ test("SSE is forwarded byte for byte, including UTF-8 split across chunks", asyn
   assert.ok(final.first_response_ms <= final.ttft_ms);
   assert.ok(final.ttft_ms < final.first_text_ms);
   assert.ok(final.first_text_ms < final.duration_ms);
-  assert.equal(final.billing.price_version, '[7,"a","real"]');
+  assert.equal(
+    final.billing.price_version,
+    "7ad97587-e0bc-426f-b30f-048bdfcb333a",
+  );
   assert.equal(final.outcome, "success");
   assert.deepEqual(
     events.map((event) => event.sequence),
@@ -697,11 +704,14 @@ for (const transport of ["http", "sse", "websocket"]) {
     });
     const config = {
       revision: 7,
-      model_policies: [
+      providers: [
+        { id: "a", model_settings: { real: { context_window: 1_000_000 } } },
+      ],
+      model_prices: [
         {
           provider_id: "a",
           model: "gemini-3.8-flash",
-          context_window: 1_000_000,
+
           pricing: {
             currency: "USD",
             tiers: [
@@ -731,7 +741,7 @@ for (const transport of ["http", "sse", "websocket"]) {
       credentialId: "key",
       model: "gemini-3.8-flash",
     });
-    config.model_policies[0].pricing.tiers[0].cache_write = "0.9375";
+    config.model_prices[0].pricing.tiers[0].cache_write = "0.9375";
     meter.recordAttempts([
       { attempt: 1, status: 503, duration_ms: 30, usage: previous },
       { attempt: 2, status: 200, duration_ms: 50 },

@@ -1,5 +1,7 @@
+import { useSaveProxyNode } from "./mutations";
 import { useState } from "react";
-import { ApiError, useSaveDraft, type Draft } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { type ProxyResources } from "@/lib/resources";
 import { useAppForm } from "@/lib/form";
 import { ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -18,7 +20,7 @@ import {
 import { ProxyNodeInputs } from "./node-inputs";
 
 interface ProxyNodeEditorProps {
-  readonly snapshot: Draft;
+  readonly snapshot: ProxyResources;
   readonly groupId: string;
   readonly proxyId?: string;
   readonly close: () => void;
@@ -30,10 +32,8 @@ export function ProxyNodeEditor({
   proxyId,
   close,
 }: ProxyNodeEditorProps) {
-  const save = useSaveDraft();
-  const group = snapshot.config.proxy_groups.find(
-    (entry) => entry.id === groupId,
-  );
+  const save = useSaveProxyNode();
+  const group = snapshot.groups.find((entry) => entry.id === groupId);
   if (!group)
     throw new Error("Proxy group is missing from the editing snapshot");
   const [initial] = useState(() => {
@@ -51,38 +51,12 @@ export function ProxyNodeEditor({
     defaultValues: initial,
     onSubmit: async ({ value }) => {
       const { node } = proxyNodeEditorSchema.parse(value);
-      if (
-        group.proxies.some(
-          (entry) => entry.id !== proxyId && entry.id === node.id,
-        )
-      ) {
-        form.setFieldMeta("node.id", (meta) => ({
-          ...meta,
-          errorMap: {
-            onSubmit: "A proxy with this ID already exists in this group",
-          },
-        }));
-        return;
-      }
       try {
         await save.mutateAsync({
           version: snapshot.version,
-          config: {
-            ...snapshot.config,
-            proxy_groups: snapshot.config.proxy_groups.map((entry) =>
-              entry.id === groupId
-                ? {
-                    ...entry,
-                    proxies:
-                      proxyId === undefined
-                        ? [...entry.proxies, node]
-                        : entry.proxies.map((existing) =>
-                            existing.id === proxyId ? node : existing,
-                          ),
-                  }
-                : entry,
-            ),
-          },
+          groupId,
+          id: proxyId ?? null,
+          node,
         });
         close();
       } catch {
@@ -110,8 +84,7 @@ export function ProxyNodeEditor({
                   : `Edit proxy ${proxyId}`}
               </DialogTitle>
               <DialogDescription>
-                Save this node to group {groupId} in your draft, then publish
-                when ready.
+                Saving applies this proxy configuration immediately.
               </DialogDescription>
             </DialogHeader>
             <form
@@ -122,17 +95,13 @@ export function ProxyNodeEditor({
               }}
             >
               <fieldset disabled={submitting}>
-                <ProxyNodeInputs
-                  form={form}
-                  fields="node"
-                  readOnlyId={proxyId !== undefined}
-                />
+                <ProxyNodeInputs form={form} fields="node" />
               </fieldset>
               {save.error && <ErrorNotice error={save.error} />}
               {save.error instanceof ApiError && save.error.status === 409 && (
                 <p className="text-sm text-muted-foreground">
-                  Refresh this page to load the latest draft before trying
-                  again.
+                  Refresh this page to load the latest configuration before
+                  trying again.
                 </p>
               )}
               <form.AppForm>

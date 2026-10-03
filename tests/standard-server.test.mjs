@@ -1,3 +1,4 @@
+import { ControlStore } from "../src/control/store.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { once } from "node:events";
@@ -120,7 +121,7 @@ test(
         CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         ADMIN_AUTH_MODE: "token",
         ADMIN_TOKEN: "test-admin-secret",
-        CONFIG_CACHE_TTL_SECONDS: "0",
+
         LOG_LEVEL: "off",
       },
       resources: {
@@ -131,14 +132,16 @@ test(
     });
     const value = config();
     value.providers[0].base_url = `${upstreamUrl}/v1`;
-    const publisher =
-      runtime.bindings.CONFIG_PUBLISHER.getByName("configuration");
-    assert.equal(
-      JSON.parse(await publisher.saveDraft(JSON.stringify(value), 0, "tester"))
-        .ok,
-      true,
-    );
-    assert.equal(JSON.parse(await publisher.publish(1, "tester")).ok, true);
+    for (const provider of value.providers) {
+      provider.name = provider.id;
+      for (const credential of provider.credentials)
+        credential.name = credential.id;
+    }
+    for (const client of value.api_keys) client.name = client.id;
+    const saved = await new ControlStore(
+      runtime.bindings.CODY_DB,
+      runtime.bindings.CONFIG_ENCRYPTION_KEY,
+    ).save(value, 0, "tester");
     const host = createNodeServer(runtime);
     const url = await listen(host.server);
     t.after(async () => {
@@ -167,7 +170,7 @@ test(
       "x-cody-admin": "1",
     };
     const cleared = await fetch(
-      `${url}/console/api/runtime/health/provider/primary?client_id=client&scope=inference`,
+      `${url}/console/api/runtime/health/${saved.config.providers[0].id}?client_id=${saved.config.api_keys[0].id}&scope=inference`,
       { method: "DELETE", headers: admin },
     );
     assert.equal(cleared.status, 200);
@@ -180,7 +183,7 @@ test(
         },
       });
     const revealed = await fetch(
-      `${url}/console/api/config/clients/client/reveal`,
+      `${url}/console/api/clients/${saved.config.api_keys[0].id}/reveal`,
       {
         method: "POST",
         headers: { ...admin, "content-type": "application/json" },

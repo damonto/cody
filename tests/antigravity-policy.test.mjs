@@ -22,8 +22,8 @@ import {
 import {
   antigravityProviderSchema,
   aiGatewayProviderSchema,
-  codexDraftProviderSchema,
-  claudeDraftProviderSchema,
+  codexProviderFormSchema,
+  claudeProviderFormSchema,
 } from "../src/config/schema.ts";
 
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -198,8 +198,8 @@ test("sensitive words save independently of accounts and stay Antigravity-only",
     );
   for (const schema of [
     aiGatewayProviderSchema,
-    codexDraftProviderSchema,
-    claudeDraftProviderSchema,
+    codexProviderFormSchema,
+    claudeProviderFormSchema,
   ])
     assert.equal(Object.hasOwn(schema.shape, "sensitive_words"), false);
 });

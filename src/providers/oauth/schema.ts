@@ -223,7 +223,7 @@ export const consumeResetReplySchema = z.object({
   account: accountViewSchema,
 });
 
-/** Inference availability of one published OAuth credential, for account cards. */
+/** Inference availability of one configured OAuth credential, for account cards. */
 export const accountHealthSchema = z.object({
   model_cooldowns: z
     .array(

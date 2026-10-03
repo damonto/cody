@@ -240,7 +240,7 @@ test("report queries read hourly aggregates without scanning interior request de
      )
      INSERT INTO requests (
        request_id, event_sequence, started_at, finished_at, endpoint, protocol,
-       transport, kind, outcome, usage_status, billing_status, event_json,
+       transport, kind, outcome, usage_status, billing_status, details_json,
        provider_id, model, client_id
      )
      SELECT 'volume-' || n, 2, ?, ?, 'responses', 'openai', 'http', 'inference',

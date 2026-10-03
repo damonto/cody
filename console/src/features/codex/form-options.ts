@@ -5,12 +5,12 @@ import {
 
 import { z } from "zod";
 import {
-  codexDraftProviderSchema,
+  codexProviderFormSchema,
   nameSchema,
 } from "../../../../src/config/schema";
 import type {
   CodexProviderConfig,
-  GatewayConfig,
+  ProviderConfig,
 } from "../../../../src/config/types";
 
 import {
@@ -26,7 +26,8 @@ export {
 export function newCodexProvider(): CodexProviderConfig {
   return {
     type: ProviderType.Codex,
-    id: "codex",
+    id: `new-${crypto.randomUUID()}`,
+    name: "Codex",
     priority: 100,
     disabled: true,
     models: [],
@@ -40,14 +41,13 @@ export function newCodexProvider(): CodexProviderConfig {
     auto_consume_resets: false,
   };
 }
-export function codexProvider(config: GatewayConfig): CodexProviderConfig {
-  return (
-    config.providers.find((provider) => provider.type === ProviderType.Codex) ??
-    newCodexProvider()
-  );
+export function codexProvider(
+  provider: ProviderConfig | null,
+): CodexProviderConfig {
+  return provider?.type === ProviderType.Codex ? provider : newCodexProvider();
 }
 
-export const settingsEditorSchema = codexDraftProviderSchema
+export const settingsEditorSchema = codexProviderFormSchema
   .omit({
     id: true,
     type: true,
@@ -61,6 +61,7 @@ export const settingsEditorSchema = codexDraftProviderSchema
       .array(
         z.strictObject({
           rowId: z.string().min(1),
+          id: z.string().optional(),
           alias: nameSchema,
           model: nameSchema,
         }),
@@ -97,6 +98,7 @@ export function settingsFormValues(
     routes: Object.entries(provider.model_routes ?? {}).map(
       ([alias, route]) => ({
         rowId: crypto.randomUUID(),
+        id: route.id,
         alias,
         model: route.model,
       }),
@@ -108,11 +110,14 @@ export function applySettings(
   value: SettingsFormValues,
 ): CodexProviderConfig {
   const { routes, ...settings } = settingsEditorSchema.parse(value);
-  return codexDraftProviderSchema.parse({
+  return codexProviderFormSchema.parse({
     ...provider,
     ...settings,
     model_routes: Object.fromEntries(
-      routes.map(({ alias, model }) => [alias, { model }]),
+      routes.map(({ id, alias, model }) => [
+        alias,
+        { ...(id ? { id } : {}), model },
+      ]),
     ),
   });
 }
@@ -128,7 +133,7 @@ export function applyAccount(
   const credentials = [...provider.credentials];
   if (index === -1) credentials.push(credential);
   else credentials[index] = credential;
-  return codexDraftProviderSchema.parse({ ...provider, credentials });
+  return codexProviderFormSchema.parse({ ...provider, credentials });
 }
 
 /** Toggles one account without opening its editor. */

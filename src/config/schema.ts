@@ -1,3 +1,5 @@
+import { tokenCountSchema } from "../billing/schema.ts";
+
 import {
   ProxyStrategy,
   CodexAccountSelection,
@@ -7,9 +9,9 @@ import {
 
 import { z } from "zod";
 import {
-  modelPoliciesSchema,
+  modelPricesSchema,
   reportingSchema,
-  validateModelPolicyReferences,
+  validateModelPriceReferences,
 } from "../billing/schema.ts";
 import { SEARCH_PROVIDERS } from "../shared/search.ts";
 import { secretSchema } from "../shared/secret-schema.ts";
@@ -45,14 +47,17 @@ function unique<T>(values: readonly T[]): boolean {
 }
 const nameList = z
   .array(nameSchema, { error: "must be a non-empty array" })
-  .refine(unique, "must not contain duplicates")
-  .meta({ uniqueItems: true });
+  .refine(unique, "must not contain duplicates");
 const names = nameList.min(1, "must be a non-empty array");
 export const routeSchema = z.strictObject({
+  id: z.uuid().optional(),
   model: nameSchema,
   providers: names.optional(),
 });
-const providerRouteSchema = z.strictObject({ model: nameSchema });
+const providerRouteSchema = z.strictObject({
+  id: z.uuid().optional(),
+  model: nameSchema,
+});
 
 function routes<T extends z.ZodType>(route: T) {
   return z
@@ -85,13 +90,11 @@ export const retrySchema = z
           .max(599, "must be between 400 and 599"),
       )
       .max(20, "must contain at most 20 items")
-      .refine(unique, "must not contain duplicates")
-      .meta({ uniqueItems: true }),
+      .refine(unique, "must not contain duplicates"),
     error_codes: z
       .array(nameSchema)
       .max(20, "must contain at most 20 items")
       .refine(unique, "must not contain duplicates")
-      .meta({ uniqueItems: true })
       .optional(),
     delays_ms: z
       .array(
@@ -106,32 +109,7 @@ export const retrySchema = z
       (value.status_codes.length === 0 && !value.error_codes?.length) ===
       (value.delays_ms.length === 0),
     "status_codes or error_codes must be non-empty exactly when delays_ms is non-empty",
-  )
-  .meta({
-    // JSON Schema cannot derive a Zod refinement. Keep its equivalent beside the rule.
-    anyOf: [
-      {
-        properties: {
-          status_codes: { maxItems: 0 },
-          error_codes: { maxItems: 0 },
-          delays_ms: { maxItems: 0 },
-        },
-      },
-      {
-        properties: {
-          status_codes: { minItems: 1 },
-          delays_ms: { minItems: 1 },
-        },
-      },
-      {
-        required: ["error_codes"],
-        properties: {
-          error_codes: { minItems: 1 },
-          delays_ms: { minItems: 1 },
-        },
-      },
-    ],
-  });
+  );
 
 const socksCredentialSchema = z
   .string()
@@ -171,29 +149,17 @@ export const socksProxySchema = z
     (value) =>
       (value.username === undefined) === (value.password === undefined),
     "username and password must be supplied together",
-  )
-  .meta({
-    description:
-      "SOCKS5 proxy with remote DNS. Credentials are optional and must be supplied together.",
-    anyOf: [
-      { required: ["username", "password"] },
-      {
-        not: {
-          anyOf: [{ required: ["username"] }, { required: ["password"] }],
-        },
-      },
-    ],
-  });
-export const proxyNodeSchema = socksProxySchema
-  .safeExtend({
-    id: identifierSchema,
-    priority: integer,
-    disabled: boolean,
-  })
-  .meta(socksProxySchema.meta() ?? {});
+  );
+export const proxyNodeSchema = socksProxySchema.safeExtend({
+  id: identifierSchema,
+  name: z.string().trim().min(1).max(256).optional(),
+  priority: integer,
+  disabled: boolean,
+});
 export const proxyStrategySchema = z.enum(ProxyStrategy);
 export const proxyGroupSchema = z.strictObject({
   id: identifierSchema,
+  name: z.string().trim().min(1).max(256).optional(),
   strategy: proxyStrategySchema,
   proxies: z.array(proxyNodeSchema).superRefine((proxies, context) => {
     if (!unique(proxies.map((proxy) => proxy.id)))
@@ -219,6 +185,7 @@ const credentialAuthSchema = z.discriminatedUnion(
 
 export const credentialSchema = z.strictObject({
   id: identifierSchema,
+  name: z.string().trim().min(1).max(256).optional(),
   auth: credentialAuthSchema,
   priority: integer,
   disabled: boolean,
@@ -230,13 +197,6 @@ export const oauthCredentialSchema = credentialSchema.extend({
     account_ref: z.uuid(),
   }),
 });
-/** IDs reserved for the fixed native provider singletons. */
-export const NATIVE_PROVIDER_IDS: readonly string[] = [
-  ProviderType.Antigravity,
-  ProviderType.Codex,
-  ProviderType.Claude,
-  ProviderType.Xai,
-];
 const oauthCredentials = z
   .array(oauthCredentialSchema)
   .superRefine((credentials, context) => {
@@ -255,15 +215,17 @@ const oauthCredentials = z
   });
 export const aiGatewayProviderSchema = z.strictObject({
   type: z.literal(ProviderType.AiGateway),
-  id: identifierSchema
-    .superRefine((id, context) => {
-      if (NATIVE_PROVIDER_IDS.includes(id))
-        context.addIssue({
-          code: "custom",
-          message: `${id} is a reserved provider ID`,
-        });
-    })
-    .meta({ not: { enum: [...NATIVE_PROVIDER_IDS] } }),
+  id: identifierSchema,
+  name: z.string().trim().min(1).max(256).optional(),
+  model_settings: z
+    .record(
+      z.string(),
+      z.strictObject({
+        id: z.uuid().optional(),
+        context_window: tokenCountSchema.positive().optional(),
+      }),
+    )
+    .optional(),
   base_url: baseUrlSchema,
   proxy_group: proxyGroupReferenceSchema,
   credentials: z
@@ -289,11 +251,11 @@ export const aiGatewayProviderSchema = z.strictObject({
   model_routes: routes(providerRouteSchema).optional(),
 });
 export const codexAccountSelectionSchema = z.enum(CodexAccountSelection);
-export const antigravityDraftProviderSchema = aiGatewayProviderSchema
+export const antigravityProviderFormSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
     type: z.literal(ProviderType.Antigravity),
-    id: z.literal(ProviderType.Antigravity),
+    id: identifierSchema,
     sensitive_words: z
       .array(z.string().trim().min(1).max(256))
       .max(128)
@@ -309,49 +271,39 @@ export const antigravityDraftProviderSchema = aiGatewayProviderSchema
     anthropic_1m_context: z.literal(false).default(false),
     emulate_claude_code: z.literal(false).default(false),
   });
-/** Enabled native providers need models and at least one account before publication. */
-function publishable<
+/** Enabled native providers need models and at least one account before saving. */
+function requireEnabledCredentials<
   T extends z.ZodType<{
     disabled: boolean;
     models: string[];
     credentials: unknown[];
   }>,
->(draft: T, label: string) {
-  return draft
-    .superRefine((provider, context) => {
-      if (provider.disabled) return;
-      if (!provider.models.length)
-        context.addIssue({
-          code: "custom",
-          path: ["models"],
-          message: `select ${label} models before enabling the provider`,
-        });
-      if (!provider.credentials.length)
-        context.addIssue({
-          code: "custom",
-          path: ["credentials"],
-          message: `add ${label === "Antigravity" ? "an" : "a"} ${label} account before enabling the provider`,
-        });
-    })
-    .meta({
-      if: {
-        properties: { disabled: { const: false } },
-        required: ["disabled"],
-      },
-      then: {
-        properties: { models: { minItems: 1 }, credentials: { minItems: 1 } },
-      },
-    });
+>(configuration: T, label: string) {
+  return configuration.superRefine((provider, context) => {
+    if (provider.disabled) return;
+    if (!provider.models.length)
+      context.addIssue({
+        code: "custom",
+        path: ["models"],
+        message: `select ${label} models before enabling the provider`,
+      });
+    if (!provider.credentials.length)
+      context.addIssue({
+        code: "custom",
+        path: ["credentials"],
+        message: `add ${label === "Antigravity" ? "an" : "a"} ${label} account before enabling the provider`,
+      });
+  });
 }
-export const antigravityProviderSchema = publishable(
-  antigravityDraftProviderSchema,
+export const antigravityProviderSchema = requireEnabledCredentials(
+  antigravityProviderFormSchema,
   "Antigravity",
 );
-export const codexDraftProviderSchema = aiGatewayProviderSchema
+export const codexProviderFormSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
     type: z.literal(ProviderType.Codex),
-    id: z.literal(ProviderType.Codex),
+    id: identifierSchema,
     models: nameList,
     credentials: oauthCredentials,
     supports_websocket: boolean.default(true),
@@ -363,11 +315,11 @@ export const codexDraftProviderSchema = aiGatewayProviderSchema
     ),
     auto_consume_resets: boolean.default(false),
   });
-export const codexProviderSchema = publishable(
-  codexDraftProviderSchema,
+export const codexProviderSchema = requireEnabledCredentials(
+  codexProviderFormSchema,
   "Codex",
 );
-export const claudeDraftProviderSchema = aiGatewayProviderSchema
+export const claudeProviderFormSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
     models: nameList,
@@ -378,23 +330,26 @@ export const claudeDraftProviderSchema = aiGatewayProviderSchema
     anthropic_1m_context: z.literal(false).default(false),
     emulate_claude_code: z.literal(false).default(false),
     type: z.literal(ProviderType.Claude),
-    id: z.literal(ProviderType.Claude),
+    id: identifierSchema,
     account_selection: codexAccountSelectionSchema.default(
       CodexAccountSelection.RoundRobin,
     ),
     allow_extra_usage: boolean.default(false),
   });
-export const claudeProviderSchema = publishable(
-  claudeDraftProviderSchema,
+export const claudeProviderSchema = requireEnabledCredentials(
+  claudeProviderFormSchema,
   "Claude",
 );
-export const xaiDraftProviderSchema = claudeDraftProviderSchema.extend({
+export const xaiProviderFormSchema = claudeProviderFormSchema.extend({
   type: z.literal(ProviderType.Xai),
-  id: z.literal(ProviderType.Xai),
+  id: identifierSchema,
   disabled: boolean.default(true),
   inject_x_search: boolean.default(false),
 });
-export const xaiProviderSchema = publishable(xaiDraftProviderSchema, "xAI");
+export const xaiProviderSchema = requireEnabledCredentials(
+  xaiProviderFormSchema,
+  "xAI",
+);
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
   antigravityProviderSchema,
@@ -404,6 +359,7 @@ export const providerSchema = z.discriminatedUnion("type", [
 ]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
+  name: z.string().trim().min(1).max(256).optional(),
   api_key: secretSchema,
   providers: names,
   model_routes: routes(routeSchema).optional(),
@@ -436,37 +392,24 @@ export const searchSchema = z.discriminatedUnion(
 );
 
 const shape = z.strictObject({
-  $schema: z.string({ error: "must be a string" }).optional(),
   proxy_groups: z.array(proxyGroupSchema).default([]),
-  providers: z
-    .array(providerSchema, { error: "must be a non-empty array" })
-    .meta({
-      allOf: NATIVE_PROVIDER_IDS.map((type) => ({
-        contains: {
-          type: "object",
-          properties: { type: { const: type } },
-          required: ["type"],
-        },
-        minContains: 0,
-        maxContains: 1,
-      })),
-    }),
+  providers: z.array(providerSchema, { error: "must be a non-empty array" }),
   api_keys: z.array(clientSchema, { error: "must be a non-empty array" }),
   model_routes: routes(routeSchema).default({}),
   web_search: searchSchema.default({ mode: "proxy" }),
-  model_policies: modelPoliciesSchema.optional(),
+  model_prices: modelPricesSchema.optional(),
   reporting: reportingSchema.optional(),
   revision: integer.positive().optional(),
 });
 type Configuration = z.output<typeof shape>;
-const draftShape = shape.extend({
+const formShape = shape.extend({
   providers: z.array(
     z.discriminatedUnion("type", [
       aiGatewayProviderSchema,
-      antigravityDraftProviderSchema,
-      codexDraftProviderSchema,
-      claudeDraftProviderSchema,
-      xaiDraftProviderSchema,
+      antigravityProviderFormSchema,
+      codexProviderFormSchema,
+      claudeProviderFormSchema,
+      xaiProviderFormSchema,
     ]),
   ),
 });
@@ -567,14 +510,14 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
         );
     }
   }
-  validateModelPolicyReferences(
-    config.model_policies ?? [],
+  validateModelPriceReferences(
+    config.model_prices ?? [],
     config.providers,
     context,
   );
 }
 
-function normalize({ $schema: _schema, ...config }: Configuration) {
+function normalize(config: Configuration) {
   for (const item of [...config.providers, ...config.api_keys]) {
     if (item.model_routes && !Object.keys(item.model_routes).length)
       delete item.model_routes;
@@ -582,24 +525,16 @@ function normalize({ $schema: _schema, ...config }: Configuration) {
   return config;
 }
 
-/** Drafts allow unresolved references and a native provider awaiting accounts or models. */
-export const draftConfigurationSchema = draftShape
+/** Editable values allow unresolved references and a native provider awaiting accounts or models. */
+export const editableConfigurationSchema = formShape
   .superRefine(validateIdentities)
   .transform(normalize);
 /** Masked credentials are repeated placeholders, so secret uniqueness is checked only after restoration. */
-export const maskedConfigurationSchema = draftShape.transform(normalize);
+export const maskedConfigurationSchema = formShape.transform(normalize);
 export const configurationSchema = shape
-  .extend({
-    providers: shape.shape.providers.min(1, "must be a non-empty array"),
-    api_keys: shape.shape.api_keys.min(1, "must be a non-empty array"),
-  })
   .superRefine(validateIdentities)
   .superRefine(validateReferences)
-  .transform(normalize)
-  .meta({
-    title: "Cody Gateway Configuration",
-    $id: "https://example.invalid/cody.schema.json",
-  });
+  .transform(normalize);
 
 function pathText(path: readonly PropertyKey[]): string {
   return path.reduce<string>(
@@ -631,7 +566,5 @@ export function configurationError(error: z.ZodError): string {
       return `${path}.${key} is only supported for Tavily or Exa mode`;
     return `${path}.${key} is not supported`;
   }
-  if (issue.path.length === 1 && issue.path[0] === "$schema")
-    return `configuration.$schema ${issue.message}`;
   return `${path} ${issue.message}`;
 }

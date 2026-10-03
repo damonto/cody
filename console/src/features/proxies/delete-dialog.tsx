@@ -1,4 +1,6 @@
-import { ApiError, useSaveDraft, type Draft } from "@/lib/api";
+import { useDeleteProxy } from "./mutations";
+import { ApiError } from "@/lib/api";
+import { type ProxyResources } from "@/lib/resources";
 import { ErrorNotice } from "@/components/common";
 import {
   AlertDialog,
@@ -20,7 +22,7 @@ export type ProxyDeletionTarget =
     };
 
 interface DeleteProxyDialogProps {
-  readonly snapshot: Draft;
+  readonly snapshot: ProxyResources;
   readonly target: ProxyDeletionTarget;
   readonly close: () => void;
 }
@@ -30,36 +32,35 @@ export function DeleteProxyDialog({
   target,
   close,
 }: DeleteProxyDialogProps) {
-  const save = useSaveDraft();
+  const save = useDeleteProxy();
+  const group = snapshot.groups.find((item) => item.id === target.groupId);
+  const groupName = group?.name ?? target.groupId;
+  const nodeName =
+    target.kind === "node"
+      ? (group?.proxies.find((node) => node.id === target.proxyId)?.name ??
+        target.proxyId)
+      : undefined;
   const referencedBy =
     target.kind === "group"
-      ? snapshot.config.providers.flatMap((provider) => [
-          ...(provider.proxy_group === target.groupId ? [provider.id] : []),
+      ? snapshot.providers.flatMap((provider) => [
+          ...(provider.proxy_group === target.groupId
+            ? [provider.name ?? provider.id]
+            : []),
           ...provider.credentials
             .filter((credential) => credential.proxy_group === target.groupId)
-            .map((credential) => `${provider.id} / ${credential.id}`),
+            .map(
+              (credential) =>
+                `${provider.name ?? provider.id} / ${credential.name ?? credential.id}`,
+            ),
         ])
       : [];
 
   const remove = (): void => {
-    const groups = snapshot.config.proxy_groups;
-    const proxy_groups =
-      target.kind === "group"
-        ? groups.filter((group) => group.id !== target.groupId)
-        : groups.map((group) =>
-            group.id === target.groupId
-              ? {
-                  ...group,
-                  proxies: group.proxies.filter(
-                    (node) => node.id !== target.proxyId,
-                  ),
-                }
-              : group,
-          );
     save.mutate(
       {
         version: snapshot.version,
-        config: { ...snapshot.config, proxy_groups },
+        groupId: target.groupId,
+        nodeId: target.kind === "node" ? target.proxyId : null,
       },
       { onSuccess: close },
     );
@@ -75,22 +76,23 @@ export function DeleteProxyDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>
             {target.kind === "group"
-              ? `Remove group ${target.groupId}?`
-              : `Remove proxy ${target.proxyId}?`}
+              ? `Remove group ${groupName}?`
+              : `Remove proxy ${nodeName}?`}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {target.kind === "group"
-              ? "The group and its nodes will be removed from the draft."
-              : `This node will be removed from group ${target.groupId} in the draft.`}{" "}
+              ? "The group and its nodes will be removed from the configuration."
+              : `This node will be removed from group ${groupName} in the configuration.`}{" "}
             {referencedBy.length
-              ? `Update references from ${referencedBy.join(", ")} before publishing.`
-              : "Published traffic changes when you publish the draft."}
+              ? `Update references from ${referencedBy.join(", ")} before saving.`
+              : "Saving applies immediately to new requests."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {save.error && <ErrorNotice error={save.error} />}
         {save.error instanceof ApiError && save.error.status === 409 && (
           <p className="text-sm text-muted-foreground">
-            Refresh this page to load the latest draft before trying again.
+            Refresh this page to load the latest configuration before trying
+            again.
           </p>
         )}
         <AlertDialogFooter>
@@ -104,7 +106,7 @@ export function DeleteProxyDialog({
               remove();
             }}
           >
-            Remove from draft
+            Remove from configuration
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

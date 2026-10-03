@@ -3,10 +3,10 @@ import {
   ProviderType,
 } from "../../../../src/config/values.ts";
 
-import { claudeDraftProviderSchema } from "../../../../src/config/schema";
+import { claudeProviderFormSchema } from "../../../../src/config/schema";
 import type {
   ClaudeProviderConfig,
-  GatewayConfig,
+  ProviderConfig,
 } from "../../../../src/config/types";
 
 import {
@@ -22,7 +22,8 @@ export {
 export function newClaudeProvider(): ClaudeProviderConfig {
   return {
     type: ProviderType.Claude,
-    id: "claude",
+    id: `new-${crypto.randomUUID()}`,
+    name: "Claude",
     priority: 100,
     disabled: true,
     models: [],
@@ -36,12 +37,12 @@ export function newClaudeProvider(): ClaudeProviderConfig {
     allow_extra_usage: false,
   };
 }
-export function claudeProvider(config: GatewayConfig): ClaudeProviderConfig {
-  return (
-    config.providers.find(
-      (provider) => provider.type === ProviderType.Claude,
-    ) ?? newClaudeProvider()
-  );
+export function claudeProvider(
+  provider: ProviderConfig | null,
+): ClaudeProviderConfig {
+  return provider?.type === ProviderType.Claude
+    ? provider
+    : newClaudeProvider();
 }
 
 export {
@@ -62,7 +63,7 @@ export function applyAccount(
   const credentials = [...provider.credentials];
   if (index === -1) credentials.push(credential);
   else credentials[index] = credential;
-  return claudeDraftProviderSchema.parse({ ...provider, credentials });
+  return claudeProviderFormSchema.parse({ ...provider, credentials });
 }
 
 /** Toggles one account without opening its editor. */

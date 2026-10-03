@@ -8,14 +8,10 @@ import { UsageStatus, BillingStatus } from "../billing/values.ts";
 import { type ApiProtocol } from "../gateway/protocol-values.ts";
 import type { TerminalRequestOutcome } from "./values.ts";
 
-import {
-  calculateCost,
-  emptyCost,
-  priceVersion,
-} from "../billing/calculate.ts";
+import { calculateCost, emptyCost } from "../billing/calculate.ts";
 import {
   USAGE_FIELDS,
-  type ModelPolicy,
+  type ModelPrice,
   type NormalizedUsage,
 } from "../billing/types.ts";
 import type { GatewayConfig } from "../config/types.ts";
@@ -85,7 +81,7 @@ export class RequestMeter {
   private readonly work: Promise<boolean>[] = [];
   private terminalDelivery: Promise<boolean> | undefined;
   private readonly data: UsageEvent;
-  private policy: ModelPolicy | undefined;
+  private price: ModelPrice | undefined;
   private config: GatewayConfig | undefined;
   private finished = false;
   private wrapped = false;
@@ -172,32 +168,35 @@ export class RequestMeter {
   private announceSelection(): void {
     if (this.finished || this.data.sequence !== 0) return;
     this.data.sequence = 1;
-    this.data.billing.currency = this.policy?.pricing?.currency ?? "";
+    this.data.billing.currency = this.price?.pricing?.currency ?? "";
     this.send(this.data);
   }
 
   checkpoint(): UsageEvent {
     return structuredClone({
       ...this.data,
-      usage: this.accumulator.snapshot(this.policy),
+      usage: this.accumulator.snapshot(this.price),
     });
   }
 
   configure(config: GatewayConfig): void {
     this.config = config;
     this.data.config_revision = config.revision ?? null;
-    this.selectPolicy();
+    this.selectPrice();
   }
 
-  private selectPolicy(): void {
+  private selectPrice(): void {
     if (this.data.sequence !== 0) return;
-    const policy = this.config?.model_policies?.find(
-      (policy) =>
-        policy.provider_id === this.data.provider_id &&
-        policy.model === this.data.model,
+    const price = this.config?.model_prices?.find(
+      (price) =>
+        price.provider_id === this.data.provider_id &&
+        price.model === this.data.model,
     );
-    this.policy = policy ? structuredClone(policy) : undefined;
-    this.data.context_window = this.policy?.context_window ?? null;
+    this.price = price ? structuredClone(price) : undefined;
+    this.data.context_window =
+      this.config?.providers.find(
+        (provider) => provider.id === this.data.provider_id,
+      )?.model_settings?.[this.data.model]?.context_window ?? null;
   }
 
   authenticate(clientId: string): void {
@@ -215,7 +214,7 @@ export class RequestMeter {
     this.data.provider_id = target.providerId;
     this.data.credential_id = target.credentialId;
     this.data.model = target.model;
-    this.selectPolicy();
+    this.selectPrice();
     this.announceSelection();
   }
 
@@ -341,24 +340,18 @@ export class RequestMeter {
       outcome === RequestOutcome.Failed
     )
       this.data.outcome = outcome;
-    const usage = this.accumulator.snapshot(this.policy);
+    const usage = this.accumulator.snapshot(this.price);
     this.data.context_tokens = usage.tokens.input_tokens;
     this.data.context_source =
       usage.tokens.input_tokens === null
         ? ContextSource.Unavailable
         : ContextSource.ReportedInput;
     this.data.usage = usage;
-    const version = this.policy
-      ? priceVersion(
-          this.data.config_revision ?? undefined,
-          this.data.provider_id,
-          this.data.model,
-        )
-      : null;
+    const version = this.price?.version_id ?? null;
     try {
       this.data.billing =
         usage.status !== UsageStatus.Invalid
-          ? calculateCost(usage.tokens, this.policy, version)
+          ? calculateCost(usage.tokens, this.price, version)
           : emptyCost(BillingStatus.Unknown);
       const last = this.data.attempts.at(-1);
       if (last) {
@@ -377,11 +370,11 @@ export class RequestMeter {
         }
         const previousUsage = new UsageAccumulator(this.options.protocol);
         previousUsage.add(attempt.usage.raw);
-        attempt.usage = previousUsage.snapshot(this.policy);
+        attempt.usage = previousUsage.snapshot(this.price);
         attempt.billing =
           attempt.usage.status === UsageStatus.Invalid
             ? emptyCost(BillingStatus.Unknown)
-            : calculateCost(attempt.usage.tokens, this.policy, version);
+            : calculateCost(attempt.usage.tokens, this.price, version);
         for (const field of USAGE_FIELDS) {
           const previous = attempt.usage.tokens[field];
           if (previous !== null) {

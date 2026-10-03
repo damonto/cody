@@ -26,9 +26,9 @@ import {
 
 export interface AuthorizationOptions {
   accountRef: string;
-  connection: ProviderConnection & { provider_id: OAuthProviderType };
+  connection: ProviderConnection & { provider_type: OAuthProviderType };
   version: number;
-  draftVersion: number;
+  configurationVersion: number;
   onAuthorized: (ref: string) => void;
 }
 
@@ -43,7 +43,7 @@ export function useAuthorization({
   accountRef,
   connection,
   version,
-  draftVersion,
+  configurationVersion,
   onAuthorized,
 }: AuthorizationOptions) {
   const cache = useQueryClient();
@@ -66,9 +66,9 @@ export function useAuthorization({
   };
   const start = useMutation({
     mutationFn: async (flow: OAuthFlow = OAuthFlow.Pkce) => {
-      if (version !== draftVersion)
+      if (version !== configurationVersion)
         throw new Error(
-          "The draft changed. Your form is retained; reopen it from the latest draft before starting authorization.",
+          "The configuration changed. Your form is retained; reopen it from the latest configuration before starting authorization.",
         );
       const parsed = connectionSchema.parse(connection);
       return sessionViewSchema.parse(
@@ -77,6 +77,7 @@ export function useAuthorization({
             json: {
               ...parsed,
               provider_id: connection.provider_id,
+              provider_type: connection.provider_type,
               version,
               flow,
               ...(accountRef ? { account_ref: accountRef } : {}),

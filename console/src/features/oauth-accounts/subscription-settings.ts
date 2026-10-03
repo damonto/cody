@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  claudeDraftProviderSchema,
+  claudeProviderFormSchema,
   nameSchema,
 } from "../../../../src/config/schema";
 import type {
@@ -8,7 +8,7 @@ import type {
   XaiProviderConfig,
 } from "../../../../src/config/types";
 export type SubscriptionProvider = ClaudeProviderConfig | XaiProviderConfig;
-export const settingsEditorSchema = claudeDraftProviderSchema
+export const settingsEditorSchema = claudeProviderFormSchema
   .omit({
     id: true,
     type: true,
@@ -23,6 +23,7 @@ export const settingsEditorSchema = claudeDraftProviderSchema
       .array(
         z.strictObject({
           rowId: z.string().min(1),
+          id: z.string().optional(),
           alias: nameSchema,
           model: nameSchema,
         }),
@@ -62,6 +63,7 @@ export function settingsFormValues(
     routes: Object.entries(provider.model_routes ?? {}).map(
       ([alias, route]) => ({
         rowId: crypto.randomUUID(),
+        id: route.id,
         alias,
         model: route.model,
       }),
@@ -81,7 +83,10 @@ export function applySettings<Provider extends SubscriptionProvider>(
       ? { inject_x_search: inject_x_search ?? false }
       : {}),
     model_routes: Object.fromEntries(
-      routes.map(({ alias, model }) => [alias, { model }]),
+      routes.map(({ id, alias, model }) => [
+        alias,
+        { ...(id ? { id } : {}), model },
+      ]),
     ),
   };
 }

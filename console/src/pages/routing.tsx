@@ -1,16 +1,17 @@
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
+import { useSaveModelRoutes } from "@/features/routing/api";
 import { useState } from "react";
 import { useAppForm } from "@/lib/form";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { routeFormSchema } from "../../../src/shared/forms";
-import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
+import { useRoutingResources, type RoutingResources } from "@/lib/resources";
 import {
   GLOBAL_SCOPE_KEY,
   parseScope,
   routesFor,
   scopeKey,
   scopeProviders,
-  setRoutes,
   type RouteScope,
 } from "@/features/routing/scope";
 import {
@@ -35,29 +36,32 @@ import {
 import { Field, FieldLabel } from "@/components/ui/field";
 
 export default function Routing() {
-  const draft = useDraft();
-  const save = useSaveDraft();
+  const configuration = useRoutingResources();
+  const save = useSaveModelRoutes();
   const [scopeChoice, setScopeChoice] = useState(GLOBAL_SCOPE_KEY);
   const [editor, setEditor] = useState<{
-    snapshot: Draft;
+    snapshot: RoutingResources;
     alias: string;
     scope: RouteScope;
   } | null>(null);
-  if (draft.isPending) return <Loading />;
-  if (draft.error)
+  if (configuration.isPending) return <Loading />;
+  if (configuration.error)
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
-  const config = draft.data.config;
+  const config = configuration.data;
   const choices = [
     { value: GLOBAL_SCOPE_KEY, label: "Global routes" },
     ...config.providers.map((provider) => ({
       value: scopeKey({ kind: "provider", id: provider.id }),
-      label: `Provider · ${provider.id}`,
+      label: `Provider · ${provider.name ?? provider.id}`,
     })),
-    ...config.api_keys.map((client) => ({
+    ...config.clients.map((client) => ({
       value: scopeKey({ kind: "client", id: client.id }),
-      label: `Client · ${client.id}`,
+      label: `Client · ${client.name ?? client.id}`,
     })),
   ];
   const selected = choices.some((choice) => choice.value === scopeChoice)
@@ -69,6 +73,7 @@ export default function Routing() {
   );
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="Model routes"
         description="Map client model names to provider models."
@@ -77,7 +82,7 @@ export default function Routing() {
           disabled={!config.providers.length}
           onClick={() =>
             setEditor({
-              snapshot: structuredClone(draft.data),
+              snapshot: structuredClone(configuration.data),
               alias: "",
               scope,
             })
@@ -155,7 +160,7 @@ export default function Routing() {
                       size="sm"
                       onClick={() =>
                         setEditor({
-                          snapshot: structuredClone(draft.data),
+                          snapshot: structuredClone(configuration.data),
                           alias: row.original.alias,
                           scope,
                         })
@@ -169,13 +174,12 @@ export default function Routing() {
                       aria-label={`Remove route ${row.original.alias}`}
                       disabled={save.isPending}
                       onClick={() => {
-                        const next = structuredClone(config);
-                        const routes = { ...routesFor(next, scope) };
+                        const routes = { ...routesFor(config, scope) };
                         delete routes[row.original.alias];
-                        setRoutes(next, scope, routes);
                         save.mutate({
-                          config: next,
-                          version: draft.data.version,
+                          scope,
+                          routes,
+                          version: configuration.data.version,
                         });
                       }}
                     >
@@ -224,14 +228,14 @@ function RouteForm({
   alias,
   close,
 }: {
-  snapshot: Draft;
+  snapshot: RoutingResources;
   scope: RouteScope;
   alias: string;
   close: () => void;
 }) {
-  const save = useSaveDraft();
-  const existing = routesFor(snapshot.config, scope)[alias];
-  const availableProviders = scopeProviders(snapshot.config, scope);
+  const save = useSaveModelRoutes();
+  const existing = routesFor(snapshot, scope)[alias];
+  const availableProviders = scopeProviders(snapshot, scope);
   const models = [
     ...new Set(availableProviders.flatMap((provider) => provider.models)),
   ];
@@ -243,8 +247,7 @@ function RouteForm({
     },
     validators: { onSubmit: routeFormSchema },
     onSubmit: async ({ value }) => {
-      const next = structuredClone(snapshot.config);
-      const routes = { ...routesFor(next, scope) };
+      const routes = { ...routesFor(snapshot, scope) };
       const parsed = routeFormSchema.parse(value);
       if (parsed.alias !== alias && Object.hasOwn(routes, parsed.alias)) {
         toast.error("This alias already exists in this scope");
@@ -252,14 +255,14 @@ function RouteForm({
       }
       if (alias && parsed.alias !== alias) delete routes[alias];
       routes[parsed.alias] = {
+        ...(existing?.id ? { id: existing.id } : {}),
         model: parsed.model,
         ...(scope.kind !== "provider" && parsed.providers.length
           ? { providers: parsed.providers }
           : {}),
       };
-      setRoutes(next, scope, routes);
       try {
-        await save.mutateAsync({ config: next, version: snapshot.version });
+        await save.mutateAsync({ routes, scope, version: snapshot.version });
         close();
       } catch {
         /* Preserve unsaved values. */
@@ -313,7 +316,7 @@ function RouteForm({
                     .filter((provider) => provider.models.includes(model))
                     .map((provider) => (
                       <label
-                        key={provider.id}
+                        key={provider.name ?? provider.id}
                         className="flex items-center gap-3 rounded-lg border p-3 text-sm"
                       >
                         <Checkbox
@@ -328,7 +331,7 @@ function RouteForm({
                             )
                           }
                         />
-                        {provider.id}
+                        {provider.name ?? provider.id}
                       </label>
                     ))}
                 </Field>

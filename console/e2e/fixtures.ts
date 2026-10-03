@@ -1,8 +1,12 @@
+import { resourceRequest } from "./configuration-resources";
+import { maskSecrets } from "../../src/control/secrets";
 import { expect, type Page } from "@playwright/test";
-import type { Draft, Summary } from "../src/lib/api";
+import type { Summary } from "../src/lib/api";
+import type { GatewayConfig } from "../../src/config/types";
+
 import type { AiGatewayProviderConfig } from "../../src/config/types";
 
-import { draftSchema, versionSchema } from "../../src/admin/schema";
+import { versionSchema } from "../../src/admin/schema";
 import { reportQuerySchema } from "../../src/reporting/query";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import {
@@ -11,17 +15,20 @@ import {
   reportRange,
 } from "../../src/reporting/ranges";
 
+export interface ConfigurationView {
+  version: number;
+  actor: string;
+  config: GatewayConfig;
+}
+
 const secret = SECRET_PLACEHOLDER;
-export function draftFixture(): Omit<Draft, "config"> & {
-  config: Omit<Draft["config"], "providers"> & {
+export function draftFixture(): Omit<ConfigurationView, "config"> & {
+  config: Omit<ConfigurationView["config"], "providers"> & {
     providers: AiGatewayProviderConfig[];
   };
 } {
   return {
     version: 1,
-    published_revision: 1,
-    valid: true,
-    validation_error: null,
     actor: "admin@example.test",
     config: {
       proxy_groups: [],
@@ -29,10 +36,12 @@ export function draftFixture(): Omit<Draft, "config"> & {
         {
           type: "ai_gateway",
           id: "example-provider",
+          name: "example-provider",
           base_url: "https://upstream.example/v1",
           credentials: [
             {
               id: "primary",
+              name: "primary",
               auth: { type: "api_key", api_key: secret },
               priority: 100,
               disabled: false,
@@ -46,11 +55,13 @@ export function draftFixture(): Omit<Draft, "config"> & {
           anthropic_1m_context: false,
           emulate_claude_code: false,
           models: ["example-model"],
+          model_settings: { "example-model": { context_window: 1000000 } },
         },
       ],
       api_keys: [
         {
           id: "example-client",
+          name: "example-client",
           api_key: secret,
           providers: ["example-provider"],
         },
@@ -58,11 +69,11 @@ export function draftFixture(): Omit<Draft, "config"> & {
       model_routes: {},
       web_search: { mode: "proxy" },
       reporting: { time_zone: "UTC", retention_days: 120 },
-      model_policies: [
+      model_prices: [
         {
           provider_id: "example-provider",
           model: "example-model",
-          context_window: 1000000,
+
           pricing: {
             currency: "USD",
             tiers: [
@@ -87,7 +98,9 @@ export function draftFixture(): Omit<Draft, "config"> & {
     },
   };
 }
-function maskKeys(config: Draft["config"]): Draft["config"] {
+function maskKeys(
+  config: ConfigurationView["config"],
+): ConfigurationView["config"] {
   return {
     ...config,
     proxy_groups: config.proxy_groups.map((group) => ({
@@ -123,8 +136,30 @@ function requiredKey(value: string | undefined, owner: string): string {
   return value;
 }
 
-export async function mockApi(page: Page, initial: Draft = draftFixture()) {
+export async function mockApi(
+  page: Page,
+  initial: ConfigurationView = draftFixture(),
+) {
+  for (const entity of [
+    ...initial.config.providers,
+    ...initial.config.api_keys,
+    ...initial.config.proxy_groups,
+  ])
+    entity.name ??= entity.id;
+  for (const provider of initial.config.providers)
+    for (const credential of provider.credentials)
+      credential.name ??= credential.id;
+  for (const group of initial.config.proxy_groups)
+    for (const node of group.proxies) node.name ??= node.id;
   let draft = structuredClone(initial);
+  for (const provider of draft.config.providers)
+    for (const model of provider.models) {
+      provider.model_settings ??= {};
+      provider.model_settings[model] = {
+        id: crypto.randomUUID(),
+        ...provider.model_settings[model],
+      };
+    }
   let clientKeys = new Map(
     draft.config.api_keys.map((client) => [
       client.id,
@@ -163,6 +198,11 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
     return requiredKey(searchApiKey, "Web search");
   }
   draft.config = maskKeys(draft.config);
+  const operations = new Map<
+    string,
+    { body: string; path: string; result: { version: number; item: unknown } }
+  >();
+  let loseSaveResponse = false;
   const calls: string[] = [];
   await page.route("**/console/api/**", async (route) => {
     const request = route.request();
@@ -170,51 +210,138 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
     calls.push(`${request.method()} ${url.pathname}${url.search}`);
     let response: unknown = {};
     const clientReveal = url.pathname.match(
-      /^\/console\/api\/config\/clients\/([^/]+)\/reveal$/,
+      /^\/console\/api\/clients\/([^/]+)\/reveal$/,
     );
     const providerReveal = url.pathname.match(
-      /^\/console\/api\/config\/providers\/([^/]+)\/credentials\/([^/]+)\/reveal$/,
+      /^\/console\/api\/providers\/([^/]+)\/credentials\/([^/]+)\/reveal$/,
     );
     const searchReveal =
-      url.pathname === "/console/api/config/web-search/reveal";
-    if (url.pathname === "/console/api/config") {
-      if (request.method() === "PUT") {
-        const input = draftSchema.parse(request.postDataJSON());
-        expect(request.headers()["x-cody-admin"]).toBe("1");
-        expect(input.version).toBe(draft.version);
-        clientKeys = new Map(
-          input.config.api_keys.map((client) => {
-            const value =
-              client.api_key === secret ? clientKey(client.id) : client.api_key;
-            return [client.id, value];
-          }),
-        );
-        providerKeys = new Map(
-          input.config.providers
-            .filter((provider) => provider.type === "ai_gateway")
-            .flatMap((provider) =>
-              provider.credentials.map((key): [string, string] => [
-                `${provider.id}:${key.id}`,
-                key.auth.api_key === secret
-                  ? providerKey(provider.id, key.id)
-                  : key.auth.api_key,
-              ]),
-            ),
-        );
-        const search = input.config.web_search;
-        searchApiKey =
-          search.mode === "proxy"
-            ? undefined
-            : search.api_key === secret
-              ? searchKey()
-              : search.api_key;
-        draft = {
-          ...draft,
-          version: draft.version + 1,
-          config: maskKeys(input.config),
-        };
+      url.pathname === "/console/api/settings/web-search/reveal";
+    if (
+      ["POST", "PUT", "DELETE"].includes(request.method()) &&
+      /^\/console\/api\/(providers|native-providers|clients|proxy-groups|settings|model-prices|model-routes)(?:\/|$)/.test(
+        url.pathname,
+      ) &&
+      !url.pathname.endsWith("/reveal") &&
+      !url.pathname.endsWith("/test")
+    ) {
+      const body = request.postDataJSON();
+      const prior = operations.get(body.operation_id);
+      if (prior) {
+        expect(JSON.stringify(body)).toBe(prior.body);
+        expect(`${request.method()} ${url.pathname}`).toBe(prior.path);
+        await route.fulfill({ json: prior.result });
+        return;
       }
-      response = draft;
+      const input = resourceRequest(
+        draft.config,
+        url.pathname,
+        request.method(),
+        body,
+      );
+      expect(request.headers()["x-cody-admin"]).toBe("1");
+      expect(body.version).toBe(draft.version);
+      clientKeys = new Map(
+        input.config.api_keys.map((client) => {
+          const value =
+            client.api_key === secret ? clientKey(client.id) : client.api_key;
+          return [client.id, value];
+        }),
+      );
+      providerKeys = new Map(
+        input.config.providers
+          .filter((provider) => provider.type === "ai_gateway")
+          .flatMap((provider) =>
+            provider.credentials.map((key): [string, string] => [
+              `${provider.id}:${key.id}`,
+              key.auth.api_key === secret
+                ? providerKey(provider.id, key.id)
+                : key.auth.api_key,
+            ]),
+          ),
+      );
+      const search = input.config.web_search;
+      searchApiKey =
+        search.mode === "proxy"
+          ? undefined
+          : search.api_key === secret
+            ? searchKey()
+            : search.api_key;
+      draft = {
+        ...draft,
+        version: draft.version + 1,
+        config: maskKeys(input.config),
+      };
+      const result = { version: draft.version, item: maskSecrets(input.item) };
+      if (body.operation_id)
+        operations.set(body.operation_id, {
+          body: JSON.stringify(body),
+          path: `${request.method()} ${url.pathname}`,
+          result,
+        });
+      if (loseSaveResponse) {
+        loseSaveResponse = false;
+        await route.abort("failed");
+        return;
+      }
+      response = result;
+    } else if (url.pathname === "/console/api/config") {
+      expect(request.method()).toBe("GET");
+      response = {
+        version: draft.version,
+        actor: draft.actor,
+        maintenance: 0,
+        updated_at: 0,
+      };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/providers"
+    ) {
+      response = { version: draft.version, item: draft.config.providers };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/clients"
+    ) {
+      response = { version: draft.version, item: draft.config.api_keys };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/proxy-groups"
+    ) {
+      response = { version: draft.version, item: draft.config.proxy_groups };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/model-prices"
+    ) {
+      response = {
+        version: draft.version,
+        item: draft.config.model_prices ?? [],
+      };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/model-routes"
+    ) {
+      response = { version: draft.version, item: draft.config.model_routes };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/settings/reporting"
+    ) {
+      response = { version: draft.version, item: draft.config.reporting };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/console/api/settings/web-search"
+    ) {
+      response = { version: draft.version, item: draft.config.web_search };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname.startsWith("/console/api/native-providers/")
+    ) {
+      response = {
+        version: draft.version,
+        item:
+          draft.config.providers.find(
+            (provider) => provider.type === url.pathname.split("/").at(-1),
+          ) ?? null,
+      };
     } else if (
       (clientReveal || providerReveal || searchReveal) &&
       request.method() === "POST"
@@ -249,9 +376,14 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
         return;
       }
       response = { api_key };
-    } else if (url.pathname === "/console/api/config/publish") {
-      draft.published_revision = (draft.published_revision ?? 0) + 1;
-      response = draft;
+    } else if (url.pathname === "/console/api/config/names") {
+      response = {
+        names: Object.fromEntries(
+          [...draft.config.providers, ...draft.config.api_keys].map(
+            (entity) => [entity.id, entity.name ?? entity.id],
+          ),
+        ),
+      };
     } else if (url.pathname === "/console/api/summary") {
       const query = reportQuerySchema.parse(
         Object.fromEntries(url.searchParams),
@@ -319,7 +451,7 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
     } else if (url.pathname === "/console/api/requests")
       response = { items: [], next_cursor: null };
     else if (url.pathname === "/console/api/pricing/version")
-      response = { policy: draft.config.model_policies![0] };
+      response = { price: draft.config.model_prices![0] };
     else if (url.pathname === "/console/api/pricing/preview")
       response = {
         status: "complete",
@@ -339,6 +471,28 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
       url.pathname === "/console/api/runtime/clients"
     )
       response = { items: [] };
+    if (
+      request.method() === "GET" &&
+      response &&
+      typeof response === "object" &&
+      "version" in response &&
+      "item" in response
+    ) {
+      const value =
+        url.pathname === "/console/api/settings/web-search"
+          ? [response.item, searchApiKey]
+          : response.item;
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(JSON.stringify(value)),
+      );
+      response = {
+        ...response,
+        etag: Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join(""),
+      };
+    }
     await route.fulfill({ json: response });
   });
   return {
@@ -346,6 +500,30 @@ export async function mockApi(page: Page, initial: Draft = draftFixture()) {
     clientKey,
     providerKey,
     searchKey,
+    rotateSearchKey: (value: string) => {
+      if (draft.config.web_search.mode === "proxy")
+        throw new Error("Configure a search provider before rotating its key");
+      searchApiKey = value;
+      draft.version += 1;
+    },
     calls,
+    loseNextSaveResponse: () => {
+      loseSaveResponse = true;
+    },
   };
+}
+
+export function isConfigurationMutation(request: {
+  method(): string;
+  url(): string;
+}): boolean {
+  const path = new URL(request.url()).pathname;
+  return (
+    ["POST", "PUT", "DELETE"].includes(request.method()) &&
+    /^\/console\/api\/(providers|native-providers|clients|proxy-groups|settings|model-prices|model-routes)(?:\/|$)/.test(
+      path,
+    ) &&
+    !path.endsWith("/reveal") &&
+    !path.endsWith("/test")
+  );
 }

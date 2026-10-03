@@ -41,11 +41,11 @@ export function CodexAccounts({
   const refs = provider.credentials.map(
     (credential) => credential.auth.account_ref,
   );
-  const key = quotaQueryKey(["codex", ...refs]);
+  const key = quotaQueryKey([provider.id, ...refs]);
   const query = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
-      const accounts = await cache.fetchQuery(accountsOptions("codex"));
+      const accounts = await cache.fetchQuery(accountsOptions(provider.id));
       return mapWithConcurrency(
         accounts.filter((account) => refs.includes(account.account_ref)),
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -56,7 +56,7 @@ export function CodexAccounts({
     retry: false,
   });
   const health = useQuery({
-    ...accountHealthOptions("codex"),
+    ...accountHealthOptions(provider.id),
     enabled: refs.length > 0,
   });
   const refresh = useMutation({

@@ -345,7 +345,7 @@ export function Authorization({
           <AlertDialogHeader>
             <AlertDialogTitle>Disconnect this account?</AlertDialogTitle>
             <AlertDialogDescription>
-              This deletes its local tokens immediately, including for published
+              This deletes its local tokens immediately, including for active
               configurations. It does not sign the account out of ChatGPT. You
               can reauthorize the same account later.
             </AlertDialogDescription>

@@ -1,9 +1,10 @@
+import { useSaveProxyGroup } from "./mutations";
 import { ProxyStrategy } from "../../../../src/config/values.ts";
 
 import { useId, useState } from "react";
 import { proxyStrategySchema } from "../../../../src/config/schema";
 import { useAppForm } from "@/lib/form";
-import { useSaveDraft, type Draft } from "@/lib/api";
+import { type ProxyResources } from "@/lib/resources";
 import { fieldErrors } from "@/lib/form-errors";
 import { ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ import {
 import { ProxyNodeFields } from "./node-fields";
 
 interface ProxyGroupEditorProps {
-  readonly snapshot: Draft;
+  readonly snapshot: ProxyResources;
   readonly groupId?: string;
   readonly close: () => void;
 }
@@ -45,13 +46,11 @@ export function ProxyGroupEditor({
   groupId,
   close,
 }: ProxyGroupEditorProps) {
-  const save = useSaveDraft();
+  const save = useSaveProxyGroup();
   const strategyId = useId();
-  // This is an editing snapshot: background draft refreshes must not replace unsaved input.
+  // This is an editing snapshot: background configuration refreshes must not replace unsaved input.
   const [initial] = useState(() => {
-    const group = snapshot.config.proxy_groups.find(
-      (entry) => entry.id === groupId,
-    );
+    const group = snapshot.groups.find((entry) => entry.id === groupId);
     if (groupId !== undefined && !group) {
       throw new Error("Proxy group is missing from the editing snapshot");
     }
@@ -61,29 +60,13 @@ export function ProxyGroupEditor({
     ...proxyGroupFormOptions,
     defaultValues: initial,
     onSubmit: async ({ value }) => {
-      if (
-        snapshot.config.proxy_groups.some(
-          (group) => group.id !== groupId && group.id === value.id,
-        )
-      ) {
-        form.setFieldMeta("id", (meta) => ({
-          ...meta,
-          errorMap: { onSubmit: "A group with this ID already exists" },
-        }));
-        return;
-      }
       const group = proxyGroupEditorSchema.parse(value);
-      const config = {
-        ...snapshot.config,
-        proxy_groups:
-          groupId === undefined
-            ? [...snapshot.config.proxy_groups, group]
-            : snapshot.config.proxy_groups.map((entry) =>
-                entry.id === groupId ? group : entry,
-              ),
-      };
       try {
-        await save.mutateAsync({ config, version: snapshot.version });
+        await save.mutateAsync({
+          group,
+          id: groupId ?? null,
+          version: snapshot.version,
+        });
         close();
       } catch {
         // Keep the editing snapshot and error visible; retry uses the same version guard.
@@ -111,7 +94,7 @@ export function ProxyGroupEditor({
                   : "Configure proxy group"}
               </DialogTitle>
               <DialogDescription>
-                Save changes to your draft, then publish when ready.
+                Saving applies these changes immediately.
               </DialogDescription>
             </DialogHeader>
             <form
@@ -122,12 +105,11 @@ export function ProxyGroupEditor({
               }}
             >
               <fieldset disabled={submitting} className="space-y-5">
-                <form.AppField name="id">
+                <form.AppField name="name">
                   {(field) => (
                     <field.TextField
-                      label="Group ID"
+                      label="Group name"
                       placeholder="US"
-                      readOnly={groupId !== undefined}
                       hint="Stable identifier selected by providers and credentials."
                     />
                   )}
@@ -174,10 +156,7 @@ export function ProxyGroupEditor({
                     </Field>
                   )}
                 </form.AppField>
-                <ProxyNodeFields
-                  form={form}
-                  savedRowIds={initial.proxies.map((node) => node.rowId)}
-                />
+                <ProxyNodeFields form={form} />
               </fieldset>
               {save.error && <ErrorNotice error={save.error} />}
               <form.AppForm>

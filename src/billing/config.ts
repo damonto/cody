@@ -1,10 +1,10 @@
 import {
-  modelPoliciesSchema,
+  modelPricesSchema,
   rateSchema,
   reportingSchema,
-  validateModelPolicyReferences,
+  validateModelPriceReferences,
 } from "./schema.ts";
-import type { ModelPolicy, ReportingConfig } from "./types.ts";
+import type { ModelPrice, ReportingConfig } from "./types.ts";
 
 export const DEFAULT_REPORTING: ReportingConfig = {
   time_zone: "Asia/Shanghai",
@@ -19,13 +19,13 @@ export function parseReporting(value: unknown): ReportingConfig {
   return reportingSchema.parse(value === undefined ? DEFAULT_REPORTING : value);
 }
 
-export function parseModelPolicies(
+export function parseModelPrices(
   value: unknown,
   providers: readonly { id: string; models: string[] }[],
-): ModelPolicy[] {
-  return modelPoliciesSchema
-    .superRefine((policies, context) =>
-      validateModelPolicyReferences(policies, providers, context),
+): ModelPrice[] {
+  return modelPricesSchema
+    .superRefine((prices, context) =>
+      validateModelPriceReferences(prices, providers, context),
     )
     .parse(value === undefined ? [] : value);
 }

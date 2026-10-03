@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import {
   applyD1Migrations,
   createExecutionContext,
@@ -181,7 +182,11 @@ async function pool() {
       { id: "client", api_key: "client-secret", providers: ["codex"] },
     ],
   });
-  await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
   return accounts;
 }
 

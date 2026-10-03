@@ -48,7 +48,8 @@ export function newCredential(): ProviderFormValues["credentials"][number] {
   const rowId = crypto.randomUUID();
   return {
     rowId,
-    id: `credential-${rowId.slice(0, 6)}`,
+    id: rowId,
+    name: "Credential",
     auth: { type: CredentialAuthType.ApiKey, api_key: "" },
     priority: 50,
     disabled: false,
@@ -58,13 +59,15 @@ export function newCredential(): ProviderFormValues["credentials"][number] {
 export function newProvider(): ProviderFormValues {
   return {
     type: ProviderType.AiGateway,
-    id: "",
+    id: `new-${crypto.randomUUID()}`,
+    name: "",
     base_url: "",
     models: [],
     credentials: [
       {
         rowId: "primary",
-        id: "primary",
+        id: `new-${crypto.randomUUID()}`,
+        name: "Primary",
         auth: { type: CredentialAuthType.ApiKey, api_key: "" },
         priority: 100,
         disabled: false,

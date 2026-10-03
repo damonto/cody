@@ -3,11 +3,10 @@ import test from "node:test";
 
 import { ConfigError, parseConfig } from "../src/config/store.ts";
 import {
-  hasSecretPlaceholder,
   maskSecrets,
   restoreSecrets,
   SECRET_PLACEHOLDER,
-} from "../src/control/store.ts";
+} from "../src/control/secrets.ts";
 import { upstreamSecretValues } from "../src/gateway/routing/credentials.ts";
 
 function validConfig() {
@@ -176,18 +175,6 @@ test("proxy passwords are restored by group and node IDs after reordering and ro
   );
   masked.proxy_groups[1].id = "new-group";
   assert.throws(() => restoreSecrets(masked, input), /new credential/);
-});
-
-test("placeholder detection inspects only secret fields", () => {
-  const input = validConfig();
-  input.proxy_groups = proxyGroups();
-  assert.equal(hasSecretPlaceholder(input), false);
-  assert.equal(hasSecretPlaceholder(maskSecrets(input)), true);
-  input.proxy_groups[0].proxies[1].password = SECRET_PLACEHOLDER;
-  assert.equal(hasSecretPlaceholder(input), true);
-  const named = validConfig();
-  named.providers[0].models.push(SECRET_PLACEHOLDER);
-  assert.equal(hasSecretPlaceholder(named), false);
 });
 
 test("parseConfig normalizes and validates a complete configuration", () => {
@@ -996,16 +983,13 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
   }
 });
 
-test("parseConfig accepts a string $schema field and rejects other types", () => {
+test("parseConfig rejects file-only $schema metadata", () => {
   const input = validConfig();
-  input.$schema = "./config.schema.json";
-  assert.doesNotThrow(() => parseConfig(input));
-
-  input.$schema = true;
+  input.$schema = "https://example.test/schema.json";
   assert.throws(
     () => parseConfig(input),
     (error) =>
       error instanceof ConfigError &&
-      error.message === "configuration.$schema must be a string",
+      error.message === "configuration.$schema is not supported",
   );
 });

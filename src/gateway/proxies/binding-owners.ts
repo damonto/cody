@@ -23,7 +23,7 @@ export type BindingOwnersSync =
       prune: boolean;
     };
 
-/** Partial OAuth snapshots cannot replace the published ownership list. */
+/** Partial OAuth snapshots cannot replace the committed ownership list. */
 export function reconcileBindingOwners(
   group: ProxyGroupSnapshot,
   previous: BindingOwners | undefined,

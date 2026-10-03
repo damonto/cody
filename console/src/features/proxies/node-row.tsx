@@ -10,7 +10,10 @@ import { useProxyTest, type ProxyTestState } from "./use-proxy-test";
 interface ProxyNodeRowProps {
   readonly groupId: string;
   readonly version: number;
-  readonly node: Pick<ProxyNodeConfig, "id" | "url" | "priority" | "disabled">;
+  readonly node: Pick<
+    ProxyNodeConfig,
+    "id" | "name" | "url" | "priority" | "disabled"
+  >;
   readonly health: ProxyGroupStatus["proxies"][number] | undefined;
   readonly timeZone: string | undefined;
   readonly clearing: boolean;
@@ -65,7 +68,7 @@ export function ProxyNodeRow({
   return (
     <TableRow className="[&_td]:h-14">
       <TableCell>
-        <p className="font-medium">{node.id}</p>
+        <p className="font-medium">{node.name ?? node.id}</p>
         <p className="text-xs text-muted-foreground">{node.url}</p>
       </TableCell>
       <TableCell>{node.priority}</TableCell>
@@ -73,7 +76,7 @@ export function ProxyNodeRow({
         <Status value={node.disabled ? "disabled" : "enabled"} />
       </TableCell>
       <TableCell>
-        <Status value={health?.status ?? "unpublished"} />
+        <Status value={health?.status ?? "unconfigured"} />
         {health?.cooling_until && (
           <p className="mt-1 text-xs text-muted-foreground">
             Until {date(health.cooling_until, timeZone)}

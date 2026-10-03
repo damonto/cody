@@ -1,3 +1,9 @@
+import {
+  ControlConflict,
+  ControlInputError,
+  ControlNotFound,
+} from "../control/errors.ts";
+import { ConfigError } from "../config/store.ts";
 import type { ErrorHandler } from "hono";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
@@ -40,6 +46,12 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
       { status: 499, headers: context.res.headers },
     );
   }
+  if (error instanceof ControlNotFound)
+    return context.json({ error: error.message }, 404);
+  if (error instanceof ControlConflict)
+    return context.json({ error: error.message }, 409);
+  if (error instanceof ControlInputError || error instanceof ConfigError)
+    return context.json({ error: error.message }, 400);
   if (error instanceof HTTPException)
     return context.json({ error: error.message }, error.status);
   if (error instanceof BodyTooLargeError)

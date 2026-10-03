@@ -3,16 +3,16 @@ import { useMutation } from "@tanstack/react-query";
 import { Calculator } from "lucide-react";
 import { useAppForm } from "@/lib/form";
 import { previewSchema } from "../../../../src/admin/schema";
-import type { ModelPolicy } from "../../../../src/billing/types";
+import type { ModelPrice } from "../../../../src/billing/types";
 import { read, rpc } from "@/lib/api";
 import { money } from "@/lib/format";
 import { ErrorNotice, Status } from "@/components/common";
 import { Button } from "@/components/ui/button";
 
-export function PriceTrial({ policy }: { policy: ModelPolicy }) {
+export function PriceTrial({ price }: { price: ModelPrice }) {
   const preview = useMutation({
     mutationFn: (usage: z.input<typeof previewSchema.shape.usage>) =>
-      read(rpc.pricing.preview.$post({ json: { policy, usage } })),
+      read(rpc.pricing.preview.$post({ json: { price, usage } })),
   });
   const form = useAppForm({
     defaultValues: {

@@ -1,9 +1,12 @@
+import { useResourceEditor } from "@/lib/use-resource-editor";
+import { ResourceConflict } from "@/components/form/resource-conflict";
+import type { z } from "zod";
 import { useState } from "react";
 import { Calculator, History } from "lucide-react";
 import { useAppForm } from "@/lib/form";
-import { modelPolicySchema } from "../../../../src/billing/schema";
-import type { ModelPolicy } from "../../../../src/billing/types";
-import { useSaveDraft, type Draft } from "@/lib/api";
+import { modelPriceSchema } from "../../../../src/billing/schema";
+import type { ModelPrice } from "../../../../src/billing/types";
+import { type PricingResources } from "@/lib/resources";
 import { ErrorNotice } from "@/components/common";
 import { FieldError } from "@/components/ui/field";
 import { fieldErrors } from "@/lib/form-errors";
@@ -24,37 +27,54 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { emptyTier, policyFormOptions } from "./form-options";
-import { updatePolicy } from "./mutations";
+import { emptyTier, priceFormOptions, priceEditorSchema } from "./form-options";
+import { useSaveModelPrice } from "./api";
+import { ModelContextForm } from "./model-context-form";
 import { PriceTiers } from "./price-tiers";
 import { PriceTrial } from "./price-trial";
 import { PriceHistory } from "./price-history";
 
-export function PolicyForm({
+export function PriceForm({
   snapshot,
   providerId,
   model,
 }: {
-  snapshot: Draft;
+  snapshot: PricingResources;
   providerId: string;
   model: string;
 }) {
-  const save = useSaveDraft();
-  const [trial, setTrial] = useState<ModelPolicy | null>(null);
+  const save = useSaveModelPrice();
+  const [trial, setTrial] = useState<ModelPrice | null>(null);
   const [tab, setTab] = useState("rates");
-  const initial: ModelPolicy = snapshot.config.model_policies?.find(
+  const initialPrice: ModelPrice = snapshot.prices?.find(
     (entry) => entry.provider_id === providerId && entry.model === model,
   ) ?? { provider_id: providerId, model };
+  const editor = useResourceEditor({
+    version: snapshot.version,
+    item: initialPrice,
+  });
+  const initial: z.input<typeof priceEditorSchema> = editor.initial;
+  const provider = snapshot.providers.find((item) => item.id === providerId);
+  const modelId = provider?.model_settings?.[model]?.id;
+  if (!modelId)
+    throw new Error("Provider model is missing from the configuration");
   const form = useAppForm({
-    ...policyFormOptions,
+    ...priceFormOptions,
     defaultValues: initial,
-    onSubmit: async ({ value }) => {
-      const next = updatePolicy(
-        snapshot.config,
-        modelPolicySchema.parse(value),
-      );
+    onSubmit: async ({ value, formApi }) => {
+      const price = modelPriceSchema.parse(value);
       try {
-        await save.mutateAsync({ config: next, version: snapshot.version });
+        const saved = await save.mutateAsync({
+          modelId,
+          pricing: price.pricing,
+          version: editor.version,
+        });
+        const item =
+          saved.item === null
+            ? { provider_id: providerId, model }
+            : modelPriceSchema.parse(saved.item);
+        editor.accept({ version: saved.version, item });
+        formApi.reset(item);
       } catch {
         /* Keep the form for correction. */
       }
@@ -67,7 +87,7 @@ export function PolicyForm({
           <div>
             <CardTitle>{model}</CardTitle>
             <CardDescription className="mt-1.5">
-              {providerId} · Prices per 1 million tokens
+              {provider.name ?? providerId} · Prices per 1 million tokens
             </CardDescription>
           </div>
           <Badge variant="outline">Provider + model</Badge>
@@ -87,6 +107,12 @@ export function PolicyForm({
             forceMount
             className="data-[state=inactive]:hidden"
           >
+            <ModelContextForm
+              version={snapshot.version}
+              providerId={providerId}
+              modelId={modelId}
+              contextWindow={provider.model_settings?.[model]?.context_window}
+            />
             <form
               className="space-y-6 pt-4"
               onSubmit={(event) => {
@@ -94,15 +120,6 @@ export function PolicyForm({
                 void form.handleSubmit();
               }}
             >
-              <form.AppField name="context_window">
-                {(field) => (
-                  <field.NumberField
-                    label="Context window (tokens)"
-                    placeholder="e.g. 1000000"
-                    hint="Leave empty when unknown. This annotates usage and does not enforce a request limit."
-                  />
-                )}
-              </form.AppField>
               <form.AppField name="pricing">
                 {(pricing) => (
                   <>
@@ -146,11 +163,12 @@ export function PolicyForm({
                             type="button"
                             variant="outline"
                             onClick={() => {
-                              const result = modelPolicySchema.safeParse(
+                              const result = priceEditorSchema.safeParse(
                                 form.state.values,
                               );
-                              if (result.success) setTrial(result.data);
-                              else void form.validate("submit");
+                              if (result.success) {
+                                setTrial(result.data);
+                              } else void form.validate("submit");
                             }}
                           >
                             <Calculator />
@@ -170,12 +188,26 @@ export function PolicyForm({
                   </>
                 )}
               </form.AppField>
+              <ResourceConflict
+                conflict={editor.conflict}
+                reload={() => {
+                  editor.accept({
+                    version: snapshot.version,
+                    item: initialPrice,
+                  });
+                  form.reset(initialPrice);
+                  save.reset();
+                }}
+              />
               {save.error && <ErrorNotice error={save.error} />}
               <div className="flex justify-end border-t pt-4">
                 <form.Subscribe selector={(state) => state.isSubmitting}>
                   {(submitting) => (
-                    <Button type="submit" disabled={submitting}>
-                      Save model policy
+                    <Button
+                      type="submit"
+                      disabled={submitting || editor.conflict}
+                    >
+                      Save model price
                     </Button>
                   )}
                 </form.Subscribe>
@@ -187,7 +219,7 @@ export function PolicyForm({
               providerId={providerId}
               model={model}
               enabled={tab === "history"}
-              timeZone={snapshot.config.reporting?.time_zone}
+              timeZone={snapshot.reporting?.time_zone}
             />
           </TabsContent>
         </Tabs>
@@ -205,7 +237,7 @@ export function PolicyForm({
                 context including cache tokens.
               </DialogDescription>
             </DialogHeader>
-            {trial && <PriceTrial policy={trial} />}
+            {trial && <PriceTrial price={trial} />}
           </DialogContent>
         </Dialog>
       </CardContent>

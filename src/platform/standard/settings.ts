@@ -16,13 +16,6 @@ const schema = z.object({
       return false;
     }
   }, "Use a base64-encoded 32-byte key"),
-  CONFIG_KEY: text.default("gateway-config"),
-  CONFIG_CACHE_TTL_SECONDS: z.coerce
-    .number()
-    .min(0)
-    .max(300)
-    .default(10)
-    .transform(String),
   MODELS_CACHE_TTL_SECONDS: z.coerce
     .number()
     .min(0)

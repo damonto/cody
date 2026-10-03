@@ -21,9 +21,11 @@ vi.mock(
 );
 
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
-const path = "/console/api/config/proxy-groups/US/proxies/selected/test";
+let path = "";
+let groupId = "";
 const selected = {
   id: "selected",
+  name: "Selected",
   url: "socks5://selected.test:1080",
   username: "proxy-user",
   password: "private-proxy-password",
@@ -55,13 +57,33 @@ beforeAll(async () => {
   await applyD1Migrations(bindings.CODY_DB, bindings.TEST_MIGRATIONS);
 });
 beforeEach(async () => {
-  await bindings.CODY_DB.prepare(
-    "UPDATE control_state SET draft_version = 0, draft_payload = NULL, published_revision = NULL WHERE id = 1",
-  ).run();
+  await bindings.CODY_DB.batch([
+    ...[
+      "model_price_versions",
+      "config_operations",
+      "config_snapshots",
+      "model_route_providers",
+      "model_routes",
+      "model_prices",
+      "provider_models",
+      "client_providers",
+      "provider_credentials",
+      "proxy_nodes",
+      "clients",
+      "providers",
+      "proxy_groups",
+      "settings",
+      "secret_versions",
+    ].map((table) => bindings.CODY_DB.prepare(`DELETE FROM ${table}`)),
+    bindings.CODY_DB.prepare(
+      "UPDATE config_meta SET version=0,operation_id=NULL,maintenance=0,updated_at=0 WHERE id=1",
+    ),
+  ]);
   const input = config();
   input.proxy_groups = [
     {
       id: "US",
+      name: "US",
       strategy: "priority",
       proxies: [
         { ...selected, id: "other", priority: 100, disabled: false },
@@ -70,11 +92,15 @@ beforeEach(async () => {
     },
     {
       id: "UK",
+      name: "UK",
       strategy: "random",
       proxies: [{ ...selected, password: "other-secret" }],
     },
   ];
-  await controlStore(bindings).save(input, 0, "tester");
+  const saved = await controlStore(bindings).save(input, 0, "tester");
+  groupId = saved.config.proxy_groups[0].id;
+  selected.id = saved.config.proxy_groups[0].proxies[1].id;
+  path = `/console/api/proxy-groups/${groupId}/nodes/${selected.id}/test`;
   vi.mocked(socksFetch)
     .mockReset()
     .mockImplementation(async (_request, _proxy, options) => {
@@ -95,7 +121,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("tests the selected unpublished, disabled draft node with its decrypted password", async () => {
+test("tests the selected disabled node with unsaved edits and its decrypted password", async () => {
   const before = await controlStore(bindings).state();
   const response = await call(
     path,
@@ -150,10 +176,14 @@ test("validates administrator authentication, request origin and JSON before tes
 
 test("rejects stale versions and missing draft nodes before opening a connection", async () => {
   expect((await call(path, { version: 0 })).status).toBe(409);
-  expect((await call(path.replace("/US/", "/missing/"))).status).toBe(404);
-  expect((await call(path.replace("/selected/", "/missing/"))).status).toBe(
-    404,
-  );
+  expect(
+    (await call(path.replace(`/${groupId}/`, `/${crypto.randomUUID()}/`)))
+      .status,
+  ).toBe(404);
+  expect(
+    (await call(path.replace(`/${selected.id}/`, `/${crypto.randomUUID()}/`)))
+      .status,
+  ).toBe(404);
   expect(socksFetch).not.toHaveBeenCalled();
 });
 

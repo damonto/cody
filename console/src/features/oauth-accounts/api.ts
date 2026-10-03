@@ -1,4 +1,3 @@
-import type { OAuthProviderType } from "../../../../src/providers/oauth/schema.ts";
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
@@ -186,8 +185,8 @@ export const sessionOptions = (id: string) =>
     retry: false,
   });
 
-/** Published inference cooldowns of each account, keyed by credential ID. */
-export const accountHealthOptions = (providerId: OAuthProviderType) =>
+/** Current inference cooldowns of each account, keyed by credential ID. */
+export const accountHealthOptions = (providerId: string) =>
   queryOptions({
     queryKey: ["provider-account-health", providerId],
     queryFn: async ({ signal }) => {

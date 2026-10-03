@@ -7,7 +7,6 @@ import type { ResetOperation } from "../../gateway/health/provider-health.ts";
  * logic also runs on the standard (Redis + SQL) backend.
  */
 import { DurableObject } from "cloudflare:workers";
-import { ConfigPublisherCore } from "../../control/publisher.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import type {
   AffinityProviderCandidate,
@@ -153,29 +152,6 @@ export class UsageOutbox extends DurableObject<Env> {
   }
   enqueue(input: unknown) {
     return this.core.enqueue(input);
-  }
-  override alarm() {
-    return this.core.alarm();
-  }
-}
-
-export class ConfigPublisher extends DurableObject<Env> {
-  private readonly core: ConfigPublisherCore;
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.core = new ConfigPublisherCore(ctx, env);
-  }
-  getDraft() {
-    return this.core.getDraft();
-  }
-  saveDraft(config: string, version: number, actor: string) {
-    return this.core.saveDraft(config, version, actor);
-  }
-  publish(version: number, actor: string) {
-    return this.core.publish(version, actor);
-  }
-  rollback(revision: number, version: number, actor: string) {
-    return this.core.rollback(revision, version, actor);
   }
   override alarm() {
     return this.core.alarm();

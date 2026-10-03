@@ -1404,11 +1404,15 @@ test("metering records routing, retries, pricing and failures without a request 
   const fixture = inferenceFixture({ status_codes: [503], delays_ms: [0] });
   fixture.config.model_routes = { alias: { model: "model" } };
   fixture.config.revision = 4;
-  fixture.config.model_policies = [
+  fixture.config.providers[0].model_settings = {
+    model: { context_window: 200000 },
+  };
+  fixture.config.model_prices = [
     {
       provider_id: "primary",
       model: "model",
-      context_window: 200000,
+      version_id: "0f5f1a92-6d63-4879-921a-9c83eaa7d054",
+
       pricing: {
         currency: "USD",
         tiers: [
@@ -1475,7 +1479,10 @@ test("metering records routing, retries, pricing and failures without a request 
     assert.equal(event.credential_id, "primary-key");
     assert.equal(event.attempts.length, 2);
     assert.equal(event.diagnostic_code, "upstream_error");
-    assert.equal(event.billing.price_version, '[4,"primary","model"]');
+    assert.equal(
+      event.billing.price_version,
+      "0f5f1a92-6d63-4879-921a-9c83eaa7d054",
+    );
     assert.equal(event.context_window, 200000);
   } finally {
     globalThis.fetch = originalFetch;

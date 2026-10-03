@@ -46,7 +46,7 @@ export function SubscriptionSettingsForm<
   close: () => void;
 }) {
   const cache = useQueryClient();
-  const accounts = useQuery(accountsOptions(provider.type));
+  const accounts = useQuery(accountsOptions(provider.id));
   const [initial] = useState(() => settingsFormValues(provider));
   const form = useAppForm({
     defaultValues: initial,

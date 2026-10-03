@@ -6,13 +6,13 @@ import {
 
 import { z } from "zod";
 import {
-  antigravityDraftProviderSchema,
+  antigravityProviderFormSchema,
   nameSchema,
   oauthCredentialSchema,
 } from "../../../../src/config/schema";
 import type {
   AntigravityProviderConfig,
-  GatewayConfig,
+  ProviderConfig,
 } from "../../../../src/config/types";
 
 export const accountEditorSchema = oauthCredentialSchema.extend({
@@ -29,7 +29,8 @@ export function newAccount(): AccountFormValues {
   const rowId = crypto.randomUUID();
   return {
     rowId,
-    id: `account-${rowId}`,
+    id: rowId,
+    name: "Account",
     priority: 100,
     disabled: false,
     auth: { type: CredentialAuthType.OAuth, account_ref: "" },
@@ -38,7 +39,8 @@ export function newAccount(): AccountFormValues {
 export function newAntigravityProvider(): AntigravityProviderConfig {
   return {
     type: ProviderType.Antigravity,
-    id: "antigravity",
+    id: `new-${crypto.randomUUID()}`,
+    name: "Antigravity",
     account_selection: CodexAccountSelection.RoundRobin,
     priority: 100,
     disabled: true,
@@ -52,16 +54,14 @@ export function newAntigravityProvider(): AntigravityProviderConfig {
   };
 }
 export function antigravityProvider(
-  config: GatewayConfig,
+  provider: ProviderConfig | null,
 ): AntigravityProviderConfig {
-  return (
-    config.providers.find(
-      (provider) => provider.type === ProviderType.Antigravity,
-    ) ?? newAntigravityProvider()
-  );
+  return provider?.type === ProviderType.Antigravity
+    ? provider
+    : newAntigravityProvider();
 }
 
-export const settingsEditorSchema = antigravityDraftProviderSchema
+export const settingsEditorSchema = antigravityProviderFormSchema
   .omit({
     id: true,
     type: true,
@@ -78,6 +78,7 @@ export const settingsEditorSchema = antigravityDraftProviderSchema
       .array(
         z.strictObject({
           rowId: z.string().min(1),
+          id: z.string().optional(),
           alias: nameSchema,
           model: nameSchema,
         }),
@@ -111,6 +112,7 @@ export function settingsFormValues(
     routes: Object.entries(provider.model_routes ?? {}).map(
       ([alias, route]) => ({
         rowId: crypto.randomUUID(),
+        id: route.id,
         alias,
         model: route.model,
       }),
@@ -122,11 +124,14 @@ export function applySettings(
   value: SettingsFormValues,
 ): AntigravityProviderConfig {
   const { routes, ...settings } = settingsEditorSchema.parse(value);
-  return antigravityDraftProviderSchema.parse({
+  return antigravityProviderFormSchema.parse({
     ...provider,
     ...settings,
     model_routes: Object.fromEntries(
-      routes.map(({ alias, model }) => [alias, { model }]),
+      routes.map(({ id, alias, model }) => [
+        alias,
+        { ...(id ? { id } : {}), model },
+      ]),
     ),
   });
 }
@@ -142,7 +147,7 @@ export function applyAccount(
   const credentials = [...provider.credentials];
   if (index === -1) credentials.push(credential);
   else credentials[index] = credential;
-  return antigravityDraftProviderSchema.parse({ ...provider, credentials });
+  return antigravityProviderFormSchema.parse({ ...provider, credentials });
 }
 
 export function moveAccount(

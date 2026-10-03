@@ -11,7 +11,7 @@ import {
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../shared/concurrency.ts";
 import { audit } from "../audit.ts";
-import { publishedConfig, type AdminContext } from "../context.ts";
+import { currentConfig, type AdminContext } from "../context.ts";
 import {
   healthListSchema,
   runtimeQuerySchema,
@@ -30,15 +30,15 @@ async function runtime(
   actor: string,
   executionContext: ExecutionContext,
 ): Promise<Response> {
-  const config = await publishedConfig(env);
+  const config = await currentConfig(env);
   if (!config)
-    throw new HTTPException(409, { message: "Publish a configuration first" });
+    throw new HTTPException(409, { message: "Save a configuration first" });
   const incoming = new URL(request.url);
   const client = config.api_keys.find(
     (entry) => entry.id === incoming.searchParams.get("client_id"),
   );
   if (!client)
-    throw new HTTPException(400, { message: "Select a published client" });
+    throw new HTTPException(400, { message: "Select a current client" });
   const url = new URL(`https://cody.internal/v1/${path}`);
   for (const name of [
     "scope",
@@ -85,7 +85,7 @@ async function clear(c: Context<AdminContext>, path: string) {
 }
 export const runtimeRoutes = new Hono<AdminContext>()
   .get("/proxy-groups", async (c) => {
-    const config = await publishedConfig(c.env);
+    const config = await currentConfig(c.env);
     if (!config) return c.json(proxyGroupsStatusSchema.parse({ items: [] }));
     const items = await mapWithConcurrency(
       config.proxy_groups,
@@ -105,7 +105,7 @@ export const runtimeRoutes = new Hono<AdminContext>()
     ),
     async (c) => {
       const { groupId, proxyId } = c.req.valid("param");
-      const config = await publishedConfig(c.env);
+      const config = await currentConfig(c.env);
       const group = config?.proxy_groups.find((entry) => entry.id === groupId);
       if (
         !config ||
@@ -113,7 +113,7 @@ export const runtimeRoutes = new Hono<AdminContext>()
         !group.proxies.some((proxy) => proxy.id === proxyId)
       )
         throw new HTTPException(404, {
-          message: "Published proxy does not exist",
+          message: "Saved proxy does not exist",
         });
       await c.env.PROXY_GROUP.getByName(groupId).clear(
         await proxyGroupSnapshot(config, group),
@@ -128,7 +128,7 @@ export const runtimeRoutes = new Hono<AdminContext>()
     },
   )
   .get("/clients", async (c) => {
-    const config = await publishedConfig(c.env);
+    const config = await currentConfig(c.env);
     return c.json({
       items: config?.api_keys.map((client) => ({ id: client.id })) ?? [],
     });

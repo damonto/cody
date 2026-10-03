@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import { env } from "cloudflare:workers";
 import {
   applyD1Migrations,
@@ -34,7 +35,6 @@ import type {
 import type { ProviderAdapter } from "../../src/providers/types.ts";
 import { decryptConfig, encryptConfig } from "../../src/control/crypto.ts";
 import { ControlStore } from "../../src/control/store.ts";
-import { draftViewSchema } from "../../src/control/schema.ts";
 import {
   accountReply,
   accountViewSchema,
@@ -79,8 +79,7 @@ vi.mock(
 type Account = ReturnType<Env["PROVIDER_OAUTH_ACCOUNT"]["getByName"]>;
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
 const actor = "admin@example.test";
-const control = () =>
-  new ControlStore(env.CODY_DB, env.CODY_CONFIG_KV, env.CONFIG_ENCRYPTION_KEY);
+const control = () => new ControlStore(env.CODY_DB, env.CONFIG_ENCRYPTION_KEY);
 const records: {
   url: string;
   body: string;
@@ -108,11 +107,26 @@ beforeEach(async () => {
   clearModelsCacheForTests();
   await env.CODY_DB.batch(
     [
+      ...[
+        "model_price_versions",
+        "config_operations",
+        "config_snapshots",
+        "model_route_providers",
+        "model_routes",
+        "model_prices",
+        "provider_models",
+        "client_providers",
+        "provider_credentials",
+        "proxy_nodes",
+        "clients",
+        "providers",
+        "proxy_groups",
+        "settings",
+        "secret_versions",
+      ].map((table) => `DELETE FROM ${table}`),
+      "UPDATE config_meta SET version=0,operation_id=NULL,maintenance=0,updated_at=0 WHERE id=1",
       "DELETE FROM oauth_accounts",
-      "DELETE FROM oauth_clients",
       "DELETE FROM audit_log",
-      "DELETE FROM config_revisions",
-      "UPDATE control_state SET draft_version = 0, draft_payload = NULL, published_revision = NULL, updated_at = 0 WHERE id = 1",
     ].map((sql) => env.CODY_DB.prepare(sql)),
   );
   await env.CODY_CONFIG_KV.delete("gateway-config");
@@ -452,7 +466,9 @@ test("desktop OAuth authorizes and refreshes without a configured client registr
     refresh_token: "refresh-token",
   });
   expect(
-    await env.CODY_DB.prepare("SELECT 1 FROM oauth_clients").first(),
+    await env.CODY_DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'oauth_clients'",
+    ).first(),
   ).toBeNull();
 });
 
@@ -864,14 +880,17 @@ test("successful quotas survive failure to prepare the subscription request", as
     provider_proxy_group: proxy.id,
   };
   const ref = crypto.randomUUID();
-  await env.CODY_CONFIG_KV.put(
+  await setTestConfiguration(
+    env.CODY_DB,
     "gateway-config",
     JSON.stringify(settings(connection, ref, [proxy])),
   );
   const { stub } = await ready(connection, ref);
   override = async (request) => {
     if (request.url.includes(":retrieveUserQuotaSummary"))
-      await env.CODY_CONFIG_KV.delete("gateway-config");
+      await env.CODY_DB.prepare(
+        "UPDATE config_meta SET maintenance=1 WHERE id=1",
+      ).run();
     return;
   };
   const current = await accountReply(
@@ -880,9 +899,7 @@ test("successful quotas survive failure to prepare the subscription request", as
   );
   expect(current.quota.groups[0]?.buckets[0]?.remaining_fraction).toBe(0.75);
   expect(current.quota.updated_at).not.toBeNull();
-  expect(current.quota.last_error).toContain(
-    "Publish the selected proxy group",
-  );
+  expect(current.quota.last_error).toContain("The account operation failed");
   expect(current.quota.stale).toBe(true);
 });
 
@@ -897,11 +914,13 @@ function settings(
       {
         type: "antigravity",
         id: connection.provider_id,
+        name: "Antigravity",
         proxy_group: connection.provider_proxy_group,
         models: ["native-model"],
         credentials: [
           {
             id: connection.credential_id,
+            name: "Account",
             priority: 100,
             disabled: false,
             proxy_group: connection.credential_proxy_group,
@@ -915,6 +934,7 @@ function settings(
     api_keys: [
       {
         id: "client",
+        name: "Client",
         api_key: "client-secret",
         providers: [connection.provider_id],
       },
@@ -925,8 +945,10 @@ function settings(
 function group() {
   return {
     id: crypto.randomUUID(),
+    name: "Proxy group",
     strategy: "sticky" as const,
     proxies: ["a", "b"].map((id, index) => ({
+      name: id,
       id,
       priority: 100 - index,
       disabled: false,
@@ -991,7 +1013,11 @@ for (const mode of ["inherit", "override", "direct"] as const) {
     };
     const ref = crypto.randomUUID();
     const config = settings(connection, ref, [first, second]);
-    await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+    await setTestConfiguration(
+      env.CODY_DB,
+      "gateway-config",
+      JSON.stringify(config),
+    );
     override = (request) =>
       request.url.includes(":loadCodeAssist")
         ? Response.json({
@@ -1047,7 +1073,11 @@ test("inference retries share one auth snapshot and one proxy switch budget", as
   };
   const ref = crypto.randomUUID();
   const config = settings(connection, ref, [selected]);
-  await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
   const { stub } = await ready(connection, ref);
   const requests: string[] = [];
   let attempt = 0;
@@ -1096,7 +1126,8 @@ test("OAuth proxy faults cool shared proxy nodes without cooling the provider", 
     credential_id: "primary",
     provider_proxy_group: selected.id,
   };
-  await env.CODY_CONFIG_KV.put(
+  await setTestConfiguration(
+    env.CODY_DB,
     "gateway-config",
     JSON.stringify(settings(connection, crypto.randomUUID(), [selected])),
   );
@@ -1261,53 +1292,79 @@ test("admin does not expose OAuth client registration endpoints", async () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   }
   expect(
-    await env.CODY_DB.prepare("SELECT 1 FROM oauth_clients").first(),
+    await env.CODY_DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'oauth_clients'",
+    ).first(),
   ).toBeNull();
 });
 
-test("admin OAuth sessions require current drafts and published proxy references", async () => {
-  const connection = { provider_id: "antigravity", credential_id: "one" };
+async function savedNative(proxy = false) {
+  const config = settings(
+    { provider_id: "new-provider", credential_id: "new-credential" },
+    crypto.randomUUID(),
+    proxy ? [group()] : [],
+  );
+  Object.assign(config.providers[0], {
+    disabled: true,
+    models: [],
+    credentials: [],
+  });
+  if (proxy) config.providers[0].proxy_group = config.proxy_groups[0].id;
+  config.model_routes = {};
+  return control().save(config, 0, actor);
+}
+
+test("admin OAuth sessions require the current version and a saved provider", async () => {
+  const saved = await savedNative();
+  const connection = {
+    provider_id: saved.config.providers[0].id,
+    provider_type: "antigravity",
+    credential_id: crypto.randomUUID(),
+  };
   expect(
     (
       await admin(
         "/oauth/sessions",
         "POST",
-        { ...connection, version: 0 },
+        { ...connection, version: saved.version },
         { origin: "https://attacker.test" },
       )
     ).status,
   ).toBe(403);
   expect(
-    (await admin("/oauth/sessions", "POST", { ...connection, version: 4 }))
+    (await admin("/oauth/sessions", "POST", { ...connection, version: 0 }))
       .status,
   ).toBe(409);
   expect(
     (
       await admin("/oauth/sessions", "POST", {
         ...connection,
-        version: 0,
-        provider_proxy_group: "unpublished",
+        version: saved.version,
+        provider_proxy_group: "missing",
       })
     ).status,
   ).toBe(409);
   const opened = await admin("/oauth/sessions", "POST", {
     ...connection,
-    version: 0,
+    version: saved.version,
   });
-  const session = sessionViewSchema.parse(await opened.json());
   expect(opened.status).toBe(200);
-  const other = await admin("/oauth/sessions", "POST", {
-    ...connection,
-    provider_id: "different",
-    version: 0,
-    account_ref: session.account_ref,
-  });
-  expect(other.status).toBe(400);
+  const session = sessionViewSchema.parse(await opened.json());
   expect(
     (
       await admin("/oauth/sessions", "POST", {
         ...connection,
-        version: 0,
+        version: saved.version,
+        provider_id: crypto.randomUUID(),
+        account_ref: session.account_ref,
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await admin("/oauth/sessions", "POST", {
+        ...connection,
+        version: saved.version,
         account_ref: crypto.randomUUID(),
       })
     ).status,
@@ -1324,128 +1381,96 @@ test("admin OAuth sessions require current drafts and published proxy references
   ).toBe(410);
 });
 
-test("fixed provider settings and proxy groups publish before the first account is authorized", async () => {
-  const proxy = group();
-  const connection = {
-    provider_id: "antigravity",
-    credential_id: "primary",
-    provider_proxy_group: proxy.id,
-  };
-  const config = settings(connection, crypto.randomUUID(), [proxy]);
-  Object.assign(config.providers[0], {
-    disabled: true,
-    credentials: [],
-    models: [],
-  });
-  config.model_routes = {};
-  const response = await admin("/config", "PUT", { config, version: 0 });
-  expect(response.status).toBe(200);
-  const saved = draftViewSchema.parse(await response.json());
-  expect(saved.valid).toBe(true);
-  expect(saved.config.providers[0]).toMatchObject({
-    id: "antigravity",
-    disabled: true,
-    credentials: [],
-    models: [],
-    proxy_group: proxy.id,
-  });
-  const published = await admin("/config/publish", "POST", {
-    version: saved.version,
-  });
-  expect(published.status).toBe(200);
+test("disabled native settings and proxy groups take effect before first authorization", async () => {
+  const saved = await savedNative(true);
+  const provider = saved.config.providers[0];
   const opened = await admin("/oauth/sessions", "POST", {
-    ...connection,
+    provider_id: provider.id,
+    provider_type: provider.type,
+    credential_id: crypto.randomUUID(),
+    provider_proxy_group: provider.proxy_group,
     version: saved.version,
   });
   expect(opened.status).toBe(200);
   const session = sessionViewSchema.parse(await opened.json());
-  expect(session.account.provider_id).toBe("antigravity");
-  const exchanged = await admin(
-    `/oauth/sessions/${session.id}/callback`,
-    "POST",
-    { redirect_url: callback(session) },
-  );
-  expect(exchanged.status).toBe(200);
+  expect(session.account.provider_id).toBe(provider.id);
+  expect(
+    (
+      await admin(`/oauth/sessions/${session.id}/callback`, "POST", {
+        redirect_url: callback(session),
+      })
+    ).status,
+  ).toBe(200);
   await initialize(env.PROVIDER_OAUTH_ACCOUNT.getByName(session.account_ref));
   expect(records.length).toBeGreaterThan(0);
   expect(records.every((record) => record.proxy !== null)).toBe(true);
 });
 
-test("enabled native drafts remain editable but require accounts and models before publication", async () => {
-  const { connection, ref } = await ready();
-  const complete = settings(connection, ref);
-  const incomplete = structuredClone(complete);
-  incomplete.providers[0].models = [];
-  incomplete.providers[0].credentials = [];
-  incomplete.model_routes = {};
-  const saved = await control().save(incomplete, 0, actor);
-  expect(saved.valid).toBe(false);
-  expect(saved.validation_error).toContain("select Antigravity models");
-  const blocked = await admin("/config/publish", "POST", {
-    version: saved.version,
-  });
-  expect(blocked.status).toBe(400);
-  expect(await env.CODY_CONFIG_KV.get("gateway-config")).toBeNull();
-  const withModels = structuredClone(incomplete);
-  withModels.providers[0].models = complete.providers[0].models;
-  const pendingAccount = await control().save(withModels, saved.version, actor);
-  expect(pendingAccount.valid).toBe(false);
-  expect(pendingAccount.validation_error).toContain(
-    "add an Antigravity account",
-  );
-  const finished = await control().save(
-    complete,
-    pendingAccount.version,
-    actor,
-  );
-  expect(finished.valid).toBe(true);
-  expect(
-    (await admin("/config/publish", "POST", { version: finished.version }))
-      .status,
-  ).toBe(200);
-  expect((await infer(complete)).status).toBe(200);
+test("incomplete enabled settings are rejected atomically", async () => {
+  const saved = await savedNative();
+  const incomplete = structuredClone(saved.config);
+  incomplete.providers[0].disabled = false;
+  await expect(
+    control().save(incomplete, saved.version, actor),
+  ).rejects.toThrow("select Antigravity models");
+  expect((await control().state()).version).toBe(saved.version);
 });
 
-test("configuration references are stable and rollback never rolls back runtime tokens", async () => {
-  const { stub, connection, ref } = await ready();
-  const config = settings(connection, ref);
-  const foreign = await ready({ ...connection, provider_id: "another" });
-  await expect(
-    control().save(settings(connection, foreign.ref), 0, actor),
-  ).rejects.toThrow("authorized for this provider");
-  const draft = await control().save(config, 0, actor);
-  expect(draft.config.providers[0].credentials[0].auth).toEqual({
-    type: "oauth",
-    account_ref: ref,
+test("stable configuration restoration never restores OAuth tokens", async () => {
+  const saved = await savedNative();
+  const connection = {
+    provider_id: saved.config.providers[0].id,
+    credential_id: crypto.randomUUID(),
+  };
+  const { stub, ref } = await ready(connection);
+  const config = await control().current();
+  config.providers[0].models = ["native-model"];
+  config.providers[0].credentials = [
+    {
+      id: connection.credential_id,
+      name: "Account",
+      priority: 100,
+      disabled: false,
+      auth: { type: "oauth", account_ref: ref },
+    },
+  ];
+  config.providers[0].disabled = false;
+  const foreign = await ready({
+    ...connection,
+    provider_id: crypto.randomUUID(),
   });
-  const publisher = env.CONFIG_PUBLISHER.getByName("configuration");
-  const first = z
-    .object({
-      ok: z.literal(true),
-      data: z.object({ version: z.number(), published_revision: z.number() }),
-    })
-    .parse(JSON.parse(await publisher.publish(draft.version, actor)));
-  const denied = await admin(
-    `/config/providers/${connection.provider_id}/credentials/primary/reveal`,
-    "POST",
-    { version: first.data.version },
+  const invalid = structuredClone(config);
+  invalid.providers[0].credentials[0].auth = {
+    type: "oauth",
+    account_ref: foreign.ref,
+  };
+  await expect(control().save(invalid, saved.version, actor)).rejects.toThrow(
+    "belong to this provider",
   );
-  expect(denied.status).toBe(400);
+  const first = await control().save(config, saved.version, actor);
+  expect(
+    (
+      await admin(
+        `/providers/${connection.provider_id}/credentials/${first.config.providers[0].credentials[0].id}/reveal`,
+        "POST",
+        { version: first.version },
+      )
+    ).status,
+  ).toBe(400);
   const reauth = await start(connection, ref);
   await complete(stub, reauth.session, "new-token");
   for (let i = 0; i < 3; i++) await runDurableObjectAlarm(stub);
-  const rollback = await publisher.rollback(
-    first.data.published_revision,
-    first.data.version,
-    actor,
-  );
-  expect(JSON.parse(rollback)).toMatchObject({ ok: true });
+  await control().restore(first.version, first.version, actor);
   expect(await resolve(stub, connection)).toMatchObject({
     token: "access-new-token",
   });
-  const published = await env.CODY_CONFIG_KV.get("gateway-config");
-  expect(published).not.toContain("access-new-token");
-  expect(published).not.toContain("refresh-token");
+  const snapshot = await env.CODY_DB.prepare(
+    "SELECT config_json FROM config_snapshots WHERE version=?",
+  )
+    .bind(first.version + 1)
+    .first<{ config_json: string }>();
+  expect(snapshot?.config_json).not.toContain("access-new-token");
+  expect(snapshot?.config_json).not.toContain("refresh-token");
   await stub.run({ action: "disconnect" });
   await expect(resolve(stub, connection)).rejects.toThrow("Reconnect");
 });

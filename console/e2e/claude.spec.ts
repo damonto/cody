@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { draftFixture, mockApi } from "./fixtures";
 import { claudeProviderSchema } from "../../src/config/schema";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
-import type { Draft } from "../src/lib/api";
+import type { ConfigurationView } from "./fixtures";
 
 test("Claude settings default to disabled, no extra usage and no resets", async ({
   page,
@@ -53,13 +53,13 @@ test("Claude cards show native quota and organization without reset controls", a
       },
     ],
   });
-  const draft: Draft = {
+  const draft: ConfigurationView = {
     ...draftFixture(),
     config: {
       ...draftFixture().config,
       providers: [provider],
       api_keys: [{ id: "client", api_key: "masked", providers: ["claude"] }],
-      model_policies: [],
+      model_prices: [],
     },
   };
   const account = accountViewSchema.parse({

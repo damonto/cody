@@ -12,6 +12,13 @@ import { pricingRoutes } from "./routes/pricing.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { runtimeRoutes } from "./routes/runtime.ts";
 import { oauthRoutes } from "./routes/oauth.ts";
+import { providerRoutes } from "./routes/providers.ts";
+import { nativeProviderRoutes } from "./routes/native-providers.ts";
+import { clientRoutes } from "./routes/clients.ts";
+import { proxyGroupRoutes } from "./routes/proxy-groups.ts";
+import { modelPriceRoutes } from "./routes/model-prices.ts";
+import { settingsRoutes } from "./routes/settings.ts";
+import { modelRouteRoutes } from "./routes/model-routes.ts";
 
 function isApiPath(path: string): boolean {
   return /\/api(?:\/|$)/.test(path);
@@ -53,6 +60,13 @@ const adminApi = new Hono<AdminContext>()
     await next();
   })
   .route("/config", configurationRoutes)
+  .route("/providers", providerRoutes)
+  .route("/native-providers", nativeProviderRoutes)
+  .route("/clients", clientRoutes)
+  .route("/proxy-groups", proxyGroupRoutes)
+  .route("/model-prices", modelPriceRoutes)
+  .route("/model-routes", modelRouteRoutes)
+  .route("/settings", settingsRoutes)
   .route("/pricing", pricingRoutes)
   .route("/", oauthRoutes)
   .route("/", reportRoutes)

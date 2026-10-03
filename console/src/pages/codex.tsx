@@ -1,9 +1,8 @@
-import { ProviderType } from "../../../src/config/values.ts";
-
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import type { CodexProviderConfig } from "../../../src/config/types";
-import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
+import { useNativeResources, type NativeResources } from "@/lib/resources";
 import { ErrorNotice, Loading, PageHeading, Status } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,46 +30,72 @@ import {
   moveAccount,
   setAccountDisabled,
 } from "@/features/codex/form-options";
-import { updateProvider } from "@/features/providers/mutations";
+import { useNativeProviderMutation } from "@/features/providers/api";
 
 type EditorAction =
   | { kind: "settings" }
   | { kind: "account"; credentialId?: string }
   | { kind: "remove"; credentialId: string };
-type Editor = { snapshot: Draft } & EditorAction;
+type Editor = { snapshot: NativeResources } & EditorAction;
 
 export default function Codex() {
-  const draft = useDraft();
-  const save = useSaveDraft();
+  const configuration = useNativeResources("codex");
+  const save = useNativeProviderMutation("codex");
   const [editor, setEditor] = useState<Editor | null>(null);
-  if (draft.isPending) return <Loading />;
-  if (draft.error)
+  if (configuration.isPending) return <Loading />;
+  if (configuration.error)
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
-  const provider = codexProvider(draft.data.config);
+  const provider = codexProvider(configuration.data.provider);
   const editingProvider = editor
-    ? codexProvider(editor.snapshot.config)
+    ? codexProvider(editor.snapshot.provider)
     : provider;
   const open = (action: EditorAction) => {
     save.reset();
-    setEditor({ ...action, snapshot: structuredClone(draft.data) });
+    setEditor({ ...action, snapshot: structuredClone(configuration.data) });
   };
-  const persist = async (snapshot: Draft, next: CodexProviderConfig) => {
+  const persistOrder = async (
+    snapshot: NativeResources,
+    next: CodexProviderConfig,
+  ) => {
     await save.mutateAsync({
-      config: updateProvider(
-        snapshot.config,
-        snapshot.config.providers.findIndex(
-          (entry) => entry.type === ProviderType.Codex,
-        ),
-        next,
-      ),
+      action: "reorder-credentials",
+      providerId: next.id,
+      ids: next.credentials.map((credential) => credential.id),
       version: snapshot.version,
     });
   };
   const saveEditor = async (next: CodexProviderConfig) => {
     if (!editor) return;
-    await persist(editor.snapshot, next);
+    const version = editor.snapshot.version;
+    if (editor.kind === "settings")
+      await save.mutateAsync({ action: "settings", provider: next, version });
+    else if (editor.kind === "remove")
+      await save.mutateAsync({
+        action: "delete-credential",
+        providerId: next.id,
+        credentialId: editor.credentialId,
+        version,
+      });
+    else {
+      const credential = editor.credentialId
+        ? next.credentials.find((item) => item.id === editor.credentialId)
+        : next.credentials.find(
+            (item) =>
+              !editingProvider.credentials.some((old) => old.id === item.id),
+          );
+      if (!credential) throw new Error("Credential is missing from the editor");
+      await save.mutateAsync({
+        action: editor.credentialId ? "update-credential" : "create-credential",
+        providerId: next.id,
+        credential,
+        version,
+      });
+    }
     setEditor(null);
   };
   const close = () => {
@@ -79,6 +104,7 @@ export default function Codex() {
   const failedSave = save.variables;
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="Codex"
         description="ChatGPT accounts, quotas and resets."
@@ -93,6 +119,11 @@ export default function Codex() {
           Settings
         </Button>
       </PageHeading>
+      {!configuration.data.provider && (
+        <p className="text-sm text-muted-foreground">
+          Save provider settings before adding accounts.
+        </p>
+      )}
       {!editor && save.error && (
         <ErrorNotice
           error={save.error}
@@ -101,18 +132,19 @@ export default function Codex() {
       )}
       <CodexAccounts
         provider={provider}
-        pending={save.isPending}
+        pending={save.isPending || !configuration.data.provider}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}
         onRemove={(credentialId) => open({ kind: "remove", credentialId })}
         onMove={(id, direction) => {
-          void persist(draft.data, moveAccount(provider, id, direction)).catch(
-            () => {},
-          );
+          void persistOrder(
+            configuration.data,
+            moveAccount(provider, id, direction),
+          ).catch(() => {});
         }}
         onToggle={(id, disabled) => {
-          void persist(
-            draft.data,
+          void persistOrder(
+            configuration.data,
             setAccountDisabled(provider, id, disabled),
           ).catch(() => {});
         }}
@@ -133,13 +165,13 @@ export default function Codex() {
                   : "Add ChatGPT account"}
             </DialogTitle>
             <DialogDescription>
-              Save changes to the draft, then publish when ready.
+              Saved changes apply to new requests immediately.
             </DialogDescription>
           </DialogHeader>
           {editor?.kind === "settings" && (
             <CodexSettingsForm
               provider={editingProvider}
-              groups={editor.snapshot.config.proxy_groups}
+              groups={editor.snapshot.groups}
               pending={save.isPending}
               onSave={saveEditor}
               close={close}
@@ -149,18 +181,18 @@ export default function Codex() {
             <AccountForm
               provider={editingProvider}
               credentialId={editor.credentialId}
-              groups={editor.snapshot.config.proxy_groups}
+              groups={editor.snapshot.groups}
               version={editor.snapshot.version}
-              draftVersion={draft.data.version}
-              pending={save.isPending}
+              configurationVersion={configuration.data.version}
+              pending={save.isPending || !configuration.data.provider}
               onSave={saveEditor}
               close={close}
             />
           )}
-          {editor && editor.snapshot.version !== draft.data.version && (
+          {editor && editor.snapshot.version !== configuration.data.version && (
             <p role="alert" className="text-sm text-destructive">
-              The draft changed. Your edits are retained; reopen from the latest
-              draft before saving.
+              The configuration changed. Your edits are retained; reopen from
+              the latest configuration before saving.
             </p>
           )}
           {save.error && <ErrorNotice error={save.error} />}
@@ -176,7 +208,7 @@ export default function Codex() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove this ChatGPT account?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes its draft reference. ChatGPT authorization is kept.
+              This removes its saved reference. ChatGPT authorization is kept.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {save.error && <ErrorNotice error={save.error} />}
@@ -191,13 +223,16 @@ export default function Codex() {
                 if (editor?.kind !== "remove") return;
                 void saveEditor({
                   ...editingProvider,
+                  disabled:
+                    editingProvider.disabled ||
+                    editingProvider.credentials.length === 1,
                   credentials: editingProvider.credentials.filter(
                     (credential) => credential.id !== editor.credentialId,
                   ),
                 }).catch(() => {});
               }}
             >
-              Remove from draft
+              Remove account
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

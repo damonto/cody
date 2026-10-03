@@ -1,3 +1,4 @@
+import { ControlStore } from "../../control/store.ts";
 import { XaiClient, xaiDeviceSchema, xaiIdentity } from "../xai/api.ts";
 import { xaiModels } from "../xai/models.ts";
 import {
@@ -17,7 +18,6 @@ import {
 import { ProviderType, CredentialAuthType } from "../../config/values.ts";
 
 import { z } from "zod";
-import { configurationSchema } from "../../config/schema.ts";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 import { configureLogging, logWarn } from "../../shared/log.ts";
@@ -49,7 +49,7 @@ import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import {
   providerConnection,
   providerOutbound,
-  publishedProxyConfiguration,
+  currentProxyConfiguration,
 } from "../outbound.ts";
 import { accountCommandSchema, type AccountCommand } from "./commands.ts";
 import {
@@ -82,7 +82,6 @@ type AccountEnv = Pick<
   | "CODY_DB"
   | "CODY_CONFIG_KV"
   | "LOG_LEVEL"
-  | "CONFIG_KEY"
   | "CONFIG_ENCRYPTION_KEY"
   | "PROXY_GROUP"
   | "UPSTREAM_HTTP"
@@ -418,16 +417,18 @@ export class ProviderOAuthAccountCore {
       throw new OAuthError("Account belongs to another provider", 403);
     let selected = connection ?? account.connection;
     if (!connection) {
-      const raw = await this.env.CODY_CONFIG_KV.get(
-        this.env.CONFIG_KEY ?? "gateway-config",
-      );
-      if (raw) {
-        const published = configurationSchema.parse(JSON.parse(raw));
-        const provider = published.providers.find(
+      const committed = await new ControlStore(
+        this.env.CODY_DB,
+        this.env.CONFIG_ENCRYPTION_KEY,
+      ).committed();
+      {
+        const provider = committed.providers.find(
           (provider) =>
             provider.id === account.provider_id &&
             provider.type === account.provider_type,
         );
+        if (!provider && committed.revision)
+          throw new OAuthError("Provider is no longer configured", 410);
         const credential = provider?.credentials.find(
           (credential) =>
             credential.auth.type === CredentialAuthType.OAuth &&
@@ -435,21 +436,30 @@ export class ProviderOAuthAccountCore {
         );
         if (provider && credential)
           selected = providerConnection(provider, credential);
-        config ??= published;
+        config ??= committed;
       }
     }
-    const network = config ?? (await publishedProxyConfiguration(this.env));
+    const network = config ?? (await currentProxyConfiguration(this.env));
     const group =
       selected.credential_proxy_group === undefined
         ? selected.provider_proxy_group
         : selected.credential_proxy_group;
     if (group && !network.proxy_groups.some((entry) => entry.id === group))
       throw new OAuthError(
-        "Publish the selected proxy group before using it",
+        "Save the selected proxy group before using it",
         409,
       );
     const signal = new AbortController().signal;
-    return [providerOutbound(selected, network, this.env, signal).send, signal];
+    return [
+      providerOutbound(
+        selected,
+        network,
+        this.env,
+        signal,
+        account.provider_type,
+      ).send,
+      signal,
+    ];
   }
   private async start(
     accountRef: string,

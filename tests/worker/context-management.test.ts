@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import {
   applyD1Migrations,
   createExecutionContext,
@@ -74,7 +75,11 @@ async function call(
   method = payload === undefined ? "GET" : "POST",
 ): Promise<Response> {
   clearConfigCacheForTests();
-  await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
   const context = createExecutionContext();
   const response = await worker.fetch(
     new Request(`https://gateway.example${path}`, {

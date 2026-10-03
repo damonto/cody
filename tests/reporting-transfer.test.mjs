@@ -153,6 +153,7 @@ test("D1 endpoints read with d1 execute queries and write with one import", asyn
     "0001_control_and_usage.sql",
     "0007_oauth_accounts.sql",
     "0011_correct_expired_usage.sql",
+    "0012_entity_configuration.sql",
   ])
     d1.exec(await readFile(path.join(ROOT, "migrations", "d1", name), "utf8"));
   const calls = [];

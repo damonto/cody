@@ -7,12 +7,9 @@ import { FieldError } from "@/components/ui/field";
 import { newProxyNode, proxyGroupFormOptions } from "./form-options";
 import { ProxyNodeInputs } from "./node-inputs";
 
-const NO_SAVED_ROWS: readonly string[] = [];
-
 export const ProxyNodeFields = withForm({
   ...proxyGroupFormOptions,
-  props: { savedRowIds: NO_SAVED_ROWS },
-  render: function ProxyNodeFields({ form, savedRowIds }) {
+  render: function ProxyNodeFields({ form }) {
     return (
       <form.AppField name="proxies" mode="array">
         {(nodes) => (
@@ -39,7 +36,6 @@ export const ProxyNodeFields = withForm({
                     key={position}
                     form={form}
                     fields={`proxies[${position}]`}
-                    readOnlyId={savedRowIds.includes(node.rowId)}
                   />
                 </CardContent>
               </Card>

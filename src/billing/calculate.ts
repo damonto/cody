@@ -1,17 +1,7 @@
 import { BillingStatus } from "./values.ts";
 
 import { parseRate } from "./config.ts";
-import type { CostBreakdown, ModelPolicy, TokenUsage } from "./types.ts";
-
-export function priceVersion(
-  revision: number | undefined,
-  provider: string,
-  model: string,
-): string | null {
-  return revision === undefined
-    ? null
-    : JSON.stringify([revision, provider, model]);
-}
+import type { CostBreakdown, ModelPrice, TokenUsage } from "./types.ts";
 
 // Prices are decimal currency units per million tokens. Monetary results are
 // integer nanounits, rounded half-up once per charge, never binary float sums.
@@ -48,16 +38,16 @@ export function emptyCost(
 
 export function calculateCost(
   usage: TokenUsage,
-  policy: ModelPolicy | undefined,
+  price: ModelPrice | undefined,
   version: string | null = null,
 ): CostBreakdown {
   const result = emptyCost(
-    policy?.pricing ? BillingStatus.Unknown : BillingStatus.Unpriced,
+    price?.pricing ? BillingStatus.Unknown : BillingStatus.Unpriced,
   );
   result.price_version = version;
   result.context_tokens = usage.input_tokens;
-  if (!policy?.pricing) return result;
-  const { currency, tiers } = policy.pricing;
+  if (!price?.pricing) return result;
+  const { currency, tiers } = price.pricing;
   result.currency = currency;
   if (usage.input_tokens === null) return result;
   const contextTokens = usage.input_tokens;

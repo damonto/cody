@@ -1,3 +1,4 @@
+import { requestDetails, attemptDetails, hydrateRequest } from "./details.ts";
 import { UsagePhase } from "../telemetry/values.ts";
 
 import {
@@ -148,7 +149,7 @@ export async function ingestUsage(
     "usage_status",
     "billing_status",
     "cost_nano",
-    "event_json",
+    "details_json",
   ];
   const values = [
     event.request_id,
@@ -178,10 +179,7 @@ export async function ingestUsage(
     event.usage.status,
     event.billing.status,
     event.billing.total_nano,
-    JSON.stringify({
-      ...event,
-      first_response_ms: firstResponseMs,
-    }),
+    requestDetails(event),
   ];
   const statements = [
     db
@@ -203,7 +201,7 @@ export async function ingestUsage(
           .prepare(
             insertIgnore(
               sqlDialect(db),
-              "INSERT INTO request_attempts (request_id, attempt, status, duration_ms, event_json) VALUES (?, ?, ?, ?, ?)",
+              "INSERT INTO request_attempts (request_id, attempt, status, duration_ms, details_json) VALUES (?, ?, ?, ?, ?)",
             ),
           )
           .bind(
@@ -211,7 +209,7 @@ export async function ingestUsage(
             attempt.attempt,
             attempt.status,
             attempt.duration_ms,
-            JSON.stringify(attempt),
+            attemptDetails(attempt),
           ),
       );
     }
@@ -419,12 +417,25 @@ export async function reportDimensions(
   };
 }
 
-function parseUsageEvent(json: string): UsageEvent {
-  // These rows contain UsageEvents serialized by ingestUsage. Older rows
-  // written before first-response metering omit the new field.
-  const event = JSON.parse(json) as UsageEvent;
-  event.first_response_ms = firstResponseLatency(event.first_response_ms);
-  return event;
+async function hydrateRows(
+  db: SqlDatabase,
+  rows: Record<string, unknown>[],
+): Promise<UsageEvent[]> {
+  if (!rows.length) return [];
+  const attempts = await db
+    .prepare(
+      `SELECT * FROM request_attempts WHERE request_id IN (${rows.map(() => "?").join(",")}) ORDER BY request_id, attempt`,
+    )
+    .bind(...rows.map((row) => row.request_id))
+    .all<Record<string, unknown>>();
+  return rows.map((row) =>
+    hydrateRequest(
+      row,
+      attempts.results.filter(
+        (attempt) => attempt.request_id === row.request_id,
+      ),
+    ),
+  );
 }
 
 export async function requestList(
@@ -472,13 +483,13 @@ export async function requestList(
   const limit = Math.min(100, Math.max(1, options.limit));
   const rows = await db
     .prepare(
-      `SELECT event_json FROM requests WHERE endpoint IN ('messages', 'responses')
+      `SELECT * FROM requests WHERE endpoint IN ('messages', 'responses')
     AND started_at >= ? AND started_at < ? ${filter.sql} ${cursorSql}
     ORDER BY started_at DESC, request_id DESC LIMIT ?`,
     )
     .bind(range.from, range.to, ...filter.values, ...extra, limit + 1)
-    .all<{ event_json: string }>();
-  const events = rows.results.map((row) => parseUsageEvent(row.event_json));
+    .all<Record<string, unknown>>();
+  const events = await hydrateRows(db, rows.results);
   const more = events.length > limit;
   const items = events.slice(0, limit);
   const last = items.at(-1);
@@ -497,10 +508,10 @@ export async function requestDetail(
   id: string,
 ): Promise<UsageEvent | null> {
   const row = await db
-    .prepare("SELECT event_json FROM requests WHERE request_id = ?")
+    .prepare("SELECT * FROM requests WHERE request_id = ?")
     .bind(id)
-    .first<{ event_json: string }>();
-  return row ? parseUsageEvent(row.event_json) : null;
+    .first<Record<string, unknown>>();
+  return row ? (await hydrateRows(db, [row]))[0] : null;
 }
 
 export async function cleanupRequests(
@@ -547,7 +558,7 @@ export async function expirePendingRequests(
           finished_at = ?,
           outcome = 'failed',
           duration_ms = NULL,
-          event_json = (event_json::jsonb || jsonb_build_object(
+          details_json = (details_json::jsonb || jsonb_build_object(
             'sequence', 2,
             'phase', 'finished',
             'finished_at', ?::bigint,
@@ -568,7 +579,7 @@ export async function expirePendingRequests(
           finished_at = ?1,
           outcome = 'failed',
           duration_ms = NULL,
-          event_json = json_set(event_json,
+          details_json = json_set(details_json,
             '$.sequence', 2,
             '$.phase', 'finished',
             '$.finished_at', ?1,

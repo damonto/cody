@@ -1,3 +1,4 @@
+import { useEntityNames } from "@/lib/api";
 import { RequestOutcome } from "../../../src/telemetry/values.ts";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -28,6 +29,7 @@ export function ReportFilters({
   timeZone?: string;
   range?: ReportRange;
 }) {
+  const names = useEntityNames();
   const { values, change, apply, invalid, reset } = useReportFilters();
   const query = {
     period: values.period,
@@ -48,7 +50,7 @@ export function ReportFilters({
   const choices = (items: string[] | undefined, selected?: string) =>
     [...new Set([...(items ?? []), ...(selected ? [selected] : [])])]
       .sort()
-      .map((value) => ({ value, label: value }));
+      .map((value) => ({ value, label: names[value] ?? value }));
   const period = (value: string) => {
     if (value !== "custom") return change("period", value);
     const to = range?.to ?? Date.now();

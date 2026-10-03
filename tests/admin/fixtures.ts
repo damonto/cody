@@ -14,10 +14,13 @@ export function config(): Omit<GatewayConfig, "providers"> & {
       {
         type: "ai_gateway",
         id: "provider",
+        name: "Provider",
+        model_settings: { "real-model": { context_window: 1_000_000 } },
         base_url: "https://upstream.example/v1",
         credentials: [
           {
             id: "primary",
+            name: "Primary",
             auth: { type: "api_key", api_key: "test-upstream-secret" },
             priority: 100,
             disabled: false,
@@ -34,16 +37,20 @@ export function config(): Omit<GatewayConfig, "providers"> & {
       },
     ],
     api_keys: [
-      { id: "client", api_key: "test-client-secret", providers: ["provider"] },
+      {
+        id: "client",
+        name: "Client",
+        api_key: "test-client-secret",
+        providers: ["provider"],
+      },
     ],
     model_routes: { alias: { model: "real-model" } },
     web_search: { mode: "proxy" },
     reporting: { time_zone: "Asia/Shanghai", retention_days: 120 },
-    model_policies: [
+    model_prices: [
       {
         provider_id: "provider",
         model: "real-model",
-        context_window: 1_000_000,
         pricing: {
           currency: "USD",
           tiers: [
@@ -72,7 +79,7 @@ export function usage(id: string, at: number, currency = "USD"): UsageEvent {
   });
   const snapshot = config();
   snapshot.revision = 1;
-  snapshot.model_policies![0].pricing!.currency = currency;
+  snapshot.model_prices![0].pricing!.currency = currency;
   meter.configure(snapshot);
   meter.authenticate("client");
   meter.requestedModel("alias");

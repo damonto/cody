@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseConfig } from "../src/config/store.ts";
-import { z } from "zod";
 import {
   configurationSchema,
-  draftConfigurationSchema,
+  editableConfigurationSchema,
   maskedConfigurationSchema,
 } from "../src/config/schema.ts";
 import { antigravityAdapter } from "../src/providers/antigravity/index.ts";
@@ -153,12 +152,15 @@ const events = (text) =>
       ),
     );
 
-test("Antigravity has a reserved identity and may only appear once", () => {
+test("Antigravity has a stable identity independent of type and remains a singleton", () => {
   const value = config();
-  for (const schema of [configurationSchema, draftConfigurationSchema]) {
+  for (const schema of [configurationSchema, editableConfigurationSchema]) {
     const renamed = structuredClone(value);
     renamed.providers[0].id = "another-antigravity";
-    assert.equal(schema.safeParse(renamed).success, false);
+    renamed.api_keys.forEach(
+      (client) => (client.providers = ["another-antigravity"]),
+    );
+    assert.equal(schema.safeParse(renamed).success, true);
     assert.throws(
       () =>
         schema.parse({
@@ -167,21 +169,6 @@ test("Antigravity has a reserved identity and may only appear once", () => {
         }),
       /Antigravity is a fixed provider/,
     );
-    const reserved = structuredClone(value);
-    reserved.providers[0] = {
-      ...reserved.providers[0],
-      type: "ai_gateway",
-      base_url: "https://example.test",
-      credentials: [
-        {
-          id: "key",
-          auth: { type: "api_key", api_key: "upstream-key" },
-          priority: 100,
-          disabled: false,
-        },
-      ],
-    };
-    assert.throws(() => schema.parse(reserved), /reserved provider ID/);
   }
 });
 
@@ -192,60 +179,14 @@ test("disabled Antigravity can be published before accounts and models are ready
   provider.models = [];
   provider.credentials = [];
   assert.deepEqual(parseConfig(value), value);
-  assert.deepEqual(draftConfigurationSchema.parse(value), value);
+  assert.deepEqual(editableConfigurationSchema.parse(value), value);
   assert.deepEqual(maskedConfigurationSchema.parse(value), value);
   provider.disabled = false;
   assert.throws(() => parseConfig(value), /select Antigravity models/);
-  assert.deepEqual(draftConfigurationSchema.parse(value), value);
+  assert.deepEqual(editableConfigurationSchema.parse(value), value);
   assert.deepEqual(maskedConfigurationSchema.parse(value), value);
   provider.models = ["native-model"];
   assert.throws(() => parseConfig(value), /add an Antigravity account/);
-});
-
-test("JSON Schema exposes native singleton, reserved ID and readiness rules", () => {
-  const schema = z.toJSONSchema(configurationSchema, {
-    io: "input",
-    target: "draft-2020-12",
-  });
-  const providers = schema.properties.providers;
-  // Each native provider type is its own optional singleton.
-  assert.deepEqual(
-    providers.allOf.map((rule) => [
-      rule.contains.properties.type.const,
-      rule.minContains,
-      rule.maxContains,
-    ]),
-    [
-      ["antigravity", 0, 1],
-      ["codex", 0, 1],
-      ["claude", 0, 1],
-      ["xai", 0, 1],
-    ],
-  );
-  const gateway = providers.items.oneOf.find(
-    (entry) => entry.properties.type.const === "ai_gateway",
-  );
-  const native = providers.items.oneOf.find(
-    (entry) => entry.properties.type.const === "antigravity",
-  );
-  assert.deepEqual(gateway.properties.id.not, {
-    enum: ["antigravity", "codex", "claude", "xai"],
-  });
-  assert.equal(native.properties.id.const, "antigravity");
-  assert.equal(native.properties.models.minItems ?? 0, 0);
-  assert.equal(native.properties.credentials.minItems ?? 0, 0);
-  assert.deepEqual(native.if, {
-    properties: { disabled: { const: false } },
-    required: ["disabled"],
-  });
-  assert.deepEqual(native.then.properties, {
-    models: { minItems: 1 },
-    credentials: { minItems: 1 },
-  });
-  assert.equal(gateway.properties.models.minItems, 1);
-  assert.equal(gateway.properties.credentials.minItems, 1);
-  assert.equal(gateway.properties.models.uniqueItems, true);
-  assert.equal(native.properties.models.uniqueItems, true);
 });
 
 test("Antigravity configuration accepts only implemented OAuth accounts and capabilities", () => {
@@ -256,7 +197,7 @@ test("Antigravity configuration accepts only implemented OAuth accounts and capa
       p.base_url = "https://not-official.example";
     },
     (p) => {
-      p.type = "claude";
+      p.type = "unsupported-native";
     },
     (p) => {
       p.protocol = "anthropic";

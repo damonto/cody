@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import { env } from "cloudflare:workers";
 import {
   applyD1Migrations,
@@ -10,6 +11,7 @@ import worker from "../../src/worker.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
 import {
   parseConfig,
+  loadConfig,
   clearConfigCacheForTests,
 } from "../../src/config/store.ts";
 import {
@@ -25,8 +27,9 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   clearConfigCacheForTests();
-  await env.CODY_CONFIG_KV.put(
-    env.CONFIG_KEY,
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
     JSON.stringify(
       parseConfig({
         providers: [
@@ -486,15 +489,17 @@ test("concurrent requests have independent executors and cancellation", async ()
 });
 
 test("SSE retries and final usage execute once inside the request object", async () => {
-  const config = parseConfig(
-    JSON.parse((await env.CODY_CONFIG_KV.get(env.CONFIG_KEY))!),
-  );
+  const config = structuredClone(await loadConfig(env));
   config.providers[0]!.retry = {
     status_codes: [429],
     error_codes: ["rate_limit_exceeded"],
     delays_ms: [0],
   };
-  await env.CODY_CONFIG_KV.put(env.CONFIG_KEY, JSON.stringify(config));
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
   const metering = vi.spyOn(RequestMeter.prototype, "response");
   const requests: string[] = [];
   const event = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;

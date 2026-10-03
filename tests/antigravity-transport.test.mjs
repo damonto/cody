@@ -5,9 +5,10 @@ import { createServer } from "node:https";
 import { gzipSync } from "node:zlib";
 import { certificates, tlsProxyFixture } from "./helpers/socks-fixture.mjs";
 import { createAntigravityHttpConnector } from "../src/platform/standard/antigravity-http.ts";
-import { socksFetch } from "../src/gateway/transport/socks-fetch.ts";
 import { createUpstreamTransport } from "../src/gateway/transport/index.ts";
+import { prepareProviderRequest } from "../src/providers/index.ts";
 import { providerOutbound } from "../src/providers/outbound.ts";
+import { providerTransportPolicy } from "../src/providers/transport.ts";
 
 async function serverFor(t, handler, options = {}) {
   const certificate = await certificates("localhost");
@@ -172,14 +173,64 @@ test("SOCKS5 Antigravity omits ALPN while other providers retain their default",
     response.end("ok");
   });
   t.after(() => fixture.close());
-  for (const omitAlpn of [false, true]) {
-    const response = await socksFetch(new Request(fixture.url), fixture.proxy, {
-      ...fixture.options,
-      omitAlpn,
-    });
+  const group = {
+    id: crypto.randomUUID(),
+    strategy: "priority",
+    proxies: [
+      {
+        id: crypto.randomUUID(),
+        ...fixture.proxy,
+        priority: 1,
+        disabled: false,
+      },
+    ],
+  };
+  const env = {
+    PROXY_GROUP: {
+      getByName: () => ({
+        select: async () => ({
+          status: "selected",
+          lease: {
+            proxy_id: group.proxies[0].id,
+            generation: crypto.randomUUID(),
+          },
+        }),
+        observe: async () => {},
+      }),
+    },
+    UPSTREAM_HTTP: {
+      antigravity: () =>
+        assert.fail("proxy requests must not use the direct connector"),
+    },
+  };
+  const context = {
+    config: { proxy_groups: [group] },
+    env,
+    clientSignal: new AbortController().signal,
+    socks: { ...fixture.options, omitAlpn: false },
+  };
+  for (const type of ["ai_gateway", "antigravity", "codex", "claude", "xai"]) {
+    const transport = createUpstreamTransport(
+      { id: crypto.randomUUID(), proxy_group: group.id },
+      { id: crypto.randomUUID() },
+      context,
+      providerTransportPolicy(type, env),
+    );
+    const response = await transport.send(new Request(fixture.url));
     assert.equal(await response.text(), "ok");
+    assert.equal(
+      context.socks.omitAlpn,
+      false,
+      "provider policy must not mutate shared context",
+    );
   }
-  assert.deepEqual(protocols, ["http/1.1", false]);
+  assert.deepEqual(protocols, [
+    "http/1.1",
+    false,
+    "http/1.1",
+    "http/1.1",
+    "http/1.1",
+  ]);
 });
 
 test(
@@ -282,32 +333,92 @@ test(
 );
 
 test("runtime-scoped connectors keep inference and OAuth requests isolated", async () => {
+  const oauth = {
+    getByName: () => ({
+      run: async () => ({
+        ok: true,
+        data: { token: "token", project_id: "project" },
+      }),
+    }),
+  };
   const first = {
     UPSTREAM_HTTP: { antigravity: async () => new Response("first") },
+    PROVIDER_OAUTH_ACCOUNT: oauth,
+    CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   };
   const second = {
+    ...first,
     UPSTREAM_HTTP: { antigravity: async () => new Response("second") },
   };
   const config = { proxy_groups: [] };
   const signal = new AbortController().signal;
-  const provider = { id: "antigravity" };
-  const credential = { id: "one" };
+  const credential = {
+    id: "one",
+    auth: { type: "oauth", account_ref: crypto.randomUUID() },
+  };
+  const provider = {
+    id: crypto.randomUUID(),
+    type: "antigravity",
+    credentials: [credential],
+  };
   const transport = (env) =>
-    createUpstreamTransport(provider, credential, {
-      env,
-      config,
-      clientSignal: signal,
-    });
-  const a = transport(first);
-  const b = transport(second);
+    prepareProviderRequest(
+      provider,
+      credential,
+      {
+        request: new Request("https://gateway.invalid/responses", { signal }),
+        endpoint: "responses",
+        transport: "http",
+        protocol: "openai",
+        model: "gemini-3-pro",
+        clientId: "client",
+        payload: { input: "hello" },
+      },
+      {
+        env,
+        config,
+      },
+    );
+  const a = await transport(first);
+  const b = await transport(second);
   const request = () => new Request("https://upstream.invalid");
   assert.equal(await (await a.send(request())).text(), "first");
   assert.equal(await (await b.send(request())).text(), "second");
   const outbound = providerOutbound(
-    { provider_id: "antigravity", credential_id: "one" },
+    { provider_id: provider.id, credential_id: "one" },
     config,
     first,
     signal,
+    "antigravity",
   );
   assert.equal(await (await outbound.send(request())).text(), "first");
+});
+
+test("default direct transport is preserved without a provider connector", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response("fetch"));
+  const env = {
+    UPSTREAM_HTTP: {
+      antigravity: () => assert.fail("other providers must use fetch"),
+    },
+  };
+  for (const type of ["antigravity", "codex", "claude", "xai"]) {
+    const outbound = providerOutbound(
+      {
+        provider_id: crypto.randomUUID(),
+        credential_id: crypto.randomUUID(),
+        provider_proxy_group: "unused",
+        credential_proxy_group: null,
+      },
+      { proxy_groups: [] },
+      type === "antigravity" ? {} : env,
+      new AbortController().signal,
+      type,
+    );
+    assert.equal(
+      await (
+        await outbound.send(new Request("https://upstream.invalid"))
+      ).text(),
+      "fetch",
+    );
+  }
 });

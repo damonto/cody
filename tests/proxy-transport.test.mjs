@@ -57,7 +57,7 @@ function transportFixture(request, socks, nodes) {
   };
   return {
     transport: createUpstreamTransport(
-      { id: "provider", proxy_group: "US" },
+      { id: "provider", type: "ai_gateway", proxy_group: "US" },
       { id: "credential" },
       runtime,
     ),

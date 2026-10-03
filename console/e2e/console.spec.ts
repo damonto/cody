@@ -1,3 +1,4 @@
+import { isConfigurationMutation } from "./fixtures";
 import { test, expect } from "@playwright/test";
 import type { UsageEvent } from "../src/lib/api";
 import { previewSchema } from "../../src/admin/schema";
@@ -96,11 +97,13 @@ test("provider forms preserve credentials, validate credentials, and save before
   expect(
     mock.calls.filter((call) => call.includes("/console/api/config/publish")),
   ).toHaveLength(0);
-  await page.getByRole("button", { name: "Publish", exact: true }).click();
-  await expect.poll(() => mock.current().published_revision).toBe(2);
+  await expect(
+    page.getByRole("button", { name: "Publish", exact: true }),
+  ).toHaveCount(0);
+  await expect.poll(() => mock.current().version).toBe(2);
   await page.getByRole("button", { name: "Add provider", exact: true }).click();
   await dialog.getByRole("button", { name: "Save provider" }).click();
-  await expect(dialog.getByLabel("Provider ID")).toHaveAttribute(
+  await expect(dialog.getByLabel("Provider name")).toHaveAttribute(
     "aria-invalid",
     "true",
   );
@@ -120,20 +123,18 @@ test("context tier pricing and the calculator use the edited policy", async ({
   );
   await dialog.getByRole("button", { name: "Calculate cost" }).click();
   expect(
-    previewSchema.parse((await submitted).postDataJSON()).policy.pricing
+    previewSchema.parse((await submitted).postDataJSON()).price.pricing
       ?.tiers[1].input,
   ).toBe("8");
   await expect(dialog.getByText("$0.714", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Save model policy" }).click();
+  await page.getByRole("button", { name: "Save model price" }).click();
   await expect
-    .poll(
-      () => mock.current().config.model_policies?.[0].pricing?.tiers[1].input,
-    )
+    .poll(() => mock.current().config.model_prices?.[0].pricing?.tiers[1].input)
     .toBe("8");
   await expect(
     page.getByRole("button", { name: "Publish", exact: true }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
 });
 
 test("failed provider deletion stays open with an error and can be retried", async ({
@@ -141,8 +142,8 @@ test("failed provider deletion stays open with an error and can be retried", asy
 }) => {
   const mock = await mockApi(page);
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 409,
@@ -158,7 +159,7 @@ test("failed provider deletion stays open with an error and can be retried", asy
     .click();
   const dialog = page.getByRole("alertdialog");
   await dialog
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove provider", exact: true })
     .click();
   await expect(dialog).toBeVisible();
   await expect(
@@ -166,7 +167,7 @@ test("failed provider deletion stays open with an error and can be retried", asy
   ).toBeVisible();
   expect(mock.current().config.providers).toHaveLength(1);
   await dialog
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove provider", exact: true })
     .click();
   await expect(dialog).toBeHidden();
   expect(mock.current().config.providers).toHaveLength(0);

@@ -1,3 +1,4 @@
+import { ControlStore } from "../src/control/store.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -44,7 +45,7 @@ const settings = {
   CONFIG_ENCRYPTION_KEY: KEY,
   ADMIN_AUTH_MODE: "token",
   ADMIN_TOKEN: "test-admin-secret",
-  CONFIG_CACHE_TTL_SECONDS: "0",
+
   LOG_LEVEL: "off",
   CRON_SECRET: "test-cron-secret",
 };
@@ -331,10 +332,10 @@ for (const [name, open] of Object.entries(databases)) {
           await second.bindings.CODY_CONFIG_KV.get(metadataKey),
           snapshot,
         );
-        await env.CODY_CONFIG_KV.put(env.CONFIG_KEY, "not a configuration");
+        await env.CODY_CONFIG_KV.put("gateway-config", "not a configuration");
         assert.equal(
-          await second.bindings.CODY_CONFIG_KV.get(env.CONFIG_KEY),
-          null,
+          await second.bindings.CODY_CONFIG_KV.get("gateway-config"),
+          "not a configuration",
         );
         await second.bindings.CODY_CONFIG_KV.delete(metadataKey);
         assert.equal(await env.CODY_CONFIG_KV.get(metadataKey), null);
@@ -529,21 +530,26 @@ for (const [name, open] of Object.entries(databases)) {
           new Request("http://localhost/console/api/config"),
         );
         assert.equal(unauthorized.status, 401);
-        const publisher = env.CONFIG_PUBLISHER.getByName("configuration");
-        assert.equal(
-          JSON.parse(
-            await publisher.saveDraft(JSON.stringify(config()), 0, "tester"),
-          ).ok,
-          true,
+        const value = config();
+        for (const provider of value.providers) {
+          provider.name = provider.id;
+          for (const credential of provider.credentials)
+            credential.name = credential.id;
+        }
+        for (const client of value.api_keys) client.name = client.id;
+        const saved = await new ControlStore(env.CODY_DB, KEY).save(
+          value,
+          0,
+          "tester",
         );
-        assert.equal(JSON.parse(await publisher.publish(1, "tester")).ok, true);
+        assert.equal(saved.version, 1);
         const authenticated = await runtime.fetch(
           new Request("http://localhost/console/api/config", {
             headers: { authorization: "Bearer test-admin-secret" },
           }),
         );
         assert.equal(authenticated.status, 200);
-        assert.equal((await authenticated.json()).published_revision, 1);
+        assert.equal((await authenticated.json()).version, 1);
         const unsafe = await runtime.fetch(
           new Request("http://localhost/console/api/config", {
             method: "PUT",
@@ -723,7 +729,7 @@ for (const [name, open] of Object.entries(databases)) {
     );
 
     await t.test(
-      "published proxy owners prune stale bindings across runtimes",
+      "committed proxy owners prune stale bindings across runtimes",
       async () => {
         const id = `ownership-${crypto.randomUUID()}`;
         await proxyBindingLifecycle(

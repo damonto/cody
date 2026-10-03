@@ -15,7 +15,8 @@ export function newAccount(): AccountFormValues {
   const rowId = crypto.randomUUID();
   return {
     rowId,
-    id: `account-${rowId}`,
+    id: rowId,
+    name: "Account",
     priority: 100,
     disabled: false,
     auth: { type: CredentialAuthType.OAuth, account_ref: "" },

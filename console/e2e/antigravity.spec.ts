@@ -1,3 +1,4 @@
+import { isConfigurationMutation } from "./fixtures";
 import {
   expect,
   test,
@@ -6,7 +7,7 @@ import {
   type Route,
   type Request as BrowserRequest,
 } from "@playwright/test";
-import type { Draft } from "../src/lib/api";
+import type { ConfigurationView } from "./fixtures";
 import { antigravityProviderSchema } from "../../src/config/schema";
 import {
   accountViewSchema,
@@ -54,15 +55,15 @@ function account(
     },
   });
 }
-function configured(accounts: AccountView[]): Draft {
-  const draft: Draft = draftFixture();
+function configured(accounts: AccountView[]): ConfigurationView {
+  const draft: ConfigurationView = draftFixture();
   draft.config.providers.push(
     antigravityProviderSchema.parse({
       id: "antigravity",
       type: "antigravity",
       priority: 100,
-      disabled: false,
-      models: [model.id],
+      disabled: accounts.length === 0,
+      models: accounts.length ? [model.id] : [],
       credentials: accounts.map((account, index) => ({
         id: `account-${index + 1}`,
         auth: { type: "oauth", account_ref: account.account_ref },
@@ -341,7 +342,7 @@ test("Providers lists only implemented providers and Antigravity is a fixed acco
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByLabel("Provider ID", { exact: true })).toHaveCount(
+  await expect(dialog.getByLabel("Provider name", { exact: true })).toHaveCount(
     0,
   );
   for (const name of ["General", "Models", "Routing & retry"])
@@ -397,7 +398,7 @@ test("Antigravity authorizes without entering provider IDs, credential IDs or OA
     if (new URL(request.url()).pathname.includes("/oauth/clients/"))
       clientRequests.push(request.url());
   });
-  await mockApi(page);
+  await mockApi(page, configured([]));
   const mock = await mockOAuth(page);
   await page.goto("/console/providers/antigravity");
   await expect(page.getByText(/OAuth client|Client ID:/)).toHaveCount(0);
@@ -409,7 +410,7 @@ test("Antigravity authorizes without entering provider IDs, credential IDs or OA
     .getByRole("button", { name: "Add Google account", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByLabel("Provider ID", { exact: true })).toHaveCount(
+  await expect(dialog.getByLabel("Provider name", { exact: true })).toHaveCount(
     0,
   );
   await expect(dialog.getByLabel("Credential ID", { exact: true })).toHaveCount(
@@ -430,7 +431,7 @@ test("Antigravity authorizes without entering provider IDs, credential IDs or OA
   expect(mock.controls.starts).toHaveLength(1);
   expect(mock.controls.starts[0]).toMatchObject({
     provider_id: "antigravity",
-    credential_id: expect.stringMatching(/^account-/),
+    credential_id: expect.any(String),
     version: 1,
   });
   expect(clientRequests).toEqual([]);
@@ -476,20 +477,20 @@ test("settings save before the first account and subsequent authorization inheri
       .current()
       .config.providers.find((provider) => provider.type === "antigravity"),
   ).toMatchObject({
-    id: "antigravity",
+    id: expect.any(String),
     priority: 250,
     proxy_group: "google-egress",
     disabled: true,
     models: [],
     credentials: [],
   });
-  expect(api.current().published_revision).toBe(1);
+  expect(api.current().version).toBe(2);
   await page
     .getByRole("button", { name: "Add Google account", exact: true })
     .click();
   await authorize(dialog);
   expect(mock.controls.starts[0]).toMatchObject({
-    provider_id: "antigravity",
+    provider_id: expect.any(String),
     provider_proxy_group: "google-egress",
     version: 2,
   });
@@ -517,7 +518,7 @@ test("authorization errors remain retryable and models are selected in separate 
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const api = await mockApi(page);
+  const api = await mockApi(page, configured([]));
   const mock = await mockOAuth(page);
   mock.controls.failCallback = true;
   await page.goto("/console/providers/antigravity");
@@ -565,7 +566,7 @@ test("authorization errors remain retryable and models are selected in separate 
     models: [],
     credentials: [
       {
-        id: mock.controls.starts[0].credential_id,
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         auth: { account_ref: [...mock.accounts.keys()][0] },
       },
     ],
@@ -594,7 +595,7 @@ test("authorization errors remain retryable and models are selected in separate 
       .current()
       .config.providers.filter((provider) => provider.type === "antigravity"),
   ).toHaveLength(1);
-  expect(api.current().published_revision).toBe(1);
+  expect(api.current().version).toBe(3);
   expect(mock.controls.starts).toHaveLength(1);
   expect(errors).toEqual([]);
 });
@@ -602,7 +603,7 @@ test("authorization errors remain retryable and models are selected in separate 
 test("a failed account save retains the authorization and can retry without another OAuth exchange", async ({
   page,
 }) => {
-  const api = await mockApi(page);
+  const api = await mockApi(page, configured([]));
   const mock = await mockOAuth(page);
   await page.goto("/console/providers/antigravity");
   await page
@@ -612,8 +613,8 @@ test("a failed account save retains the authorization and can retry without anot
   await authorize(dialog);
   await dialog.getByLabel("Account priority", { exact: true }).fill("75");
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 409,
@@ -692,12 +693,12 @@ test("settings preserve accounts, stable route rows and retry edits after a fail
     .getByLabel("Retry delays (milliseconds)", { exact: true })
     .fill("1000, 2000");
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 503,
-        json: { error: "Draft save temporarily unavailable" },
+        json: { error: "Configuration save temporarily unavailable" },
       });
     } else await route.fallback();
   });
@@ -705,7 +706,9 @@ test("settings preserve accounts, stable route rows and retry edits after a fail
     .getByRole("button", { name: "Save settings", exact: true })
     .click();
   await expect(
-    dialog.getByText("Draft save temporarily unavailable", { exact: true }),
+    dialog.getByText("Configuration save temporarily unavailable", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
     dialog.getByLabel("Client model name", { exact: true }),
@@ -771,8 +774,8 @@ test("account ordering saves independently and failed reorder operations can be 
   const rows = page.locator("[data-account-id]");
   await expect(rows).toHaveCount(2);
   let fail = true;
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT" && fail) {
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request()) && fail) {
       fail = false;
       await route.fulfill({
         status: 503,
@@ -816,11 +819,11 @@ test("removing a draft account keeps authorization available for recovery", asyn
   await page.goto("/console/providers/antigravity");
   await page.getByRole("button", { name: /Account actions/ }).click();
   await page
-    .getByRole("menuitem", { name: "Remove from draft", exact: true })
+    .getByRole("menuitem", { name: "Remove account", exact: true })
     .click();
   await page
     .getByRole("alertdialog")
-    .getByRole("button", { name: "Remove from draft", exact: true })
+    .getByRole("button", { name: "Remove account", exact: true })
     .click();
   await expect(page.locator("[data-account-id]")).toHaveCount(0);
   expect(api.current().config.providers[1].credentials).toEqual([]);
@@ -854,8 +857,8 @@ test("pending settings saves lock the form and keep the editing snapshot open", 
   const api = await mockApi(page, configured([ready]));
   await mockOAuth(page, [ready]);
   const delayed = deferred<Route>();
-  await page.route("**/console/api/config", async (route) => {
-    if (route.request().method() === "PUT") delayed.resolve(route);
+  await page.route("**/console/api/**", async (route) => {
+    if (isConfigurationMutation(route.request())) delayed.resolve(route);
     else await route.fallback();
   });
   await page.goto("/console/providers/antigravity");

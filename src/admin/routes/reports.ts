@@ -16,7 +16,7 @@ import {
   summary,
   type ReportFilters,
 } from "../../reporting/store.ts";
-import { publishedConfig, type AdminContext } from "../context.ts";
+import { currentConfig, type AdminContext } from "../context.ts";
 import { requestIdSchema } from "../schema.ts";
 import { validate } from "../validation.ts";
 import type { Bindings } from "../../platform/bindings.ts";
@@ -35,7 +35,7 @@ function filters(query: ReportQuery): ReportFilters {
   return result;
 }
 async function rangeFor(query: ReportQuery, env: Bindings) {
-  const config = await publishedConfig(env);
+  const config = await currentConfig(env);
   const now = Date.now();
   const days =
     config?.reporting?.retention_days ?? DEFAULT_REPORTING.retention_days;

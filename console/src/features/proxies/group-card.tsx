@@ -47,26 +47,26 @@ export function ProxyGroupCard({
     <Card className="shadow-none">
       <CardHeader className="flex-row items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <CardTitle>{group.id}</CardTitle>
+          <CardTitle>{group.name ?? group.id}</CardTitle>
           <Badge variant="secondary">{group.strategy}</Badge>
         </div>
         <div className="flex gap-1">
           <Button
             variant="outline"
             size="sm"
-            aria-label={`Add proxy to ${group.id}`}
+            aria-label={`Add proxy to ${group.name ?? group.id}`}
             onClick={addNode}
           >
             <Plus />
             Add proxy
           </Button>
           <Button variant="outline" size="sm" onClick={edit}>
-            Configure {group.id}
+            Configure {group.name ?? group.id}
           </Button>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label={`Delete group ${group.id}`}
+            aria-label={`Delete group ${group.name ?? group.id}`}
             onClick={remove}
           >
             <Trash2 />
@@ -82,7 +82,7 @@ export function ProxyGroupCard({
           <Table>
             <TableHeader className="[&_th]:h-11 [&_th]:bg-muted/30 [&_th]:text-xs">
               <TableRow>
-                {["Proxy", "Priority", "Draft", "Live health", "Exit IP"].map(
+                {["Proxy", "Priority", "Status", "Live health", "Exit IP"].map(
                   (heading) => (
                     <TableHead key={heading} scope="col">
                       {heading}

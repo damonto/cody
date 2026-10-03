@@ -1,10 +1,11 @@
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
+import { useDeleteProvider } from "@/features/providers/api";
 import { ProviderType } from "../../../src/config/values.ts";
 
 import { ProviderForm } from "@/features/providers/provider-form";
-import { removeProvider } from "@/features/providers/mutations";
 import { useState } from "react";
 import { Plus, Server, Trash2 } from "lucide-react";
-import { useDraft, useSaveDraft, type Draft } from "@/lib/api";
+import { useProviderResources, type ProviderResources } from "@/lib/resources";
 import {
   DataTable,
   Empty,
@@ -35,31 +36,35 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Providers() {
-  const draft = useDraft();
-  const save = useSaveDraft();
+  const configuration = useProviderResources();
+  const save = useDeleteProvider();
   const [editor, setEditor] = useState<{
-    snapshot: Draft;
+    snapshot: ProviderResources;
     index: number;
   } | null>(null);
   const [remove, setRemove] = useState<string | null>(null);
-  if (draft.isPending) return <Loading />;
-  if (draft.error)
+  if (configuration.isPending) return <Loading />;
+  if (configuration.error)
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
-  const config = draft.data.config;
+  const config = configuration.data;
   const providers = config.providers.filter(
     (provider) => provider.type === ProviderType.AiGateway,
   );
   const edit = (index: number) =>
-    setEditor({ snapshot: structuredClone(draft.data), index });
+    setEditor({ snapshot: structuredClone(configuration.data), index });
   const referencedBy = remove
-    ? config.api_keys
+    ? config.clients
         .filter((client) => client.providers.includes(remove))
-        .map((client) => client.id)
+        .map((client) => client.name ?? client.id)
     : [];
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="AI Gateway"
         description="Manage providers, models, and prioritized credentials."
@@ -117,7 +122,9 @@ export default function Providers() {
                       <Server className="size-4 text-muted-foreground" />
                     </span>
                     <div>
-                      <p className="font-medium">{row.original.id}</p>
+                      <p className="font-medium">
+                        {row.original.name ?? row.original.id}
+                      </p>
                       <p className="max-w-72 truncate text-xs text-muted-foreground">
                         {row.original.base_url}
                       </p>
@@ -188,7 +195,7 @@ export default function Providers() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label={`Delete ${row.original.id}`}
+                      aria-label={`Delete ${row.original.name ?? row.original.id}`}
                       onClick={() => {
                         save.reset();
                         setRemove(row.original.id);
@@ -220,14 +227,14 @@ export default function Providers() {
               {editor?.index === -1 ? "Add provider" : "Configure provider"}
             </DialogTitle>
             <DialogDescription>
-              Save these changes to your draft, then publish when ready.
+              Saving applies these changes immediately.
             </DialogDescription>
           </DialogHeader>
           {editor && (
             <ProviderForm
               snapshot={editor.snapshot}
               index={editor.index}
-              draftVersion={draft.data.version}
+              configurationVersion={configuration.data.version}
               close={() => setEditor(null)}
             />
           )}
@@ -241,13 +248,20 @@ export default function Providers() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {remove}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Remove{" "}
+              {
+                config.providers.find((provider) => provider.id === remove)
+                  ?.name
+              }
+              ?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              The provider and its pricing policies will be removed from the
-              draft.{" "}
+              The provider and its model prices will be removed from the
+              configuration.{" "}
               {referencedBy.length
-                ? `Update clients ${referencedBy.join(", ")} and any model routes before publishing.`
-                : "Check model routes for references before publishing."}
+                ? `Update clients ${referencedBy.join(", ")} and any model routes before saving.`
+                : "Check model routes for references before saving."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {save.error && <ErrorNotice error={save.error} />}
@@ -259,15 +273,14 @@ export default function Providers() {
               onClick={(event) => {
                 event.preventDefault();
                 if (!remove) return;
-                const next = removeProvider(config, remove);
                 save.mutate(
-                  { config: next, version: draft.data.version },
+                  { id: remove, version: configuration.data.version },
                   { onSuccess: () => setRemove(null) },
                 );
               }}
               disabled={save.isPending}
             >
-              Remove from draft
+              Remove provider
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

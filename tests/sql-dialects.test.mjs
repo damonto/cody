@@ -25,6 +25,7 @@ import {
 } from "../src/platform/standard/sql/postgres.ts";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
 import { checkExpiredUsageCorrection } from "./helpers/expired-usage.ts";
+import { checkIncrementalConfiguration } from "./helpers/entity-configuration.ts";
 
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -44,6 +45,11 @@ test("placeholders are numbered outside string literals", () => {
 });
 
 for (const [dialect, create] of Object.entries(factories)) {
+  test(`${dialect}: saves touch only changed rows and swap aliases atomically`, async () => {
+    const db = await create();
+    await applyMigrations(db, migrationDirectories(dialect, ROOT));
+    await checkIncrementalConfiguration(db, KEY);
+  });
   test(`${dialect}: correction migration marks historical inferred failures without changing rollups`, async () => {
     const db = await create();
     const directory = migrationDirectories(dialect, ROOT)[0];
@@ -116,6 +122,7 @@ for (const [dialect, create] of Object.entries(factories)) {
       "0009_claude_oauth_accounts.sql",
       "0010_xai_oauth_accounts.sql",
       "0011_correct_expired_usage.sql",
+      "0012_entity_configuration.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(
@@ -182,38 +189,40 @@ for (const [dialect, create] of Object.entries(factories)) {
     assert.equal(Number(remaining?.count), 0);
   });
 
-  test(`${dialect}: control store draft, revision and publish`, async () => {
+  test(`${dialect}: configuration entities and snapshots commit atomically`, async () => {
     const db = await create();
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
-    const kv = new Map();
-    const store = new ControlStore(
-      db,
-      {
-        get: async (key) => kv.get(key) ?? null,
-        put: async (key, value) => void kv.set(key, value),
-        delete: async (key) => void kv.delete(key),
-      },
-      KEY,
-      "gateway-config",
-    );
-    const state = await store.state();
-    assert.equal(state.draft_version, 0);
+    const store = new ControlStore(db, KEY);
+    assert.equal((await store.state()).version, 0);
     const config = configFixture();
+    for (const provider of config.providers) {
+      provider.name = provider.id;
+      for (const credential of provider.credentials)
+        credential.name = credential.id;
+    }
+    for (const client of config.api_keys) client.name = client.id;
     const view = await store.save(config, 0, "tester");
     assert.equal(view.version, 1);
-    await assert.rejects(store.save(config, 0, "tester"), /draft changed/);
-    const audits = await db
-      .prepare(
-        "SELECT COUNT(*) AS count FROM audit_log WHERE action = 'save_draft'",
-      )
-      .first();
-    assert.equal(Number(audits?.count), 1);
-
-    const revision = await store.createRevision(1, "tester");
-    await store.publishRevision(revision);
-    await store.publishRevision(revision);
-    assert.equal((await store.state()).published_revision, revision);
-    assert.ok(kv.get("gateway-config"));
-    assert.equal((await store.revision(revision)).revision, revision);
+    await assert.rejects(
+      store.save(config, 0, "tester"),
+      /Configuration changed/,
+    );
+    assert.equal(
+      (await store.current()).providers[0].id,
+      view.config.providers[0].id,
+    );
+    assert.equal((await store.revision(1)).revision, 1);
+    assert.equal(
+      Number(
+        (
+          await db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM audit_log WHERE action = 'save_configuration'",
+            )
+            .first()
+        ).count,
+      ),
+      1,
+    );
   });
 }

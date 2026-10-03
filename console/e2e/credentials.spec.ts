@@ -1,5 +1,5 @@
+import { isConfigurationMutation } from "./fixtures";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { draftSchema } from "../../src/admin/schema";
 import { SECRET_PLACEHOLDER } from "../../src/shared/secrets";
 import { draftFixture, mockApi } from "./fixtures";
 
@@ -54,10 +54,12 @@ test("saved provider credentials can be viewed without rotation and follow their
   await expect(inputs).toHaveValue(
     mock.providerKey("example-provider", "backup"),
   );
-  const saving = page.waitForRequest((request) => request.method() === "PUT");
+  const saving = page.waitForRequest((request) =>
+    isConfigurationMutation(request),
+  );
   await dialog.getByRole("button", { name: "Save provider" }).click();
-  const submitted = draftSchema.parse((await saving).postDataJSON());
-  expect(submitted.config.providers[0].credentials).toEqual([
+  const submitted = (await saving).postDataJSON();
+  expect(submitted.provider.credentials).toMatchObject([
     {
       id: "backup",
       auth: { type: "api_key", api_key: SECRET_PLACEHOLDER },
@@ -167,7 +169,7 @@ test("credential rows keep identity while editing IDs and removing other rows", 
   await dialog
     .getByRole("button", { name: "Add credential", exact: true })
     .click();
-  const id = dialog.getByLabel("Credential ID", { exact: true }).last();
+  const id = dialog.getByLabel("Credential name", { exact: true }).last();
   await id.fill("");
   await id.pressSequentially("replacement");
   await expect(id).toHaveValue("replacement");
@@ -186,15 +188,19 @@ test("credential rows keep identity while editing IDs and removing other rows", 
   await expect(dialog).toBeHidden();
   expect(mock.current().config.providers[0].credentials).toEqual([
     {
-      id: "replacement",
+      id: expect.any(String),
+      name: "replacement",
       auth: { type: "api_key", api_key: SECRET_PLACEHOLDER },
       priority: 73,
       disabled: false,
     },
   ]);
-  expect(mock.providerKey("example-provider", "replacement")).toBe(
-    "new-upstream-secret",
-  );
+  expect(
+    mock.providerKey(
+      "example-provider",
+      mock.current().config.providers[0].credentials[0].id,
+    ),
+  ).toBe("new-upstream-secret");
 });
 
 for (const mode of ["tavily", "exa"] as const) {
@@ -227,10 +233,8 @@ for (const mode of ["tavily", "exa"] as const) {
       .getByRole("button", { name: "Show Search API key", exact: true })
       .click();
     await expect(key).toHaveValue(mock.searchKey());
-    const saving = page.waitForRequest((request) => request.method() === "PUT");
-    await page.getByRole("button", { name: "Save settings" }).click();
-    const submitted = draftSchema.parse((await saving).postDataJSON());
-    expect(submitted.config.web_search).toMatchObject({
+    await page.getByRole("button", { name: "Save search settings" }).click();
+    expect(mock.current().config.web_search).toMatchObject({
       mode,
       api_key: SECRET_PLACEHOLDER,
     });
@@ -258,7 +262,7 @@ test("switching search providers cancels a pending reveal and shows only the new
   };
   const mock = await mockApi(page, initial);
   const requests: Route[] = [];
-  await page.route("**/console/api/config/web-search/reveal", (route) => {
+  await page.route("**/console/api/settings/web-search/reveal", (route) => {
     requests.push(route);
   });
   await page.goto("/console/settings");
@@ -284,7 +288,7 @@ test("switching search providers cancels a pending reveal and shows only the new
   await expect(key).toHaveValue("new-exa-key");
   await expect(key).toHaveAttribute("type", "text");
   expect(requests).toHaveLength(0);
-  await page.getByRole("button", { name: "Save settings" }).click();
+  await page.getByRole("button", { name: "Save search settings" }).click();
   await expect(key).toHaveValue("");
   expect(mock.searchKey()).toBe("new-exa-key");
 });

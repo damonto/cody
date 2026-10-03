@@ -30,8 +30,6 @@
     },
   },
   "vars": {
-    "CONFIG_KEY": "gateway-config",
-    "CONFIG_CACHE_TTL_SECONDS": "10",
     "MODELS_CACHE_TTL_SECONDS": "30",
     "LOG_LEVEL": "info",
     "ACCESS_TEAM_DOMAIN": "https://damonto.cloudflareaccess.com",
@@ -96,10 +94,6 @@
         "class_name": "UsageOutbox",
       },
       {
-        "name": "CONFIG_PUBLISHER",
-        "class_name": "ConfigPublisher",
-      },
-      {
         "name": "PROXY_GROUP",
         "class_name": "ProxyGroup",
       },
@@ -155,6 +149,7 @@
       "tag": "v10",
       "new_sqlite_classes": ["HttpExecution"],
     },
+    { "tag": "v11", "deleted_classes": ["ConfigPublisher"] },
   ],
   "triggers": {
     "crons": ["17 * * * *"],

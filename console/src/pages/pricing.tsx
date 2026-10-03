@@ -1,6 +1,7 @@
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useSearchParams } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
-import { useDraft } from "@/lib/api";
+import { usePricingResources } from "@/lib/resources";
 import {
   Choice,
   Empty,
@@ -10,17 +11,20 @@ import {
 } from "@/components/common";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { PolicyForm } from "@/features/pricing/policy-form";
+import { PriceForm } from "@/features/pricing/price-form";
 
 export default function Pricing() {
-  const draft = useDraft();
+  const configuration = usePricingResources();
   const [search, setSearch] = useSearchParams();
-  if (draft.isPending) return <Loading />;
-  if (draft.error)
+  if (configuration.isPending) return <Loading />;
+  if (configuration.error)
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
-  const config = draft.data.config;
+  const config = configuration.data;
   const provider =
     config.providers.find((entry) => entry.id === search.get("provider")) ??
     config.providers[0];
@@ -29,6 +33,7 @@ export default function Pricing() {
     provider?.models[0];
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="Model pricing"
         description="Set token rates and context windows for each provider and model."
@@ -54,7 +59,7 @@ export default function Pricing() {
             />
             <div className="rounded-xl border p-1.5">
               {provider.models.map((name) => {
-                const policy = config.model_policies?.find(
+                const price = config.prices?.find(
                   (entry) =>
                     entry.provider_id === provider.id && entry.model === name,
                 );
@@ -73,8 +78,8 @@ export default function Pricing() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{name}</span>
                       <span className="mt-1 block text-xs text-muted-foreground">
-                        {policy?.pricing
-                          ? `${policy.pricing.currency} · ${policy.pricing.tiers.length} ${policy.pricing.tiers.length === 1 ? "tier" : "tiers"}`
+                        {price?.pricing
+                          ? `${price.pricing.currency} · ${price.pricing.tiers.length} ${price.pricing.tiers.length === 1 ? "tier" : "tiers"}`
                           : "No price configured"}
                       </span>
                     </span>
@@ -86,9 +91,9 @@ export default function Pricing() {
               })}
             </div>
           </aside>
-          <PolicyForm
-            key={`${provider.id}:${model}:${draft.data.version}`}
-            snapshot={draft.data}
+          <PriceForm
+            key={`${provider.id}:${model}`}
+            snapshot={configuration.data}
             providerId={provider.id}
             model={model}
           />

@@ -3,7 +3,7 @@ import { ApiProtocol } from "../gateway/protocol-values.ts";
 
 import {
   USAGE_FIELDS,
-  type ModelPolicy,
+  type ModelPrice,
   type NormalizedUsage,
   type TokenUsage,
 } from "../billing/types.ts";
@@ -67,7 +67,7 @@ export class UsageAccumulator {
     }
   }
 
-  snapshot(policy?: ModelPolicy): NormalizedUsage {
+  snapshot(price?: ModelPrice): NormalizedUsage {
     const tokens = emptyUsage();
     // Counters are primitive values and detail objects are never mutated in
     // place by add(), so a shallow copy safely isolates subsequent snapshots.
@@ -116,7 +116,7 @@ export class UsageAccumulator {
       ) {
         // Compatible providers can omit writes when they have no separate
         // charge. A priced write or an explicit invalid counter stays unknown.
-        const tier = policy?.pricing?.tiers.find(
+        const tier = price?.pricing?.tiers.find(
           (tier) =>
             tier.up_to_input_tokens === null ||
             inputTokens <= tier.up_to_input_tokens,

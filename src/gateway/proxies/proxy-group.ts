@@ -192,7 +192,7 @@ export class ProxyGroup extends DurableObject<Env> {
       );
       const key = proxyOwnerKey(owner);
       const owners = synced.owners;
-      // Draft OAuth calls can connect without resurrecting a published binding.
+      // ConfigurationView OAuth calls can connect without resurrecting a active binding.
       const mayBind = owners === undefined || owners.keys.includes(key);
       if (group.owners !== undefined && !mayBind)
         return { status: "unavailable" };

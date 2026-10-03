@@ -21,7 +21,7 @@ export function OAuthAccountForm({
   credentialId,
   groups,
   version,
-  draftVersion,
+  configurationVersion,
   pending,
   onSave,
   close,
@@ -33,7 +33,7 @@ export function OAuthAccountForm({
   credentialId?: string;
   groups: ProxyGroupConfig[];
   version: number;
-  draftVersion: number;
+  configurationVersion: number;
   pending: boolean;
   onSave: (value: AccountFormValues) => Promise<void>;
   close: () => void;
@@ -89,12 +89,13 @@ export function OAuthAccountForm({
                 accountRef={accountRef}
                 connection={{
                   provider_id: provider.id,
+                  provider_type: provider.type,
                   credential_id: initial.id,
                   provider_proxy_group: provider.proxy_group,
                   credential_proxy_group: field.state.value,
                 }}
                 version={version}
-                draftVersion={draftVersion}
+                configurationVersion={configurationVersion}
                 occupied={provider.credentials
                   .filter((entry) => entry.id !== initial.id)
                   .map((entry) => entry.auth.account_ref)}

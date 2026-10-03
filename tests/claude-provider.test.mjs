@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseConfig } from "../src/config/store.ts";
-import { draftConfigurationSchema } from "../src/config/schema.ts";
+import { editableConfigurationSchema } from "../src/config/schema.ts";
 import { claudeAdapter } from "../src/providers/claude/index.ts";
 import {
   authorizationUrl,
@@ -56,7 +56,7 @@ test("Claude is an OAuth singleton with no resets or auxiliary transports", () =
     assert.throws(() => config(extra));
   const draft = config();
   draft.providers[0].credentials = [];
-  assert.equal(draftConfigurationSchema.safeParse(draft).success, true);
+  assert.equal(editableConfigurationSchema.safeParse(draft).success, true);
   const duplicate = config();
   duplicate.providers.push(duplicate.providers[0]);
   assert.throws(() => parseConfig(duplicate));

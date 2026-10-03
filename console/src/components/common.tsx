@@ -116,9 +116,7 @@ export function Status({ value }: { value: string }) {
       variant="outline"
       className={cn(
         "gap-1.5 capitalize font-normal",
-        ["success", "reported", "complete", "published", "enabled"].includes(
-          value,
-        ) &&
+        ["success", "reported", "complete", "enabled"].includes(value) &&
           "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
         ["failed", "invalid"].includes(value) &&
           "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300",

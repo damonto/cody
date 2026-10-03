@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import { env } from "cloudflare:workers";
 import {
   applyD1Migrations,
@@ -478,14 +479,10 @@ const admin = (path: string, method = "GET", json?: unknown) =>
 test("the console shows quota cooldowns and a manual reset clears them", async () => {
   const [only] = await accounts(1);
   const config = codexConfig([only]);
-  await env.CODY_DB.prepare(
-    "UPDATE control_state SET draft_version = 0, draft_payload = NULL, published_revision = NULL, updated_at = 0 WHERE id = 1",
-  ).run();
-  const draft = await admin("/config", "PUT", { config, version: 0 });
-  expect(draft.status).toBe(200);
-  const { version } = (await draft.json()) as { version: number };
-  expect((await admin("/config/publish", "POST", { version })).status).toBe(
-    200,
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
   );
   exhausted.set(`acct-${only.connection.credential_id}`, 900);
   expect((await infer(config)).status).toBe(429);

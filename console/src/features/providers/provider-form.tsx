@@ -2,7 +2,7 @@ import { ProviderType } from "../../../../src/config/values.ts";
 
 import { useState } from "react";
 import { useAppForm } from "@/lib/form";
-import { useSaveDraft, type Draft } from "@/lib/api";
+import { type ProviderResources } from "@/lib/resources";
 import { ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,7 +12,7 @@ import {
   providerFormOptions,
   providerFormValues,
 } from "./form-options";
-import { updateProvider } from "./mutations";
+import { useSaveProvider } from "./api";
 import { ConnectionFields } from "./connection-fields";
 import { CredentialFields } from "./credential-fields";
 import { CapabilityFields } from "./capability-fields";
@@ -20,18 +20,18 @@ import { CapabilityFields } from "./capability-fields";
 export function ProviderForm({
   snapshot,
   index,
-  draftVersion,
+  configurationVersion,
   close,
 }: {
-  snapshot: Draft;
+  snapshot: ProviderResources;
   index: number;
-  draftVersion: number;
+  configurationVersion: number;
   close: () => void;
 }) {
-  const save = useSaveDraft();
+  const save = useSaveProvider();
   const [current] = useState(() => {
     if (index === -1) return newProvider();
-    const provider = snapshot.config.providers[index];
+    const provider = snapshot.providers[index];
     if (!provider || provider.type !== ProviderType.AiGateway)
       throw new Error("Provider is missing from the editing snapshot");
     return providerFormValues(provider);
@@ -40,25 +40,12 @@ export function ProviderForm({
     ...providerFormOptions,
     defaultValues: current,
     onSubmit: async ({ value }) => {
-      if (
-        snapshot.config.providers.some(
-          (provider, position) =>
-            position !== index && provider.id === value.id,
-        )
-      ) {
-        form.setFieldMeta("id", (meta) => ({
-          ...meta,
-          errorMap: { onSubmit: "A provider with this ID already exists" },
-        }));
-        return;
-      }
-      const next = updateProvider(
-        snapshot.config,
-        index,
-        providerEditorSchema.parse(value),
-      );
       try {
-        await save.mutateAsync({ config: next, version: snapshot.version });
+        await save.mutateAsync({
+          provider: providerEditorSchema.parse(value),
+          id: index === -1 ? null : current.id,
+          version: snapshot.version,
+        });
         close();
       } catch {
         /* The mutation displays the error and preserves form values. */
@@ -83,14 +70,14 @@ export function ProviderForm({
           form={form}
           index={index}
           close={close}
-          groups={snapshot.config.proxy_groups}
+          groups={snapshot.groups}
         />
         <CredentialFields
           form={form}
           providerId={current.id}
           version={snapshot.version}
-          draftVersion={draftVersion}
-          groups={snapshot.config.proxy_groups}
+          configurationVersion={configurationVersion}
+          groups={snapshot.groups}
         />
         <CapabilityFields form={form} />
       </Tabs>

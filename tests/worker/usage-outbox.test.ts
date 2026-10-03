@@ -475,6 +475,7 @@ test("new records honor persisted Queue backoff while D1 remains available", asy
     const progress: UsageEvent = {
       ...first,
       request_id: "backoff-progress",
+      attempts: [],
       sequence: 1,
       phase: "started",
       finished_at: null,

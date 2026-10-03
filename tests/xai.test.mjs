@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseConfig } from "../src/config/store.ts";
-import { draftConfigurationSchema } from "../src/config/schema.ts";
+import { editableConfigurationSchema } from "../src/config/schema.ts";
 import { translateRequest } from "../src/providers/xai/request.ts";
 import { convertResponse } from "../src/providers/xai/response.ts";
 import { openReasoning, sealReasoning } from "../src/providers/xai/replay.ts";
@@ -114,7 +114,7 @@ test("xAI configuration is an OAuth singleton with disabled drafts", () => {
     assert.throws(() => config(value));
   const draft = structuredClone(c);
   draft.providers[0].credentials = [];
-  assert.equal(draftConfigurationSchema.safeParse(draft).success, true);
+  assert.equal(editableConfigurationSchema.safeParse(draft).success, true);
   c.providers.push(c.providers[0]);
   assert.throws(() => parseConfig(c));
   assert.equal(
@@ -364,18 +364,15 @@ test("xAI incomplete is preserved and truncated streams never succeed", async ()
   assert.doesNotMatch(output, /message_stop/);
 });
 test("xAI billing separates subscription and paid eligibility, failing closed on unknown", () => {
-  const quota = parseBilling(
-    {
-      credit_usage_percent: 20,
-      current_period: {
-        type: "weekly",
-        end: new Date(Date.now() + 60000).toISOString(),
-      },
-      on_demand_cap: { val: "100" },
-      on_demand_used: { val: "10" },
+  const quota = parseBilling({
+    credit_usage_percent: 20,
+    current_period: {
+      type: "weekly",
+      end: new Date(Date.now() + 60000).toISOString(),
     },
-    { monthly_limit: 100, used: 100 },
-  );
+    on_demand_cap: { val: "100" },
+    on_demand_used: { val: "10" },
+  });
   assert.equal(quota.groups.length, 1);
   assert.equal(quotaAvailability(quota, scope.model).subscription, true);
   quota.groups[0].buckets[0].used_percent = 100;
@@ -781,29 +778,75 @@ test("xAI refusal SSE retains the refusal content contract", async () => {
   assert.match(sse, /"part":\{"type":"refusal"/);
 });
 
-test("xAI primary billing wins across field aliases and keeps subscription periods separate", () => {
-  const primary = {
+test("xAI credits billing supports field aliases and keeps subscription periods separate", () => {
+  const billing = {
     creditUsagePercent: 30,
     currentPeriod: { type: "daily", end: "2030-01-02T00:00:00Z" },
     onDemandCap: 100,
     onDemandUsed: 90,
     usage: { includedUsed: 12 },
+    monthlyLimit: 50,
+    billingPeriodEnd: "2030-02-01T00:00:00Z",
   };
-  const legacy = {
-    credit_usage_percent: 0,
-    on_demand_cap: 1000,
-    on_demand_used: 0,
-    usage: { included_used: 0 },
-    monthly_limit: 50,
-    billing_period_end: "2030-02-01T00:00:00Z",
-  };
-  const quota = parseBilling(primary, legacy);
+  const quota = parseBilling({ config: billing });
   assert.equal(quota.groups[0].buckets[0].window, "daily");
   assert.equal(quota.groups[0].buckets[0].used_percent, 30);
-  assert.equal(quota.groups[0].buckets[0].reset_at, primary.currentPeriod.end);
-  assert.equal(quota.xai_billing.billing_period_end, legacy.billing_period_end);
+  assert.equal(quota.groups[0].buckets[0].reset_at, billing.currentPeriod.end);
+  assert.equal(quota.xai_billing.billing_period_end, billing.billingPeriodEnd);
   assert.equal(quota.xai_billing.included_used, 12);
   assert.equal(quota.extra_usage.used_credits, 90);
   assert.equal(quota.extra_usage.monthly_limit, 100);
-  assert.equal(parseBilling(primary).groups[0].buckets[0].used_percent, 30);
+  assert.equal(parseBilling(billing).groups[0].buckets[0].used_percent, 30);
+});
+
+test("xAI billing rejects missing credits quota even with monthly or paid usage", () => {
+  for (const creditUsagePercent of [undefined, null, "", -1, "invalid"]) {
+    assert.throws(
+      () =>
+        parseBilling({
+          config: {
+            creditUsagePercent,
+            currentPeriod: { type: "weekly", end: "2030-02-01T00:00:00Z" },
+            monthlyLimit: { val: 100 },
+            used: { val: 10 },
+            onDemandCap: { val: 100 },
+            onDemandUsed: { val: 10 },
+          },
+        }),
+      { status: 503, code: "quota_unknown" },
+    );
+  }
+  assert.equal(
+    parseBilling({ creditUsagePercent: 0 }).groups[0].buckets[0].used_percent,
+    0,
+  );
+});
+
+test("xAI quota requests only credits billing and preserves failures", async () => {
+  for (const status of [200, 401, 503]) {
+    const requests = [];
+    const client = new XaiClient(async (request) => {
+      requests.push(request);
+      return Response.json(
+        status === 200
+          ? { config: { creditUsagePercent: 25 } }
+          : { error: "unavailable" },
+        { status },
+      );
+    }, new AbortController().signal);
+    if (status === 200) {
+      const quota = await client.quota("token", "subject");
+      assert.equal(quota.groups[0].buckets[0].used_percent, 25);
+      assert.equal(quota.extra_usage, null);
+    } else {
+      await assert.rejects(client.quota("token", "subject"), { status });
+    }
+    assert.equal(requests.length, 1);
+    assert.equal(
+      requests[0].url,
+      "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+    );
+    assert.equal(requests[0].headers.get("authorization"), "Bearer token");
+    assert.equal(requests[0].headers.get("x-userid"), "subject");
+  }
 });

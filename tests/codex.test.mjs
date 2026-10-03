@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseConfig } from "../src/config/store.ts";
 import {
   configurationSchema,
-  draftConfigurationSchema,
+  editableConfigurationSchema,
 } from "../src/config/schema.ts";
 import { codexAdapter } from "../src/providers/codex/index.ts";
 import {
@@ -82,10 +82,11 @@ test("Codex defaults to round robin with WebSocket and search, and no automatic 
 
 test("Codex is a reserved singleton that rejects gateway-only fields", () => {
   const value = config();
-  for (const schema of [configurationSchema, draftConfigurationSchema]) {
+  for (const schema of [configurationSchema, editableConfigurationSchema]) {
     const renamed = structuredClone(value);
     renamed.providers[0].id = "chatgpt";
-    assert.equal(schema.safeParse(renamed).success, false);
+    renamed.api_keys.forEach((client) => (client.providers = ["chatgpt"]));
+    assert.equal(schema.safeParse(renamed).success, true);
     assert.throws(
       () =>
         schema.parse({

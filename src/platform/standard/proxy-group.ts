@@ -198,7 +198,7 @@ export class ProxyGroupCore implements ProxyGroupObject {
       const ownerKey = proxyOwnerKey(owner);
       const key = `${BINDING_PREFIX}${ownerKey}`;
       const owners = synced.owners;
-      // Draft OAuth calls can connect without resurrecting a published binding.
+      // ConfigurationView OAuth calls can connect without resurrecting a active binding.
       const mayBind = owners === undefined || owners.keys.includes(ownerKey);
       if (group.owners !== undefined && !mayBind)
         return { status: "unavailable" };

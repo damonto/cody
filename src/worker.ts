@@ -11,7 +11,6 @@ export { app } from "./app.ts";
 export { ProxyGroup } from "./gateway/proxies/proxy-group.ts";
 export { SessionAffinityIndex } from "./gateway/sessions/session-affinity-index.ts";
 export {
-  ConfigPublisher,
   ProviderHealth,
   ProviderOAuthAccount,
   ResponsesWebSocketProxy,

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { Draft } from "../src/lib/api";
+import type { ConfigurationView } from "./fixtures";
 import { codexProviderSchema } from "../../src/config/schema";
 import {
   accountViewSchema,
@@ -102,8 +102,8 @@ function account(ref: string = crypto.randomUUID(), ready = true): AccountView {
   });
 }
 
-function configured(accounts: AccountView[]): Draft {
-  const draft: Draft = draftFixture();
+function configured(accounts: AccountView[]): ConfigurationView {
+  const draft: ConfigurationView = draftFixture();
   draft.config.providers.push(
     codexProviderSchema.parse({
       id: "codex",
@@ -339,7 +339,7 @@ test("a ChatGPT account authorizes with a device code", async ({ page }) => {
     .getByRole("button", { name: "Save account", exact: true })
     .click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator('[data-account-id^="account-"]')).toHaveCount(1);
+  await expect(page.locator("[data-account-id]")).toHaveCount(1);
 });
 
 test("the paste flow asks for the localhost callback", async ({ page }) => {

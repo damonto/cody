@@ -1,3 +1,4 @@
+import { ControlStore } from "../control/store.ts";
 import type {
   ProviderConfig,
   ProviderCredentialConfig,
@@ -6,9 +7,11 @@ import { createUpstreamTransport } from "../gateway/transport/index.ts";
 import {
   proxyConfigurationSchema,
   type ProviderConnection,
+  type OAuthProviderType,
   type ProxyConfiguration,
 } from "./oauth/schema.ts";
 import type { Bindings } from "../platform/bindings.ts";
+import { providerTransportPolicy } from "./transport.ts";
 
 export function providerConnection(
   provider: Pick<ProviderConfig, "id" | "proxy_group">,
@@ -22,13 +25,12 @@ export function providerConnection(
   };
 }
 
-/** Management operations use published nodes, never a draft that could change live proxy health. */
-export async function publishedProxyConfiguration(
-  env: Pick<Bindings, "CODY_CONFIG_KV" | "CONFIG_KEY">,
+/** Management operations use the same committed configuration as inference. */
+export async function currentProxyConfiguration(
+  env: Pick<Bindings, "CODY_DB" | "CONFIG_ENCRYPTION_KEY">,
 ): Promise<ProxyConfiguration> {
-  const raw = await env.CODY_CONFIG_KV.get(env.CONFIG_KEY ?? "gateway-config");
   return proxyConfigurationSchema.parse(
-    raw ? JSON.parse(raw) : { proxy_groups: [] },
+    await new ControlStore(env.CODY_DB, env.CONFIG_ENCRYPTION_KEY).committed(),
   );
 }
 
@@ -37,6 +39,7 @@ export function providerOutbound(
   config: ProxyConfiguration,
   env: Pick<Bindings, "PROXY_GROUP" | "UPSTREAM_HTTP">,
   signal: AbortSignal,
+  providerType: OAuthProviderType,
 ) {
   return createUpstreamTransport(
     {
@@ -48,5 +51,6 @@ export function providerOutbound(
       proxy_group: connection.credential_proxy_group,
     },
     { config, env, clientSignal: signal },
+    providerTransportPolicy(providerType, env),
   );
 }

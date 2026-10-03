@@ -1,3 +1,4 @@
+import { useEntityNames } from "@/lib/api";
 import { ArrowUpRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Choice, Empty } from "@/components/common";
@@ -33,6 +34,7 @@ export function SourceRanking({
   filters: ReportQueryParams;
   change: ChangeReportFilter;
 }) {
+  const names = useEntityNames();
   const ranking = data.ranking;
   const metric: MetricName = ranking.metric;
   const currency = ranking.currency;
@@ -133,7 +135,9 @@ export function SourceRanking({
                           className="max-w-full cursor-pointer break-all text-left text-xs hover:underline"
                           onClick={() => change(ranking.dimension, row.value)}
                         >
-                          {row.value}
+                          {ranking.dimension === "model"
+                            ? row.value
+                            : (names[row.value] ?? row.value)}
                         </button>
                       )}
                       <div className="mt-2 flex items-center gap-2">

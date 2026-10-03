@@ -7,7 +7,7 @@ export type ProxyTestState =
   | { status: "success"; result: ProxyTestResult }
   | { status: "error"; message: string };
 
-/** The owning row is keyed by draft version and proxy ID within its group. */
+/** The owning row is keyed by configuration version and proxy ID within its group. */
 export function useProxyTest(
   groupId: string,
   proxyId: string,

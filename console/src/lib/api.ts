@@ -1,15 +1,8 @@
-import {
-  queryOptions,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { parseResponse, type InferResponseType } from "hono/client";
 import { z } from "zod";
-import { toast } from "sonner";
 import { createAdminClient } from "../../../src/admin/client";
 import { apiKeySchema } from "../../../src/admin/credential-schema";
-import type { GatewayConfig } from "../../../src/config/types";
 export type { GatewayConfig } from "../../../src/config/types";
 export type { UsageEvent } from "../../../src/telemetry/types";
 
@@ -75,7 +68,7 @@ export async function revealClientKey(
 ): Promise<string> {
   return apiKey(
     await read(
-      rpc.config.clients[":id"].reveal.$post(
+      rpc.clients[":id"].reveal.$post(
         { param: { id }, json: { version } },
         { init: { signal } },
       ),
@@ -90,7 +83,7 @@ export async function revealProviderCredential(
 ): Promise<string> {
   return apiKey(
     await read(
-      rpc.config.providers[":id"].credentials[":credentialId"].reveal.$post(
+      rpc.providers[":id"].credentials[":credentialId"].reveal.$post(
         { param: { id, credentialId }, json: { version } },
         { init: { signal } },
       ),
@@ -103,45 +96,35 @@ export async function revealSearchKey(
 ): Promise<string> {
   return apiKey(
     await read(
-      rpc.config["web-search"].reveal.$post(
+      rpc.settings["web-search"].reveal.$post(
         { json: { version } },
         { init: { signal } },
       ),
     ),
   );
 }
-export type Draft = InferResponseType<typeof rpc.config.$get, 200>;
+export type ConfigurationState = InferResponseType<typeof rpc.config.$get, 200>;
 
 export type Summary = InferResponseType<typeof rpc.summary.$get, 200>;
 export type Aggregate = Summary["totals"];
 
-export const draftOptions = queryOptions({
-  queryKey: ["config"],
+export const configurationStateOptions = queryOptions({
+  queryKey: ["configuration-state"],
   queryFn: ({ signal }) => read(rpc.config.$get({}, { init: { signal } })),
   staleTime: 30_000,
   refetchOnWindowFocus: false,
+  refetchOnReconnect: true,
 });
-export function useDraft() {
-  return useQuery(draftOptions);
+export function useConfigurationState() {
+  return useQuery(configurationStateOptions);
 }
-export function useSaveDraft() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      config,
-      version,
-    }: {
-      config: GatewayConfig;
-      version: number;
-    }) => read(rpc.config.$put({ json: { config, version } })),
-    onSuccess: (draft) => {
-      client.setQueryData(draftOptions.queryKey, draft);
-      toast.success("Draft saved", {
-        description: "Publish when your changes are ready.",
-      });
-    },
-    onError: (error) => toast.error(error.message),
+export function useEntityNames() {
+  const { data } = useQuery({
+    queryKey: ["entity-names"],
+    queryFn: () => read(rpc.config.names.$get()),
+    staleTime: 30_000,
   });
+  return data?.names ?? {};
 }
 export function params(values: Record<string, string | undefined>): string {
   return new URLSearchParams(

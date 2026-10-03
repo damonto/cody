@@ -1,3 +1,4 @@
+import { setTestConfiguration } from "../helpers/worker-configuration.ts";
 import {
   applyD1Migrations,
   createExecutionContext,
@@ -303,7 +304,11 @@ async function putConfig(
   config: ReturnType<typeof gatewayConfig>,
 ): Promise<void> {
   clearConfigCacheForTests();
-  await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
 }
 
 async function clearRoutingState(): Promise<void> {
@@ -1890,12 +1895,19 @@ test.each(["/responses", "/v1/responses"])(
 test("WebSocket generations retain separate models, timing, usage, and request-time prices", async () => {
   const records: import("../../src/telemetry/types.ts").UsageEvent[] = [];
   const config = gatewayConfig();
-  config.revision = 12;
-  config.model_policies = ["upstream-model", "other-model"].map(
+
+  config.providers[0].model_settings = Object.fromEntries(
+    ["upstream-model", "other-model"].map((model) => [
+      model,
+      { context_window: 1000000 },
+    ]),
+  );
+  config.model_prices = ["upstream-model", "other-model"].map(
     (model, index) => ({
       provider_id: "primary",
       model,
-      context_window: 1000000,
+      version_id: crypto.randomUUID(),
+
       pricing: {
         currency: "USD",
         tiers: [
@@ -1911,6 +1923,7 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
     }),
   );
   await putConfig(config);
+
   const upstream = upstreamPair();
   vi.stubGlobal(
     "fetch",
@@ -2012,7 +2025,7 @@ test("WebSocket generations retain separate models, timing, usage, and request-t
   expect(first.request_id).not.toBe(second.request_id);
   expect(first.connection_id).toBe(second.connection_id);
   expect(first.context_window).toBe(1000000);
-  expect(first.billing.price_version).toBe('[12,"primary","upstream-model"]');
+  expect(first.billing.price_version).toBe(config.model_prices[0].version_id);
   for (const event of [first, second]) {
     expect(event.first_response_ms).toBeTypeOf("number");
     expect(event.first_response_ms!).toBeLessThanOrEqual(event.ttft_ms!);

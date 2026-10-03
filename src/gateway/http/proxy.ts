@@ -391,8 +391,11 @@ export async function handleInference(
       if (
         [...selection.checks, ...selection.credentialChecks].some(
           (check) =>
-            check.provider_id === ProviderType.Antigravity &&
-            check.reason === ProviderAvailabilityReason.HealthReadFailed,
+            config.providers.some(
+              (provider) =>
+                provider.id === check.provider_id &&
+                provider.type === ProviderType.Antigravity,
+            ) && check.reason === ProviderAvailabilityReason.HealthReadFailed,
         )
       ) {
         if (exhausted) await discardBody(exhausted.body);

@@ -12,6 +12,7 @@ import { antigravityAdapter } from "./antigravity/index.ts";
 import { claudeAdapter } from "./claude/index.ts";
 import { codexAdapter } from "./codex/index.ts";
 import { resolveCredential } from "./credentials.ts";
+import { providerTransportPolicy } from "./transport.ts";
 import type {
   PreparedProviderResult,
   ProviderAdapter,
@@ -101,6 +102,7 @@ export async function prepareProviderRequest(
       provider,
       credential,
       context && { ...context, clientSignal: input.request.signal },
+      providerTransportPolicy(provider.type, context?.env),
     ),
   };
 }

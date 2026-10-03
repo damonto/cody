@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { draftFixture, mockApi } from "./fixtures";
 import { xaiProviderSchema } from "../../src/config/schema";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
-import type { Draft } from "../src/lib/api";
+import type { ConfigurationView } from "./fixtures";
 
 test("xAI settings default to disabled, no extra usage and no resets", async ({
   page,
@@ -61,13 +61,13 @@ test("xAI cards show native quota and paid usage without reset controls", async 
       },
     ],
   });
-  const draft: Draft = {
+  const draft: ConfigurationView = {
     ...draftFixture(),
     config: {
       ...draftFixture().config,
       providers: [provider],
       api_keys: [{ id: "client", api_key: "masked", providers: ["xai"] }],
-      model_policies: [],
+      model_prices: [],
     },
   };
   const account = accountViewSchema.parse({
@@ -139,7 +139,34 @@ test("xAI cards show native quota and paid usage without reset controls", async 
 test("xAI account editor requests device authorization and supports cancellation", async ({
   page,
 }) => {
-  await mockApi(page);
+  const saved = draftFixture();
+  saved.config.providers = [];
+  const initial: ConfigurationView = {
+    ...saved,
+    config: {
+      ...saved.config,
+      providers: [
+        {
+          type: "xai",
+          id: "xai",
+          name: "xAI",
+          priority: 100,
+          disabled: true,
+          models: [],
+          credentials: [],
+          supports_websocket: false,
+          supports_web_search: false,
+          supports_context_management: false,
+          anthropic_1m_context: false,
+          emulate_claude_code: false,
+          account_selection: "round_robin",
+          allow_extra_usage: false,
+          inject_x_search: false,
+        },
+      ],
+    },
+  };
+  await mockApi(page, initial);
   await page.route("**/console/api/provider-accounts**", (route) =>
     route.fulfill({ json: { items: [] } }),
   );

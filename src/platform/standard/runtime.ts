@@ -1,6 +1,5 @@
 import path from "node:path";
 import { app } from "../../app.ts";
-import { ConfigPublisherCore } from "../../control/publisher.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import { SessionAffinityCore } from "../../gateway/sessions/session-affinity.ts";
 import { setDirectWebSocketConnector } from "../../gateway/transport/index.ts";
@@ -12,7 +11,6 @@ import { equalSecret } from "../../shared/equal-secret.ts";
 import { UsageOutboxCore } from "../../telemetry/outbox.ts";
 import type {
   Bindings,
-  ConfigPublisherObject,
   HealthObject,
   OAuthAccountObject,
   ProxyGroupObject,
@@ -25,7 +23,6 @@ import { createFilesystemAssets } from "./assets.ts";
 import { connectRedis } from "./ioredis.ts";
 import { ObjectRuntime, RedisObjectLocks } from "./objects.ts";
 import { ProxyGroupCore } from "./proxy-group.ts";
-import { PublishedConfigSnapshot } from "./published-config.ts";
 import type { RedisClient } from "./redis.ts";
 import { SessionAffinityIndexCore } from "./session-index.ts";
 import {
@@ -124,8 +121,6 @@ export async function createRuntime(
   const env: Bindings = {
     UPSTREAM_HTTP: { antigravity: antigravityHttp.send },
     CONFIG_ENCRYPTION_KEY: settings.CONFIG_ENCRYPTION_KEY,
-    CONFIG_KEY: settings.CONFIG_KEY,
-    CONFIG_CACHE_TTL_SECONDS: settings.CONFIG_CACHE_TTL_SECONDS,
     MODELS_CACHE_TTL_SECONDS: settings.MODELS_CACHE_TTL_SECONDS,
     LOG_LEVEL: settings.LOG_LEVEL,
     ADMIN_AUTH_MODE: settings.ADMIN_AUTH_MODE,
@@ -149,20 +144,15 @@ export async function createRuntime(
       : {}),
     ...(settings.ACCESS_AUD ? { ACCESS_AUD: settings.ACCESS_AUD } : {}),
     CODY_DB: db,
-    CODY_CONFIG_KV: new PublishedConfigSnapshot(
-      db,
-      settings.CONFIG_ENCRYPTION_KEY,
-      settings.CONFIG_KEY,
-      {
-        get: (key) => redis.get(`${settings.REDIS_PREFIX}:public:${key}`),
-        put: async (key, value) => {
-          await redis.set(`${settings.REDIS_PREFIX}:public:${key}`, value);
-        },
-        delete: async (key) => {
-          await redis.del(`${settings.REDIS_PREFIX}:public:${key}`);
-        },
+    CODY_CONFIG_KV: {
+      get: (key) => redis.get(`${settings.REDIS_PREFIX}:public:${key}`),
+      put: async (key, value) => {
+        await redis.set(`${settings.REDIS_PREFIX}:public:${key}`, value);
       },
-    ),
+      delete: async (key) => {
+        await redis.del(`${settings.REDIS_PREFIX}:public:${key}`);
+      },
+    },
     USAGE_QUEUE: new DirectIngestQueue(db),
     ASSETS: createFilesystemAssets(path.join(options.root, "console", "dist")),
     HEALTH: objects.namespace(
@@ -218,17 +208,7 @@ export async function createRuntime(
       }),
       { backend },
     ),
-    CONFIG_PUBLISHER: objects.namespace(
-      "publisher",
-      (ctx) => new ConfigPublisherCore(ctx, env),
-      (call): ConfigPublisherObject => ({
-        getDraft: () => call((core) => core.getDraft()),
-        saveDraft: (...args) => call((core) => core.saveDraft(...args)),
-        publish: (...args) => call((core) => core.publish(...args)),
-        rollback: (...args) => call((core) => core.rollback(...args)),
-      }),
-      durable,
-    ),
+
     PROXY_GROUP: objects.namespace(
       "proxy-group",
       (ctx) => new ProxyGroupCore(ctx),

@@ -4,15 +4,12 @@ import { emptyProxyNode } from "./form-options";
 
 export const ProxyNodeInputs = withFieldGroup({
   defaultValues: emptyProxyNode,
-  props: { readOnlyId: false },
-  render: function ProxyNodeInputs({ group, readOnlyId }) {
+  render: function ProxyNodeInputs({ group }) {
     return (
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
-          <group.AppField name="id">
-            {(field) => (
-              <field.TextField label="Proxy ID" readOnly={readOnlyId} />
-            )}
+          <group.AppField name="name">
+            {(field) => <field.TextField label="Proxy name" />}
           </group.AppField>
           <group.AppField name="priority">
             {(field) => <field.NumberField label="Priority" />}

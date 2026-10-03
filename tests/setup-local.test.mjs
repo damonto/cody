@@ -100,12 +100,7 @@ test("fresh local setup creates a private key only after migrating and checking 
     "--json",
     "--command",
   ]);
-  for (const table of [
-    "control_state",
-    "config_revisions",
-    "oauth_clients",
-    "oauth_accounts",
-  ])
+  for (const table of ["secret_versions", "config_snapshots", "oauth_accounts"])
     assert.ok(result.calls[1][6].includes(table));
   const contents = await readFile(file, "utf8");
   const settings = parseEnv(contents);

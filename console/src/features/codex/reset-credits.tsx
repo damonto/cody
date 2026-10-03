@@ -79,7 +79,7 @@ export function ResetCreditsDialog({
     onSuccess: async (reply) => {
       await cacheAccounts(cache, [reply.account]);
       void cache.invalidateQueries({
-        queryKey: accountHealthOptions("codex").queryKey,
+        queryKey: accountHealthOptions(account.provider_id).queryKey,
       });
       void cache.invalidateQueries({
         queryKey: ["codex-reset-credits", account.account_ref],

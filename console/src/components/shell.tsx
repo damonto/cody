@@ -1,5 +1,5 @@
-import { RevisionStatus } from "../../../src/control/values.ts";
-
+import { reportingOptions } from "@/lib/resources";
+import { useRetryableRequest } from "@/lib/use-retryable-request";
 import { useState } from "react";
 import { Collapsible } from "radix-ui";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -16,17 +16,20 @@ import {
   KeyRound,
   LayoutDashboard,
   ListFilter,
-  Loader2,
   Monitor,
   Network,
   Moon,
-  Send,
   Server,
   Settings,
   Sun,
 } from "lucide-react";
 import { toast } from "sonner";
-import { read, rpc, draftOptions, useDraft } from "@/lib/api";
+import {
+  read,
+  rpc,
+  configurationStateOptions,
+  useConfigurationState,
+} from "@/lib/api";
 import { date } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -72,7 +75,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { DataTable, ErrorNotice, Loading, Status } from "@/components/common";
+import { DataTable, ErrorNotice, Loading } from "@/components/common";
 
 const navigation = [
   {
@@ -103,22 +106,23 @@ const providerNavigation = [
   { path: "/providers/xai", title: "xAI" },
 ];
 
-function publishedConfigurationLabel(
-  draft: ReturnType<typeof useDraft>,
+function currentConfigurationLabel(
+  configuration: ReturnType<typeof useConfigurationState>,
 ): string {
-  if (draft.isError) return "Connection unavailable";
-  if (draft.isPending) return "Connecting…";
-  if (draft.data.published_revision !== null) {
-    return `Revision ${draft.data.published_revision}`;
+  if (configuration.isError) return "Connection unavailable";
+  if (configuration.isPending) return "Connecting…";
+  if (configuration.data.version > 0) {
+    return `Revision ${configuration.data.version}`;
   }
-  return "No configuration published";
+  return "No configuration saved";
 }
 
 export function Shell() {
   const { pathname } = useLocation();
-  const draft = useDraft();
+  const configuration = useConfigurationState();
   const queryClient = useQueryClient();
   const [history, setHistory] = useState(false);
+  const reporting = useQuery({ ...reportingOptions, enabled: history });
   const [rollback, setRollback] = useState<number | null>(null);
   const { theme, setTheme } = useTheme();
   const revisions = useQuery({
@@ -127,21 +131,37 @@ export function Shell() {
       read(rpc.config.versions.$get({}, { init: { signal } })),
     enabled: history,
   });
-  const publish = useMutation({
+  const prepareRestore = useRetryableRequest<{
+    version: number;
+    revision: number;
+    operation_id: string;
+  }>();
+  const restore = useMutation({
     mutationFn: (revision?: number) => {
-      if (!draft.data)
-        throw new Error("Load the configuration before publishing");
-      const version = draft.data.version;
+      if (!configuration.data)
+        throw new Error("Load the configuration before restoring");
+      const version = configuration.data.version;
       if (revision !== undefined)
-        return read(rpc.config.rollback.$post({ json: { version, revision } }));
-      return read(rpc.config.publish.$post({ json: { version } }));
+        return read(
+          rpc.config.restorations.$post({
+            json: prepareRestore({ version, revision }, () => ({
+              version,
+              revision,
+              operation_id: crypto.randomUUID(),
+            })),
+          }),
+        );
+      throw new Error("Choose a configuration version to restore");
     },
     onSuccess: (next) => {
-      queryClient.setQueryData(draftOptions.queryKey, next);
+      void queryClient.invalidateQueries({
+        queryKey: configurationStateOptions.queryKey,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["configuration"] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-names"] });
       void queryClient.invalidateQueries({ queryKey: ["revisions"] });
-      toast.success(`Revision ${next.published_revision} published`, {
-        description:
-          "Gateway locations will pick up the published configuration as their caches refresh.",
+      toast.success(`Configuration version ${next.version} restored`, {
+        description: "New requests use the saved configuration immediately.",
       });
       setRollback(null);
     },
@@ -238,19 +258,19 @@ export function Shell() {
         <SidebarFooter className="gap-3 p-4">
           <div className="rounded-lg border bg-background p-3 text-xs">
             <div className="flex items-center justify-between font-medium">
-              Published configuration
+              Saved configuration
               <ArrowUpRight className="size-3.5 text-muted-foreground" />
             </div>
             <p className="mt-2 text-muted-foreground">
-              {publishedConfigurationLabel(draft)}
+              {currentConfigurationLabel(configuration)}
             </p>
           </div>
           <div className="flex items-center justify-between gap-2 px-1">
             <span
               className="truncate text-xs text-muted-foreground"
-              title={draft.data?.actor}
+              title={configuration.data?.actor}
             >
-              {draft.data?.actor ?? "Admin console"}
+              {configuration.data?.actor ?? "Admin console"}
             </span>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -310,7 +330,7 @@ export function Shell() {
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="hidden font-normal sm:flex">
-              Draft {draft.data?.version ?? "—"}
+              Version {configuration.data?.version ?? "—"}
             </Badge>
             <Button
               variant="ghost"
@@ -319,17 +339,6 @@ export function Shell() {
               onClick={() => setHistory(true)}
             >
               <History />
-            </Button>
-            <Button
-              disabled={!draft.data?.valid || publish.isPending}
-              onClick={() => publish.mutate(undefined)}
-            >
-              {publish.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Send />
-              )}
-              Publish
             </Button>
           </div>
         </header>
@@ -351,8 +360,8 @@ export function Shell() {
           <DialogHeader>
             <DialogTitle>Configuration history</DialogTitle>
             <DialogDescription>
-              Every publication creates an immutable revision. Restoring a
-              revision replaces the saved draft and publishes a new revision.
+              Every save creates an immutable version. Restoring a version is
+              applied as a new saved configuration.
             </DialogDescription>
           </DialogHeader>
           {revisions.isPending ? (
@@ -372,12 +381,12 @@ export function Shell() {
                 },
                 {
                   id: "time",
-                  header: "Published",
+                  header: "Saved",
                   cell: ({ row }) => (
                     <span className="text-xs">
                       {date(
-                        row.original.published_at,
-                        draft.data?.config.reporting?.time_zone,
+                        row.original.created_at,
+                        reporting.data?.item.time_zone,
                       )}
                     </span>
                   ),
@@ -388,11 +397,6 @@ export function Shell() {
                   cell: ({ row }) => row.original.actor,
                 },
                 {
-                  id: "status",
-                  header: "Status",
-                  cell: ({ row }) => <Status value={row.original.status} />,
-                },
-                {
                   id: "action",
                   header: "",
                   cell: ({ row }) => (
@@ -400,9 +404,8 @@ export function Shell() {
                       variant="outline"
                       size="sm"
                       disabled={
-                        row.original.status !== RevisionStatus.Published ||
-                        row.original.id === draft.data?.published_revision ||
-                        publish.isPending
+                        row.original.id === configuration.data?.version ||
+                        restore.isPending
                       }
                       onClick={() => setRollback(row.original.id)}
                     >
@@ -425,20 +428,19 @@ export function Shell() {
           <AlertDialogHeader>
             <AlertDialogTitle>Restore revision {rollback}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This replaces your saved draft and publishes the selected
-              configuration as a new revision. Existing request costs keep their
-              original prices.
+              This saves the selected configuration as a new revision. Existing
+              request costs keep their original prices.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={publish.isPending}
+              disabled={restore.isPending}
               onClick={() => {
-                if (rollback !== null) publish.mutate(rollback);
+                if (rollback !== null) restore.mutate(rollback);
               }}
             >
-              Restore and publish
+              Restore configuration
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

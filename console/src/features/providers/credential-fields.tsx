@@ -1,6 +1,5 @@
 import { withForm } from "@/lib/form";
 import { newCredential, providerFormOptions } from "./form-options";
-import { SECRET_PLACEHOLDER } from "../../../../src/shared/secrets";
 import { revealProviderCredential } from "@/lib/api";
 import { CredentialField } from "@/components/form/credential-field";
 import { TabsContent } from "@/components/ui/tabs";
@@ -16,14 +15,14 @@ export const CredentialFields = withForm({
   props: {
     providerId: "",
     version: 0,
-    draftVersion: 0,
+    configurationVersion: 0,
     groups: new Array<ProxyGroupConfig>(),
   },
   render: function CredentialFields({
     form,
     providerId,
     version,
-    draftVersion,
+    configurationVersion,
     groups,
   }) {
     return (
@@ -58,15 +57,8 @@ export const CredentialFields = withForm({
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <form.AppField name={`credentials[${position}].id`}>
-                        {(field) => (
-                          <field.TextField
-                            label="Credential ID"
-                            readOnly={
-                              credential.auth.api_key === SECRET_PLACEHOLDER
-                            }
-                          />
-                        )}
+                      <form.AppField name={`credentials[${position}].name`}>
+                        {(field) => <field.TextField label="Credential name" />}
                       </form.AppField>
                       <form.AppField name={`credentials[${position}].priority`}>
                         {(field) => (
@@ -79,7 +71,7 @@ export const CredentialFields = withForm({
                     >
                       {(field) => (
                         <CredentialField
-                          key={`${providerId}:${credential.id}:${field.name}:${version}:${draftVersion}`}
+                          key={`${providerId}:${credential.id}:${field.name}:${version}:${configurationVersion}`}
                           label="API key"
                           name={field.name}
                           value={field.state.value}

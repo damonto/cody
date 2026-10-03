@@ -1,23 +1,16 @@
 import { HealthScope } from "../gateway/health/values.ts";
 
 import { z } from "zod";
-import { modelPolicySchema, tokenCountSchema } from "../billing/schema.ts";
-import {
-  identifierSchema,
-  maskedConfigurationSchema,
-} from "../config/schema.ts";
+import { modelPriceSchema, tokenCountSchema } from "../billing/schema.ts";
 
-export const versionSchema = z.strictObject({ version: tokenCountSchema });
-export const rollbackSchema = versionSchema.extend({
+export const versionSchema = z.strictObject({
+  version: tokenCountSchema,
+});
+export const configurationOperationSchema = versionSchema.extend({
+  operation_id: z.uuid(),
+});
+export const rollbackSchema = configurationOperationSchema.extend({
   revision: tokenCountSchema.positive(),
-});
-export const draftSchema = versionSchema.extend({
-  config: maskedConfigurationSchema,
-});
-export const clientIdSchema = z.object({ id: identifierSchema });
-export const providerCredentialIdSchema = z.object({
-  id: identifierSchema,
-  credentialId: identifierSchema,
 });
 export const priceHistoryQuerySchema = z.object({
   provider_id: z.string().min(1).max(256),
@@ -65,7 +58,7 @@ const nullableCounter = tokenCountSchema
   .nullish()
   .transform((value) => value ?? null);
 export const previewSchema = z.strictObject({
-  policy: modelPolicySchema,
+  price: modelPriceSchema,
   usage: z
     .strictObject({
       input_tokens: nullableCounter,

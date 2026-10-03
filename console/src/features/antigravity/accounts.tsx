@@ -41,15 +41,15 @@ export function AntigravityAccounts({
   onRemove: (id: string) => void;
 }) {
   const cache = useQueryClient();
-  const health = useQuery(accountHealthOptions("antigravity"));
+  const health = useQuery(accountHealthOptions(provider.id));
   const refs = provider.credentials.map(
     (credential) => credential.auth.account_ref,
   );
-  const key = quotaQueryKey(["antigravity", ...refs]);
+  const key = quotaQueryKey([provider.id, ...refs]);
   const query = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
-      const accounts = await cache.fetchQuery(accountsOptions("antigravity"));
+      const accounts = await cache.fetchQuery(accountsOptions(provider.id));
       return mapWithConcurrency(
         accounts.filter((account) => refs.includes(account.account_ref)),
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -227,7 +227,7 @@ export function AntigravityAccounts({
                         variant="destructive"
                         onSelect={() => onRemove(credential.id)}
                       >
-                        Remove from draft
+                        Remove account
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

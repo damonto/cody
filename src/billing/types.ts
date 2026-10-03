@@ -2,13 +2,13 @@ import { type UsageStatus, type BillingStatus } from "./values.ts";
 
 import type { z } from "zod";
 import type {
-  modelPolicySchema,
+  modelPriceSchema,
   priceTierSchema,
   reportingSchema,
 } from "./schema.ts";
 
 export type PriceTier = z.infer<typeof priceTierSchema>;
-export type ModelPolicy = z.infer<typeof modelPolicySchema>;
+export type ModelPrice = z.infer<typeof modelPriceSchema>;
 export type ReportingConfig = z.infer<typeof reportingSchema>;
 
 export const USAGE_FIELDS = [

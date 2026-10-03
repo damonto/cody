@@ -45,7 +45,7 @@ export function AntigravitySettingsForm({
   close: () => void;
 }) {
   const cache = useQueryClient();
-  const accounts = useQuery(accountsOptions("antigravity"));
+  const accounts = useQuery(accountsOptions(provider.id));
   const [initial] = useState(() => settingsFormValues(provider));
   const form = useAppForm({
     defaultValues: initial,

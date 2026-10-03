@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  parseModelPolicies,
+  parseModelPrices,
   parseRate,
   parseReporting,
 } from "../src/billing/config.ts";
@@ -18,7 +18,6 @@ const tier = (upper, input = "3", output = "15") => ({
 const policy = {
   provider_id: "a",
   model: "real-model",
-  context_window: 1_000_000,
   pricing: {
     currency: "USD",
     tiers: [
@@ -277,21 +276,21 @@ test("inferred cache writes do not alter cumulative usage or conceal contradicti
 
 test("policies are unique per provider and real model, with sorted complete tiers", () => {
   const providers = [{ id: "a", models: ["real-model"] }];
-  assert.deepEqual(parseModelPolicies([policy], providers), [policy]);
+  assert.deepEqual(parseModelPrices([policy], providers), [policy]);
   assert.throws(
-    () => parseModelPolicies([policy, policy], providers),
+    () => parseModelPrices([policy, policy], providers),
     /duplicates/,
   );
   assert.throws(
-    () => parseModelPolicies([{ ...policy, model: "client-alias" }], providers),
+    () => parseModelPrices([{ ...policy, model: "client-alias" }], providers),
     /one of its models/,
   );
   const invalid = structuredClone(policy);
   invalid.pricing.tiers[1].up_to_input_tokens = 300000;
-  assert.throws(() => parseModelPolicies([invalid], providers), /final tier/);
+  assert.throws(() => parseModelPrices([invalid], providers), /final tier/);
   invalid.pricing.tiers = [tier(200000), tier(100000), tier(null)];
   assert.throws(
-    () => parseModelPolicies([invalid], providers),
+    () => parseModelPrices([invalid], providers),
     /increase strictly/,
   );
   assert.throws(

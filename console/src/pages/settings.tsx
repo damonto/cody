@@ -1,22 +1,15 @@
-import { useRef, useState } from "react";
+import { useResourceEditor } from "@/lib/use-resource-editor";
+import { ResourceConflict } from "@/components/form/resource-conflict";
+import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
+import { useSaveReporting, useSaveWebSearch } from "@/features/settings/api";
+import { useState } from "react";
 import { useAppForm } from "@/lib/form";
-import { useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
-import { CheckCircle2, FileUp, RefreshCw } from "lucide-react";
-import { toast } from "sonner";
+import { CheckCircle2, RefreshCw } from "lucide-react";
 import { reportingSchema } from "../../../src/billing/schema";
-import { maskedConfigurationSchema } from "../../../src/config/schema";
 import { searchFormSchema } from "../../../src/shared/forms";
-import type { GatewayConfig } from "../../../src/config/types";
-import {
-  read,
-  revealSearchKey,
-  rpc,
-  draftOptions,
-  useDraft,
-  useSaveDraft,
-  type Draft,
-} from "@/lib/api";
+import { revealSearchKey } from "@/lib/api";
+import { useSettingsResources, type SettingsResources } from "@/lib/resources";
 import { Choice, ErrorNotice, Loading, PageHeading } from "@/components/common";
 import { CredentialField } from "@/components/form/credential-field";
 import { fieldErrors } from "@/lib/form-errors";
@@ -30,114 +23,51 @@ import {
 } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldLabel } from "@/components/ui/field";
-import { ExportMenu } from "@/features/configuration/export-menu";
 
-const settingsSchema = z.object({
-  reporting: reportingSchema,
-  web_search: searchFormSchema,
-});
 export default function Settings() {
-  const draft = useDraft();
-  const queryClient = useQueryClient();
-  const file = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
-  if (draft.isPending) return <Loading />;
-  if (draft.error)
+  const configuration = useSettingsResources();
+  if (configuration.isPending) return <Loading />;
+  if (configuration.error)
     return (
-      <ErrorNotice error={draft.error} retry={() => void draft.refetch()} />
+      <ErrorNotice
+        error={configuration.error}
+        retry={() => void configuration.refetch()}
+      />
     );
-  const importFile = async (selected: File) => {
-    if (selected.size > 1024 * 1024) {
-      toast.error("Configuration must be smaller than 1 MiB");
-      return;
-    }
-    setImporting(true);
-    try {
-      const config = maskedConfigurationSchema.parse(
-        JSON.parse(await selected.text()),
-      );
-      const next = await read(
-        rpc.config.$put({ json: { config, version: draft.data.version } }),
-      );
-      queryClient.setQueryData(draftOptions.queryKey, next);
-      toast.success("Configuration imported as a draft", {
-        description: "Review it before publishing.",
-      });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Import failed");
-    } finally {
-      setImporting(false);
-      if (file.current) file.current.value = "";
-    }
-  };
   return (
     <>
+      <ResourceRefreshNotice resource={configuration} />
       <PageHeading
         title="Workspace settings"
         description="Configure reporting, retention, and gateway search behavior."
       >
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => void draft.refetch()}
-            disabled={draft.isFetching}
-          >
-            <RefreshCw />
-            Reload draft
-          </Button>
-          <input
-            ref={file}
-            className="hidden"
-            type="file"
-            accept="application/json,.json"
-            aria-label="Import configuration JSON"
-            onChange={(event) => {
-              const selected = event.target.files?.[0];
-              if (selected) void importFile(selected);
-            }}
-          />
-          <Button
-            variant="outline"
-            disabled={importing}
-            onClick={() => file.current?.click()}
-          >
-            <FileUp />
-            Import JSON
-          </Button>
-          <ExportMenu snapshot={draft.data} />
-        </div>
+        <Button
+          variant="outline"
+          onClick={() => void configuration.refetch()}
+          disabled={configuration.isFetching}
+        >
+          <RefreshCw />
+          Reload configuration
+        </Button>
       </PageHeading>
-      {draft.data.valid ? (
-        <Alert>
-          <CheckCircle2 />
-          <AlertTitle>Draft is ready to publish</AlertTitle>
-          <AlertDescription>
-            Review your changes and use Publish to make this configuration
-            active.
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <Alert variant="destructive">
-          <AlertTitle>Complete the draft before publishing</AlertTitle>
-          <AlertDescription className="break-all">
-            {draft.data.validation_error}
-          </AlertDescription>
-        </Alert>
-      )}
-      <SettingsForm key={draft.data.version} snapshot={draft.data} />
+      <Alert>
+        <CheckCircle2 />
+        <AlertTitle>Changes take effect when saved</AlertTitle>
+        <AlertDescription>
+          New requests use the latest saved configuration.
+        </AlertDescription>
+      </Alert>
+      <ReportingSettings snapshot={configuration.data} />
+      <SearchSettings snapshot={configuration.data} />
       <Card className="shadow-none">
         <CardHeader>
           <CardTitle>Data collection</CardTitle>
-          <CardDescription>
-            Request records include timing, routing identifiers, reported token
-            counters, and price snapshots.
-          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>
             Prompts, response content, and credentials are not stored in request
-            history. Secrets in configuration drafts are encrypted and hidden
-            when read back.
+            history. Configuration secrets are encrypted and hidden when read
+            back.
           </p>
           <p>
             Hourly usage aggregates remain available after request details
@@ -148,27 +78,31 @@ export default function Settings() {
     </>
   );
 }
-function SettingsForm({ snapshot }: { snapshot: Draft }) {
-  const save = useSaveDraft();
-  const initial: z.input<typeof settingsSchema> = {
-    reporting: snapshot.config.reporting ?? {
-      time_zone: "Asia/Shanghai",
-      retention_days: 120,
-    },
-    web_search: snapshot.config.web_search,
-  };
+
+const reportingFormSchema = z.object({ reporting: reportingSchema });
+function ReportingSettings({ snapshot }: { snapshot: SettingsResources }) {
+  const save = useSaveReporting();
+  const editor = useResourceEditor({
+    version: snapshot.version,
+    item: snapshot.reporting,
+    etag: snapshot.tags.reporting,
+  });
   const form = useAppForm({
-    defaultValues: initial,
-    validators: { onBlur: settingsSchema, onSubmit: settingsSchema },
-    onSubmit: async ({ value }) => {
-      const next: GatewayConfig = {
-        ...snapshot.config,
-        ...settingsSchema.parse(value),
-      };
+    defaultValues: {
+      reporting: editor.initial,
+    },
+    validators: { onBlur: reportingFormSchema, onSubmit: reportingFormSchema },
+    onSubmit: async ({ value, formApi }) => {
       try {
-        await save.mutateAsync({ config: next, version: snapshot.version });
+        const saved = await save.mutateAsync({
+          reporting: reportingSchema.parse(value.reporting),
+          version: editor.version,
+        });
+        const reporting = reportingSchema.parse(saved.item);
+        editor.accept({ version: saved.version, item: reporting });
+        formApi.reset({ reporting });
       } catch {
-        /* Display below. */
+        /* Keep the reporting edits available for retry. */
       }
     },
   });
@@ -209,6 +143,70 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
           </form.AppField>
         </CardContent>
       </Card>
+      <ResourceConflict
+        conflict={editor.conflict}
+        reload={() => {
+          editor.accept({
+            version: snapshot.version,
+            item: snapshot.reporting,
+            etag: snapshot.tags.reporting,
+          });
+          form.reset({ reporting: snapshot.reporting });
+          save.reset();
+        }}
+      />
+      {save.error && <ErrorNotice error={save.error} />}
+      <div className="flex justify-end">
+        <form.Subscribe selector={(state) => state.isSubmitting}>
+          {(submitting) => (
+            <Button type="submit" disabled={submitting || editor.conflict}>
+              Save reporting settings
+            </Button>
+          )}
+        </form.Subscribe>
+      </div>
+    </form>
+  );
+}
+
+const webSearchFormSchema = z.object({ web_search: searchFormSchema });
+function SearchSettings({ snapshot }: { snapshot: SettingsResources }) {
+  const [savedCount, setSavedCount] = useState(0);
+  const save = useSaveWebSearch();
+  const editor = useResourceEditor({
+    version: snapshot.version,
+    item: snapshot.search,
+    etag: snapshot.tags.search,
+  });
+  const initial: z.input<typeof webSearchFormSchema> = {
+    web_search: editor.initial,
+  };
+  const form = useAppForm({
+    defaultValues: initial,
+    validators: { onBlur: webSearchFormSchema, onSubmit: webSearchFormSchema },
+    onSubmit: async ({ value, formApi }) => {
+      try {
+        const saved = await save.mutateAsync({
+          web_search: searchFormSchema.parse(value.web_search),
+          version: editor.version,
+        });
+        const web_search = searchFormSchema.parse(saved.item);
+        editor.accept({ version: saved.version, item: web_search });
+        formApi.reset({ web_search });
+        setSavedCount((count) => count + 1);
+      } catch {
+        /* Keep the search edits available for retry. */
+      }
+    },
+  });
+  return (
+    <form
+      className="space-y-5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void form.handleSubmit();
+      }}
+    >
       <Card className="shadow-none">
         <CardHeader>
           <CardTitle>Web search</CardTitle>
@@ -266,7 +264,7 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
                     <form.AppField name="web_search.api_key">
                       {(input) => (
                         <CredentialField
-                          key={field.state.value.mode}
+                          key={`${field.state.value.mode}:${savedCount}:${snapshot.version}`}
                           label="Search API key"
                           name={input.name}
                           value={input.state.value ?? ""}
@@ -274,7 +272,7 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
                           onBlur={input.handleBlur}
                           errors={fieldErrors(input)}
                           reveal={(signal) =>
-                            revealSearchKey(snapshot.version, signal)
+                            revealSearchKey(editor.version, signal)
                           }
                         />
                       )}
@@ -291,12 +289,24 @@ function SettingsForm({ snapshot }: { snapshot: Draft }) {
           </form.AppField>
         </CardContent>
       </Card>
+      <ResourceConflict
+        conflict={editor.conflict}
+        reload={() => {
+          editor.accept({
+            version: snapshot.version,
+            item: snapshot.search,
+            etag: snapshot.tags.search,
+          });
+          form.reset({ web_search: snapshot.search });
+          save.reset();
+        }}
+      />
       {save.error && <ErrorNotice error={save.error} />}
       <div className="flex justify-end">
         <form.Subscribe selector={(state) => state.isSubmitting}>
           {(submitting) => (
-            <Button type="submit" disabled={submitting}>
-              Save settings
+            <Button type="submit" disabled={submitting || editor.conflict}>
+              Save search settings
             </Button>
           )}
         </form.Subscribe>

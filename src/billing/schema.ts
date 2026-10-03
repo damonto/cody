@@ -75,42 +75,44 @@ const pricingSchema = z.strictObject({
     }),
 });
 
-export const modelPolicySchema = z.strictObject({
+export const modelPriceSchema = z.strictObject({
+  id: z.uuid().optional(),
+  /** System-generated price version in a compiled snapshot. */
+  version_id: z.uuid().optional(),
   provider_id: z.string().trim().min(1),
   model: z.string().trim().min(1),
-  context_window: tokenCountSchema.positive().optional(),
   pricing: pricingSchema.optional(),
 });
 
-export const modelPoliciesSchema = z
-  .array(modelPolicySchema)
-  .superRefine((policies, context) => {
+export const modelPricesSchema = z
+  .array(modelPriceSchema)
+  .superRefine((prices, context) => {
     const seen = new Set<string>();
-    for (const [index, policy] of policies.entries()) {
-      const key = JSON.stringify([policy.provider_id, policy.model]);
+    for (const [index, price] of prices.entries()) {
+      const key = JSON.stringify([price.provider_id, price.model]);
       if (seen.has(key))
         context.addIssue({
           code: "custom",
           path: [index],
-          message: "This duplicates a provider/model policy",
+          message: "This duplicates a provider/model price",
         });
       seen.add(key);
     }
   });
 
-export function validateModelPolicyReferences(
-  policies: z.output<typeof modelPoliciesSchema>,
+export function validateModelPriceReferences(
+  prices: z.output<typeof modelPricesSchema>,
   providers: readonly { id: string; models: string[] }[],
   context: z.RefinementCtx,
 ): void {
   const models = new Map(
     providers.map((provider) => [provider.id, provider.models]),
   );
-  for (const [index, policy] of policies.entries()) {
-    if (!models.get(policy.provider_id)?.includes(policy.model)) {
+  for (const [index, price] of prices.entries()) {
+    if (!models.get(price.provider_id)?.includes(price.model)) {
       context.addIssue({
         code: "custom",
-        path: ["model_policies", index],
+        path: ["model_prices", index],
         message: "must reference a declared provider and one of its models",
       });
     }

@@ -24,14 +24,14 @@ function account() {
 
 test("the fixed Codex provider starts disabled with round robin and no resets spent", () => {
   const provider = newCodexProvider();
-  assert.equal(provider.id, "codex");
+  assert.match(provider.id, /^new-/);
   assert.equal(provider.disabled, true);
   assert.equal(provider.account_selection, "round_robin");
   assert.equal(provider.auto_consume_resets, false);
   assert.deepEqual(provider.credentials, []);
   assert.deepEqual(codexProviderSchema.parse(provider), provider);
-  assert.deepEqual(codexProvider({ providers: [] }), provider);
-  assert.equal(codexProvider({ providers: [provider] }), provider);
+  assert.deepEqual({ ...codexProvider(null), id: provider.id }, provider);
+  assert.equal(codexProvider(provider), provider);
 });
 
 test("an account needs a ChatGPT authorization before it can be saved", () => {

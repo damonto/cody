@@ -12,7 +12,7 @@ export interface SocksFetchOptions {
   readonly dial?: SocksDial;
   /** Extra trusted roots for local integration fixtures; never a configuration option. */
   readonly trustedCertificates?: readonly string[];
-  /** Antigravity's native client uses HTTP/1.1 without an ALPN extension. */
+  /** Omit the TLS ALPN extension while continuing to use HTTP/1.1. */
   readonly omitAlpn?: boolean;
   readonly connectTimeoutMs?: number;
   readonly clientSignal?: AbortSignal;

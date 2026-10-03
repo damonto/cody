@@ -1,363 +1,422 @@
-import { ProviderType } from "../config/values.ts";
-
-import { priceVersion } from "../billing/calculate.ts";
-import { DEFAULT_REPORTING } from "../billing/config.ts";
-import { maskedConfigurationSchema } from "../config/schema.ts";
-import { parseConfig } from "../config/store.ts";
-import type { GatewayConfig } from "../config/types.ts";
-import { draftConfigurationSchema } from "../shared/forms.ts";
-import { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
-import { record } from "../telemetry/usage.ts";
-import { decryptConfig, encryptConfig } from "./crypto.ts";
-import type { DraftView } from "./schema.ts";
+import { ControlConflict, ControlInputError } from "./errors.ts";
 import {
-  sqlDialect,
-  type KeyValueStore,
-  type SqlDatabase,
-} from "../platform/bindings.ts";
-import { insertIgnore } from "../platform/sql-dialect.ts";
-export type { DraftView } from "./schema.ts";
+  maskSecrets,
+  restoreSecrets,
+  resolveSecrets,
+  sealConfiguration,
+} from "./secrets.ts";
+import { commitConfiguration } from "./transaction.ts";
+import { maskedConfigurationSchema } from "../config/schema.ts";
+import { parseConfig } from "../config/parse.ts";
+import type { GatewayConfig } from "../config/types.ts";
+import { decryptConfig } from "./crypto.ts";
+import { revisionSchema, type ConfigurationView } from "./schema.ts";
+import { type SqlDatabase } from "../platform/bindings.ts";
+import { z } from "zod";
+import { assignIdentities, projectConfiguration } from "./projection.ts";
+import { entityTables, type EntityRows, type EntityTable } from "./entities.ts";
+import { configurationFromEntities, compileSnapshot } from "./compiler.ts";
+import { ConfigurationUnitOfWork } from "./unit-of-work.ts";
+import { SecretRepository } from "./secret-repository.ts";
+import { configurationError } from "../config/schema.ts";
+import { readEntities } from "./repository.ts";
+import { validateOAuth, validateClientKeys } from "./validation.ts";
+import { preserveCurrentSecrets } from "./recovery.ts";
+import type { ConfigurationOperation } from "./unit-of-work.ts";
+export type { ConfigurationView } from "./schema.ts";
 
 export { SECRET_PLACEHOLDER } from "../shared/secrets.ts";
-export type JsonValue =
-  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
 export interface ControlState {
-  draft_version: number;
-  draft_payload: string | null;
-  published_revision: number | null;
+  version: number;
+  maintenance: number;
   updated_at: number;
 }
 
-export class ControlConflict extends Error {
-  override name = "ControlConflict";
-}
-export class ControlInputError extends Error {
-  override name = "ControlInputError";
-}
-
-function initialConfig(): unknown {
-  return {
-    proxy_groups: [],
-    providers: [],
-    api_keys: [],
-    model_routes: {},
-    web_search: { mode: "proxy" },
-    model_policies: [],
-    reporting: { ...DEFAULT_REPORTING },
-  };
-}
-
-function entries(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.flatMap((entry) => {
-        const item = record(entry);
-        return item ? [item] : [];
-      })
-    : [];
-}
-
-/** Preserve secrets by stable provider/credential/client IDs, never by array position. */
-export function restoreSecrets(value: unknown, previous: unknown): unknown {
-  const restored: unknown = structuredClone(value);
-  const input = record(restored);
-  const old = record(previous);
-  if (!input) throw new ControlInputError("Configuration must be an object");
-  delete input.revision;
-  const restore = (
-    entry: Record<string, unknown>,
-    existing: Record<string, unknown> | undefined,
-    field = "api_key",
-  ): void => {
-    if (entry[field] === SECRET_PLACEHOLDER) {
-      if (
-        typeof existing?.[field] !== "string" ||
-        existing[field] === SECRET_PLACEHOLDER
-      )
-        throw new ControlInputError("A new credential requires a secret value");
-      entry[field] = existing[field];
-    }
-  };
-  for (const group of entries(input.proxy_groups)) {
-    const existing = entries(old?.proxy_groups).find(
-      (item) => item.id === group.id,
-    );
-    for (const proxy of entries(group.proxies))
-      restore(
-        proxy,
-        entries(existing?.proxies).find((item) => item.id === proxy.id),
-        "password",
-      );
-  }
-  for (const provider of entries(input.providers)) {
-    const existing = entries(old?.providers).find(
-      (item) => item.id === provider.id,
-    );
-    if (existing && existing.type !== provider.type)
-      throw new ControlInputError(
-        "A provider's type cannot be changed; create a new provider",
-      );
-    for (const credential of entries(provider.credentials)) {
-      const oldCredential = entries(existing?.credentials).find(
-        (item) => item.id === credential.id,
-      );
-      const auth = record(credential.auth);
-      const oldAuth = record(oldCredential?.auth);
-      if (auth)
-        restore(auth, auth.type === oldAuth?.type ? oldAuth : undefined);
-    }
-  }
-  for (const client of entries(input.api_keys))
-    restore(
-      client,
-      entries(old?.api_keys).find((item) => item.id === client.id),
-    );
-  const search = record(input.web_search);
-  if (search) restore(search, record(old?.web_search));
-  return restored;
-}
-
-const isSecretField = (name: string): boolean =>
-  name === "api_key" || name === "password";
-
-/** Stored drafts hold real secrets; a placeholder means a restoration was skipped. */
-export function hasSecretPlaceholder(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasSecretPlaceholder);
-  const input = record(value);
-  return (
-    !!input &&
-    Object.entries(input).some(([name, entry]) =>
-      isSecretField(name)
-        ? entry === SECRET_PLACEHOLDER
-        : hasSecretPlaceholder(entry),
-    )
+const stateSchema = z.object({
+  version: z.number().int().nonnegative(),
+  maintenance: z.number(),
+  updated_at: z.number(),
+});
+const operationSchema = z.object({
+  version: z.number(),
+  input_hash: z.string(),
+  actor: z.string(),
+});
+const snapshotSchema = z.object({
+  version: z.number(),
+  config_json: z.string(),
+});
+const snapshotPriceReferences = z.object({
+  model_prices: z.array(z.object({ version_id: z.uuid() })).optional(),
+});
+async function digest(value: unknown): Promise<string> {
+  const buffer = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(value)),
   );
-}
-
-export function maskSecrets(value: unknown): JsonValue {
-  if (Array.isArray(value)) return value.map(maskSecrets);
-  const input = record(value);
-  if (!input)
-    return typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-      ? value
-      : null;
-  return Object.fromEntries(
-    Object.entries(input).map(([name, entry]) => [
-      name,
-      isSecretField(name) && typeof entry === "string" && entry
-        ? SECRET_PLACEHOLDER
-        : maskSecrets(entry),
-    ]),
-  );
+  return Array.from(new Uint8Array(buffer), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 export class ControlStore {
   constructor(
     readonly db: SqlDatabase,
-    private readonly kv: KeyValueStore,
     private readonly encryptionKey: string,
-    private readonly configKey = "gateway-config",
   ) {}
-
-  private async validateOAuthReferences(config: GatewayConfig): Promise<void> {
-    for (const provider of config.providers) {
-      if (provider.type === ProviderType.AiGateway) continue;
-      for (const credential of provider.credentials) {
-        const row = await this.db
-          .prepare(
-            "SELECT provider_id FROM oauth_accounts WHERE account_ref = ?",
-          )
-          .bind(credential.auth.account_ref)
-          .first<{ provider_id: string }>();
-        if (!row || row.provider_id !== provider.id)
-          throw new ControlInputError(
-            "OAuth account must be authorized for this provider before saving",
-          );
-      }
-    }
-  }
 
   async state(): Promise<ControlState> {
     const state = await this.db
       .prepare(
-        "SELECT draft_version, draft_payload, published_revision, updated_at FROM control_state WHERE id = 1",
+        "SELECT version, maintenance, updated_at FROM config_meta WHERE id = 1",
       )
-      .first<ControlState>();
+      .first();
     if (!state)
       throw new Error(
-        "Control database is not initialized; apply D1 migrations",
+        "Configuration database is not initialized; apply migrations",
       );
-    return state;
+    return stateSchema.parse(state);
   }
 
-  async rawDraft(state = this.state()): Promise<unknown> {
-    const current = await state;
-    return current.draft_payload
-      ? decryptConfig(current.draft_payload, this.encryptionKey)
-      : initialConfig();
-  }
-
-  async view(): Promise<DraftView> {
-    const state = await this.state();
-    const config = await this.rawDraft(Promise.resolve(state));
-    let validationError: string | null = null;
-    try {
-      parseConfig(config);
-    } catch (error) {
-      validationError =
-        error instanceof Error ? error.message : "Invalid configuration";
+  private async entities<K extends EntityTable>(
+    tables: readonly K[],
+    includeDeleted = true,
+  ): Promise<{ state: ControlState; rows: Pick<EntityRows, K> }> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.state();
+      const rows = await readEntities(this.db, tables, { includeDeleted });
+      const after = await this.state();
+      if (before.version === after.version) return { state: after, rows };
     }
+    throw new ControlConflict(
+      "Configuration changed while reading; reload and retry",
+    );
+  }
+
+  async current(): Promise<GatewayConfig> {
+    const state = await this.state();
+    if (state.maintenance)
+      throw new ControlConflict("Configuration is in maintenance mode");
+    if (state.version) return this.revision(state.version);
+    return configurationFromEntities((await this.entities(entityTables)).rows);
+  }
+
+  /** Management and inference share the exact committed snapshot. */
+  async committed(): Promise<GatewayConfig> {
+    const state = await this.state();
+    if (state.maintenance)
+      throw new ControlConflict("Configuration is in maintenance mode");
+    return state.version ? this.revision(state.version) : this.current();
+  }
+
+  async view(): Promise<ConfigurationView> {
+    const state = await this.state();
+    if (state.maintenance)
+      throw new ControlConflict("Configuration is in maintenance mode");
     return {
-      version: state.draft_version,
-      published_revision: state.published_revision,
-      config: maskedConfigurationSchema.parse(maskSecrets(config)),
-      valid: validationError === null,
-      validation_error: validationError,
+      version: state.version,
+      config: state.version
+        ? await this.maskedRevision(state.version)
+        : maskedConfigurationSchema.parse(maskSecrets(await this.current())),
     };
   }
 
+  async resource<K extends EntityTable, T>(
+    tables: readonly K[],
+    select: (rows: Pick<EntityRows, NoInfer<K>>) => T,
+    redact: (item: T) => T = (item) => item,
+  ): Promise<{ version: number; item: T; etag: string }> {
+    const { state, rows } = await this.entities(tables, false);
+    if (state.maintenance)
+      throw new ControlConflict("Configuration is in maintenance mode");
+    const item = select(rows);
+    return {
+      version: state.version,
+      etag: await digest(item),
+      item: redact(item),
+    };
+  }
+
+  async reveal<K extends EntityTable, T>(
+    tables: readonly K[],
+    expectedVersion: number,
+    select: (
+      rows: Pick<EntityRows, NoInfer<K>>,
+      secrets: SecretRepository,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const { state, rows } = await this.entities(tables, false);
+    if (state.maintenance || state.version !== expectedVersion)
+      throw new ControlConflict(
+        "Configuration changed; reload before trying again",
+      );
+    return select(
+      rows,
+      new SecretRepository(this.db, this.encryptionKey, state.updated_at),
+    );
+  }
+
+  private async snapshot(version: number) {
+    const value = await this.db
+      .prepare(
+        "SELECT version, config_json FROM config_snapshots WHERE version = ?",
+      )
+      .bind(version)
+      .first();
+    if (!value)
+      throw new ControlInputError("Configuration version does not exist");
+    const snapshot = snapshotSchema.parse(value);
+    snapshotPriceReferences.parse(JSON.parse(snapshot.config_json));
+    return snapshot;
+  }
+
+  private async maskedRevision(version: number): Promise<GatewayConfig> {
+    const row = await this.snapshot(version);
+    return maskedConfigurationSchema.parse(
+      maskSecrets(JSON.parse(row.config_json)),
+    );
+  }
+
+  async revision(version: number): Promise<GatewayConfig> {
+    const row = await this.snapshot(version);
+    return {
+      ...parseConfig(
+        await resolveSecrets(JSON.parse(row.config_json), this.db, (text) =>
+          decryptConfig(text, this.encryptionKey),
+        ),
+      ),
+      revision: row.version,
+    };
+  }
+
+  async replay(
+    value: unknown,
+    expectedVersion: number,
+    actor: string,
+    operationId: string | undefined,
+    sourceVersion?: number,
+  ): Promise<ConfigurationView | null> {
+    if (!operationId) return null;
+    const prior = await this.db
+      .prepare(
+        "SELECT version,input_hash,actor FROM config_operations WHERE id=?",
+      )
+      .bind(operationId)
+      .first();
+    if (!prior) return null;
+    const operation = operationSchema.parse(prior);
+    if (
+      operation.actor !== actor ||
+      operation.input_hash !==
+        (await digest({ value, expectedVersion, sourceVersion }))
+    )
+      throw new ControlConflict(
+        "Operation ID was already used for another change",
+      );
+    return {
+      version: operation.version,
+      config: await this.maskedRevision(operation.version),
+    };
+  }
+
+  /** Ordinary CRUD commits entities; recovery shares this exact transaction path. */
+  async mutate<T>(
+    operation: ConfigurationOperation,
+    change: (work: ConfigurationUnitOfWork) => void | Promise<void>,
+    select: (config: GatewayConfig) => T,
+  ): Promise<{ version: number; item: T }> {
+    const committed = await this.write(operation, change);
+    return { version: committed.version, item: select(committed.config) };
+  }
+
+  private async write(
+    operation: ConfigurationOperation,
+    change: (work: ConfigurationUnitOfWork) => void | Promise<void>,
+    options: { sourceVersion?: number } = {},
+  ): Promise<ConfigurationView> {
+    const {
+      version: expectedVersion,
+      operation_id: operationId,
+      actor,
+      request,
+    } = operation;
+    z.uuid().parse(operationId);
+    const replay = await this.replay(
+      request,
+      expectedVersion,
+      actor,
+      operationId,
+      options.sourceVersion,
+    );
+    if (replay) return replay;
+    const { state, rows } = await this.entities(entityTables);
+    if (state.version !== expectedVersion)
+      throw new ControlConflict("Configuration changed; reload before saving");
+    if (state.maintenance)
+      throw new ControlConflict("Configuration is in maintenance mode");
+    const version = state.version + 1;
+    const now = Math.max(Date.now(), state.updated_at + 1);
+    const work = new ConfigurationUnitOfWork(
+      structuredClone(rows),
+      version,
+      now,
+      this.db,
+      this.encryptionKey,
+    );
+    let snapshot: GatewayConfig;
+    try {
+      await change(work);
+      snapshot = compileSnapshot(work.rows, version);
+    } catch (error) {
+      if (error instanceof z.ZodError)
+        throw new ControlInputError(configurationError(error));
+      throw error;
+    }
+    if (new TextEncoder().encode(JSON.stringify(snapshot)).length > 1024 * 1024)
+      throw new ControlInputError("Configuration exceeds 1 MiB");
+    await validateClientKeys(work, rows);
+    await validateOAuth(this.db, snapshot);
+    const inputHash = await digest({
+      value: request,
+      expectedVersion,
+      sourceVersion: options.sourceVersion,
+    });
+    await commitConfiguration(this.db, {
+      previous: rows,
+      projected: work.rows,
+      snapshot,
+      secrets: work.secrets.pending,
+      version,
+      expectedVersion,
+      maintenance: state.maintenance,
+      now,
+      actor,
+      operationId,
+      inputHash,
+      sourceVersion: options.sourceVersion,
+    });
+    const committed = await this.replay(
+      request,
+      expectedVersion,
+      actor,
+      operationId,
+      options.sourceVersion,
+    );
+    if (!committed || committed.version !== version)
+      throw new ControlConflict("Configuration changed; reload before saving");
+    return committed;
+  }
+
+  /** Document replacement is reserved for historical recovery and test seeding. */
   async save(
     value: unknown,
     expectedVersion: number,
     actor: string,
-  ): Promise<DraftView> {
-    const current = await this.state();
-    if (expectedVersion !== current.draft_version)
-      throw new ControlConflict("The draft changed; reload before saving");
-    let restored = restoreSecrets(
-      value,
-      await this.rawDraft(Promise.resolve(current)),
+    operationId = crypto.randomUUID(),
+    options: {
+      sourceVersion?: number;
+      requestValue?: unknown;
+    } = {},
+  ): Promise<ConfigurationView> {
+    return this.write(
+      {
+        version: expectedVersion,
+        operation_id: operationId,
+        actor,
+        request: options.requestValue ?? value,
+      },
+      async (work) => {
+        const previousRefs = configurationFromEntities(work.rows);
+        const previous = parseConfig(
+          await resolveSecrets(previousRefs, this.db, (text) =>
+            decryptConfig(text, this.encryptionKey),
+          ),
+        );
+        let input: unknown;
+        try {
+          input = assignIdentities(restoreSecrets(value, previous), work.rows);
+        } catch (error) {
+          throw new ControlInputError(
+            error instanceof Error
+              ? error.message
+              : "Invalid entity identities",
+          );
+        }
+        const config = parseConfig(input);
+        if (
+          new TextEncoder().encode(JSON.stringify(config)).length >
+          1024 * 1024
+        )
+          throw new ControlInputError("Configuration exceeds 1 MiB");
+        const { sealed, secrets } = await sealConfiguration(
+          config,
+          previous,
+          previousRefs,
+          this.encryptionKey,
+          work.now,
+        );
+        Object.assign(
+          work.rows,
+          projectConfiguration(sealed, work.rows, work.version, work.now),
+        );
+        work.secrets.pending.push(...secrets);
+      },
+      options,
     );
-    try {
-      restored = parseConfig(restored);
-    } catch {
-      restored = draftConfigurationSchema.parse(restored);
-    }
-    if (new TextEncoder().encode(JSON.stringify(restored)).length > 1024 * 1024)
-      throw new ControlInputError("Configuration exceeds 1 MiB");
-    await this.validateOAuthReferences(
-      draftConfigurationSchema.parse(restored),
-    );
-    const encrypted = await encryptConfig(restored, this.encryptionKey);
-    const now = Date.now();
-    const [updated] =
-      sqlDialect(this.db) === "postgres"
-        ? await this.db.batch([
-            // The audit row is inserted only when the guarded update changed the draft.
-            this.db
-              .prepare(
-                "WITH updated AS (UPDATE control_state SET draft_payload = ?, draft_version = draft_version + 1, updated_at = ? WHERE id = 1 AND draft_version = ? RETURNING id) INSERT INTO audit_log (id, created_at, actor, action) SELECT ?, ?, ?, 'save_draft' FROM updated",
-              )
-              .bind(
-                encrypted,
-                now,
-                expectedVersion,
-                crypto.randomUUID(),
-                now,
-                actor,
-              ),
-          ])
-        : await this.db.batch([
-            this.db
-              .prepare(
-                "UPDATE control_state SET draft_payload = ?, draft_version = draft_version + 1, updated_at = ? WHERE id = 1 AND draft_version = ?",
-              )
-              .bind(encrypted, now, expectedVersion),
-            this.db
-              .prepare(
-                "INSERT INTO audit_log (id, created_at, actor, action) SELECT ?, ?, ?, 'save_draft' WHERE changes() = 1",
-              )
-              .bind(crypto.randomUUID(), now, actor),
-          ]);
-    if (updated.meta.changes !== 1)
-      throw new ControlConflict("The draft changed; reload before saving");
-    return this.view();
   }
 
-  async createRevision(
+  async restore(
+    version: number,
     expectedVersion: number,
     actor: string,
-    sourceRevision: number | null = null,
-  ): Promise<number> {
-    const state = await this.state();
-    if (state.draft_version !== expectedVersion)
-      throw new ControlConflict("The draft changed; reload before publishing");
-    const config = parseConfig(await this.rawDraft(Promise.resolve(state)));
-    await this.validateOAuthReferences(config);
-    delete config.revision;
-    const payload = await encryptConfig(config, this.encryptionKey);
-    const inserted = await this.db
-      .prepare(
-        "INSERT INTO config_revisions (payload, created_at, actor, source_revision) SELECT ?, ?, ?, ? FROM control_state WHERE id = 1 AND draft_version = ? RETURNING id",
-      )
-      .bind(payload, Date.now(), actor, sourceRevision, expectedVersion)
-      .first<{ id: number }>();
-    if (!inserted)
-      throw new ControlConflict("The draft changed; reload before publishing");
-    return inserted.id;
-  }
-
-  async revision(id: number): Promise<GatewayConfig> {
-    const row = await this.db
-      .prepare("SELECT payload FROM config_revisions WHERE id = ?")
-      .bind(id)
-      .first<{ payload: string }>();
-    if (!row)
-      throw new ControlInputError("Configuration revision does not exist");
-    return {
-      ...parseConfig(await decryptConfig(row.payload, this.encryptionKey)),
-      revision: id,
-    };
-  }
-
-  async publishRevision(id: number): Promise<void> {
-    const state = await this.state();
-    if (state.published_revision !== null && state.published_revision >= id)
-      return;
-    const config = await this.revision(id);
-    const now = Date.now();
-    const policies = (config.model_policies ?? []).map((policy) =>
-      this.db
-        .prepare(
-          insertIgnore(
-            sqlDialect(this.db),
-            "INSERT INTO pricing_versions (id, revision, provider_id, model, policy_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-          ),
-        )
-        .bind(
-          priceVersion(id, policy.provider_id, policy.model),
-          id,
-          policy.provider_id,
-          policy.model,
-          JSON.stringify(policy),
-          now,
-        ),
+    operationId?: string,
+  ): Promise<ConfigurationView> {
+    const requestValue = { restore_version: version };
+    const replay = await this.replay(
+      requestValue,
+      expectedVersion,
+      actor,
+      operationId,
+      version,
     );
-    // The policy ledger exists before a gateway can observe this snapshot.
-    for (let i = 0; i < policies.length; i += 50)
-      await this.db.batch(policies.slice(i, i + 50));
-    await this.kv.put(this.configKey, JSON.stringify(config));
-    await this.db.batch([
-      this.db
-        .prepare(
-          "UPDATE control_state SET published_revision = ? WHERE id = 1 AND (published_revision IS NULL OR published_revision < ?)",
-        )
-        .bind(id, id),
-      this.db
-        .prepare(
-          "UPDATE config_revisions SET status = 'published', published_at = COALESCE(published_at, ?) WHERE id = ?",
-        )
-        .bind(now, id),
-      this.db
-        .prepare(
-          insertIgnore(
-            sqlDialect(this.db),
-            "INSERT INTO audit_log (id, created_at, actor, action, revision) SELECT ?, ?, actor, 'publish', id FROM config_revisions WHERE id = ?",
-          ),
-        )
-        .bind(`publish:${id}`, now, id),
-    ]);
+    if (replay) return replay;
+    const config = parseConfig(
+      JSON.parse((await this.snapshot(version)).config_json),
+    );
+    const current = await this.current();
+    preserveCurrentSecrets(config, current);
+    return this.save(config, expectedVersion, actor, operationId, {
+      sourceVersion: version,
+      requestValue,
+    });
+  }
+
+  async versions() {
+    const result = await this.db
+      .prepare(
+        "SELECT version AS id, created_at, actor, source_version AS source_revision FROM config_snapshots ORDER BY version DESC LIMIT 100",
+      )
+      .all();
+    return z.array(revisionSchema).parse(result.results);
+  }
+
+  async names(): Promise<Record<string, string>> {
+    const result = await this.db.batch(
+      [
+        "providers",
+        "clients",
+        "provider_credentials",
+        "proxy_groups",
+        "proxy_nodes",
+      ].map((table) => this.db.prepare(`SELECT id,name FROM ${table}`)),
+    );
+    return Object.fromEntries(
+      result.flatMap((result) =>
+        z
+          .array(z.object({ id: z.string(), name: z.string() }))
+          .parse(result.results)
+          .map((row) => [row.id, row.name]),
+      ),
+    );
   }
 }

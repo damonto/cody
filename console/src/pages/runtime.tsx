@@ -1,10 +1,12 @@
+import { useReporting } from "@/lib/resources";
+import { useEntityNames } from "@/lib/api";
 import { HealthScope } from "../../../src/gateway/health/values.ts";
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, ShieldCheck, Unplug } from "lucide-react";
 import { toast } from "sonner";
-import { read, rpc, useDraft } from "@/lib/api";
+import { read, rpc, useConfigurationState } from "@/lib/api";
 import { date } from "@/lib/format";
 import {
   Choice,
@@ -37,6 +39,7 @@ type ClearAction =
   | { kind: "health"; providerId: string; credentialId?: string }
   | { kind: "session"; sessionId: string };
 export default function Runtime() {
+  const names = useEntityNames();
   const [selected, setSelected] = useState("");
   const [scope, setScope] = useState<"inference" | "catalog">(
     HealthScope.Inference,
@@ -48,9 +51,10 @@ export default function Runtime() {
     description: string;
   } | null>(null);
   const queryClient = useQueryClient();
-  const draft = useDraft();
+  const configuration = useConfigurationState();
+  const reporting = useReporting();
   const clients = useQuery({
-    queryKey: ["runtime-clients", draft.data?.published_revision],
+    queryKey: ["runtime-clients", configuration.data?.version],
     queryFn: ({ signal }) =>
       read(rpc.runtime.clients.$get({}, { init: { signal } })),
   });
@@ -109,12 +113,12 @@ export default function Runtime() {
     },
     onError: (error) => toast.error(error.message),
   });
-  const timeZone = draft.data?.config.reporting?.time_zone;
+  const timeZone = reporting.data?.item.time_zone;
   return (
     <>
       <PageHeading
         title="Runtime"
-        description="Inspect cooldowns and session bindings through a published client identity."
+        description="Inspect cooldowns and session bindings through a current client identity."
       >
         <Button
           variant="outline"
@@ -134,9 +138,8 @@ export default function Runtime() {
         <Loading />
       ) : !clientId ? (
         <Card>
-          <Empty title="Publish a client configuration first">
-            Runtime operations use the currently published providers and
-            clients.
+          <Empty title="Create a client first">
+            Runtime operations use the current providers and clients.
           </Empty>
         </Card>
       ) : (
@@ -196,13 +199,17 @@ export default function Runtime() {
                       {
                         id: "provider",
                         header: "Provider",
-                        cell: ({ row }) => row.original.provider_id,
+                        cell: ({ row }) =>
+                          names[row.original.provider_id] ??
+                          row.original.provider_id,
                       },
                       {
                         id: "credential",
                         header: "Credential",
                         cell: ({ row }) =>
-                          row.original.credential_id ?? "Provider-wide",
+                          names[row.original.credential_id ?? ""] ??
+                          row.original.credential_id ??
+                          "Provider-wide",
                       },
                       {
                         id: "failures",
@@ -277,9 +284,11 @@ export default function Runtime() {
                         header: "Provider / credential",
                         cell: ({ row }) => (
                           <div>
-                            {row.original.provider_id}
+                            {names[row.original.provider_id] ??
+                              row.original.provider_id}
                             <p className="text-xs text-muted-foreground">
-                              {row.original.credential_id}
+                              {names[row.original.credential_id] ??
+                                row.original.credential_id}
                             </p>
                           </div>
                         ),

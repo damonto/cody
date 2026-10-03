@@ -192,13 +192,6 @@ export interface UsageOutboxObject {
   enqueue(event: unknown): Promise<void>;
 }
 
-export interface ConfigPublisherObject {
-  getDraft(): Promise<string>;
-  saveDraft(config: string, version: number, actor: string): Promise<string>;
-  publish(version: number, actor: string): Promise<string>;
-  rollback(revision: number, version: number, actor: string): Promise<string>;
-}
-
 export interface OAuthAccountObject {
   run(command: AccountCommand): Promise<AccountReply>;
 }
@@ -222,8 +215,6 @@ export interface WebSocketProxyNamespace {
 
 type WorkerSettings = Pick<
   Env,
-  | "CONFIG_KEY"
-  | "CONFIG_CACHE_TTL_SECONDS"
   | "MODELS_CACHE_TTL_SECONDS"
   | "LOG_LEVEL"
   | "ACCESS_TEAM_DOMAIN"
@@ -247,7 +238,6 @@ export interface Bindings extends Partial<WorkerSettings> {
   /** Absent where inbound WebSockets are unsupported (Vercel). */
   readonly RESPONSES_WEBSOCKET?: WebSocketProxyNamespace;
   readonly USAGE_OUTBOX?: ObjectNamespace<UsageOutboxObject>;
-  readonly CONFIG_PUBLISHER: ObjectNamespace<ConfigPublisherObject>;
   readonly PROXY_GROUP: ObjectNamespace<ProxyGroupObject>;
   readonly PROVIDER_OAUTH_ACCOUNT: ObjectNamespace<OAuthAccountObject>;
   /** Standard backend only: administrator authentication settings. */

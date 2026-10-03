@@ -236,14 +236,11 @@ export class XaiClient {
   }
   async quota(token: string, subject: string) {
     const headers = xaiHeaders(token, subject);
-    const results = await Promise.allSettled([
-      this.json(`${XAI_BASE}/billing?format=credits`, { headers }, 5000),
-      this.json(`${XAI_BASE}/billing`, { headers }, 3000),
-    ]);
-    const primary =
-      results[0].status === "fulfilled" ? results[0].value : undefined;
-    const secondary =
-      results[1].status === "fulfilled" ? results[1].value : undefined;
-    return parseBilling(primary, secondary);
+    const billing = await this.json(
+      `${XAI_BASE}/billing?format=credits`,
+      { headers },
+      5000,
+    );
+    return parseBilling(billing);
   }
 }
