@@ -74,7 +74,7 @@ export class XaiClient {
   constructor(
     private readonly send: UpstreamFetch,
     private readonly signal: AbortSignal,
-  ) { }
+  ) {}
   private async json(
     url: string,
     init: RequestInit = {},
@@ -106,13 +106,13 @@ export class XaiClient {
       if (!response.ok || error.success) {
         const code =
           error.success &&
-            [
-              "authorization_pending",
-              "slow_down",
-              "access_denied",
-              "expired_token",
-              "invalid_grant",
-            ].includes(error.data.error)
+          [
+            "authorization_pending",
+            "slow_down",
+            "access_denied",
+            "expired_token",
+            "invalid_grant",
+          ].includes(error.data.error)
             ? error.data.error
             : "upstream_error";
         throw new OAuthError(

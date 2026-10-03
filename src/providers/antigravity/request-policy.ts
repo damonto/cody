@@ -26,13 +26,13 @@ export function antigravitySystemParts(
   return system.map((part) =>
     typeof part.text === "string"
       ? {
-        ...part,
-        text: part.text.replace(matcher, (word) => {
-          // Match Go's first-rune insertion, including supplementary Unicode characters.
-          const [first, ...rest] = Array.from(word);
-          return `${first}\u200b${rest.join("")}`;
-        }),
-      }
+          ...part,
+          text: part.text.replace(matcher, (word) => {
+            // Match Go's first-rune insertion, including supplementary Unicode characters.
+            const [first, ...rest] = Array.from(word);
+            return `${first}\u200b${rest.join("")}`;
+          }),
+        }
       : part,
   );
 }

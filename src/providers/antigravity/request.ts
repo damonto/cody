@@ -138,10 +138,10 @@ async function toolsFor(value: unknown): Promise<ToolMapping[]> {
         );
       const parameters = custom
         ? {
-          type: "object",
-          properties: { input: { type: "string" } },
-          required: ["input"],
-        }
+            type: "object",
+            properties: { input: { type: "string" } },
+            required: ["input"],
+          }
         : (definition.parameters ??
           definition.input_schema ?? { type: "object", properties: {} });
       mappings.push({
@@ -380,8 +380,8 @@ export async function translateRequest(
               "model",
               Array.isArray(item.summary)
                 ? records(item.summary, "reasoning summary")
-                  .map((part) => string(part.text, "reasoning summary text"))
-                  .join("")
+                    .map((part) => string(part.text, "reasoning summary text"))
+                    .join("")
                 : undefined,
             );
         } else if (type === "function_call" || type === "custom_tool_call") {
@@ -542,8 +542,8 @@ export async function translateRequest(
   }
   const format = object(
     object(payload.text).format ??
-    object(payload.output_config).format ??
-    payload.response_format,
+      object(payload.output_config).format ??
+      payload.response_format,
   );
   if (format.type === "json_schema" || format.type === "json_object") {
     generation.responseMimeType = "application/json";
@@ -563,12 +563,12 @@ export async function translateRequest(
   const systemParts = antigravitySystemParts(
     system,
     endpoint !== "responses" &&
-    claude &&
-    scope.model.toLowerCase().includes("thinking") &&
-    tools.length > 0 &&
-    choice !== "none" &&
-    choiceObject.type !== "none" &&
-    ["enabled", "adaptive", "auto"].includes(String(thinking.type)),
+      claude &&
+      scope.model.toLowerCase().includes("thinking") &&
+      tools.length > 0 &&
+      choice !== "none" &&
+      choiceObject.type !== "none" &&
+      ["enabled", "adaptive", "auto"].includes(String(thinking.type)),
     sensitiveWords,
   );
   if (systemParts.length)
@@ -578,9 +578,9 @@ export async function translateRequest(
       choice === "none" || choiceObject.type === "none"
         ? "NONE"
         : choice === "required" ||
-          ["any", "tool", "function", "custom"].includes(
-            String(choiceObject.type),
-          )
+            ["any", "tool", "function", "custom"].includes(
+              String(choiceObject.type),
+            )
           ? "ANY"
           : claude
             ? "VALIDATED"
@@ -591,16 +591,16 @@ export async function translateRequest(
         mode,
         ...(typeof name === "string"
           ? {
-            allowedFunctionNames: [
-              toolName(
-                tools,
-                name,
-                typeof choiceObject.namespace === "string"
-                  ? choiceObject.namespace
-                  : undefined,
-              ),
-            ],
-          }
+              allowedFunctionNames: [
+                toolName(
+                  tools,
+                  name,
+                  typeof choiceObject.namespace === "string"
+                    ? choiceObject.namespace
+                    : undefined,
+                ),
+              ],
+            }
           : {}),
       },
     };

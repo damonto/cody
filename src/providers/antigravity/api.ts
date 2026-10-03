@@ -190,7 +190,7 @@ export class AntigravityClient {
     private readonly send: UpstreamFetch,
     private readonly signal: AbortSignal = new AbortController().signal,
     private readonly version = ANTIGRAVITY_FALLBACK_VERSION,
-  ) { }
+  ) {}
   private async json(
     url: string,
     init: RequestInit,
