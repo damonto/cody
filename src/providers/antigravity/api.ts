@@ -3,19 +3,18 @@ import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import { logWarn } from "../../shared/log.ts";
 import {
-  ANTIGRAVITY_FALLBACK_VERSION,
-  antigravityUserAgent,
-} from "./version.ts";
-import {
   OAuthError,
   identitySchema,
   type AccountModel,
   type QuotaSnapshot,
 } from "../oauth/schema.ts";
+import {
+  ANTIGRAVITY_FALLBACK_VERSION,
+  antigravityUserAgent,
+} from "./version.ts";
 
 export const ANTIGRAVITY_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-// Public desktop OAuth registration used by CLIProxyAPI, not an account credential.
 const ANTIGRAVITY_CLIENT_SECRET = "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";
 export const ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 export const ANTIGRAVITY_BASE = "https://daily-cloudcode-pa.googleapis.com";
@@ -191,7 +190,7 @@ export class AntigravityClient {
     private readonly send: UpstreamFetch,
     private readonly signal: AbortSignal = new AbortController().signal,
     private readonly version = ANTIGRAVITY_FALLBACK_VERSION,
-  ) {}
+  ) { }
   private async json(
     url: string,
     init: RequestInit,

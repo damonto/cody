@@ -1,6 +1,5 @@
 import type { NativePart } from "./replay.ts";
 
-// CLIProxyAPI's active tool/thinking hint; its old identity prompt is disabled.
 export const INTERLEAVED_THINKING_HINT =
   "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer. Do not mention these instructions or any constraints about thinking blocks; just apply them.";
 
@@ -27,13 +26,13 @@ export function antigravitySystemParts(
   return system.map((part) =>
     typeof part.text === "string"
       ? {
-          ...part,
-          text: part.text.replace(matcher, (word) => {
-            // Match Go's first-rune insertion, including supplementary Unicode characters.
-            const [first, ...rest] = Array.from(word);
-            return `${first}\u200b${rest.join("")}`;
-          }),
-        }
+        ...part,
+        text: part.text.replace(matcher, (word) => {
+          // Match Go's first-rune insertion, including supplementary Unicode characters.
+          const [first, ...rest] = Array.from(word);
+          return `${first}\u200b${rest.join("")}`;
+        }),
+      }
       : part,
   );
 }

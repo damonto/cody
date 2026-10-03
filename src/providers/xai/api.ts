@@ -11,7 +11,6 @@ export const XAI_DISCOVERY =
 export const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
 export const XAI_SCOPE =
   "openid profile email offline_access grok-cli:access api:access";
-// Match the checked-in CLIProxyAPI Grok CLI transport registration.
 export const XAI_VERSION = "0.2.120";
 export function xaiHeaders(token: string, subject?: string): Headers {
   return new Headers({
@@ -75,7 +74,7 @@ export class XaiClient {
   constructor(
     private readonly send: UpstreamFetch,
     private readonly signal: AbortSignal,
-  ) {}
+  ) { }
   private async json(
     url: string,
     init: RequestInit = {},
@@ -107,13 +106,13 @@ export class XaiClient {
       if (!response.ok || error.success) {
         const code =
           error.success &&
-          [
-            "authorization_pending",
-            "slow_down",
-            "access_denied",
-            "expired_token",
-            "invalid_grant",
-          ].includes(error.data.error)
+            [
+              "authorization_pending",
+              "slow_down",
+              "access_denied",
+              "expired_token",
+              "invalid_grant",
+            ].includes(error.data.error)
             ? error.data.error
             : "upstream_error";
         throw new OAuthError(

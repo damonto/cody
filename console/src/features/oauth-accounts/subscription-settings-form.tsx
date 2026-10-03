@@ -2,16 +2,6 @@ import { CodexAccountSelection } from "../../../../src/config/values.ts";
 
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
-import type { ProxyGroupConfig } from "../../../../src/config/types";
-import {
-  mapWithConcurrency,
-  PROVIDER_FAN_OUT_CONCURRENCY,
-} from "../../../../src/shared/concurrency";
-import { useAppForm } from "@/lib/form";
-import { fieldErrors } from "@/lib/form-errors";
 import { Choice, ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,6 +13,16 @@ import {
   cacheAccounts,
   refreshModels,
 } from "@/features/oauth-accounts/api";
+import { useAppForm } from "@/lib/form";
+import { fieldErrors } from "@/lib/form-errors";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useState } from "react";
+import type { ProxyGroupConfig } from "../../../../src/config/types";
+import {
+  mapWithConcurrency,
+  PROVIDER_FAN_OUT_CONCURRENCY,
+} from "../../../../src/shared/concurrency";
 import {
   applySettings,
   settingsEditorSchema,
@@ -155,7 +155,7 @@ export function SubscriptionSettingsForm<
                 {(field) => (
                   <field.ToggleField
                     label="Enable native X Search"
-                    hint="Allow Grok to search X using its hosted search tool. Disabled by default, matching CLIProxyAPI."
+                    hint="Allow Grok to search X using its hosted search tool. Disabled by default."
                   />
                 )}
               </form.AppField>
