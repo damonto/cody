@@ -219,7 +219,7 @@ export function CodexSettingsForm({
               {(field) => (
                 <>
                   {models.size ? (
-                    <div className="grid max-h-80 gap-3 overflow-auto rounded-md border p-3">
+                    <div className="relative grid max-h-80 gap-3 overflow-auto rounded-md border p-3">
                       {[...models].map(([id, label]) => (
                         <Label
                           key={id}
@@ -248,7 +248,7 @@ export function CodexSettingsForm({
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      Authorize a ChatGPT account to discover models.
+                      Authorize an account to discover models.
                     </p>
                   )}
                   <FieldError errors={fieldErrors(field)} />

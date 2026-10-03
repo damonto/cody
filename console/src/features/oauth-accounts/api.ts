@@ -42,7 +42,21 @@ export const accountOptions = (ref: string) =>
         ),
       ),
     enabled: !!ref,
+    refetchInterval: (query) =>
+      query.state.data?.project_initialization?.status === "pending"
+        ? 5000
+        : false,
   });
+export async function retryProjectInitialization(ref: string) {
+  return accountViewSchema.parse(
+    await read(
+      rpc["provider-accounts"][":ref"]["retry-project"].$post({
+        param: { ref },
+        json: {},
+      }),
+    ),
+  );
+}
 export async function refreshModels(ref: string) {
   return accountViewSchema.parse(
     await read(

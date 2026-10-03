@@ -1,29 +1,24 @@
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../../../src/shared/concurrency";
 import type { AccountView } from "../../../../src/providers/oauth/schema";
 import type { AntigravityProviderConfig } from "../../../../src/config/types";
-import { Empty, ErrorNotice, Loading, Status } from "@/components/common";
+import { Empty, ErrorNotice } from "@/components/common";
+import { AccountCardGrid } from "@/features/oauth-accounts/account-card-grid";
+import { AccountCardsSkeleton } from "@/features/oauth-accounts/account-cards-skeleton";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   accountsOptions,
   accountHealthOptions,
   quotaQueryKey,
   refreshAccountQuota,
 } from "@/features/oauth-accounts/api";
-import { AccountQuota } from "./quota";
+import { AccountCard } from "./account-card";
 
 export function AntigravityAccounts({
   provider,
@@ -49,15 +44,38 @@ export function AntigravityAccounts({
   const query = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
-      const accounts = await cache.fetchQuery(accountsOptions(provider.id));
+      const previous = new Map(
+        cache
+          .getQueryData<AccountView[]>(key)
+          ?.map((account) => [account.account_ref, account]),
+      );
+      const accounts = await cache.fetchQuery({
+        ...accountsOptions(provider.id),
+        staleTime: 0,
+      });
       return mapWithConcurrency(
         accounts.filter((account) => refs.includes(account.account_ref)),
         PROVIDER_FAN_OUT_CONCURRENCY,
-        (account) => refreshAccountQuota(account, false, signal),
+        async (account) => {
+          const cached = previous.get(account.account_ref);
+          // Project polling refreshes status; unchanged ready accounts keep
+          // on-demand quotas. A newly ready credential gets its first snapshot.
+          return cached?.status === OAuthAccountViewStatus.Ready &&
+            account.status === OAuthAccountViewStatus.Ready &&
+            cached.generation === account.generation
+            ? account
+            : refreshAccountQuota(account, false, signal);
+        },
       );
     },
     enabled: refs.length > 0,
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (account) => account.project_initialization?.status === "pending",
+      )
+        ? 5000
+        : false,
   });
   const refresh = useMutation({
     mutationFn: (ref?: string) =>
@@ -113,7 +131,7 @@ export function AntigravityAccounts({
           onClick={() => refresh.mutate(undefined)}
         >
           <RefreshCw />
-          Refresh all quotas
+          Refresh all
         </Button>
         <Button size="sm" disabled={pending} onClick={onAdd}>
           <Plus />
@@ -121,7 +139,6 @@ export function AntigravityAccounts({
         </Button>
       </div>
       <div className="space-y-4">
-        {!!refs.length && query.isPending && <Loading />}
         {query.error && (
           <ErrorNotice error={query.error} retry={() => void query.refetch()} />
         )}
@@ -131,132 +148,40 @@ export function AntigravityAccounts({
             retry={() => void health.refetch()}
           />
         )}
-        {!provider.credentials.length && (
+        {!provider.credentials.length ? (
           <Empty title="No Google accounts">
             Authorize a Google account with Antigravity access to start
             balancing requests.
           </Empty>
-        )}
-        {provider.credentials.map((credential, index) => {
-          const account = accounts.get(credential.auth.account_ref);
-          const cooldown = health.data?.find(
-            (entry) =>
-              entry.credential_id === credential.id &&
-              entry.account_ref === credential.auth.account_ref,
-          );
-          const label = account?.email ?? `Google account ${index + 1}`;
-          return (
-            <div
-              className="space-y-3 rounded-lg border p-4"
-              key={credential.id}
-              data-account-id={credential.id}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">{label}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Status value={account?.status ?? "unknown"} />
-                    {credential.disabled && (
-                      <Badge variant="outline">Disabled</Badge>
-                    )}
-                    <span>Priority {credential.priority}</span>
-                    {cooldown && !cooldown.available && (
-                      <Badge variant="outline">Account cooling down</Badge>
-                    )}
-                  </div>
-                  {cooldown?.model_cooldowns?.map((block) => (
-                    <p
-                      key={block.model}
-                      className="mt-1 text-xs text-muted-foreground"
-                    >
-                      {block.model}:{" "}
-                      {block.reason === "quota"
-                        ? "Quota / rate limit"
-                        : "Quota status unavailable"}
-                      {block.until !== null &&
-                        ` until ${new Date(block.until).toLocaleString()}`}
-                    </p>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={
-                      account?.status !== OAuthAccountViewStatus.Ready ||
-                      refresh.isPending ||
-                      query.isFetching
-                    }
-                    onClick={() => refresh.mutate(credential.auth.account_ref)}
-                  >
-                    Refresh quota
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={() => onConfigure(credential.id)}
-                  >
-                    Manage
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        disabled={pending}
-                        aria-label={`Account actions for ${label}`}
-                      >
-                        <MoreHorizontal />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        disabled={index === 0}
-                        onSelect={() => onMove(credential.id, -1)}
-                      >
-                        Move up
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={index === provider.credentials.length - 1}
-                        onSelect={() => onMove(credential.id, 1)}
-                      >
-                        Move down
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onSelect={() => onRemove(credential.id)}
-                      >
-                        Remove account
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-              {account?.error && (
-                <p role="alert" className="text-xs text-destructive">
-                  {account.error}
-                </p>
-              )}
-              {account && (
-                <AccountQuota
-                  account={
-                    query.error
-                      ? {
-                          ...account,
-                          quota: {
-                            ...account.quota,
-                            stale: true,
-                            last_error: query.error.message,
-                          },
-                        }
-                      : account
-                  }
+        ) : (
+          <AccountCardGrid>
+            {query.isPending ? (
+              <AccountCardsSkeleton credentials={provider.credentials} />
+            ) : (
+              provider.credentials.map((credential, index) => (
+                <AccountCard
+                  key={credential.id}
+                  credential={credential}
+                  index={index}
+                  count={provider.credentials.length}
+                  account={accounts.get(credential.auth.account_ref)}
+                  health={health.data?.find(
+                    (entry) =>
+                      entry.credential_id === credential.id &&
+                      entry.account_ref === credential.auth.account_ref,
+                  )}
+                  staleError={query.error?.message}
+                  pending={pending}
+                  refreshing={refresh.isPending || query.isFetching}
+                  onRefresh={() => refresh.mutate(credential.auth.account_ref)}
+                  onConfigure={() => onConfigure(credential.id)}
+                  onMove={(direction) => onMove(credential.id, direction)}
+                  onRemove={() => onRemove(credential.id)}
                 />
-              )}
-            </div>
-          );
-        })}
+              ))
+            )}
+          </AccountCardGrid>
+        )}
       </div>
     </section>
   );

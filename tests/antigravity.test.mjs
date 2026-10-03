@@ -16,6 +16,8 @@ import {
   parseQuota,
   parseModels,
   parseSubscription,
+  projectId,
+  onboardingTier,
 } from "../src/providers/antigravity/api.ts";
 import {
   translateRequest,
@@ -350,6 +352,199 @@ test("OAuth API uses the built-in desktop registration, injected transport and P
   );
   assert.equal(models.headers.get("user-agent"), ANTIGRAVITY_USER_AGENT);
   assert.equal(quota.headers.get("user-agent"), ANTIGRAVITY_USER_AGENT);
+});
+
+test("project lookup follows CLIProxyAPI project and tier selection rules", () => {
+  assert.equal(
+    projectId({ cloudaicompanionProject: "  existing  " }),
+    "existing",
+  );
+  assert.equal(
+    projectId({
+      cloudaicompanionProject: " ",
+      projectId: { id: "  assigned  " },
+    }),
+    "assigned",
+  );
+  assert.equal(projectId({ project: { id: "  " } }), null);
+  assert.equal(
+    onboardingTier({
+      allowedTiers: [
+        { isDefault: true, id: " " },
+        { isDefault: true, id: "  selected-tier  " },
+      ],
+      currentTier: { id: "current-tier" },
+    }),
+    "selected-tier",
+  );
+  assert.equal(
+    onboardingTier({ currentTier: { id: " current-tier " } }),
+    "current-tier",
+  );
+  assert.equal(onboardingTier({ currentTier: { id: " " } }), "free-tier");
+});
+
+test("project onboarding respects explicit Google eligibility and project prerequisites", () => {
+  assert.throws(
+    () =>
+      onboardingTier({
+        allowedTiers: [
+          {
+            id: "standard-tier",
+            isDefault: true,
+            userDefinedCloudaicompanionProject: true,
+          },
+        ],
+        ineligibleTiers: [
+          {
+            tierId: "free-tier",
+            reasonCode: "UNSUPPORTED_LOCATION",
+            reasonMessage: "private-detail",
+          },
+        ],
+      }),
+    (error) => {
+      assert.equal(error.code, "project_required");
+      assert.match(error.message, /user-managed Cloud project/);
+      assert.match(error.message, /UNSUPPORTED_LOCATION/);
+      assert.doesNotMatch(error.message, /private-detail/);
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      onboardingTier({
+        currentTier: {
+          id: "standard-tier",
+          userDefinedCloudaicompanionProject: true,
+        },
+      }),
+    { code: "project_required" },
+  );
+  assert.throws(
+    () =>
+      onboardingTier({
+        allowedTiers: [],
+        ineligibleTiers: [
+          { tierId: "free-tier", reasonCode: "INELIGIBLE_ACCOUNT" },
+        ],
+      }),
+    { code: "project_ineligible" },
+  );
+  assert.equal(
+    onboardingTier({
+      allowedTiers: [
+        { id: "free-tier", isDefault: true },
+        { id: "standard-tier", userDefinedCloudaicompanionProject: true },
+      ],
+      ineligibleTiers: [
+        { tierId: "other-tier", reasonCode: "INELIGIBLE_ACCOUNT" },
+      ],
+    }),
+    "free-tier",
+  );
+});
+
+test("onboarding allows a response after 15 seconds but aborts at 30 seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new AntigravityClient(
+    (request) =>
+      new Promise((resolve, reject) => {
+        request.signal.addEventListener(
+          "abort",
+          () => reject(request.signal.reason),
+          { once: true },
+        );
+        setTimeout(
+          () =>
+            resolve(
+              Response.json({
+                done: true,
+                response: { projectId: "slow-project" },
+              }),
+            ),
+          20_000,
+        );
+      }),
+  );
+  const ready = client.onboard("access", "free-tier");
+  t.mock.timers.tick(20_000);
+  assert.equal(projectId((await ready).response), "slow-project");
+
+  let signal;
+  const stalled = new AntigravityClient((request) => {
+    signal = request.signal;
+    return new Promise((_, reject) =>
+      request.signal.addEventListener(
+        "abort",
+        () => reject(request.signal.reason),
+        { once: true },
+      ),
+    );
+  });
+  const timedOut = assert.rejects(stalled.onboard("access", "free-tier"), {
+    code: "upstream_transport_error",
+    status: 504,
+    message: "onboardUser timed out after 30 seconds",
+  });
+  t.mock.timers.tick(29_999);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await timedOut;
+});
+
+test("onboarding recognizes operation errors over HTTP 200 without exposing response details", async () => {
+  const original = console.warn;
+  const entries = [];
+  console.warn = (entry) => entries.push(entry);
+  try {
+    const client = new AntigravityClient(async () =>
+      Response.json({
+        done: true,
+        error: {
+          code: 7,
+          message: "private-account-detail",
+          details: [{ token: "private-access" }],
+        },
+      }),
+    );
+    await assert.rejects(
+      client.onboard("private-access", "free-tier"),
+      (error) => {
+        assert.equal(error.status, 502);
+        assert.equal(error.code, "upstream_operation_error");
+        assert.match(error.message, /onboardUser failed.*upstream code 7/);
+        assert.doesNotMatch(error.message, /private-/);
+        return true;
+      },
+    );
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].operation, "onboardUser");
+  assert.equal(entries[0].code, 7);
+  assert.doesNotMatch(JSON.stringify(entries), /private-/);
+});
+
+test("OAuth distinguishes transport failures and invalid token responses without leaking details", async () => {
+  const unavailable = new AntigravityClient(async () => {
+    throw new TypeError("private-transport-detail");
+  });
+  await assert.rejects(unavailable.load("private-access"), (error) => {
+    assert.equal(error.code, "upstream_transport_error");
+    assert.equal(error.status, 503);
+    assert.doesNotMatch(error.message, /private-/);
+    return true;
+  });
+  const malformed = new AntigravityClient(async () =>
+    Response.json({ access_token: "private-access" }),
+  );
+  await assert.rejects(malformed.refresh("private-refresh"), (error) => {
+    assert.equal(error.code, "invalid_response");
+    assert.doesNotMatch(error.message, /private-/);
+    return true;
+  });
 });
 
 test("quota fallback is limited to explicit unsupported statuses, including plain-text errors", async () => {

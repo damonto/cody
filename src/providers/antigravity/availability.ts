@@ -6,6 +6,33 @@ import {
 } from "../../gateway/health/values.ts";
 import { errorMessage } from "../../shared/log.ts";
 import type { AccountLimit } from "../types.ts";
+import { accountReply, accountReadinessSchema } from "../oauth/schema.ts";
+
+export async function antigravityAccountAvailability(
+  env: Pick<Bindings, "PROVIDER_OAUTH_ACCOUNT">,
+  accountRef: string,
+): Promise<ProviderAvailability> {
+  try {
+    const { ready } = await accountReply(
+      env.PROVIDER_OAUTH_ACCOUNT.getByName(accountRef).run({
+        action: "readiness",
+      }),
+      accountReadinessSchema,
+    );
+    return {
+      available: ready,
+      reason: ready
+        ? ProviderAvailabilityReason.Available
+        : ProviderAvailabilityReason.AccountNotReady,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      reason: ProviderAvailabilityReason.HealthReadFailed,
+      error: errorMessage(error),
+    };
+  }
+}
 
 /** Physical account and real model, independent of editable credential IDs/aliases. */
 export function antigravityQuotaObjectName(

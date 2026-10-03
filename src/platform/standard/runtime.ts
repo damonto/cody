@@ -224,7 +224,10 @@ export async function createRuntime(
       "oauth",
       (ctx) => new ProviderOAuthAccountCore(ctx, env),
       (call): OAuthAccountObject => ({
-        run: (...args) => call((core) => core.run(...args)),
+        run: (command) =>
+          call((core) => core.run(command), {
+            catchUpAlarms: command.action !== "readiness",
+          }),
       }),
       durable,
     ),

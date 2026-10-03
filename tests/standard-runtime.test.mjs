@@ -268,11 +268,15 @@ test("registered object alarms catch up on access and preserve rescheduling", as
     (call) => ({
       start: () => call((core) => core.start()),
       read: () => call((core) => core.read()),
+      peek: () => call((core) => core.read(), { catchUpAlarms: false }),
     }),
     { backend, alarms: true },
   );
   const stub = namespace.getByName("one");
   await stub.start();
+  assert.equal(await stub.peek(), 0);
+  await tasks.drain();
+  assert.equal(await backend.getAlarm("alarm", "one"), 100);
   assert.equal(await stub.read(), 1);
   await tasks.drain();
   assert.equal(await backend.getAlarm("alarm", "one"), 200);

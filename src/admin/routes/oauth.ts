@@ -484,6 +484,22 @@ export const oauthRoutes = new Hono<AdminContext>()
     },
   )
   .post(
+    "/provider-accounts/:ref/retry-project",
+    validate("param", accountParam),
+    validate("json", z.strictObject({})),
+    async (c) => {
+      const ref = c.req.valid("param").ref;
+      const result = await reply(
+        (
+          await checkedAccount(c.env, ref, undefined, ProviderType.Antigravity)
+        ).run({ action: "retry_project" }),
+        accountViewSchema,
+      );
+      await audit(c.env, c.get("actor"), `antigravity_project_retry:${ref}`);
+      return c.json(result);
+    },
+  )
+  .post(
     "/provider-accounts/:ref/disconnect",
     validate("param", accountParam),
     validate("json", z.strictObject({})),

@@ -1,7 +1,7 @@
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 
 import { useState } from "react";
-import { MoreHorizontal, RefreshCw, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import type { CodexProviderConfig } from "../../../../src/config/types";
 import type {
   AccountHealth,
@@ -10,19 +10,9 @@ import type {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { AccountCardFooter } from "@/features/oauth-accounts/account-card-footer";
 import { daysUntil, expiryTone, planLabel, relative, toneText } from "./plan";
 import { QuotaWindow } from "./quota-window";
 import { ResetCreditsDialog } from "./reset-credits";
@@ -188,18 +178,19 @@ export function AccountCard({
           </p>
         )}
       </CardContent>
-      <CardFooter className="flex-wrap justify-end gap-2 border-t pt-4">
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={
-            account?.status !== OAuthAccountViewStatus.Ready || refreshing
-          }
-          onClick={onRefresh}
-        >
-          <RefreshCw />
-          Refresh
-        </Button>
+      <AccountCardFooter
+        title={title}
+        index={index}
+        count={count}
+        pending={pending}
+        refreshDisabled={
+          account?.status !== OAuthAccountViewStatus.Ready || refreshing
+        }
+        onRefresh={onRefresh}
+        onConfigure={onConfigure}
+        onMove={onMove}
+        onRemove={onRemove}
+      >
         <Button
           size="sm"
           variant="outline"
@@ -209,44 +200,7 @@ export function AccountCard({
           <RotateCcw />
           Reset{resets ? ` (${resets})` : ""}
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending}
-          onClick={onConfigure}
-        >
-          Manage
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              disabled={pending}
-              aria-label={`Account actions for ${title}`}
-            >
-              <MoreHorizontal />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              disabled={index === 0}
-              onSelect={() => onMove(-1)}
-            >
-              Move up
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={index === count - 1}
-              onSelect={() => onMove(1)}
-            >
-              Move down
-            </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-              Remove account
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </CardFooter>
+      </AccountCardFooter>
       {account && (
         <ResetCreditsDialog
           key={account.account_ref}

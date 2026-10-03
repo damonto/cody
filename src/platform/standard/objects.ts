@@ -621,6 +621,7 @@ interface NamespaceRegistration {
 /** A typed call boundary: the stub exposes only the methods it actually binds. */
 export type ObjectInvoker<T> = <R>(
   operation: (instance: T) => R | Promise<R>,
+  options?: { readonly catchUpAlarms?: boolean },
 ) => Promise<R>;
 
 function hasAlarm(instance: object): instance is AlarmHandler {
@@ -681,7 +682,7 @@ export class ObjectRuntime {
     });
     return {
       getByName: (name) =>
-        bind((operation) =>
+        bind((operation, invocation) =>
           this.invoke(
             namespace,
             name,
@@ -689,7 +690,8 @@ export class ObjectRuntime {
             options.backend,
             async (instance, storage) => {
               // Catch up overdue alarms on access on deployments with infrequent cron.
-              if (options.alarms) await this.catchUpAlarm(instance, storage);
+              if (options.alarms && invocation?.catchUpAlarms !== false)
+                await this.catchUpAlarm(instance, storage);
               return operation(instance);
             },
           ),

@@ -149,7 +149,7 @@ export function Authorization({
               }
               onClick={() => refresh.mutate({ ref: accountRef, kind: "quota" })}
             >
-              Refresh quota
+              Refresh
             </Button>
             <Button
               type="button"

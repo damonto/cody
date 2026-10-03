@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { connectionSchema } from "../../../../src/providers/oauth/schema";
 import { AccountQuota } from "./quota";
+import { ProjectInitialization } from "./project-initialization";
+import { AccountError } from "./account-error";
 import {
   useAuthorization,
   type AuthorizationOptions,
@@ -124,7 +126,7 @@ export function Authorization({
               }
               onClick={() => refresh.mutate({ ref: accountRef, kind: "quota" })}
             >
-              Refresh quota
+              Refresh
             </Button>
             <Button
               type="button"
@@ -215,8 +217,7 @@ export function Authorization({
           )}
           {authorization.status === OAuthSessionStatus.Initializing && (
             <p className="text-xs">
-              Tokens are saved. Discovering the account and initializing its
-              project…
+              Tokens are saved. Verifying the Google account…
             </p>
           )}
           {authorization.error && (
@@ -277,12 +278,12 @@ export function Authorization({
           {view.error}
         </p>
       )}
-      {view?.models_error && (
-        <p role="alert" className="text-xs text-destructive">
-          Model discovery: {view.models_error}
-        </p>
-      )}
-      {view && <AccountQuota account={view} />}
+      <AccountError
+        error={view?.models_error}
+        verification={view?.models_verification}
+      />
+      {view && <AccountQuota quota={view.quota} />}
+      {view && <ProjectInitialization account={view} />}
       <AlertDialog open={disconnect} onOpenChange={setDisconnect}>
         <AlertDialogContent>
           <AlertDialogHeader>

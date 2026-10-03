@@ -64,7 +64,14 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     proxy_configuration: proxyConfigurationSchema,
   }),
   z.strictObject({
-    action: z.enum(["view", "models", "disconnect", "reset_credits"]),
+    action: z.enum([
+      "view",
+      "readiness",
+      "models",
+      "disconnect",
+      "reset_credits",
+      "retry_project",
+    ]),
   }),
   z.strictObject({
     action: z.literal("consume_reset"),

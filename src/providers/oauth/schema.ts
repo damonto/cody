@@ -8,6 +8,7 @@ import {
 import { HealthCooldownReason } from "../../gateway/health/values.ts";
 
 import { z } from "zod";
+import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { identifierSchema, proxyGroupSchema } from "../../config/schema.ts";
 
 export const connectionSchema = z.object({
@@ -102,6 +103,7 @@ export const quotaSnapshotSchema = z.object({
   subscription: subscriptionSchema.nullable(),
   updated_at: z.number().nullable(),
   last_error: z.string().nullable(),
+  verification: z.array(antigravityVerificationSchema).optional(),
   stale: z.boolean(),
   limit_reached: z.boolean().optional(),
   credits_balance: z
@@ -118,6 +120,11 @@ export const quotaSnapshotSchema = z.object({
       monthly_limit: z.number().nullable(),
       included_used: z.number().nullable(),
       billing_period_end: z.string().nullable(),
+      subscription_error: z.string().nullable().optional(),
+      monthly_error: z.string().nullable().optional(),
+      settings_error: z.string().nullable().optional(),
+      allow_access: z.boolean().nullable().optional(),
+      prepaid_balance: z.number().nonnegative().nullable().optional(),
       products: z.array(
         z.object({ product: z.string(), used_percent: z.number().nullable() }),
       ),
@@ -157,6 +164,15 @@ export const accountViewSchema = z.object({
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
   project_id: z.string().nullable(),
+  project_initialization: z
+    .object({
+      status: z.enum(["pending", "error"]),
+      next_retry_at: z.number().nullable(),
+      error: z.string().nullable(),
+      verification: z.array(antigravityVerificationSchema).optional(),
+    })
+    .nullable()
+    .optional(),
   xai: z
     .object({ subject: z.string().min(1) })
     .nullable()
@@ -177,9 +193,12 @@ export const accountViewSchema = z.object({
   models: z.array(modelSchema),
   models_updated_at: z.number().nullable(),
   models_error: z.string().nullable(),
+  models_verification: z.array(antigravityVerificationSchema).optional(),
   quota: quotaSnapshotSchema,
 });
 export type AccountView = z.output<typeof accountViewSchema>;
+/** Minimal credential readiness; never includes account metadata or tokens. */
+export const accountReadinessSchema = z.object({ ready: z.boolean() });
 export const sessionStatusSchema = z.enum(OAuthSessionStatus);
 export const sessionViewSchema = z.object({
   id: z.string(),

@@ -1,6 +1,6 @@
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
+import { canUseXaiUnreportedQuota } from "../../../../src/shared/xai-quota";
 
-import { MoreHorizontal, RefreshCw } from "lucide-react";
 import type { XaiProviderConfig } from "../../../../src/config/types";
 import type {
   AccountHealth,
@@ -8,20 +8,9 @@ import type {
 } from "../../../../src/providers/oauth/schema";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { AccountCardFooter } from "@/features/oauth-accounts/account-card-footer";
 import { daysUntil, expiryTone, relative, toneText } from "../codex/plan";
 import { QuotaWindow } from "../codex/quota-window";
 
@@ -69,16 +58,30 @@ export function AccountCard({
 }) {
   const title = account?.email ?? `xAI account ${index + 1}`;
   const baseBadge = healthBadge(credential, account, health, now);
-  const badge =
-    baseBadge.tone === "ok" && account?.quota.stale
-      ? {
-          text: "Quota unknown",
-          tone: "muted" as const,
-          title: "Refresh quota before routing",
-        }
-      : baseBadge;
   const quota = account?.quota;
-  const plan = quota?.subscription?.tier_id ?? null;
+  const unreportedQuota = canUseXaiUnreportedQuota(quota, now);
+  const quotaUnknown =
+    !unreportedQuota &&
+    (!quota ||
+      quota.stale ||
+      !quota.groups.length ||
+      quota.groups.some(
+        (group) =>
+          !group.buckets.length ||
+          group.buckets.some((bucket) => bucket.used_percent == null),
+      ));
+  const badge =
+    baseBadge.tone === "ok" && quota?.xai_billing?.allow_access === false
+      ? { text: "Access restricted", tone: "warn" as const }
+      : baseBadge.tone === "ok" && quotaUnknown
+        ? {
+            text: "Quota unknown",
+            tone: "muted" as const,
+            title: "Subscription quota must be known before routing",
+          }
+        : baseBadge;
+  const plan =
+    quota?.subscription?.tier_name ?? quota?.subscription?.tier_id ?? null;
   const days = daysUntil(quota?.subscription?.active_until ?? null, now);
   const credits = quota?.extra_usage;
   const multipleGroups = (quota?.groups.length ?? 0) > 1;
@@ -137,7 +140,16 @@ export function AccountCard({
             {block.until ? ` · back ${relative(block.until, now)}` : ""}
           </p>
         ))}
-        {quota && !quota.groups.length && (
+        {unreportedQuota &&
+          (!quota?.groups.length ||
+            quota.groups.some((group) =>
+              group.buckets.some((bucket) => bucket.used_percent == null),
+            )) && (
+            <p className="text-xs text-muted-foreground">
+              Remaining quota is not reported. Limits are enforced by xAI.
+            </p>
+          )}
+        {!unreportedQuota && quota && !quota.groups.length && (
           <p className="text-xs text-muted-foreground">
             Quota unknown. Refresh after authorization is ready.
           </p>
@@ -152,14 +164,18 @@ export function AccountCard({
                 )}
               </p>
             )}
-            {group.buckets.map((bucket) => (
-              <QuotaWindow
-                key={bucket.id}
-                group={group.label}
-                bucket={bucket}
-                now={now}
-              />
-            ))}
+            {group.buckets
+              .filter(
+                (bucket) => !unreportedQuota || bucket.used_percent != null,
+              )
+              .map((bucket) => (
+                <QuotaWindow
+                  key={bucket.id}
+                  group={group.label}
+                  bucket={bucket}
+                  now={now}
+                />
+              ))}
           </div>
         ))}
         {quota?.xai_billing?.products.map((product, index) => (
@@ -217,61 +233,41 @@ export function AccountCard({
         </div>
         {(staleError ?? quota?.last_error) && (
           <p role="alert" className="text-xs text-destructive">
-            {staleError ?? quota?.last_error} · Last successful data is
-            retained.
+            {staleError ?? quota?.last_error} ·{" "}
+            {quota?.updated_at != null
+              ? "Last successful data is retained."
+              : "No quota data has been fetched yet."}
+          </p>
+        )}
+        {quota?.xai_billing?.subscription_error && (
+          <p role="alert" className="text-xs text-destructive">
+            Subscription quota: {quota.xai_billing.subscription_error}
+          </p>
+        )}
+        {quota?.xai_billing?.monthly_error && (
+          <p role="alert" className="text-xs text-destructive">
+            Monthly billing: {quota.xai_billing.monthly_error}
+          </p>
+        )}
+        {quota?.xai_billing?.settings_error && (
+          <p role="alert" className="text-xs text-destructive">
+            Account settings: {quota.xai_billing.settings_error}
           </p>
         )}
       </CardContent>
-      <CardFooter className="flex-wrap justify-end gap-2 border-t pt-4">
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={
-            account?.status !== OAuthAccountViewStatus.Ready || refreshing
-          }
-          onClick={onRefresh}
-        >
-          <RefreshCw />
-          Refresh
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending}
-          onClick={onConfigure}
-        >
-          Manage
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              disabled={pending}
-              aria-label={`Account actions for ${title}`}
-            >
-              <MoreHorizontal />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              disabled={index === 0}
-              onSelect={() => onMove(-1)}
-            >
-              Move up
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={index === count - 1}
-              onSelect={() => onMove(1)}
-            >
-              Move down
-            </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-              Remove account
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </CardFooter>
+      <AccountCardFooter
+        title={title}
+        index={index}
+        count={count}
+        pending={pending}
+        refreshDisabled={
+          account?.status !== OAuthAccountViewStatus.Ready || refreshing
+        }
+        onRefresh={onRefresh}
+        onConfigure={onConfigure}
+        onMove={onMove}
+        onRemove={onRemove}
+      />
     </Card>
   );
 }

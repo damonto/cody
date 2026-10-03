@@ -80,6 +80,10 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
   );
   const sessions = new Map<string, SessionView>();
   const controls = {
+    delayProject: false,
+    projectRetries: 0,
+    modelCalls: 0,
+    accountListCalls: 0,
     failCallback: false,
     failQuota: false,
     quotaCalls: 0,
@@ -140,6 +144,17 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
           return;
         }
         const ready = account(session.account_ref, session.account.provider_id);
+        if (controls.delayProject) {
+          ready.status = "initializing";
+          ready.project_id = null;
+          ready.models = [];
+          ready.models_updated_at = null;
+          ready.project_initialization = {
+            status: "pending",
+            next_retry_at: Date.now() + 5000,
+            error: null,
+          };
+        }
         accounts.set(ready.account_ref, ready);
         session.account = ready;
         session.status = "complete";
@@ -162,6 +177,7 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
         return;
       }
       if (url.pathname === "/console/api/provider-accounts") {
+        controls.accountListCalls++;
         await route.fulfill({
           json: {
             items: [...accounts.values()].filter(
@@ -217,8 +233,17 @@ async function mockOAuth(page: Page, initial: AccountView[] = []) {
         value.status = "disconnected";
       }
       if (url.pathname.endsWith("/models")) {
+        controls.modelCalls++;
         value.models = [model];
         value.models_updated_at = Date.now();
+      }
+      if (url.pathname.endsWith("/retry-project")) {
+        controls.projectRetries++;
+        value.project_initialization = {
+          status: "pending",
+          next_retry_at: Date.now() + 5000,
+          error: null,
+        };
       }
       await route.fulfill({ json: value });
     },
@@ -435,6 +460,248 @@ test("Antigravity authorizes without entering provider IDs, credential IDs or OA
     version: 1,
   });
   expect(clientRequests).toEqual([]);
+});
+
+test("accounts can be saved while project setup continues and become ready through polling", async ({
+  page,
+}) => {
+  await mockApi(page, configured([]));
+  const mock = await mockOAuth(page);
+  mock.controls.delayProject = true;
+  await page.goto("/console/providers/antigravity");
+  await page
+    .getByRole("button", { name: "Add Google account", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await authorize(dialog);
+  await expect(
+    dialog.getByText(/Project setup continues in the background/),
+  ).toBeVisible();
+  expect(mock.controls.modelCalls).toBe(0);
+  await dialog
+    .getByRole("button", { name: "Save account", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText(/Project setup continues in the background/),
+  ).toBeVisible();
+  const pending = [...mock.accounts.values()][0];
+  Object.assign(pending, account(pending.account_ref, pending.provider_id), {
+    project_initialization: null,
+  });
+  await expect(
+    page.getByText(/Project setup continues in the background/),
+  ).not.toBeVisible({ timeout: 10000 });
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true }),
+  ).toBeEnabled();
+  expect(mock.controls.callbackCalls).toBe(1);
+});
+
+test("project setup can be retried from a saved account without another Google authorization", async ({
+  page,
+}) => {
+  const pending = account();
+  pending.status = "initializing";
+  pending.project_id = null;
+  pending.project_initialization = {
+    status: "error",
+    next_retry_at: null,
+    error:
+      "Project setup is still unavailable after ten minutes; retry project initialization",
+  };
+  await mockApi(page, configured([pending]));
+  const mock = await mockOAuth(page, [pending]);
+  await page.goto("/console/providers/antigravity");
+  await page
+    .getByRole("button", { name: "Retry project initialization", exact: true })
+    .click();
+  await expect(
+    page.getByText(/Project setup continues in the background/),
+  ).toBeVisible();
+  expect(mock.controls.projectRetries).toBe(1);
+  expect(mock.controls.starts).toHaveLength(0);
+});
+
+test("project status polling does not repeatedly refresh ready account quotas", async ({
+  page,
+}) => {
+  const ready = account();
+  const pending = account();
+  pending.status = "initializing";
+  pending.project_id = null;
+  pending.project_initialization = {
+    status: "pending",
+    next_retry_at: Date.now() + 5000,
+    error: null,
+  };
+  await mockApi(page, configured([ready, pending]));
+  const mock = await mockOAuth(page, [ready, pending]);
+  await page.goto("/console/providers/antigravity");
+  await expect.poll(() => mock.controls.quotaCalls).toBe(1);
+  const reads = mock.controls.accountListCalls;
+  await expect
+    .poll(() => mock.controls.accountListCalls, { timeout: 10000 })
+    .toBeGreaterThan(reads);
+  expect(mock.controls.quotaCalls).toBe(1);
+  Object.assign(
+    mock.accounts.get(pending.account_ref)!,
+    account(pending.account_ref, pending.provider_id),
+    { project_initialization: null },
+  );
+  await expect.poll(() => mock.controls.quotaCalls, { timeout: 10000 }).toBe(2);
+});
+
+test("age and account verification links are available on the account card and authorization dialog", async ({
+  page,
+}) => {
+  const pending = account();
+  const challenge =
+    "https://accounts.google.com/signin/continue?authuser=1&state=challenge%2Bvalue";
+  pending.status = "initializing";
+  pending.project_id = null;
+  pending.project_initialization = {
+    status: "error",
+    next_retry_at: null,
+    error: "Account verification is required.",
+    verification: [
+      {
+        reason: "RESTRICTED_AGE",
+        message: "Verify your age to use Antigravity.",
+        url: "https://myaccount.google.com/age-verification",
+        learn_more_url: null,
+      },
+      {
+        reason: "VALIDATION_REQUIRED",
+        message: "Complete Google's account verification.",
+        url: challenge,
+        learn_more_url: "https://support.google.com/accounts?p=al_alert",
+      },
+    ],
+  };
+  await mockApi(page, configured([pending]));
+  const mock = await mockOAuth(page, [pending]);
+  await page.goto("/console/providers/antigravity");
+  await expect(
+    page.getByRole("link", { name: "Verify age", exact: true }),
+  ).toHaveAttribute("href", "https://myaccount.google.com/age-verification");
+  await expect(
+    page.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveAttribute("href", challenge);
+  await expect(
+    page.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveAttribute("rel", "noopener noreferrer");
+  await page.getByRole("button", { name: "Manage", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("Complete Google's account verification."),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveAttribute("href", challenge);
+  await expect(
+    dialog.getByRole("link", { name: "Learn more", exact: true }),
+  ).toHaveAttribute("href", "https://support.google.com/accounts?p=al_alert");
+  await dialog
+    .getByRole("button", { name: "Retry project initialization", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveCount(0);
+  expect(mock.controls.projectRetries).toBe(1);
+  expect(mock.controls.starts).toHaveLength(0);
+});
+
+test("quota verification shows the Google action and credit balances preserve zero and large integers", async ({
+  page,
+}) => {
+  const ready = account();
+  const challenge =
+    "https://accounts.google.com/signin/continue?state=quota-challenge";
+  ready.quota = {
+    ...ready.quota,
+    last_error:
+      "retrieveUserQuotaSummary failed (HTTP 503) Verify your account to continue.",
+    verification: [
+      {
+        reason: "VALIDATION_REQUIRED",
+        message: "Verify your account to continue.",
+        url: challenge,
+        learn_more_url: null,
+      },
+    ],
+    subscription: {
+      tier_id: "pro",
+      tier_name: "Pro",
+      credits: [
+        { type: "GOOGLE_ONE_AI", amount: "0" },
+        { type: "Bonus credits", amount: "9007199254740993" },
+      ],
+    },
+  };
+  await mockApi(page, configured([ready]));
+  await mockOAuth(page, [ready]);
+  await page.route(
+    `**/console/api/provider-accounts/${ready.account_ref}/quota`,
+    (route) => route.fulfill({ json: ready }),
+  );
+  await page.goto("/console/providers/antigravity");
+  await expect(
+    page.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveAttribute("href", challenge);
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "retrieveUserQuotaSummary failed (HTTP 503)" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Verify your account to continue." }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText("Google One AI credits: 0", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Bonus credits: 9007199254740993", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Credit spending is disabled.")).toBeVisible();
+  await expect(page.getByText(/Available credits:.*Unknown/)).toHaveCount(0);
+  await page.route(
+    `**/console/api/provider-accounts/${ready.account_ref}/quota`,
+    (route) =>
+      route.fulfill({
+        status: 503,
+        json: { error: "Quota refresh temporarily unavailable" },
+      }),
+  );
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Quota refresh temporarily unavailable" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Verify your account to continue." }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveAttribute("href", challenge);
+  ready.quota.verification = undefined;
+  ready.quota.last_error = null;
+  ready.quota.subscription!.credits = [];
+  await page.route(
+    `**/console/api/provider-accounts/${ready.account_ref}/quota`,
+    (route) => route.fulfill({ json: ready }),
+  );
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Verify account", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Credit spending is disabled.")).toHaveCount(0);
 });
 
 test("settings save before the first account and subsequent authorization inherits the selected proxy", async ({
@@ -887,20 +1154,16 @@ test("quota refresh failures preserve last success and can be retried", async ({
   await mockApi(page, configured([ready]));
   const mock = await mockOAuth(page, [ready]);
   await page.goto("/console/providers/antigravity");
-  await expect(page.getByText("75% remaining", { exact: true })).toBeVisible();
+  await expect(page.getByText("75% left", { exact: true })).toBeVisible();
   mock.controls.failQuota = true;
-  await page
-    .getByRole("button", { name: "Refresh all quotas", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Refresh all", exact: true }).click();
   await expect(
     page.getByText(/Quota refresh temporarily unavailable/),
   ).toBeVisible();
-  await expect(page.getByText("75% remaining", { exact: true })).toBeVisible();
+  await expect(page.getByText("75% left", { exact: true })).toBeVisible();
   await expect(page.getByText("Stale", { exact: true })).toBeVisible();
   mock.controls.failQuota = false;
-  await page
-    .getByRole("button", { name: "Refresh quota", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByText("Stale", { exact: true })).toHaveCount(0);
 });
 
@@ -912,7 +1175,7 @@ test("quotas refresh only on demand, including after focus and reconnect", async
   const mock = await mockOAuth(page, [ready]);
   await page.clock.install();
   await page.goto("/console/providers/antigravity");
-  await expect(page.getByText("75% remaining", { exact: true })).toBeVisible();
+  await expect(page.getByText("75% left", { exact: true })).toBeVisible();
   const initial = mock.controls.quotaCalls;
   await page.clock.fastForward(300001);
   expect(mock.controls.quotaCalls).toBe(initial);
@@ -928,9 +1191,7 @@ test("quotas refresh only on demand, including after focus and reconnect", async
   });
   await page.clock.fastForward(300001);
   expect(mock.controls.quotaCalls).toBe(initial);
-  await page
-    .getByRole("button", { name: "Refresh all quotas", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Refresh all", exact: true }).click();
   await expect.poll(() => mock.controls.quotaCalls).toBe(initial + 1);
 });
 
@@ -1001,16 +1262,14 @@ test("a slow bulk quota refresh cannot restore an account disconnected in the ed
   await mockApi(page, configured([ready]));
   const mock = await mockOAuth(page, [ready]);
   await page.goto("/console/providers/antigravity");
-  await expect(page.getByText("75% remaining", { exact: true })).toBeVisible();
+  await expect(page.getByText("75% left", { exact: true })).toBeVisible();
   const oldSnapshot = structuredClone(mock.accounts.get(ready.account_ref));
   const delayed = deferred<Route>();
   await page.route(
     `**/console/api/provider-accounts/${ready.account_ref}/quota`,
     (route) => delayed.resolve(route),
   );
-  await page
-    .getByRole("button", { name: "Refresh all quotas", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Refresh all", exact: true }).click();
   const pending = await delayed.promise;
   await page.getByRole("button", { name: "Manage", exact: true }).click();
   const dialog = page.getByRole("dialog");
@@ -1036,6 +1295,6 @@ test("a slow bulk quota refresh cannot restore an account disconnected in the ed
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByText("disconnected", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Refresh quota", exact: true }),
+    page.getByRole("button", { name: "Refresh", exact: true }),
   ).toBeDisabled();
 });

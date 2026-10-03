@@ -8,7 +8,9 @@ import {
 } from "../../../../src/shared/concurrency";
 import type { AccountView } from "../../../../src/providers/oauth/schema";
 import type { CodexProviderConfig } from "../../../../src/config/types";
-import { Empty, ErrorNotice, Loading } from "@/components/common";
+import { Empty, ErrorNotice } from "@/components/common";
+import { AccountCardGrid } from "@/features/oauth-accounts/account-card-grid";
+import { AccountCardsSkeleton } from "@/features/oauth-accounts/account-cards-skeleton";
 import { Button } from "@/components/ui/button";
 import {
   accountHealthOptions,
@@ -115,7 +117,7 @@ export function CodexAccounts({
           onClick={() => refresh.mutate(undefined)}
         >
           <RefreshCw />
-          Refresh all quotas
+          Refresh all
         </Button>
         <Button size="sm" disabled={pending} onClick={onAdd}>
           <Plus />
@@ -123,7 +125,6 @@ export function CodexAccounts({
         </Button>
       </div>
       <div className="space-y-4">
-        {!!refs.length && query.isPending && <Loading />}
         {query.error && (
           <ErrorNotice error={query.error} retry={() => void query.refetch()} />
         )}
@@ -140,32 +141,36 @@ export function CodexAccounts({
             requests.
           </Empty>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-            {provider.credentials.map((credential, index) => (
-              <AccountCard
-                key={credential.id}
-                credential={credential}
-                index={index}
-                count={provider.credentials.length}
-                account={accounts.get(credential.auth.account_ref)}
-                health={
-                  cooldowns.get(credential.id)?.account_ref ===
-                  credential.auth.account_ref
-                    ? cooldowns.get(credential.id)
-                    : undefined
-                }
-                now={now}
-                staleError={query.error?.message}
-                pending={pending}
-                refreshing={busy}
-                onRefresh={() => refresh.mutate(credential.auth.account_ref)}
-                onConfigure={() => onConfigure(credential.id)}
-                onMove={(direction) => onMove(credential.id, direction)}
-                onRemove={() => onRemove(credential.id)}
-                onToggle={(enabled) => onToggle(credential.id, !enabled)}
-              />
-            ))}
-          </div>
+          <AccountCardGrid>
+            {query.isPending ? (
+              <AccountCardsSkeleton credentials={provider.credentials} />
+            ) : (
+              provider.credentials.map((credential, index) => (
+                <AccountCard
+                  key={credential.id}
+                  credential={credential}
+                  index={index}
+                  count={provider.credentials.length}
+                  account={accounts.get(credential.auth.account_ref)}
+                  health={
+                    cooldowns.get(credential.id)?.account_ref ===
+                    credential.auth.account_ref
+                      ? cooldowns.get(credential.id)
+                      : undefined
+                  }
+                  now={now}
+                  staleError={query.error?.message}
+                  pending={pending}
+                  refreshing={busy}
+                  onRefresh={() => refresh.mutate(credential.auth.account_ref)}
+                  onConfigure={() => onConfigure(credential.id)}
+                  onMove={(direction) => onMove(credential.id, direction)}
+                  onRemove={() => onRemove(credential.id)}
+                  onToggle={(enabled) => onToggle(credential.id, !enabled)}
+                />
+              ))
+            )}
+          </AccountCardGrid>
         )}
       </div>
     </section>

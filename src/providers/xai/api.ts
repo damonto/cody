@@ -2,8 +2,13 @@ import { decodeJwt } from "jose";
 import { z } from "zod";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
-import { OAuthError, tokenSchema } from "../oauth/schema.ts";
-import { parseBilling } from "./billing.ts";
+import {
+  OAuthError,
+  tokenSchema,
+  type QuotaSnapshot,
+} from "../oauth/schema.ts";
+import { billingQuota, parseBilling } from "./billing.ts";
+import { parseSettings, xaiSubscription } from "./subscription.ts";
 
 export const XAI_BASE = "https://cli-chat-proxy.grok.com/v1";
 export const XAI_DISCOVERY =
@@ -233,13 +238,47 @@ export class XaiClient {
     }
     return tokens;
   }
-  async quota(token: string, subject: string) {
+  async quota(token: string, subject: string): Promise<QuotaSnapshot> {
     const headers = xaiHeaders(token, subject);
-    const billing = await this.json(
-      `${XAI_BASE}/billing?format=credits`,
-      { headers },
-      5000,
+    const requestBilling = async (path: string) =>
+      parseBilling(await this.json(`${XAI_BASE}${path}`, { headers }, 5000));
+    const [credits, monthly, settings] = await Promise.allSettled([
+      requestBilling("/billing?format=credits"),
+      requestBilling("/billing"),
+      this.json(`${XAI_BASE}/settings`, { headers }, 5000).then(parseSettings),
+    ]);
+    const accountSettings =
+      settings.status === "fulfilled" ? settings.value : null;
+    const subscription = xaiSubscription(token, subject, accountSettings);
+    if (
+      credits.status === "rejected" &&
+      monthly.status === "rejected" &&
+      !subscription
+    )
+      throw credits.reason;
+    const unauthorized = [credits, monthly, settings].some(
+      (result) =>
+        result.status === "rejected" &&
+        result.reason instanceof OAuthError &&
+        (result.reason.status === 401 ||
+          (result === settings && result.reason.status === 403)),
     );
-    return parseBilling(billing);
+    const errorMessage = (result: PromiseSettledResult<unknown>) =>
+      result.status === "fulfilled"
+        ? null
+        : result.reason instanceof OAuthError
+          ? result.reason.message
+          : "xAI billing request failed";
+    return billingQuota({
+      credits: credits.status === "fulfilled" ? credits.value : null,
+      monthly: monthly.status === "fulfilled" ? monthly.value : null,
+      subscriptionError: errorMessage(credits),
+      monthlyError: errorMessage(monthly),
+      subscription,
+      settingsError: errorMessage(settings),
+      allowAccess: unauthorized
+        ? false
+        : (accountSettings?.allow_access ?? null),
+    });
   }
 }

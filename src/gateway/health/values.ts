@@ -26,6 +26,7 @@ export const ProviderAvailabilityReason = {
   Available: "available",
   Cooling: "cooling",
   HealthReadFailed: "health_read_failed",
+  AccountNotReady: "account_not_ready",
 } as const;
 
 export type ProviderAvailabilityReason =

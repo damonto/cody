@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { readBodyWithinLimit } from "../../gateway/http/body.ts";
+import {
+  BodyTooLargeError,
+  readBodyWithinLimit,
+} from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import { logWarn } from "../../shared/log.ts";
 import {
@@ -12,6 +15,7 @@ import {
   ANTIGRAVITY_FALLBACK_VERSION,
   antigravityUserAgent,
 } from "./version.ts";
+import { rpcVerificationError, tierVerificationError } from "./verification.ts";
 
 export const ANTIGRAVITY_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -64,21 +68,63 @@ function positive(value: unknown): number | null {
 export function projectId(value: unknown): string | null {
   const data = object(value);
   for (const key of ["cloudaicompanionProject", "projectId", "project"]) {
-    const id = str(data[key]) ?? str(object(data[key]).id);
+    const id = (str(data[key]) ?? str(object(data[key]).id))?.trim();
     if (id) return id;
   }
   return null;
 }
-export function defaultTier(value: unknown): string {
+function onboardingChoice(value: unknown) {
   const data = object(value);
   const tiers = Array.isArray(data.allowedTiers)
     ? data.allowedTiers.map(object)
     : [];
-  return (
-    str(tiers.find((tier) => tier.isDefault === true)?.id) ??
-    str(object(data.currentTier).id) ??
-    "free-tier"
-  );
+  const tier =
+    tiers.find((tier) => tier.isDefault === true && str(tier.id)) ??
+    object(data.currentTier);
+  const id = str(tier.id)?.trim() ?? "free-tier";
+  const ineligible = (
+    Array.isArray(data.ineligibleTiers) ? data.ineligibleTiers : []
+  )
+    .map(object)
+    .filter(
+      (entry) =>
+        (str(entry.tierId) ?? str(object(entry.tier).id))?.trim() === id ||
+        (tier.userDefinedCloudaicompanionProject === true &&
+          str(entry.tierId)?.trim() === "free-tier"),
+    );
+  return { tier, id, ineligible };
+}
+/** Report verification requirements before suggesting a user-managed project. */
+export function onboardingTier(value: unknown): string {
+  const { tier, id, ineligible } = onboardingChoice(value);
+  const verification = tierVerificationError(ineligible);
+  if (verification) throw verification;
+  const reasons = [
+    ...new Set(
+      ineligible
+        .map((entry) => entry.reasonCode)
+        .filter(
+          (reason): reason is string =>
+            typeof reason === "string" && /^[A-Z_]{1,64}$/.test(reason),
+        ),
+    ),
+  ];
+  const detail = reasons.length
+    ? ` Google eligibility: ${reasons.join(", ")}.`
+    : "";
+  if (tier.userDefinedCloudaicompanionProject === true)
+    throw new OAuthError(
+      `Google requires a user-managed Cloud project for this account; automatic project setup is unavailable.${detail}`,
+      403,
+      "project_required",
+    );
+  if (ineligible.length)
+    throw new OAuthError(
+      `Google reports this account is ineligible for project onboarding.${detail}`,
+      403,
+      "project_ineligible",
+    );
+  return id;
 }
 export function parseModels(value: unknown): AccountModel[] {
   const parsed = z
@@ -158,6 +204,14 @@ export function parseQuota(value: unknown): QuotaSnapshot["groups"] {
     };
   });
 }
+/** An omitted proto3 int64 is zero; keep strings exact and reject malformed values. */
+function creditAmount(value: unknown): number | string | null {
+  if (value == null) return "0";
+  if (typeof value === "number")
+    return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return value;
+  return null;
+}
 export function parseSubscription(
   value: unknown,
 ): QuotaSnapshot["subscription"] {
@@ -166,20 +220,20 @@ export function parseSubscription(
   const current = object(data.currentTier ?? data.current_tier);
   const tier = str(paid.id) ? paid : current;
   if (!str(tier.id) && !str(tier.name)) return null;
-  const credits = paid.availableCredits ?? paid.available_credits;
+  const credits = tier.availableCredits ?? tier.available_credits;
   return {
     tier_id: str(tier.id),
     tier_name: str(tier.name),
-    credits: (Array.isArray(credits) ? credits : []).map((value) => {
-      const credit = object(value);
-      const amount = credit.creditAmount ?? credit.credit_amount;
-      return {
-        type: str(credit.creditType ?? credit.credit_type),
-        amount:
-          typeof amount === "number" && Number.isFinite(amount)
-            ? amount
-            : str(amount),
-      };
+    credits: (Array.isArray(credits) ? credits : []).flatMap((value) => {
+      const parsed = objectSchema.safeParse(value);
+      if (!parsed.success) return [];
+      const credit = parsed.data;
+      return [
+        {
+          type: str(credit.creditType ?? credit.credit_type),
+          amount: creditAmount(credit.creditAmount ?? credit.credit_amount),
+        },
+      ];
     }),
   };
 }
@@ -195,24 +249,47 @@ export class AntigravityClient {
     url: string,
     init: RequestInit,
     operation: string,
+    timeoutMs = 15_000,
   ): Promise<unknown> {
     const deadline = new AbortController();
     const timer = setTimeout(
       () => deadline.abort(new Error("Antigravity operation timed out")),
-      15_000,
+      timeoutMs,
     );
     const signal = AbortSignal.any([this.signal, deadline.signal]);
     try {
-      const response = await this.send(
-        new Request(url, { ...init, signal, redirect: "manual" }),
-      );
-      const bytes = await readBodyWithinLimit(
-        response.body,
-        8 * 1024 * 1024,
-        response.headers.get("content-length"),
-        undefined,
-        signal,
-      );
+      let response: Response;
+      let bytes: Uint8Array;
+      try {
+        response = await this.send(
+          new Request(url, { ...init, signal, redirect: "manual" }),
+        );
+        bytes = await readBodyWithinLimit(
+          response.body,
+          8 * 1024 * 1024,
+          response.headers.get("content-length"),
+          undefined,
+          signal,
+        );
+      } catch (error) {
+        if (error instanceof BodyTooLargeError)
+          throw new OAuthError(
+            `${operation} returned an oversized response`,
+            502,
+            "invalid_response",
+          );
+        if (deadline.signal.aborted)
+          throw new OAuthError(
+            `${operation} timed out after ${timeoutMs / 1000} seconds`,
+            504,
+            "upstream_transport_error",
+          );
+        throw new OAuthError(
+          `${operation} could not reach Google; check the selected proxy and try again`,
+          503,
+          "upstream_transport_error",
+        );
+      }
       let data: unknown;
       try {
         data = JSON.parse(new TextDecoder().decode(bytes));
@@ -225,15 +302,17 @@ export class AntigravityClient {
       }
       if (!response.ok) {
         const upstreamError = object(data).error;
+        const verification = rpcVerificationError(upstreamError);
         logWarn("oauth.upstream.failed", {
           operation,
           status: response.status,
           url: url.split("?")[0],
-          upstream_error:
-            typeof upstreamError === "string"
-              ? upstreamError
-              : object(upstreamError).message,
+          // Error messages/details can contain account-specific challenge URLs.
+          verification_reasons: verification?.verification.map(
+            (item) => item.reason,
+          ),
         });
+        if (verification) throw verification;
         const code =
           object(data).error === "invalid_grant"
             ? "invalid_grant"
@@ -252,7 +331,7 @@ export class AntigravityClient {
     }
   }
   private async token(fields: Record<string, string>) {
-    const data = tokenResponse.parse(
+    const result = tokenResponse.safeParse(
       await this.json(
         "https://oauth2.googleapis.com/token",
         {
@@ -267,6 +346,13 @@ export class AntigravityClient {
         "Token exchange",
       ),
     );
+    if (!result.success)
+      throw new OAuthError(
+        "Token exchange returned an invalid response",
+        502,
+        "invalid_response",
+      );
+    const data = result.data;
     return {
       access_token: data.access_token,
       ...(data.refresh_token ? { refresh_token: data.refresh_token } : {}),
@@ -323,37 +409,64 @@ export class AntigravityClient {
       method,
     );
   }
-  load(token: string) {
-    return this.post(
+  async load(token: string) {
+    const result = await this.post(
       "loadCodeAssist",
       token,
       { metadata: { ideType: "ANTIGRAVITY" } },
       "https://cloudcode-pa.googleapis.com",
     );
+    if (!projectId(result)) {
+      const verification = tierVerificationError(
+        onboardingChoice(result).ineligible,
+      );
+      if (verification) throw verification;
+    }
+    return result;
   }
-  onboard(token: string, tier: string) {
-    return this.json(
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
-      {
-        method: "POST",
-        headers: {
-          accept: "*/*",
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-          "user-agent": `${antigravityUserAgent(this.version)} google-api-nodejs-client/10.3.0`,
-          "x-goog-api-client": ANTIGRAVITY_GOOG_API_CLIENT,
-        },
-        body: JSON.stringify({
-          tier_id: tier,
-          metadata: {
-            ide_type: "ANTIGRAVITY",
-            ide_name: "antigravity",
-            ide_version: this.version,
+  async onboard(token: string, tier: string) {
+    const result = object(
+      await this.json(
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+        {
+          method: "POST",
+          headers: {
+            accept: "*/*",
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            "user-agent": `${antigravityUserAgent(this.version)} google-api-nodejs-client/10.3.0`,
+            "x-goog-api-client": ANTIGRAVITY_GOOG_API_CLIENT,
           },
-        }),
-      },
-      "onboardUser",
+          body: JSON.stringify({
+            tier_id: tier,
+            metadata: {
+              ide_type: "ANTIGRAVITY",
+              ide_name: "antigravity",
+              ide_version: this.version,
+            },
+          }),
+        },
+        "onboardUser",
+        30_000,
+      ),
     );
+    // A completed Google operation can contain an error even over HTTP 200.
+    if (result.error != null) {
+      const verification = rpcVerificationError(result.error);
+      if (verification) throw verification;
+      const parsedCode = z.number().int().safeParse(object(result.error).code);
+      const code = parsedCode.success ? parsedCode.data : null;
+      logWarn("oauth.upstream.operation_failed", {
+        operation: "onboardUser",
+        code,
+      });
+      throw new OAuthError(
+        `onboardUser failed${code === null ? "" : ` (upstream code ${code})`}; retry initialization`,
+        502,
+        "upstream_operation_error",
+      );
+    }
+    return result;
   }
   models(token: string, project: string) {
     return this.post("fetchAvailableModels", token, { project });

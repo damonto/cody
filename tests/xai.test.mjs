@@ -5,12 +5,14 @@ import { editableConfigurationSchema } from "../src/config/schema.ts";
 import { translateRequest } from "../src/providers/xai/request.ts";
 import { convertResponse } from "../src/providers/xai/response.ts";
 import { openReasoning, sealReasoning } from "../src/providers/xai/replay.ts";
-import { parseBilling } from "../src/providers/xai/billing.ts";
+import { billingQuota, parseBilling } from "../src/providers/xai/billing.ts";
 import { quotaAvailability, xaiLimit } from "../src/providers/xai/limits.ts";
 import { inspectXaiResponse } from "../src/providers/xai/inspect.ts";
 import { officialOAuthUrl, XaiClient } from "../src/providers/xai/api.ts";
 import { prepareProviderRequest } from "../src/providers/index.ts";
 import { estimateInputTokens } from "../src/providers/xai/tokens.ts";
+const quotaFromBilling = (value) =>
+  billingQuota({ credits: parseBilling(value) });
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ref = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const scope = {
@@ -364,7 +366,7 @@ test("xAI incomplete is preserved and truncated streams never succeed", async ()
   assert.doesNotMatch(output, /message_stop/);
 });
 test("xAI billing separates subscription and paid eligibility, failing closed on unknown", () => {
-  const quota = parseBilling({
+  const quota = quotaFromBilling({
     credit_usage_percent: 20,
     current_period: {
       type: "weekly",
@@ -382,7 +384,11 @@ test("xAI billing separates subscription and paid eligibility, failing closed on
     quotaAvailability({ ...quota, stale: true }, scope.model).extra,
     false,
   );
-  assert.throws(() => parseBilling({ on_demand_cap: 100 }));
+  assert.equal(
+    quotaAvailability(quotaFromBilling({ on_demand_cap: 100 }), scope.model)
+      .subscription,
+    false,
+  );
   assert.equal(
     xaiLimit({ code: "rate_limit" }, new Headers(), scope.model),
     undefined,
@@ -788,7 +794,7 @@ test("xAI credits billing supports field aliases and keeps subscription periods 
     monthlyLimit: 50,
     billingPeriodEnd: "2030-02-01T00:00:00Z",
   };
-  const quota = parseBilling({ config: billing });
+  const quota = quotaFromBilling({ config: billing });
   assert.equal(quota.groups[0].buckets[0].window, "daily");
   assert.equal(quota.groups[0].buckets[0].used_percent, 30);
   assert.equal(quota.groups[0].buckets[0].reset_at, billing.currentPeriod.end);
@@ -796,33 +802,47 @@ test("xAI credits billing supports field aliases and keeps subscription periods 
   assert.equal(quota.xai_billing.included_used, 12);
   assert.equal(quota.extra_usage.used_credits, 90);
   assert.equal(quota.extra_usage.monthly_limit, 100);
-  assert.equal(parseBilling(billing).groups[0].buckets[0].used_percent, 30);
+  assert.equal(quotaFromBilling(billing).groups[0].buckets[0].used_percent, 30);
 });
 
-test("xAI billing rejects missing credits quota even with monthly or paid usage", () => {
-  for (const creditUsagePercent of [undefined, null, "", -1, "invalid"]) {
-    assert.throws(
-      () =>
-        parseBilling({
-          config: {
-            creditUsagePercent,
-            currentPeriod: { type: "weekly", end: "2030-02-01T00:00:00Z" },
-            monthlyLimit: { val: 100 },
-            used: { val: 10 },
-            onDemandCap: { val: 100 },
-            onDemandUsed: { val: 10 },
-          },
-        }),
-      { status: 503, code: "quota_unknown" },
-    );
+test("xAI billing preserves partial data without inventing subscription availability", () => {
+  for (const creditUsagePercent of [
+    undefined,
+    null,
+    "",
+    " ",
+    {},
+    -1,
+    "invalid",
+  ]) {
+    const quota = quotaFromBilling({
+      config: {
+        creditUsagePercent,
+        currentPeriod: { type: "weekly", end: "2030-02-01T00:00:00Z" },
+        monthlyLimit: { val: 100 },
+        used: { val: 10 },
+        onDemandCap: { val: 100 },
+        onDemandUsed: { val: 10 },
+      },
+    });
+    assert.equal(quota.groups[0].buckets[0].used_percent, null);
+    assert.equal(quota.groups[0].buckets[0].remaining_fraction, null);
+    assert.equal(quota.groups[0].buckets[0].reset_at, "2030-02-01T00:00:00Z");
+    assert.equal(quota.xai_billing.monthly_limit, 100);
+    assert.equal(quota.xai_billing.included_used, 10);
+    assert.equal(quota.last_error, null);
+    assert.equal(quota.stale, false);
+    assert.equal(quotaAvailability(quota, scope.model).subscription, false);
+    assert.equal(quotaAvailability(quota, scope.model).extra, false);
   }
   assert.equal(
-    parseBilling({ creditUsagePercent: 0 }).groups[0].buckets[0].used_percent,
+    quotaFromBilling({ creditUsagePercent: 0 }).groups[0].buckets[0]
+      .used_percent,
     0,
   );
 });
 
-test("xAI quota requests only credits billing and preserves failures", async () => {
+test("xAI quota reads both billing sources and preserves total failures", async () => {
   for (const status of [200, 401, 503]) {
     const requests = [];
     const client = new XaiClient(async (request) => {
@@ -841,12 +861,329 @@ test("xAI quota requests only credits billing and preserves failures", async () 
     } else {
       await assert.rejects(client.quota("token", "subject"), { status });
     }
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 3);
     assert.equal(
       requests[0].url,
       "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
     );
     assert.equal(requests[0].headers.get("authorization"), "Bearer token");
     assert.equal(requests[0].headers.get("x-userid"), "subject");
+    assert.equal(requests[1].url, "https://cli-chat-proxy.grok.com/v1/billing");
+    assert.equal(requests[1].headers.get("authorization"), "Bearer token");
+    assert.equal(requests[1].headers.get("x-userid"), "subject");
+  }
+});
+
+test("xAI merges billing evidence without replacing unknown weekly quota or resets", async () => {
+  const client = new XaiClient(
+    async (request) =>
+      Response.json({
+        config: new URL(request.url).search
+          ? {
+              currentPeriod: {
+                type: "USAGE_PERIOD_TYPE_WEEKLY",
+                end: "2030-01-08T00:00:00Z",
+              },
+              productUsage: [{ product: "grok-cli", usagePercent: 7 }],
+            }
+          : {
+              monthlyLimit: { val: "10000" },
+              used: { val: "12500" },
+              onDemandCap: { val: "5000" },
+              billingPeriodEnd: "2030-02-01T00:00:00Z",
+            },
+      }),
+    new AbortController().signal,
+  );
+  const quota = await client.quota("token", "subject");
+  assert.equal(quota.groups[0].buckets[0].used_percent, null);
+  assert.equal(quota.groups[0].buckets[0].reset_at, "2030-01-08T00:00:00Z");
+  assert.equal(quota.xai_billing.monthly_limit, 10000);
+  assert.equal(quota.xai_billing.included_used, 10000);
+  assert.equal(quota.xai_billing.billing_period_end, "2030-02-01T00:00:00Z");
+  assert.deepEqual(quota.xai_billing.products, [
+    { product: "grok-cli", used_percent: 7 },
+  ]);
+  assert.equal(quota.extra_usage.used_credits, 2500);
+  assert.equal(quotaAvailability(quota, scope.model).subscription, false);
+  assert.equal(quotaAvailability(quota, scope.model).extra, false);
+});
+
+test("xAI billing sources fail independently for HTTP and malformed responses", async () => {
+  for (const failed of ["credits", "monthly"]) {
+    for (const status of [200, 503]) {
+      const client = new XaiClient(async (request) => {
+        const credits = Boolean(new URL(request.url).search);
+        if (credits === (failed === "credits"))
+          return Response.json({}, { status });
+        return Response.json({
+          config: credits
+            ? { creditUsagePercent: 0, onDemandCap: 0 }
+            : {
+                creditUsagePercent: 5,
+                monthlyLimit: 100,
+                used: 10,
+                billingPeriodEnd: "2030-02-01T00:00:00Z",
+              },
+        });
+      }, new AbortController().signal);
+      const quota = await client.quota("token", "subject");
+      assert.equal(quota.last_error, null);
+      assert.equal(quota.stale, false);
+      assert.equal(typeof quota.updated_at, "number");
+      assert.equal(
+        quotaAvailability(quota, scope.model).subscription,
+        failed === "monthly",
+      );
+      assert.equal(quota.groups[0].buckets[0].reset_at, null);
+      assert.equal(
+        typeof quota.xai_billing[
+          failed === "credits" ? "subscription_error" : "monthly_error"
+        ],
+        "string",
+      );
+      if (failed === "credits")
+        assert.equal(quota.xai_billing.included_used, 10);
+    }
+  }
+});
+
+test("xAI billing validates usable evidence and preserves explicit zero amounts", () => {
+  for (const value of [{}, null, [], { config: {} }])
+    assert.throws(() => quotaFromBilling(value), { code: "quota_unknown" });
+  const quota = quotaFromBilling({
+    creditUsagePercent: 0,
+    monthlyLimit: {},
+    monthly_limit: { val: 0 },
+    used: { val: 0 },
+    onDemandCap: 0,
+    onDemandUsed: 0,
+  });
+  assert.equal(quota.groups[0].buckets[0].used_percent, 0);
+  assert.equal(quota.xai_billing.monthly_limit, 0);
+  assert.equal(quota.xai_billing.included_used, 0);
+  assert.equal(quota.extra_usage.is_enabled, false);
+  assert.equal(quota.extra_usage.used_credits, 0);
+});
+
+test("xAI credits evidence takes precedence over legacy paid balances", async () => {
+  for (const cap of [0, 100]) {
+    const client = new XaiClient(
+      async (request) =>
+        Response.json({
+          config: new URL(request.url).search
+            ? {
+                creditUsagePercent: 100,
+                monthlyLimit: 100,
+                used: 250,
+                onDemandCap: cap,
+              }
+            : {
+                monthlyLimit: 1000,
+                used: 10,
+                onDemandCap: 1000,
+                onDemandUsed: 0,
+              },
+        }),
+      new AbortController().signal,
+    );
+    const quota = await client.quota("token", "subject");
+    assert.equal(quota.xai_billing.monthly_limit, 100);
+    assert.equal(quota.xai_billing.included_used, 100);
+    assert.equal(quota.extra_usage.monthly_limit, cap);
+    assert.equal(quota.extra_usage.used_credits, 150);
+    assert.equal(quotaAvailability(quota, scope.model).extra, false);
+  }
+});
+
+test("xAI billing normalization keeps numeric evidence separate from quota state", () => {
+  const billing = parseBilling({
+    config: {
+      credit_usage_percent: "invalid",
+      creditUsagePercent: 0,
+      currentPeriod: { type: "weekly", end: "2030-01-08T00:00:00Z" },
+      monthly_limit: { val: "invalid" },
+      monthlyLimit: { val: "100" },
+      usage: {
+        included_used: { val: "invalid" },
+        includedUsed: { value: "20" },
+      },
+      billing_period_end: "invalid",
+      billingCycle: { billingPeriodEnd: "2030-02-01T00:00:00Z" },
+    },
+  });
+  assert.deepEqual(billing, {
+    usagePercent: 0,
+    periodType: "weekly",
+    periodEnd: "2030-01-08T00:00:00Z",
+    monthlyLimit: 100,
+    includedUsed: 20,
+    totalUsed: null,
+    onDemandCap: null,
+    onDemandUsed: null,
+    prepaidBalance: null,
+    billingPeriodEnd: "2030-02-01T00:00:00Z",
+    products: [],
+  });
+});
+
+test("xAI never merges monetary balances from different billing periods", async () => {
+  for (const billingPeriodEnd of [
+    "2030-02-01T08:00:00+08:00",
+    "2030-01-01T00:00:00Z",
+  ]) {
+    const client = new XaiClient(
+      async (request) =>
+        Response.json({
+          config: new URL(request.url).search
+            ? {
+                creditUsagePercent: 100,
+                billingPeriodEnd: "2030-02-01T00:00:00Z",
+                onDemandCap: 5000,
+                currentPeriod: { type: "weekly", end: "2030-01-08T00:00:00Z" },
+              }
+            : {
+                billingPeriodEnd,
+                monthlyLimit: 10000,
+                used: 12500,
+                onDemandUsed: 2500,
+              },
+        }),
+      new AbortController().signal,
+    );
+    const quota = await client.quota("token", "subject");
+    const samePeriod =
+      Date.parse(billingPeriodEnd) === Date.parse("2030-02-01T00:00:00Z");
+    assert.equal(quota.xai_billing.monthly_limit, samePeriod ? 10000 : null);
+    assert.equal(quota.xai_billing.included_used, samePeriod ? 10000 : null);
+    assert.equal(quota.xai_billing.billing_period_end, "2030-02-01T00:00:00Z");
+    assert.equal(
+      quota.extra_usage?.used_credits ?? null,
+      samePeriod ? 2500 : null,
+    );
+    assert.equal(quotaAvailability(quota, scope.model).subscription, false);
+    assert.equal(quotaAvailability(quota, scope.model).extra, samePeriod);
+    assert.equal(quota.groups[0].buckets[0].reset_at, "2030-01-08T00:00:00Z");
+  }
+});
+
+test("xAI reads the plan from settings with an explicit JWT tier fallback", async () => {
+  const token = (claims) =>
+    `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "subject", iss: "https://auth.x.ai", ...claims })).toString("base64url")}.signature`;
+  for (const [claims, settings, expected] of [
+    [{ tier: 0 }, {}, "Free"],
+    [{ tier: 5 }, {}, "SuperGrok Heavy"],
+    [{ tier: 7 }, {}, "SuperGrok Plus"],
+    [{ tier: 0 }, { subscription_tier_display: "SuperGrok" }, "SuperGrok"],
+    [{ tier: 0 }, { subscription_tier_display: "Future plan" }, "Future plan"],
+    [{ tier: 0 }, { subscription_tier_display: " " }, "Free"],
+    [{}, {}, null],
+    [{ tier: "0" }, {}, null],
+    [{ tier: 0, sub: "different" }, {}, null],
+    [{ tier: 0, exp: 1 }, {}, null],
+  ]) {
+    const requests = [];
+    const client = new XaiClient(async (request) => {
+      requests.push(request);
+      return Response.json(
+        new URL(request.url).pathname === "/v1/settings"
+          ? settings
+          : { config: { creditUsagePercent: 5 } },
+      );
+    }, new AbortController().signal);
+    const quota = await client.quota(token(claims), "subject");
+    assert.equal(quota.subscription?.tier_name ?? null, expected);
+    assert.equal(
+      requests[2].url,
+      "https://cli-chat-proxy.grok.com/v1/settings",
+    );
+    assert.equal(requests[2].headers.get("x-userid"), "subject");
+  }
+});
+
+test("xAI protobuf zero amounts permit unreported quota without a plan exception", async () => {
+  for (const plan of ["Free", "SuperGrok", undefined]) {
+    const client = new XaiClient(
+      async (request) =>
+        Response.json(
+          new URL(request.url).pathname === "/v1/settings"
+            ? { subscription_tier_display: plan }
+            : {
+                config: {
+                  monthlyLimit: {},
+                  used: {},
+                  onDemandCap: {},
+                  onDemandUsed: {},
+                  prepaidBalance: {},
+                },
+              },
+        ),
+      new AbortController().signal,
+    );
+    const quota = await client.quota("opaque", "subject");
+    assert.equal(quota.xai_billing.monthly_limit, 0);
+    assert.equal(quota.xai_billing.included_used, 0);
+    assert.equal(quota.xai_billing.prepaid_balance, 0);
+    assert.equal(quota.extra_usage.monthly_limit, 0);
+    assert.equal(quota.extra_usage.is_enabled, false);
+    assert.equal(quota.groups[0].buckets[0].used_percent, null);
+    assert.equal(quotaAvailability(quota, scope.model).subscription, true);
+    assert.equal(quotaAvailability(quota, scope.model).extra, false);
+    assert.equal(
+      quotaAvailability({ ...quota, stale: true }, scope.model).subscription,
+      false,
+    );
+    assert.equal(
+      quotaAvailability(quota, scope.model, quota.updated_at + 60000)
+        .subscription,
+      false,
+    );
+  }
+  assert.equal(parseBilling({ onDemandCap: {} }).onDemandCap, 0);
+  assert.equal(
+    parseBilling({ onDemandCap: 0, creditUsagePercent: {} }).usagePercent,
+    null,
+  );
+});
+
+test("xAI unreported quota respects paid balances, access denial and request failures", async () => {
+  for (const scenario of [
+    "paid",
+    "prepaid",
+    "missing",
+    "access",
+    "billing",
+    "unauthorized",
+  ]) {
+    const client = new XaiClient(async (request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/v1/settings")
+        return Response.json({
+          subscription_tier_display: "Free",
+          allow_access: scenario !== "access",
+          on_demand_enabled: false,
+        });
+      if (scenario === "unauthorized")
+        return Response.json({}, { status: 401 });
+      if (scenario === "billing" && url.search)
+        return Response.json({}, { status: 503 });
+      return Response.json({
+        config: {
+          currentPeriod: { type: "weekly" },
+          onDemandCap:
+            scenario === "missing" ? undefined : scenario === "paid" ? 100 : {},
+          onDemandUsed: {},
+          prepaidBalance: scenario === "prepaid" ? 100 : {},
+        },
+      });
+    }, new AbortController().signal);
+    const quota = await client.quota("opaque", "subject");
+    assert.equal(quota.subscription.tier_name, "Free");
+    assert.equal(
+      quotaAvailability(quota, scope.model).subscription,
+      false,
+      scenario,
+    );
+    assert.equal(quotaAvailability(quota, scope.model).extra, false, scenario);
   }
 });

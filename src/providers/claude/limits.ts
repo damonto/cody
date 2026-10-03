@@ -122,16 +122,22 @@ export function claudeUsageLimit(
     headers.get("anthropic-ratelimit-unified-status") === "rejected" &&
     claim !== "overage"
   ) {
-    const scope =
-      claim === "seven_day_opus"
-        ? "opus"
-        : claim === "seven_day_sonnet"
-          ? "sonnet"
-          : ["five_hour", "seven_day", "seven_day_oauth_apps"].includes(
-                claim ?? "",
-              )
-            ? null
-            : modelFamily(model);
+    let scope: string | null;
+    switch (claim) {
+      case "seven_day_opus":
+        scope = "opus";
+        break;
+      case "seven_day_sonnet":
+        scope = "sonnet";
+        break;
+      case "five_hour":
+      case "seven_day":
+      case "seven_day_oauth_apps":
+        scope = null;
+        break;
+      default:
+        scope = modelFamily(model);
+    }
     add(scope, headers.get("anthropic-ratelimit-unified-reset"));
   }
   const limits = [...blocks]

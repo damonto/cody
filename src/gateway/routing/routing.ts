@@ -1,7 +1,10 @@
 import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
-import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
+import {
+  antigravityAccountAvailability,
+  antigravityModelAvailability,
+} from "../../providers/antigravity/availability.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
 
 import { HealthScope, ProviderAvailabilityReason } from "../health/values.ts";
@@ -327,13 +330,20 @@ async function evaluateAvailability<T extends RoutedProvider>(
         scope,
       );
       const model = upstreamModels?.get(provider.id);
-      if (
-        provider.type === ProviderType.Antigravity &&
-        scope === HealthScope.Inference
-      ) {
+      if (provider.type === ProviderType.Antigravity) {
         if (health.reason === ProviderAvailabilityReason.HealthReadFailed)
           health = { ...health, available: false };
-        if (health.available && model && key.auth.type === "oauth")
+        if (health.available && key.auth.type === "oauth")
+          health = await antigravityAccountAvailability(
+            env,
+            key.auth.account_ref,
+          );
+        if (
+          health.available &&
+          scope === HealthScope.Inference &&
+          model &&
+          key.auth.type === "oauth"
+        )
           health = await antigravityModelAvailability(
             env,
             key.auth.account_ref,

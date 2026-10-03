@@ -1,47 +1,55 @@
-import type { AccountView } from "../../../../src/providers/oauth/schema";
+import type { QuotaSnapshot } from "../../../../src/providers/oauth/schema";
 import { date } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { AccountError } from "./account-error";
 
 function resetTime(value: string | null): string {
   const timestamp = value ? Date.parse(value) : NaN;
-  return Number.isFinite(timestamp) ? date(timestamp) : "Unknown";
+  return Number.isFinite(timestamp)
+    ? `Resets ${date(timestamp)}`
+    : "Reset time unknown";
 }
-export function AccountQuota({ account }: { account: AccountView }) {
-  const quota = account.quota;
+export function AccountQuota({
+  quota,
+  staleError,
+}: {
+  quota: QuotaSnapshot;
+  staleError?: string;
+}) {
   return (
     <div className="space-y-3 text-xs" aria-label="Account quota">
       <div className="flex flex-wrap items-center gap-2">
-        <span>
-          Plan:{" "}
+        <Badge variant="secondary">
           {quota.subscription?.tier_name ??
             quota.subscription?.tier_id ??
-            "Unknown"}
-        </span>
-        {quota.stale && <Badge variant="outline">Stale</Badge>}
+            "Unknown plan"}
+        </Badge>
+        {(quota.stale || staleError) && <Badge variant="outline">Stale</Badge>}
         <span className="text-muted-foreground">
-          Updated:{" "}
-          {quota.updated_at === null ? "Never" : date(quota.updated_at)}
+          Updated {quota.updated_at === null ? "never" : date(quota.updated_at)}
         </span>
       </div>
-      {quota.last_error && (
-        <p role="alert" className="text-destructive">
-          {quota.last_error} · Last successful data is retained.
-        </p>
+      {staleError && staleError !== quota.last_error && (
+        <AccountError error={staleError} />
       )}
+      <AccountError
+        error={quota.last_error}
+        verification={quota.verification}
+      />
       {!quota.groups.length && (
         <p className="text-muted-foreground">
           Quota unknown. Refresh after authorization is ready.
         </p>
       )}
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="space-y-3">
         {quota.groups.map((group) => (
-          <div key={group.id} className="space-y-2 rounded-md border p-3">
+          <div key={group.id} className="space-y-2">
             <p className="font-medium">{group.label}</p>
             {!group.buckets.length && <p>Unknown</p>}
             {group.buckets.map((bucket) => (
               <div key={bucket.id} className="space-y-1.5">
-                <div className="flex justify-between gap-3">
+                <div className="flex flex-wrap justify-between gap-x-3 gap-y-1">
                   <span>
                     {bucket.label}
                     {` · ${bucket.window ?? "Unknown window"}`}
@@ -49,7 +57,7 @@ export function AccountQuota({ account }: { account: AccountView }) {
                   <span>
                     {bucket.remaining_fraction === null
                       ? "Unknown"
-                      : `${Math.round(bucket.remaining_fraction * 100)}% remaining`}
+                      : `${Math.round(bucket.remaining_fraction * 100)}% left`}
                   </span>
                 </div>
                 {bucket.remaining_fraction !== null && (
@@ -59,29 +67,25 @@ export function AccountQuota({ account }: { account: AccountView }) {
                   />
                 )}
                 <p className="text-muted-foreground">
-                  Resets: {resetTime(bucket.reset_at)}
+                  {resetTime(bucket.reset_at)}
                 </p>
               </div>
             ))}
           </div>
         ))}
       </div>
-      {quota.subscription?.credits.length ? (
-        <p>
-          Available credits:{" "}
-          {quota.subscription.credits
-            .map(
-              (credit) =>
-                `${credit.type ?? "Unknown"}: ${credit.amount ?? "Unknown"}`,
-            )
-            .join(" · ")}
-          . Display only; paid credits are not enabled by this gateway.
-        </p>
-      ) : (
-        <p className="text-muted-foreground">
-          Available credits: Unknown. Paid credits are not enabled by this
-          gateway.
-        </p>
+      {!!quota.subscription?.credits.length && (
+        <div className="space-y-1">
+          {quota.subscription.credits.map((credit, index) => (
+            <p key={`${credit.type}-${index}`}>
+              {credit.type === "GOOGLE_ONE_AI"
+                ? "Google One AI credits"
+                : (credit.type ?? "AI credits")}
+              : {credit.amount ?? "Unavailable"}
+            </p>
+          ))}
+          <p className="text-muted-foreground">Credit spending is disabled.</p>
+        </div>
       )}
     </div>
   );

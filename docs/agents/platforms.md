@@ -12,6 +12,7 @@ Read this guide for runtime entry points, deployment, SQL/Redis coordination, re
 
 - Keep the shared Hono application in `src/app.ts` runtime-neutral. Keep Cloudflare dependencies in Worker entry/object shells; derive binding types from generated `Env` through `src/platform/bindings.ts` and use narrow dependency types.
 - Standard runtime implementations live in `src/platform/standard/`. Require Redis coordination and SQL durable state; never substitute in-memory production state. libSQL uses native-free `@libsql/client/http`.
+- Account readiness checks skip synchronous alarm catch-up so routing cannot start background initialization. Scheduled alarm delivery remains enabled; other object operations retain catch-up on access.
 - Preserve atomic migrations, SQL stale-write fencing, encrypted OAuth state and durable usage delivery. Reuse connection pools, bound connection waits, and retain idle cleanup with the platform's `waitUntil`.
 - Local administrator mode must bind only to loopback. Keep Node and Vercel authentication checks in the standard runtime; Vercel does not support SQLite or inbound WebSocket.
 

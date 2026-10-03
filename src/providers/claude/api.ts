@@ -150,12 +150,14 @@ export function parseUsage(
       "model_scoped",
     ].includes(limit.kind);
     if (scoped && limit.group && limit.group !== "weekly") continue;
-    const base =
-      !limit.scope && limit.kind === "session"
-        ? "five_hour"
-        : !limit.scope && ["weekly", "weekly_all"].includes(limit.kind)
-          ? "seven_day"
-          : null;
+    let base: "five_hour" | "seven_day" | null = null;
+    if (!limit.scope) {
+      if (limit.kind === "session") {
+        base = "five_hour";
+      } else if (["weekly", "weekly_all"].includes(limit.kind)) {
+        base = "seven_day";
+      }
+    }
     if (!base && !scoped) continue;
     const model = scoped ? limit.scope?.model.id : null;
     if (scoped && !model)
@@ -175,12 +177,13 @@ export function parseUsage(
       limit.scope?.model.display_name ?? model ?? id.replaceAll("_", " ");
     const used = limit.percent ?? limit.utilization ?? null;
     const rawReset = limit.resets_at;
-    const reset =
-      typeof rawReset === "number"
-        ? rawReset * (rawReset < 1e12 ? 1000 : 1)
-        : rawReset
-          ? Date.parse(rawReset)
-          : NaN;
+    let reset = NaN;
+    if (typeof rawReset === "number") {
+      reset = rawReset;
+      if (rawReset < 1e12) reset *= 1000;
+    } else if (rawReset) {
+      reset = Date.parse(rawReset);
+    }
     const resetAt =
       Number.isFinite(reset) && Math.abs(reset) <= 8640000000000000
         ? new Date(reset).toISOString()

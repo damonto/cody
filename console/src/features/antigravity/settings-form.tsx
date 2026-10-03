@@ -195,7 +195,7 @@ export function AntigravitySettingsForm({
               {(field) => (
                 <>
                   {models.size ? (
-                    <div className="grid max-h-80 gap-3 overflow-auto rounded-md border p-3">
+                    <div className="relative grid max-h-80 gap-3 overflow-auto rounded-md border p-3">
                       {[...models].map(([id, label]) => (
                         <Label
                           key={id}

@@ -46,7 +46,7 @@ export function ModelContextForm({
   });
   return (
     <form
-      className="space-y-4 border-b py-4"
+      className="space-y-4 py-4"
       onSubmit={(event) => {
         event.preventDefault();
         void form.handleSubmit();

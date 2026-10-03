@@ -98,10 +98,14 @@ export async function refreshAntigravityVersion(
           "user-agent": "electron-builder",
           "cache-control": "no-cache",
         },
-        redirect: "error",
+        redirect: "manual",
         signal,
       }),
     );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Manifest returned HTTP ${response.status}`);
+    }
     const bytes = await readBodyWithinLimit(
       response.body,
       4096,
@@ -109,8 +113,6 @@ export async function refreshAntigravityVersion(
       undefined,
       signal,
     );
-    if (!response.ok)
-      throw new Error(`Manifest returned HTTP ${response.status}`);
     // Only the scalar version is needed; never parse updater URLs or execute manifest content.
     const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, "");
     const matches = [

@@ -1,6 +1,7 @@
 import {
   OAuthFlow,
   OAuthSessionStatus,
+  OAuthAccountViewStatus,
 } from "../../../../src/providers/oauth/values.ts";
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
@@ -165,7 +166,10 @@ export function useAuthorization({
   });
   // Completion arrives through polling, not necessarily through a local button click.
   const onCompleted = useEffectEvent((value: SessionView) => {
-    adopt.mutate({ account: value.account, discover: true });
+    adopt.mutate({
+      account: value.account,
+      discover: value.account.status === OAuthAccountViewStatus.Ready,
+    });
   });
   const authorization = session.data;
   useEffect(() => {

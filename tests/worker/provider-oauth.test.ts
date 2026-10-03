@@ -274,6 +274,7 @@ async function complete(stub: Account, session: SessionView, code = "initial") {
   );
 }
 async function initialize(stub: Account) {
+  let initializationError: string | null | undefined;
   for (let i = 0; i < 7; i++) {
     await runDurableObjectAlarm(stub);
     const view = await accountReply(
@@ -281,8 +282,11 @@ async function initialize(stub: Account) {
       accountViewSchema,
     );
     if (view.status === "ready") return view;
+    initializationError = view.project_initialization?.error ?? view.error;
   }
-  throw new Error("Account did not become ready");
+  throw new Error(
+    `Account did not become ready: ${initializationError ?? "still pending"}`,
+  );
 }
 // Account alarms are due immediately, so workerd may fire them on its own
 // before the test does; drive them until the session leaves "initializing".
@@ -297,6 +301,32 @@ async function settleSession(stub: Account, session: SessionView) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Session did not leave initialization");
+}
+async function failedProject(stub: Account) {
+  return vi.waitFor(async () => {
+    // An automatically running alarm can overlap the test's manual trigger.
+    await runDurableObjectAlarm(stub);
+    const view = await accountReply(
+      stub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    expect(view.project_initialization?.status).toBe("error");
+    return view;
+  });
+}
+async function retryingProject(stub: Account) {
+  return vi.waitFor(async () => {
+    await runDurableObjectAlarm(stub);
+    const view = await accountReply(
+      stub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    expect(view.project_initialization?.status).toBe("pending");
+    expect(view.project_initialization?.next_retry_at).toBeGreaterThan(
+      Date.now(),
+    );
+    return view;
+  });
 }
 async function ready(connection?: ProviderConnection, ref?: string) {
   const account = await start(connection, ref);
@@ -549,23 +579,711 @@ test("cancelled and expired sessions cannot be completed after eviction", async 
   expect(tokenRequests()).toHaveLength(0);
 });
 
-test("initialization failure retains tokens across eviction and retries without a second exchange", async () => {
+test("project transport failures retry in the background after OAuth completes and eviction", async () => {
   override = (request) =>
     request.url.includes(":loadCodeAssist")
       ? new Response("temporary error", { status: 503 })
       : undefined;
-  const { stub, session } = await start();
+  const { stub, session, connection } = await start();
   await complete(stub, session);
-  const progress = await settleSession(stub, session);
-  expect(progress).toMatchObject({ status: "error", can_retry: true });
+  expect(await settleSession(stub, session)).toMatchObject({
+    status: "complete",
+    error: null,
+  });
+  const view = await retryingProject(stub);
+  expect(view).toMatchObject({
+    status: "initializing",
+    project_initialization: { status: "pending", error: null },
+  });
+  expect(view.project_initialization!.next_retry_at).toBeGreaterThan(
+    Date.now(),
+  );
+  await expect(resolve(stub, connection)).rejects.toThrow();
   await evictDurableObject(stub);
   override = undefined;
-  await stub.run({ action: "retry", actor, session_id: sessionId(session) });
   await initialize(stub);
   expect(tokenRequests()).toHaveLength(1);
   expect(
     records.filter((record) => record.url.includes("/userinfo")),
   ).toHaveLength(1);
+});
+
+test("explicit project prerequisites stop onboarding and remain retryable after the upstream condition changes", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? Response.json({
+          allowedTiers: [
+            {
+              id: "standard-tier",
+              isDefault: true,
+              userDefinedCloudaicompanionProject: true,
+            },
+          ],
+          ineligibleTiers: [
+            {
+              tierId: "free-tier",
+              reasonCode: "UNSUPPORTED_LOCATION",
+              reasonMessage: "private-detail",
+            },
+          ],
+        })
+      : undefined;
+  const { stub, session, connection } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  await runDurableObjectAlarm(stub);
+  const view = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(view.project_initialization).toMatchObject({
+    status: "error",
+    next_retry_at: null,
+  });
+  expect(view.project_initialization!.error).toContain(
+    "user-managed Cloud project",
+  );
+  expect(view.project_initialization!.error).toContain("UNSUPPORTED_LOCATION");
+  expect(JSON.stringify(view)).not.toContain("private-detail");
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")),
+  ).toHaveLength(0);
+  await expect(resolve(stub, connection)).rejects.toThrow();
+  await evictDurableObject(stub);
+  override = undefined;
+  await stub.run({ action: "retry_project" });
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_id: "project",
+  });
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("an existing assigned project remains usable with a user-defined tier", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? Response.json({
+          cloudaicompanionProject: "assigned-project",
+          currentTier: {
+            id: "standard-tier",
+            userDefinedCloudaicompanionProject: true,
+          },
+          allowedTiers: [
+            {
+              id: "standard-tier",
+              isDefault: true,
+              userDefinedCloudaicompanionProject: true,
+            },
+          ],
+        })
+      : undefined;
+  const { stub, connection, session } = await start();
+  await complete(stub, session);
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_id: "assigned-project",
+  });
+  expect(await resolve(stub, connection)).toMatchObject({
+    project_id: "assigned-project",
+  });
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")),
+  ).toHaveLength(0);
+});
+
+test("verification requirements survive account eviction and clear after manual project retry", async () => {
+  const challenge =
+    "https://accounts.google.com/signin/continue?state=private-challenge&authuser=1";
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? Response.json({
+          allowedTiers: [
+            {
+              id: "standard-tier",
+              isDefault: true,
+              userDefinedCloudaicompanionProject: true,
+            },
+          ],
+          ineligibleTiers: [
+            { tierId: "free-tier", reasonCode: "RESTRICTED_AGE" },
+            {
+              tierId: "free-tier",
+              reasonCode: "VALIDATION_REQUIRED",
+              validationErrorMessage: "Verify this Google account.",
+              validationUrl: challenge,
+            },
+          ],
+        })
+      : undefined;
+  const { stub, session } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  await failedProject(stub);
+  await evictDurableObject(stub);
+  const view = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(view.project_initialization).toMatchObject({
+    status: "error",
+    next_retry_at: null,
+  });
+  expect(
+    view.project_initialization?.verification?.map((item) => item.url),
+  ).toEqual(["https://myaccount.google.com/age-verification", challenge]);
+  expect(view.project_initialization?.error).not.toContain("user-managed");
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")),
+  ).toHaveLength(0);
+  await runInDurableObject(stub, async (_instance, state) => {
+    expect(await state.storage.getAlarm()).toBeNull();
+    expect(JSON.stringify([...(await state.storage.list())])).not.toContain(
+      "private-challenge",
+    );
+  });
+  override = undefined;
+  const retried = await accountReply(
+    stub.run({ action: "retry_project" }),
+    accountViewSchema,
+  );
+  expect(retried.project_initialization?.verification).toBeUndefined();
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_initialization: null,
+  });
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("quota and model verification retain useful data and clear after successful refresh", async () => {
+  const { stub } = await ready();
+  const previous = await accountReply(
+    stub.run({ action: "quota" }),
+    accountViewSchema,
+  );
+  const challenge =
+    "https://accounts.google.com/signin/continue?state=account-check";
+  override = (request) =>
+    [":retrieveUserQuotaSummary", ":fetchAvailableModels"].some((method) =>
+      request.url.includes(method),
+    )
+      ? Response.json(
+          {
+            error: {
+              code: 403,
+              message: "Verify your account to continue.",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "VALIDATION_REQUIRED",
+                  metadata: {
+                    validation_error_message:
+                      "Verify your account to continue.",
+                    validation_url: challenge,
+                  },
+                },
+              ],
+            },
+          },
+          { status: 403 },
+        )
+      : request.url.includes(":loadCodeAssist")
+        ? Response.json({
+            paidTier: {
+              id: "pro",
+              availableCredits: [{ creditType: "GOOGLE_ONE_AI" }],
+            },
+          })
+        : undefined;
+  const failed = await accountReply(
+    stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(failed.quota.groups).toEqual(previous.quota.groups);
+  expect(failed.quota).toMatchObject({
+    stale: true,
+    last_error: "Verify your account to continue.",
+    verification: [{ reason: "VALIDATION_REQUIRED", url: challenge }],
+    subscription: {
+      tier_id: "pro",
+      credits: [{ type: "GOOGLE_ONE_AI", amount: "0" }],
+    },
+  });
+  const models = await accountReply(
+    stub.run({ action: "models" }),
+    accountViewSchema,
+  );
+  expect(models.models_verification).toMatchObject([{ url: challenge }]);
+  await evictDurableObject(stub);
+  const persisted = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(persisted.quota.verification).toEqual(failed.quota.verification);
+  expect(persisted.models_verification).toEqual(models.models_verification);
+  override = undefined;
+  const refreshed = await accountReply(
+    stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(refreshed.quota.last_error).toBeNull();
+  expect(refreshed.quota.verification).toBeUndefined();
+  const discovered = await accountReply(
+    stub.run({ action: "models" }),
+    accountViewSchema,
+  );
+  expect(discovered.models_verification).toBeUndefined();
+  expect(discovered.models_error).toBeNull();
+});
+
+test("completed onboarding without a project stops automatic retries and retains authorization", async () => {
+  let loads = 0;
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) {
+      loads++;
+      return Response.json(
+        loads === 1
+          ? { allowedTiers: [{ id: "free-tier", isDefault: true }] }
+          : { cloudaicompanionProject: { id: "existing-project" } },
+      );
+    }
+    if (request.url.includes(":onboardUser"))
+      return Response.json({ done: true, response: {} });
+    return;
+  };
+  const { stub, connection, session } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  await runDurableObjectAlarm(stub);
+  await runDurableObjectAlarm(stub);
+  const failed = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(failed).toMatchObject({
+    status: "initializing",
+    project_id: null,
+    project_initialization: { status: "error", next_retry_at: null },
+  });
+  expect(failed.project_initialization!.error).toContain(
+    "completed onboarding without assigning a project ID",
+  );
+  await expect(resolve(stub, connection)).rejects.toThrow();
+  expect(
+    tokenSchema.parse(
+      storedObject.parse((await storage(stub)).antigravity_initialization)
+        .tokens,
+    ).refresh_token,
+  ).toBe("refresh-token");
+  await evictDurableObject(stub);
+  await runDurableObjectAlarm(stub);
+  expect(loads).toBe(1);
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")),
+  ).toHaveLength(1);
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("manual project retries restart lookup and refresh the selected tier after eviction", async () => {
+  let loads = 0;
+  const tiers: string[] = [];
+  override = (request, body) => {
+    if (request.url.includes(":loadCodeAssist")) {
+      loads++;
+      return Response.json({
+        allowedTiers: [
+          { id: loads === 1 ? "free-tier" : "updated-tier", isDefault: true },
+        ],
+      });
+    }
+    if (request.url.includes(":onboardUser")) {
+      tiers.push(
+        z.object({ tier_id: z.string() }).parse(JSON.parse(body)).tier_id,
+      );
+      return Response.json({
+        done: true,
+        response:
+          tiers.length === 1 ? {} : { project: { id: " assigned-project " } },
+      });
+    }
+    return;
+  };
+  const { stub, session } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await failedProject(stub);
+  expect(tiers).toEqual(["free-tier"]);
+  await evictDurableObject(stub);
+  expect(await stub.run({ action: "retry_project" })).toMatchObject({
+    ok: true,
+  });
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_id: "assigned-project",
+  });
+  expect(tiers).toEqual(["free-tier", "updated-tier"]);
+  expect(loads).toBe(2);
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("project timeout reports the last transport failure after eviction", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? new Response("private-upstream-detail", { status: 503 })
+      : undefined;
+  const { stub, session } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await vi.waitFor(async () => {
+    await runDurableObjectAlarm(stub);
+    const project = storedObject.parse(
+      (await storage(stub)).antigravity_initialization,
+    );
+    expect(project.last_result).toBe("loadCodeAssist failed (HTTP 503)");
+  });
+  await rewrite(stub, (value) => {
+    value.antigravity_initialization = {
+      ...storedObject.parse(value.antigravity_initialization),
+      deadline: Date.now() - 1,
+    };
+  });
+  const view = await failedProject(stub);
+  expect(view.project_initialization?.error).toContain(
+    "Last result: loadCodeAssist failed (HTTP 503)",
+  );
+  expect(JSON.stringify(view)).not.toContain("private-upstream-detail");
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("project timeout retains authorization and retries after the OAuth session expires", async () => {
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist"))
+      return Response.json({
+        allowedTiers: [{ id: "free-tier", isDefault: true }],
+      });
+    if (request.url.includes(":onboardUser"))
+      return Response.json({ done: false });
+    return;
+  };
+  const { stub, connection, session } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  for (let i = 0; i < 8; i++) await runDurableObjectAlarm(stub);
+  const pending = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(pending).toMatchObject({
+    status: "initializing",
+    project_initialization: { status: "pending", error: null },
+  });
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")).length,
+  ).toBeGreaterThan(1);
+  await expect(resolve(stub, connection)).rejects.toThrow();
+  await rewrite(stub, (value) => {
+    value.session = {
+      ...storedObject.parse(value.session),
+      expires_at: Date.now() - 1,
+    };
+    value.antigravity_initialization = {
+      ...storedObject.parse(value.antigravity_initialization),
+      deadline: Date.now() - 1,
+    };
+  });
+  await runDurableObjectAlarm(stub);
+  const failed = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(failed.project_initialization).toMatchObject({
+    status: "error",
+    next_retry_at: null,
+  });
+  expect(failed.project_initialization!.error).toContain("ten minutes");
+  expect(failed.project_initialization!.error).toContain("Last result:");
+  expect(failed.project_initialization!.error).toContain(
+    "onboardUser has not completed",
+  );
+  expect(
+    tokenSchema.parse(
+      storedObject.parse((await storage(stub)).antigravity_initialization)
+        .tokens,
+    ).refresh_token,
+  ).toBe("refresh-token");
+  expect(
+    (
+      await accountReply(
+        stub.run({ action: "session", actor, session_id: sessionId(session) }),
+        sessionViewSchema,
+      )
+    ).status,
+  ).toBe("complete");
+  await evictDurableObject(stub);
+  override = undefined;
+  expect(await stub.run({ action: "retry_project" })).toMatchObject({
+    ok: true,
+  });
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_id: "project",
+    project_initialization: null,
+  });
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("onboarding can take more than five polls without failing authorization", async () => {
+  let onboards = 0;
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) return Response.json({});
+    if (request.url.includes(":onboardUser")) {
+      onboards++;
+      return Response.json(
+        onboards < 9
+          ? { done: false }
+          : { done: true, response: { projectId: "slow-project" } },
+      );
+    }
+    return;
+  };
+  const { stub, session } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  for (let i = 0; i < 8; i++) await runDurableObjectAlarm(stub);
+  expect(onboards).toBeGreaterThan(5);
+  expect(
+    await accountReply(stub.run({ action: "view" }), accountViewSchema),
+  ).toMatchObject({
+    status: "initializing",
+    project_initialization: { status: "pending", error: null },
+  });
+  await evictDurableObject(stub);
+  expect(await initialize(stub)).toMatchObject({
+    status: "ready",
+    project_id: "slow-project",
+  });
+});
+
+test("onboarding operation errors stop project retries without undoing OAuth", async () => {
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) return Response.json({});
+    if (request.url.includes(":onboardUser"))
+      return Response.json({
+        done: true,
+        error: { code: 7, message: "private-detail" },
+      });
+    return;
+  };
+  const { stub, connection, session } = await start();
+  await complete(stub, session);
+  expect((await settleSession(stub, session)).status).toBe("complete");
+  for (let i = 0; i < 3; i++) await runDurableObjectAlarm(stub);
+  const failed = await accountReply(
+    stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(failed.project_initialization).toMatchObject({
+    status: "error",
+    next_retry_at: null,
+  });
+  expect(failed.project_initialization!.error).toContain(
+    "onboardUser failed (upstream code 7)",
+  );
+  expect(JSON.stringify(failed)).not.toContain("private-detail");
+  await expect(resolve(stub, connection)).rejects.toThrow();
+  expect(
+    records.filter((record) => record.url.includes(":onboardUser")),
+  ).toHaveLength(1);
+  await evictDurableObject(stub);
+  override = undefined;
+  await stub.run({ action: "retry_project" });
+  await initialize(stub);
+  expect(tokenRequests()).toHaveLength(1);
+});
+
+test("project token rotation is persisted before a failed discovery and survives eviction", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? new Response("temporary", { status: 503 })
+      : undefined;
+  const { stub, session } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await runDurableObjectAlarm(stub);
+  override = (request) => {
+    if (request.url.includes("/token"))
+      return Response.json({
+        access_token: "rotated-project-access",
+        refresh_token: "rotated-project-refresh",
+        expires_in: 3600,
+      });
+    if (request.url.includes(":loadCodeAssist"))
+      return new Response("temporary", { status: 503 });
+    return;
+  };
+  await rewrite(stub, (value) => {
+    const project = storedObject.parse(value.antigravity_initialization);
+    project.tokens = {
+      ...tokenSchema.parse(project.tokens),
+      expires_at: Date.now() - 1,
+    };
+    value.antigravity_initialization = project;
+  });
+  await runDurableObjectAlarm(stub);
+  expect(
+    tokenSchema.parse(
+      storedObject.parse((await storage(stub)).antigravity_initialization)
+        .tokens,
+    ).refresh_token,
+  ).toBe("rotated-project-refresh");
+  await evictDurableObject(stub);
+  override = undefined;
+  await initialize(stub);
+  expect(tokenSchema.parse((await storage(stub)).tokens).access_token).toBe(
+    "rotated-project-access",
+  );
+  expect(tokenRequests()).toHaveLength(2);
+});
+
+test("disconnect fences an in-flight project discovery", async () => {
+  const gate = deferred<void>();
+  override = async (request) => {
+    if (!request.url.includes(":loadCodeAssist")) return;
+    await gate.promise;
+    return Response.json({ projectId: "late-project" });
+  };
+  const { stub, session } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  const initializing = runDurableObjectAlarm(stub);
+  await vi.waitFor(() =>
+    expect(
+      records.some((record) => record.url.includes(":loadCodeAssist")),
+    ).toBe(true),
+  );
+  await stub.run({ action: "disconnect" });
+  gate.resolve();
+  await initializing;
+  expect(await storage(stub)).toMatchObject({
+    status: "disconnected",
+    tokens: null,
+    antigravity_initialization: null,
+  });
+});
+
+test("a failed project commit propagates without writing an upstream retry", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? new Response("temporary", { status: 503 })
+      : undefined;
+  const { stub, session } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await runDurableObjectAlarm(stub);
+  // Keep automatic alarm delivery from completing setup before fault injection.
+  await rewrite(stub, (value) => {
+    value.antigravity_initialization = {
+      ...storedObject.parse(value.antigravity_initialization),
+      next_at: Date.now() + 60_000,
+    };
+  });
+  await runInDurableObject(stub, async (instance, state) => {
+    await state.storage.setAlarm(Date.now() + 60_000);
+    const saved = await state.storage.get<string>("account");
+    const alarm = await state.storage.getAlarm();
+    const transaction = state.storage.transaction.bind(state.storage);
+    const failure = vi
+      .spyOn(state.storage, "transaction")
+      .mockImplementationOnce((operation) =>
+        transaction(async (tx) => {
+          await operation(tx);
+          throw new Error("project commit unavailable");
+        }),
+      );
+    try {
+      override = undefined;
+      await expect(instance.alarm()).rejects.toThrow(
+        "project commit unavailable",
+      );
+      expect(failure).toHaveBeenCalledTimes(1);
+      expect(await state.storage.get<string>("account")).toBe(saved);
+      expect(await state.storage.getAlarm()).toBe(alarm);
+    } finally {
+      failure.mockRestore();
+    }
+    await instance.alarm();
+  });
+  expect(
+    await accountReply(stub.run({ action: "view" }), accountViewSchema),
+  ).toMatchObject({
+    status: "ready",
+    project_initialization: null,
+  });
+});
+
+test("pending projects use committed proxy changes instead of the authorization snapshot", async () => {
+  const proxy = group();
+  const ref = crypto.randomUUID();
+  const connection = {
+    provider_id: "antigravity",
+    credential_id: "primary",
+    provider_proxy_group: proxy.id,
+  };
+  const config = settings(connection, ref, [proxy]);
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? new Response("temporary", { status: 503 })
+      : undefined;
+  const { stub, session } = await start(connection, ref);
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await retryingProject(stub);
+  // Finish the old lookup and hold the next alarm while committing the new proxy.
+  await runInDurableObject(stub, async (_instance, state) => {
+    await state.storage.setAlarm(Date.now() + 60_000);
+  });
+  config.providers[0].credentials[0].proxy_group = null;
+  await setTestConfiguration(
+    env.CODY_DB,
+    "gateway-config",
+    JSON.stringify(config),
+  );
+  const before = records.length;
+  override = undefined;
+  await initialize(stub);
+  const requests = records
+    .slice(before)
+    .filter((record) => record.url.includes(":loadCodeAssist"));
+  expect(requests).toHaveLength(1);
+  expect(requests[0].proxy).toBeNull();
+});
+
+test("project setup preserves a working account during reauthorization", async () => {
+  const { stub, connection, ref } = await ready();
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? Response.json({})
+      : request.url.includes(":onboardUser")
+        ? Response.json({ done: false })
+        : undefined;
+  const next = await start(connection, ref);
+  await complete(stub, next.session, "replacement");
+  expect((await settleSession(stub, next.session)).status).toBe("complete");
+  for (let i = 0; i < 7; i++) await runDurableObjectAlarm(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "access-initial",
+    project_id: "project",
+  });
+  override = undefined;
+  await runDurableObjectAlarm(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "access-replacement",
+    project_id: "project",
+  });
 });
 
 test("concurrent refreshes are merged and refresh-token rotation or omission is persisted", async () => {
@@ -846,6 +1564,107 @@ test("quota refresh uses a one-minute cache and failures retain the last good sn
   expect(
     (await env.HEALTH.getByName(connection.provider_id).getStatus()).failures,
   ).toBe(0);
+});
+
+test.each(["retrieveUserQuotaSummary", "loadCodeAssist"])(
+  "quota refresh retains both verification and %s transport errors",
+  async (failedOperation) => {
+    const { stub } = await ready();
+    const previous = await accountReply(
+      stub.run({ action: "quota" }),
+      accountViewSchema,
+    );
+    const challenge =
+      "https://accounts.google.com/signin/continue?state=mixed-failure";
+    override = (request) => {
+      if (request.url.includes(`:${failedOperation}`))
+        return new Response("Unavailable", { status: 503 });
+      if (
+        [":retrieveUserQuotaSummary", ":loadCodeAssist"].some((method) =>
+          request.url.includes(method),
+        )
+      )
+        return Response.json(
+          {
+            error: {
+              code: 403,
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "VALIDATION_REQUIRED",
+                  metadata: {
+                    validation_error_message:
+                      "Verify your account to continue.",
+                    validation_url: challenge,
+                  },
+                },
+              ],
+            },
+          },
+          { status: 403 },
+        );
+      return;
+    };
+    const failed = await accountReply(
+      stub.run({ action: "quota", force: true }),
+      accountViewSchema,
+    );
+    expect(failed.quota.groups).toEqual(previous.quota.groups);
+    expect(failed.quota.subscription).toEqual(previous.quota.subscription);
+    expect(failed.quota.last_error).toContain(
+      `${failedOperation} failed (HTTP 503)`,
+    );
+    expect(failed.quota.last_error).toContain(
+      "Verify your account to continue.",
+    );
+    expect(failed.quota.verification).toMatchObject([{ url: challenge }]);
+  },
+);
+
+test("quota verification merges duplicate requirements without dropping a later help link", async () => {
+  const { stub } = await ready();
+  override = (request) => {
+    if (
+      ![":retrieveUserQuotaSummary", ":loadCodeAssist"].some((method) =>
+        request.url.includes(method),
+      )
+    )
+      return;
+    return Response.json(
+      {
+        error: {
+          code: 403,
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              reason: "VALIDATION_REQUIRED",
+              metadata: {
+                validation_error_message: "Verify your account to continue.",
+                validation_url:
+                  "https://accounts.google.com/signin/continue?state=duplicate",
+                ...(request.url.includes(":loadCodeAssist")
+                  ? {
+                      validation_learn_more_url:
+                        "https://support.google.com/accounts?p=al_alert",
+                    }
+                  : {}),
+              },
+            },
+          ],
+        },
+      },
+      { status: 403 },
+    );
+  };
+  const failed = await accountReply(
+    stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(failed.quota.last_error).toBe("Verify your account to continue.");
+  expect(failed.quota.verification).toHaveLength(1);
+  expect(failed.quota.verification?.[0].learn_more_url).toBe(
+    "https://support.google.com/accounts?p=al_alert",
+  );
 });
 
 test("a malformed quota response does not discard a successful subscription refresh", async () => {
@@ -1315,6 +2134,8 @@ async function savedNative(proxy = false) {
 }
 
 test("migrated defaults authorize and save a first account without saving settings", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist") ? Response.json({}) : undefined;
   const saved = await control().save({ providers: [], api_keys: [] }, 0, actor);
   const migration = bindings.TEST_MIGRATIONS.find(
     (item) => item.name === "0015_native_provider_defaults.sql",
@@ -1341,7 +2162,19 @@ test("migrated defaults authorize and save a first account without saving settin
       })
     ).status,
   ).toBe(200);
-  await initialize(env.PROVIDER_OAUTH_ACCOUNT.getByName(session.account_ref));
+  const stub = env.PROVIDER_OAUTH_ACCOUNT.getByName(session.account_ref);
+  await runDurableObjectAlarm(stub);
+  expect(
+    sessionViewSchema.parse(
+      await (await admin(`/oauth/sessions/${session.id}`)).json(),
+    ).status,
+  ).toBe("complete");
+  expect(
+    await accountReply(stub.run({ action: "view" }), accountViewSchema),
+  ).toMatchObject({
+    status: "initializing",
+    project_initialization: { status: "pending" },
+  });
   const created = await admin(`/providers/${provider.id}/credentials`, "POST", {
     version: saved.version,
     operation_id: crypto.randomUUID(),
@@ -1363,6 +2196,25 @@ test("migrated defaults authorize and save a first account without saving settin
     account_ref: session.account_ref,
   });
   expect((await control().revision(saved.version)).providers).toEqual([]);
+  await rewrite(stub, (value) => {
+    value.antigravity_initialization = {
+      ...storedObject.parse(value.antigravity_initialization),
+      deadline: Date.now() - 1,
+    };
+  });
+  await runDurableObjectAlarm(stub);
+  const retried = await admin(
+    `/provider-accounts/${session.account_ref}/retry-project`,
+    "POST",
+    {},
+  );
+  expect(retried.status).toBe(200);
+  expect(
+    accountViewSchema.parse(await retried.json()).project_initialization
+      ?.status,
+  ).toBe("pending");
+  override = undefined;
+  await initialize(stub);
 });
 
 test("admin OAuth sessions require the current version and a saved provider", async () => {
@@ -1486,7 +2338,7 @@ test("stable configuration restoration never restores OAuth tokens", async () =>
     },
   ];
   config.providers[0].disabled = false;
-  const foreign = await ready({
+  const foreign = await start({
     ...connection,
     provider_id: crypto.randomUUID(),
   });
@@ -1572,6 +2424,44 @@ async function balancingPool() {
   provider.models.push("another-model");
   return { accounts, config, provider };
 }
+test("routing skips project setup accounts and uses the ready account without changing health", async () => {
+  const { accounts, config, provider } = await balancingPool();
+  provider.account_selection = "session_affinity";
+  const pending = accounts[0];
+  await pending.stub.run({ action: "disconnect" });
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? Response.json({})
+      : request.url.includes(":onboardUser")
+        ? Response.json({ done: false })
+        : undefined;
+  const next = await start(pending.connection, pending.ref);
+  await complete(pending.stub, next.session, "pending-project");
+  await settleSession(pending.stub, next.session);
+  const response = await infer(config, "responses", {
+    model: "alias",
+    input: "hello",
+  });
+  expect(response.status).toBe(200);
+  await response.text();
+  const requests = records.filter((record) =>
+    /:(?:streamG|g)enerateContent/.test(record.url),
+  );
+  expect(requests).toHaveLength(1);
+  expect(requests[0].authorization).toBe("Bearer access-pool-b");
+  expect((await env.HEALTH.getByName(provider.id).getStatus()).failures).toBe(
+    0,
+  );
+  await accounts[1].stub.run({ action: "disconnect" });
+  expect(
+    (await infer(config, "responses", { model: "alias", input: "hello" }))
+      .status,
+  ).toBe(503);
+  expect(
+    records.filter((record) => /:(?:streamG|g)enerateContent/.test(record.url)),
+  ).toHaveLength(1);
+});
+
 function quotaError(delay = "60s") {
   return {
     error: {

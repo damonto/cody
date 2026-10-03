@@ -20,9 +20,12 @@ const sent: string[] = [];
 const usage = new Map<string, number>();
 const reject = new Set<string>();
 let unknown = false,
+  partial = false,
+  noExtra = false,
   generic = false,
   pending = false;
 let identity = 0;
+let settings: Record<string, unknown> = {};
 const jwt = (sub: string) =>
   `${btoa(JSON.stringify({ alg: "none" }))}.${btoa(JSON.stringify({ sub, iss: "https://auth.x.ai", email: `${sub}@example.test` }))}.signature`;
 beforeAll(() => applyD1Migrations(env.CODY_DB, bindings.TEST_MIGRATIONS));
@@ -31,6 +34,9 @@ beforeEach(async () => {
   usage.clear();
   reject.clear();
   unknown = false;
+  partial = false;
+  noExtra = false;
+  settings = {};
   generic = false;
   pending = false;
   await env.CODY_CONFIG_KV.delete("gateway-config");
@@ -72,18 +78,31 @@ beforeEach(async () => {
           expires_in: 3600,
         });
       }
+      if (url.pathname === "/v1/settings") return Response.json(settings);
       if (url.pathname === "/v1/billing")
         return unknown
           ? new Response("unavailable", { status: 503 })
-          : Response.json({
-              credit_usage_percent: usage.get(token) ?? 10,
-              current_period: {
-                type: "weekly",
-                end: new Date(Date.now() + 600000).toISOString(),
-              },
-              on_demand_cap: 100,
-              on_demand_used: 1,
-            });
+          : !url.search
+            ? Response.json({
+                config: {
+                  monthlyLimit: 100,
+                  used: 20,
+                  onDemandCap: 100,
+                  onDemandUsed: 1,
+                },
+              })
+            : Response.json({
+                credit_usage_percent: partial
+                  ? undefined
+                  : (usage.get(token) ?? 10),
+                current_period: {
+                  type: "weekly",
+                  end: new Date(Date.now() + 600000).toISOString(),
+                },
+                on_demand_cap: noExtra ? {} : 100,
+                on_demand_used: noExtra ? {} : 1,
+                prepaid_balance: noExtra ? {} : undefined,
+              });
       if (url.pathname === "/v1/responses") {
         sent.push(token);
         expect(request.headers.get("x-xai-token-auth")).toBe("xai-grok-cli");
@@ -202,6 +221,46 @@ test("xAI device accounts and quota survive object eviction", async () => {
   );
   expect(view.xai?.subject).toBe(account.sub);
   expect(view.status).toBe("ready");
+});
+
+test("xAI partial quota replaces old availability and survives eviction and failed refresh", async () => {
+  const account = await ready();
+  const before = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(before.quota.groups[0].buckets[0].used_percent).toBe(10);
+  partial = true;
+  const updated = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(updated.status).toBe("ready");
+  expect(updated.quota.groups[0].buckets[0].used_percent).toBeNull();
+  expect(updated.quota.groups[0].buckets[0].reset_at).not.toBeNull();
+  expect(updated.quota.xai_billing?.included_used).toBe(20);
+  expect(updated.quota.last_error).toBeNull();
+  expect(updated.quota.stale).toBe(false);
+  await evictDurableObject(account.stub);
+  const restored = await accountReply(
+    account.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(restored.quota).toEqual(updated.quota);
+  const refused = await infer(config([account], { allow_extra_usage: true }));
+  expect(refused.status).toBe(503);
+  await refused.text();
+  expect(sent).toHaveLength(0);
+  unknown = true;
+  const failed = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(failed.quota.groups).toEqual(updated.quota.groups);
+  expect(failed.quota.xai_billing).toEqual(updated.quota.xai_billing);
+  expect(failed.quota.updated_at).toBe(updated.quota.updated_at);
+  expect(failed.quota.stale).toBe(true);
+  expect(failed.quota.last_error).toContain("HTTP 503");
 });
 
 test("xAI replay storage survives Worker eviction and fences late responses", async () => {
@@ -324,4 +383,52 @@ test("cancelled xAI devices cannot initialize", async () => {
     accountViewSchema,
   );
   expect(view.status).toBe("disconnected");
+});
+
+test.each(["Free", "SuperGrok"])(
+  "xAI %s accounts can use unreported quota when billing disables extra spending",
+  async (plan) => {
+    settings = { subscription_tier_display: plan };
+    partial = true;
+    noExtra = true;
+    const account = await ready();
+    const view = await accountReply(
+      account.stub.run({ action: "quota", force: true }),
+      accountViewSchema,
+    );
+    expect(view.quota.subscription?.tier_name).toBe(plan);
+    expect(view.quota.groups[0].buckets[0].used_percent).toBeNull();
+    await evictDurableObject(account.stub);
+    const response = await infer(config([account]));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(sent).toEqual([account.sub]);
+  },
+);
+
+test("xAI unreported quota honors observed limits and switches before output", async () => {
+  settings = { subscription_tier_display: "Free" };
+  partial = true;
+  noExtra = true;
+  const a = await ready(),
+    b = await ready();
+  reject.add(a.sub);
+  const response = await infer(
+    config([a, b], { account_selection: "session_affinity" }),
+  );
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(sent).toEqual([a.sub, b.sub]);
+  const view = await accountReply(
+    a.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(view.quota.xai_limits?.[0].model).toBe("grok-4.7");
+  sent.length = 0;
+  settings = { subscription_tier_display: "Free", allow_access: false };
+  await b.stub.run({ action: "quota", force: true });
+  const denied = await infer(config([b]));
+  expect(denied.status).toBe(503);
+  await denied.text();
+  expect(sent).toHaveLength(0);
 });

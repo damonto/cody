@@ -112,8 +112,13 @@ test("xAI cards show native quota and paid usage without reset controls", async 
     },
   });
   await mockApi(page, draft);
+  let releaseQuota!: () => void;
+  let quotaReady = new Promise<void>((resolve) => {
+    releaseQuota = resolve;
+  });
   await page.route("**/console/api/provider-accounts**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/quota")) await quotaReady;
     await route.fulfill({
       json: path.endsWith("/health")
         ? { items: [] }
@@ -124,16 +129,40 @@ test("xAI cards show native quota and paid usage without reset controls", async 
   });
   await page.goto("/console/providers/xai");
   await expect(
+    page.getByRole("status", { name: "Loading accounts" }),
+  ).toBeVisible();
+  await expect(page.getByText("Unknown plan", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Manage", exact: true }),
+  ).toHaveCount(0);
+  releaseQuota();
+  await expect(
+    page.getByRole("status", { name: "Loading accounts" }),
+  ).toHaveCount(0);
+  await expect(
     page.getByText("xai@example.test", { exact: true }),
   ).toBeVisible();
 
   await expect(page.getByText(/Extra Usage: Enabled/)).toBeVisible();
   await expect(page.getByText(/Used \$1\.00 \/ \$10\.00/)).toBeVisible();
   await expect(page.getByRole("button", { name: /^Reset/ })).toHaveCount(0);
+  quotaReady = new Promise<void>((resolve) => {
+    releaseQuota = resolve;
+  });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("status", { name: "Loading accounts" }),
+  ).toHaveCount(0);
   await expect(
     page.getByText("xai@example.test", { exact: true }),
   ).toBeVisible();
+  releaseQuota();
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true }),
+  ).toBeEnabled();
 });
 
 test("xAI account editor requests device authorization and supports cancellation", async ({
@@ -223,4 +252,149 @@ test("xAI account editor requests device authorization and supports cancellation
   ).toHaveAttribute("href", "https://auth.x.ai/activate");
   await page.getByRole("button", { name: "Cancel authorization" }).click();
   await expect(page.getByText("Authorization: cancelled")).toBeVisible();
+});
+
+test("xAI distinguishes first failures, partial billing and retained data", async ({
+  page,
+}) => {
+  const ref = crypto.randomUUID();
+  const draft: ConfigurationView = draftFixture();
+  draft.config.providers = [
+    xaiProviderSchema.parse({
+      type: "xai",
+      id: "xai",
+      disabled: false,
+      priority: 100,
+      models: ["grok-4.7"],
+      credentials: [
+        {
+          id: "one",
+          auth: { type: "oauth", account_ref: ref },
+          priority: 100,
+          disabled: false,
+        },
+      ],
+    }),
+  ];
+  const account = accountViewSchema.parse({
+    account_ref: ref,
+    provider_id: "xai",
+    status: "ready",
+    email: "partial@example.test",
+    project_id: null,
+    expires_at: null,
+    error: null,
+    models: [],
+    models_updated_at: null,
+    models_error: null,
+    quota: {
+      groups: [],
+      subscription: null,
+      updated_at: null,
+      stale: true,
+      last_error: "xAI account request failed (HTTP 503, upstream_error)",
+    },
+  });
+  await mockApi(page, draft);
+  await page.route("**/console/api/provider-accounts**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({
+      json: path.endsWith("/health")
+        ? { items: [] }
+        : path.endsWith("/quota")
+          ? account
+          : { items: [account] },
+    });
+  });
+  await page.goto("/console/providers/xai");
+  await expect(page.getByRole("alert")).toContainText(
+    "No quota data has been fetched yet.",
+  );
+  await expect(page.getByText(/Last successful data/)).toHaveCount(0);
+  account.quota = {
+    groups: [
+      {
+        id: "weekly",
+        label: "Subscription credits",
+        buckets: [
+          {
+            id: "weekly",
+            label: "Subscription credits",
+            window: "weekly",
+            used_percent: null,
+            remaining_fraction: null,
+            reset_at: new Date(Date.now() + 3600000).toISOString(),
+          },
+        ],
+      },
+    ],
+    subscription: null,
+    updated_at: Date.now(),
+    stale: false,
+    last_error: null,
+    xai_billing: {
+      monthly_limit: 10000,
+      included_used: 2500,
+      billing_period_end: null,
+      products: [],
+    },
+  };
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Quota unknown", { exact: true })).toBeVisible();
+  await expect(page.getByText("Unknown", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Monthly included usage: $25.00 / $100.00"),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText("100% left", { exact: true })).toHaveCount(0);
+  account.quota.xai_billing!.subscription_error =
+    "xAI account request failed (HTTP 503, upstream_error)";
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Subscription quota: xAI account request failed",
+  );
+  await expect(page.getByText(/Last successful data/)).toHaveCount(0);
+  account.quota.xai_billing!.subscription_error = null;
+  account.quota.last_error =
+    "xAI account request failed (HTTP 503, upstream_error)";
+  account.quota.stale = true;
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Last successful data is retained.",
+  );
+  await expect(
+    page.getByText("Monthly included usage: $25.00 / $100.00"),
+  ).toBeVisible();
+  account.quota.last_error = null;
+  account.quota.stale = false;
+  account.quota.extra_usage = {
+    is_enabled: false,
+    monthly_limit: 0,
+    used_credits: 0,
+    utilization: 100,
+  };
+  account.quota.xai_billing!.prepaid_balance = 0;
+  for (const [id, name] of [
+    ["free", "Free"],
+    ["supergrok", "SuperGrok"],
+  ]) {
+    account.quota.subscription = { tier_id: id, tier_name: name, credits: [] };
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(page.getByText(name, { exact: true })).toBeVisible();
+    await expect(page.getByText("Available", { exact: true })).toBeVisible();
+    await expect(page.getByText("Quota unknown", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByText(
+        "Remaining quota is not reported. Limits are enforced by xAI.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByText("100% left", { exact: true })).toHaveCount(0);
+  }
+  account.quota.xai_billing!.allow_access = false;
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(
+    page.getByText("Access restricted", { exact: true }),
+  ).toBeVisible();
 });

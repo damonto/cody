@@ -20,6 +20,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 
 - The Providers submenu contains only AI Gateway, Antigravity, Codex, Claude and xAI. Native providers are fixed singletons, disabled by default; expose neither creation nor deletion.
 - Native pages manage authorization, accounts and quotas directly. Top-right Settings dialogs own enabled state, priority, proxy, models, routes, retries and applicable account-selection/usage options. Antigravity/Codex selection and Codex automatic resets belong in those dialogs.
+- Native account lists share the card grid and footer in `features/oauth-accounts/`. Keep common actions consistent (`Refresh`, `Refresh all`, `Manage`); compose provider-specific actions such as Codex resets into the shared footer.
 - Codex account cards show plan/subscription days, quota windows, credits, reset credits and cooldown state, following CPA-Manager-Plus. Spending a reset always asks for confirmation.
 - Claude and xAI extra usage remains opt-in. xAI owns device authorization, quotas and independent settings; do not expose unsupported provider capabilities.
 

@@ -174,6 +174,12 @@ function parseLimit(
       const name = windowName(seconds);
       const resetAt = finite(window.reset_at);
       const resetAfter = finite(window.reset_after_seconds);
+      let resetAtIso: string | null = null;
+      if (resetAt !== null) {
+        resetAtIso = new Date(resetAt * 1000).toISOString();
+      } else if (resetAfter !== null) {
+        resetAtIso = new Date(Date.now() + resetAfter * 1000).toISOString();
+      }
       return [
         {
           id: key === "primary_window" ? "primary" : "secondary",
@@ -184,12 +190,7 @@ function parseLimit(
           window_seconds: seconds,
           used_percent: used,
           remaining_fraction: Math.min(1, Math.max(0, 1 - used / 100)),
-          reset_at:
-            resetAt !== null
-              ? new Date(resetAt * 1000).toISOString()
-              : resetAfter !== null
-                ? new Date(Date.now() + resetAfter * 1000).toISOString()
-                : null,
+          reset_at: resetAtIso,
         },
       ];
     },

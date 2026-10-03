@@ -2,6 +2,7 @@ import type { AccountLimit } from "../types.ts";
 import type { QuotaSnapshot } from "../oauth/schema.ts";
 import { object, text } from "./json.ts";
 import { xaiErrorDetails } from "./errors.ts";
+import { canUseXaiUnreportedQuota } from "../../shared/xai-quota.ts";
 
 export interface XaiLimit extends AccountLimit {
   model: string | null;
@@ -16,6 +17,7 @@ export function quotaAvailability(
     (group) => !group.model || group.model === model,
   );
   const known =
+    quota.xai_billing?.allow_access !== false &&
     !quota.stale &&
     quota.updated_at !== null &&
     now - quota.updated_at < 60000 &&
@@ -40,8 +42,7 @@ export function quotaAvailability(
     ...limits.map((limit) => limit.until),
   ].filter((until) => Number.isFinite(until) && until > now);
   return {
-    subscription:
-      known && !blocked && !limits.some((limit) => limit.kind === "spending"),
+    subscription: (known || canUseXaiUnreportedQuota(quota, now)) && !blocked,
     blocked,
     extra:
       known &&

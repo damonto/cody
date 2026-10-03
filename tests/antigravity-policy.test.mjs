@@ -212,7 +212,7 @@ test("updater caches only a valid bounded version and never forwards credentials
     requests++;
     assert.equal(request.headers.get("authorization"), null);
     assert.equal(request.headers.get("user-agent"), "electron-builder");
-    assert.equal(request.redirect, "error");
+    assert.equal(request.redirect, "manual");
     return new Response("version: '2.10.3'\nfiles:\n  - url: ignored.zip\n");
   };
   assert.equal(await antigravityVersion(cache), "2.9.1");
