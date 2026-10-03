@@ -1,17 +1,9 @@
-import {
-  CodexAccountSelection,
-  ProviderType,
-} from "../../../../src/config/values.ts";
-
 import { z } from "zod";
 import {
   codexProviderFormSchema,
   nameSchema,
 } from "../../../../src/config/schema";
-import type {
-  CodexProviderConfig,
-  ProviderConfig,
-} from "../../../../src/config/types";
+import type { CodexProviderConfig } from "../../../../src/config/types";
 
 import {
   accountEditorSchema,
@@ -23,29 +15,6 @@ export {
   newAccount,
   type AccountFormValues,
 } from "../oauth-accounts/form-options";
-export function newCodexProvider(): CodexProviderConfig {
-  return {
-    type: ProviderType.Codex,
-    id: `new-${crypto.randomUUID()}`,
-    name: "Codex",
-    priority: 100,
-    disabled: true,
-    models: [],
-    credentials: [],
-    supports_websocket: true,
-    supports_context_management: false,
-    supports_web_search: true,
-    anthropic_1m_context: false,
-    emulate_claude_code: false,
-    account_selection: CodexAccountSelection.RoundRobin,
-    auto_consume_resets: false,
-  };
-}
-export function codexProvider(
-  provider: ProviderConfig | null,
-): CodexProviderConfig {
-  return provider?.type === ProviderType.Codex ? provider : newCodexProvider();
-}
 
 export const settingsEditorSchema = codexProviderFormSchema
   .omit({

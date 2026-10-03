@@ -1,3 +1,4 @@
+import { newAntigravityProvider } from "./helpers/native-provider-fixtures.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -15,7 +16,6 @@ import {
   UpstreamAttemptTimeoutError,
 } from "../src/gateway/http/upstream-retry.ts";
 import {
-  newAntigravityProvider,
   applySettings,
   settingsFormValues,
 } from "../console/src/features/antigravity/form-options.ts";

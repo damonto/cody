@@ -1,13 +1,12 @@
+import { newCodexProvider } from "./helpers/native-provider-fixtures.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
   accountEditorSchema,
   applyAccount,
   applySettings,
-  codexProvider,
   moveAccount,
   newAccount,
-  newCodexProvider,
   setAccountDisabled,
   settingsFormValues,
 } from "../console/src/features/codex/form-options.ts";
@@ -24,14 +23,12 @@ function account() {
 
 test("the fixed Codex provider starts disabled with round robin and no resets spent", () => {
   const provider = newCodexProvider();
-  assert.match(provider.id, /^new-/);
+  assert.match(provider.id, /^[0-9a-f-]{36}$/);
   assert.equal(provider.disabled, true);
   assert.equal(provider.account_selection, "round_robin");
   assert.equal(provider.auto_consume_resets, false);
   assert.deepEqual(provider.credentials, []);
   assert.deepEqual(codexProviderSchema.parse(provider), provider);
-  assert.deepEqual({ ...codexProvider(null), id: provider.id }, provider);
-  assert.equal(codexProvider(provider), provider);
 });
 
 test("an account needs a ChatGPT authorization before it can be saved", () => {

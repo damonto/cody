@@ -25,18 +25,14 @@ import {
 import { CodexAccounts } from "@/features/codex/accounts";
 import { AccountForm } from "@/features/codex/account-form";
 import { CodexSettingsForm } from "@/features/codex/settings-form";
-import {
-  codexProvider,
-  moveAccount,
-  setAccountDisabled,
-} from "@/features/codex/form-options";
+import { moveAccount, setAccountDisabled } from "@/features/codex/form-options";
 import { useNativeProviderMutation } from "@/features/providers/api";
 
 type EditorAction =
   | { kind: "settings" }
   | { kind: "account"; credentialId?: string }
   | { kind: "remove"; credentialId: string };
-type Editor = { snapshot: NativeResources } & EditorAction;
+type Editor = { snapshot: NativeResources<"codex"> } & EditorAction;
 
 export default function Codex() {
   const configuration = useNativeResources("codex");
@@ -50,16 +46,14 @@ export default function Codex() {
         retry={() => void configuration.refetch()}
       />
     );
-  const provider = codexProvider(configuration.data.provider);
-  const editingProvider = editor
-    ? codexProvider(editor.snapshot.provider)
-    : provider;
+  const provider = configuration.data.provider;
+  const editingProvider = editor?.snapshot.provider ?? provider;
   const open = (action: EditorAction) => {
     save.reset();
     setEditor({ ...action, snapshot: structuredClone(configuration.data) });
   };
   const persistOrder = async (
-    snapshot: NativeResources,
+    snapshot: NativeResources<"codex">,
     next: CodexProviderConfig,
   ) => {
     await save.mutateAsync({
@@ -119,11 +113,6 @@ export default function Codex() {
           Settings
         </Button>
       </PageHeading>
-      {!configuration.data.provider && (
-        <p className="text-sm text-muted-foreground">
-          Save provider settings before adding accounts.
-        </p>
-      )}
       {!editor && save.error && (
         <ErrorNotice
           error={save.error}
@@ -132,7 +121,7 @@ export default function Codex() {
       )}
       <CodexAccounts
         provider={provider}
-        pending={save.isPending || !configuration.data.provider}
+        pending={save.isPending}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}
         onRemove={(credentialId) => open({ kind: "remove", credentialId })}
@@ -184,7 +173,7 @@ export default function Codex() {
               groups={editor.snapshot.groups}
               version={editor.snapshot.version}
               configurationVersion={configuration.data.version}
-              pending={save.isPending || !configuration.data.provider}
+              pending={save.isPending}
               onSave={saveEditor}
               close={close}
             />

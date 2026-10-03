@@ -1314,6 +1314,57 @@ async function savedNative(proxy = false) {
   return control().save(config, 0, actor);
 }
 
+test("migrated defaults authorize and save a first account without saving settings", async () => {
+  const saved = await control().save({ providers: [], api_keys: [] }, 0, actor);
+  const migration = bindings.TEST_MIGRATIONS.find(
+    (item) => item.name === "0015_native_provider_defaults.sql",
+  )!;
+  await env.CODY_DB.batch(
+    migration.queries.map((sql) => env.CODY_DB.prepare(sql)),
+  );
+  const resource = await admin("/native-providers/antigravity");
+  const { item: provider } = z
+    .object({ item: z.object({ id: z.uuid() }) })
+    .parse(await resource.json());
+  const opened = await admin("/oauth/sessions", "POST", {
+    provider_id: provider.id,
+    provider_type: "antigravity",
+    credential_id: crypto.randomUUID(),
+    version: saved.version,
+  });
+  expect(opened.status).toBe(200);
+  const session = sessionViewSchema.parse(await opened.json());
+  expect(
+    (
+      await admin(`/oauth/sessions/${session.id}/callback`, "POST", {
+        redirect_url: callback(session),
+      })
+    ).status,
+  ).toBe(200);
+  await initialize(env.PROVIDER_OAUTH_ACCOUNT.getByName(session.account_ref));
+  const created = await admin(`/providers/${provider.id}/credentials`, "POST", {
+    version: saved.version,
+    operation_id: crypto.randomUUID(),
+    credential: {
+      name: "First account",
+      priority: 100,
+      disabled: false,
+      auth: { type: "oauth", account_ref: session.account_ref },
+    },
+  });
+  expect(created.status).toBe(201);
+  const current = (await control().current()).providers.find(
+    (item) => item.id === provider.id,
+  )!;
+  expect(current.disabled).toBe(true);
+  expect(current.models).toEqual([]);
+  expect(current.credentials[0].auth).toEqual({
+    type: "oauth",
+    account_ref: session.account_ref,
+  });
+  expect((await control().revision(saved.version)).providers).toEqual([]);
+});
+
 test("admin OAuth sessions require the current version and a saved provider", async () => {
   const saved = await savedNative();
   const connection = {

@@ -1,8 +1,4 @@
-import {
-  CodexAccountSelection,
-  CredentialAuthType,
-  ProviderType,
-} from "../../../../src/config/values.ts";
+import { CredentialAuthType } from "../../../../src/config/values.ts";
 
 import { z } from "zod";
 import {
@@ -10,10 +6,7 @@ import {
   nameSchema,
   oauthCredentialSchema,
 } from "../../../../src/config/schema";
-import type {
-  AntigravityProviderConfig,
-  ProviderConfig,
-} from "../../../../src/config/types";
+import type { AntigravityProviderConfig } from "../../../../src/config/types";
 
 export const accountEditorSchema = oauthCredentialSchema.extend({
   rowId: z.string().min(1),
@@ -35,30 +28,6 @@ export function newAccount(): AccountFormValues {
     disabled: false,
     auth: { type: CredentialAuthType.OAuth, account_ref: "" },
   };
-}
-export function newAntigravityProvider(): AntigravityProviderConfig {
-  return {
-    type: ProviderType.Antigravity,
-    id: `new-${crypto.randomUUID()}`,
-    name: "Antigravity",
-    account_selection: CodexAccountSelection.RoundRobin,
-    priority: 100,
-    disabled: true,
-    models: [],
-    credentials: [],
-    supports_websocket: false,
-    supports_context_management: false,
-    supports_web_search: false,
-    anthropic_1m_context: false,
-    emulate_claude_code: false,
-  };
-}
-export function antigravityProvider(
-  provider: ProviderConfig | null,
-): AntigravityProviderConfig {
-  return provider?.type === ProviderType.Antigravity
-    ? provider
-    : newAntigravityProvider();
 }
 
 export const settingsEditorSchema = antigravityProviderFormSchema

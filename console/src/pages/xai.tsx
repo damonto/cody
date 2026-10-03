@@ -25,18 +25,14 @@ import {
 import { XaiAccounts } from "@/features/xai/accounts";
 import { AccountForm } from "@/features/xai/account-form";
 import { XaiSettingsForm } from "@/features/xai/settings-form";
-import {
-  xaiProvider,
-  moveAccount,
-  setAccountDisabled,
-} from "@/features/xai/form-options";
+import { moveAccount, setAccountDisabled } from "@/features/xai/form-options";
 import { useNativeProviderMutation } from "@/features/providers/api";
 
 type EditorAction =
   | { kind: "settings" }
   | { kind: "account"; credentialId?: string }
   | { kind: "remove"; credentialId: string };
-type Editor = { snapshot: NativeResources } & EditorAction;
+type Editor = { snapshot: NativeResources<"xai"> } & EditorAction;
 
 export default function Xai() {
   const configuration = useNativeResources("xai");
@@ -50,16 +46,14 @@ export default function Xai() {
         retry={() => void configuration.refetch()}
       />
     );
-  const provider = xaiProvider(configuration.data.provider);
-  const editingProvider = editor
-    ? xaiProvider(editor.snapshot.provider)
-    : provider;
+  const provider = configuration.data.provider;
+  const editingProvider = editor?.snapshot.provider ?? provider;
   const open = (action: EditorAction) => {
     save.reset();
     setEditor({ ...action, snapshot: structuredClone(configuration.data) });
   };
   const persistOrder = async (
-    snapshot: NativeResources,
+    snapshot: NativeResources<"xai">,
     next: XaiProviderConfig,
   ) => {
     await save.mutateAsync({
@@ -119,11 +113,6 @@ export default function Xai() {
           Settings
         </Button>
       </PageHeading>
-      {!configuration.data.provider && (
-        <p className="text-sm text-muted-foreground">
-          Save provider settings before adding accounts.
-        </p>
-      )}
       {!editor && save.error && (
         <ErrorNotice
           error={save.error}
@@ -132,7 +121,7 @@ export default function Xai() {
       )}
       <XaiAccounts
         provider={provider}
-        pending={save.isPending || !configuration.data.provider}
+        pending={save.isPending}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}
         onRemove={(credentialId) => open({ kind: "remove", credentialId })}
@@ -184,7 +173,7 @@ export default function Xai() {
               groups={editor.snapshot.groups}
               version={editor.snapshot.version}
               configurationVersion={configuration.data.version}
-              pending={save.isPending || !configuration.data.provider}
+              pending={save.isPending}
               onSave={saveEditor}
               close={close}
             />

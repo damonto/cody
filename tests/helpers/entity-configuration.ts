@@ -83,8 +83,12 @@ export async function checkIncrementalConfiguration(
   for (const table of entityTables)
     if (table !== "providers")
       assert.deepEqual(after[table], before[table], table);
-  assert.equal(after.providers[0].version, 2);
-  assert.equal(after.providers[0].created_at, before.providers[0].created_at);
+  const updatedProvider = after.providers.find((row) => row.id === id)!;
+  assert.equal(updatedProvider.version, 2);
+  assert.equal(
+    updatedProvider.created_at,
+    before.providers.find((row) => row.id === id)!.created_at,
+  );
 
   const routes = first.config.model_routes;
   const swapped = await routing.save(operation(2), {

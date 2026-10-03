@@ -1,13 +1,5 @@
-import {
-  CodexAccountSelection,
-  ProviderType,
-} from "../../../../src/config/values.ts";
-
 import { xaiProviderFormSchema } from "../../../../src/config/schema";
-import type {
-  XaiProviderConfig,
-  ProviderConfig,
-} from "../../../../src/config/types";
+import type { XaiProviderConfig } from "../../../../src/config/types";
 
 import {
   accountEditorSchema,
@@ -19,30 +11,6 @@ export {
   newAccount,
   type AccountFormValues,
 } from "../oauth-accounts/form-options";
-export function newXaiProvider(): XaiProviderConfig {
-  return {
-    type: ProviderType.Xai,
-    id: `new-${crypto.randomUUID()}`,
-    name: "Xai",
-    priority: 100,
-    disabled: true,
-    models: [],
-    credentials: [],
-    supports_websocket: false,
-    supports_context_management: false,
-    supports_web_search: false,
-    anthropic_1m_context: false,
-    emulate_claude_code: false,
-    account_selection: CodexAccountSelection.RoundRobin,
-    allow_extra_usage: false,
-    inject_x_search: false,
-  };
-}
-export function xaiProvider(
-  provider: ProviderConfig | null,
-): XaiProviderConfig {
-  return provider?.type === ProviderType.Xai ? provider : newXaiProvider();
-}
 
 export {
   settingsEditorSchema,

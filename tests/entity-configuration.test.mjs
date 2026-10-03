@@ -137,14 +137,20 @@ test("masked saves retain identities and secrets; stale writes have no effects",
 test("transaction errors roll back entities, snapshot, secrets and version", async () => {
   const db = await database();
   try {
+    const providersBefore = await db
+      .prepare("SELECT * FROM providers ORDER BY id")
+      .all();
     await db.exec(
       "CREATE TRIGGER reject_config_audit BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
     );
     const store = new ControlStore(db, key);
     await assert.rejects(store.save(config(), 0, "test"), /audit unavailable/);
     assert.equal((await store.state()).version, 0);
+    assert.deepEqual(
+      await db.prepare("SELECT * FROM providers ORDER BY id").all(),
+      providersBefore,
+    );
     for (const table of [
-      "providers",
       "clients",
       "secret_versions",
       "config_snapshots",

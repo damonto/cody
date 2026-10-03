@@ -123,6 +123,7 @@ for (const [dialect, create] of Object.entries(factories)) {
       "0010_xai_oauth_accounts.sql",
       "0011_correct_expired_usage.sql",
       "0012_entity_configuration.sql",
+      "0015_native_provider_defaults.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(

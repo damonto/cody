@@ -1,3 +1,4 @@
+import { newAntigravityProvider } from "./helpers/native-provider-fixtures.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { translateRequest } from "../src/providers/antigravity/request.ts";
@@ -13,7 +14,6 @@ import {
   refreshAntigravityVersion,
 } from "../src/providers/antigravity/version.ts";
 import {
-  newAntigravityProvider,
   settingsFormValues,
   applySettings,
   applyAccount,

@@ -1,13 +1,12 @@
+import { newAntigravityProvider } from "./helpers/native-provider-fixtures.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
   accountEditorSchema,
-  antigravityProvider,
   applyAccount,
   applySettings,
   moveAccount,
   newAccount,
-  newAntigravityProvider,
   settingsEditorSchema,
   settingsFormValues,
 } from "../console/src/features/antigravity/form-options.ts";
@@ -22,13 +21,11 @@ function account() {
 
 test("the fixed provider starts disabled and needs no fabricated accounts or models", () => {
   const provider = newAntigravityProvider();
-  assert.match(provider.id, /^new-/);
+  assert.match(provider.id, /^[0-9a-f-]{36}$/);
   assert.equal(provider.disabled, true);
   assert.deepEqual(provider.credentials, []);
   assert.deepEqual(provider.models, []);
   assert.deepEqual(antigravityProviderSchema.parse(provider), provider);
-  assert.deepEqual({ ...antigravityProvider(null), id: provider.id }, provider);
-  assert.equal(antigravityProvider(provider), provider);
 });
 
 test("pending accounts keep separate stable identities without inventing OAuth references", () => {

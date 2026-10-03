@@ -26,7 +26,6 @@ import { ClaudeAccounts } from "@/features/claude/accounts";
 import { AccountForm } from "@/features/claude/account-form";
 import { ClaudeSettingsForm } from "@/features/claude/settings-form";
 import {
-  claudeProvider,
   moveAccount,
   setAccountDisabled,
 } from "@/features/claude/form-options";
@@ -36,7 +35,7 @@ type EditorAction =
   | { kind: "settings" }
   | { kind: "account"; credentialId?: string }
   | { kind: "remove"; credentialId: string };
-type Editor = { snapshot: NativeResources } & EditorAction;
+type Editor = { snapshot: NativeResources<"claude"> } & EditorAction;
 
 export default function Claude() {
   const configuration = useNativeResources("claude");
@@ -50,16 +49,14 @@ export default function Claude() {
         retry={() => void configuration.refetch()}
       />
     );
-  const provider = claudeProvider(configuration.data.provider);
-  const editingProvider = editor
-    ? claudeProvider(editor.snapshot.provider)
-    : provider;
+  const provider = configuration.data.provider;
+  const editingProvider = editor?.snapshot.provider ?? provider;
   const open = (action: EditorAction) => {
     save.reset();
     setEditor({ ...action, snapshot: structuredClone(configuration.data) });
   };
   const persistOrder = async (
-    snapshot: NativeResources,
+    snapshot: NativeResources<"claude">,
     next: ClaudeProviderConfig,
   ) => {
     await save.mutateAsync({
@@ -119,11 +116,6 @@ export default function Claude() {
           Settings
         </Button>
       </PageHeading>
-      {!configuration.data.provider && (
-        <p className="text-sm text-muted-foreground">
-          Save provider settings before adding accounts.
-        </p>
-      )}
       {!editor && save.error && (
         <ErrorNotice
           error={save.error}
@@ -132,7 +124,7 @@ export default function Claude() {
       )}
       <ClaudeAccounts
         provider={provider}
-        pending={save.isPending || !configuration.data.provider}
+        pending={save.isPending}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}
         onRemove={(credentialId) => open({ kind: "remove", credentialId })}
@@ -184,7 +176,7 @@ export default function Claude() {
               groups={editor.snapshot.groups}
               version={editor.snapshot.version}
               configurationVersion={configuration.data.version}
-              pending={save.isPending || !configuration.data.provider}
+              pending={save.isPending}
               onSave={saveEditor}
               close={close}
             />

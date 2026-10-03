@@ -25,17 +25,14 @@ import {
 import { AntigravityAccounts } from "@/features/antigravity/accounts";
 import { AccountForm } from "@/features/antigravity/account-form";
 import { AntigravitySettingsForm } from "@/features/antigravity/settings-form";
-import {
-  antigravityProvider,
-  moveAccount,
-} from "@/features/antigravity/form-options";
+import { moveAccount } from "@/features/antigravity/form-options";
 import { useNativeProviderMutation } from "@/features/providers/api";
 
 type EditorAction =
   | { kind: "settings" }
   | { kind: "account"; credentialId?: string }
   | { kind: "remove"; credentialId: string };
-type Editor = { snapshot: NativeResources } & EditorAction;
+type Editor = { snapshot: NativeResources<"antigravity"> } & EditorAction;
 
 export default function Antigravity() {
   const configuration = useNativeResources("antigravity");
@@ -49,16 +46,14 @@ export default function Antigravity() {
         retry={() => void configuration.refetch()}
       />
     );
-  const provider = antigravityProvider(configuration.data.provider);
-  const editingProvider = editor
-    ? antigravityProvider(editor.snapshot.provider)
-    : provider;
+  const provider = configuration.data.provider;
+  const editingProvider = editor?.snapshot.provider ?? provider;
   const open = (action: EditorAction) => {
     save.reset();
     setEditor({ ...action, snapshot: structuredClone(configuration.data) });
   };
   const persistOrder = async (
-    snapshot: NativeResources,
+    snapshot: NativeResources<"antigravity">,
     next: AntigravityProviderConfig,
   ) => {
     await save.mutateAsync({
@@ -118,11 +113,6 @@ export default function Antigravity() {
           Settings
         </Button>
       </PageHeading>
-      {!configuration.data.provider && (
-        <p className="text-sm text-muted-foreground">
-          Save provider settings before adding accounts.
-        </p>
-      )}
       {!editor && save.error && (
         <ErrorNotice
           error={save.error}
@@ -131,7 +121,7 @@ export default function Antigravity() {
       )}
       <AntigravityAccounts
         provider={provider}
-        pending={save.isPending || !configuration.data.provider}
+        pending={save.isPending}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}
         onRemove={(credentialId) => open({ kind: "remove", credentialId })}
@@ -177,7 +167,7 @@ export default function Antigravity() {
               groups={editor.snapshot.groups}
               version={editor.snapshot.version}
               configurationVersion={configuration.data.version}
-              pending={save.isPending || !configuration.data.provider}
+              pending={save.isPending}
               onSave={saveEditor}
               close={close}
             />

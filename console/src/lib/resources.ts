@@ -1,3 +1,7 @@
+import type {
+  OAuthProviderConfig,
+  ProviderConfig,
+} from "../../../src/config/types";
 import {
   queryOptions,
   useQuery,
@@ -48,17 +52,27 @@ export const reportingOptions = options(resourceKeys.reporting, (signal) =>
 export const searchOptions = options(resourceKeys.search, (signal) =>
   read(rpc.settings["web-search"].$get({}, { init: { signal } })),
 );
-export const nativeOptions = (
-  type: "antigravity" | "codex" | "claude" | "xai",
-) =>
-  options([...resourceKeys.native, type], (signal) =>
-    read(
+type NativeType = OAuthProviderConfig["type"];
+function requireNativeProvider<T extends NativeType>(
+  provider: ProviderConfig | null,
+  type: T,
+): asserts provider is Extract<OAuthProviderConfig, { type: T }> {
+  if (!provider || provider.type !== type)
+    throw new Error(
+      "Provider is not initialized. Apply database migrations and retry.",
+    );
+}
+export const nativeOptions = <T extends NativeType>(type: T) =>
+  options([...resourceKeys.native, type], async (signal) => {
+    const result = await read(
       rpc["native-providers"][":type"].$get(
         { param: { type } },
         { init: { signal } },
       ),
-    ),
-  );
+    );
+    requireNativeProvider(result.item, type);
+    return { ...result, item: result.item };
+  });
 export function useReporting() {
   return useQuery(reportingOptions);
 }
@@ -166,12 +180,12 @@ export function useSettingsResources() {
 export type SettingsResources = NonNullable<
   ReturnType<typeof useSettingsResources>["data"]
 >;
-export function useNativeResources(type: Parameters<typeof nativeOptions>[0]) {
+export function useNativeResources<T extends NativeType>(type: T) {
   return combine({
     provider: useQuery(nativeOptions(type)),
     groups: useQuery(proxiesOptions),
   });
 }
-export type NativeResources = NonNullable<
-  ReturnType<typeof useNativeResources>["data"]
+export type NativeResources<T extends NativeType> = NonNullable<
+  ReturnType<typeof useNativeResources<T>>["data"]
 >;

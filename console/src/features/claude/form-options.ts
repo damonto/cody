@@ -1,13 +1,5 @@
-import {
-  CodexAccountSelection,
-  ProviderType,
-} from "../../../../src/config/values.ts";
-
 import { claudeProviderFormSchema } from "../../../../src/config/schema";
-import type {
-  ClaudeProviderConfig,
-  ProviderConfig,
-} from "../../../../src/config/types";
+import type { ClaudeProviderConfig } from "../../../../src/config/types";
 
 import {
   accountEditorSchema,
@@ -19,31 +11,6 @@ export {
   newAccount,
   type AccountFormValues,
 } from "../oauth-accounts/form-options";
-export function newClaudeProvider(): ClaudeProviderConfig {
-  return {
-    type: ProviderType.Claude,
-    id: `new-${crypto.randomUUID()}`,
-    name: "Claude",
-    priority: 100,
-    disabled: true,
-    models: [],
-    credentials: [],
-    supports_websocket: false,
-    supports_context_management: false,
-    supports_web_search: false,
-    anthropic_1m_context: false,
-    emulate_claude_code: false,
-    account_selection: CodexAccountSelection.RoundRobin,
-    allow_extra_usage: false,
-  };
-}
-export function claudeProvider(
-  provider: ProviderConfig | null,
-): ClaudeProviderConfig {
-  return provider?.type === ProviderType.Claude
-    ? provider
-    : newClaudeProvider();
-}
 
 export {
   settingsEditorSchema,
