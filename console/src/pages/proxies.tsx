@@ -93,6 +93,7 @@ export default function Proxies() {
         <ProxyGroupCard
           key={group.id}
           group={group}
+          providers={config.providers}
           version={configuration.data.version}
           live={liveGroups.get(group.id)}
           timeZone={config.reporting?.time_zone}

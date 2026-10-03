@@ -35,6 +35,77 @@ function twoNodeFixture() {
   return draft;
 }
 
+test("fixed bindings display provider, credential and proxy names", async ({
+  page,
+}) => {
+  const draft = fixture();
+  const provider = draft.config.providers[0];
+  provider.id = "83ccf1b4-e14b-4ff4-9283-1038bc312b4d";
+  provider.name = "Primary gateway";
+  provider.proxy_group = "US";
+  const credential = provider.credentials[0];
+  credential.id = "a2c62f70-64ec-4482-a6cc-6f4f19f6e9b1";
+  credential.name = "Production key";
+  credential.proxy_group = "US";
+  const proxy = draft.config.proxy_groups[0].proxies[0];
+  proxy.id = "8e9c5b11-f93c-43d2-8837-728027a56f1c";
+  proxy.name = "US West";
+  draft.config.api_keys[0].providers = [provider.id];
+  draft.config.model_prices = [];
+  await mockApi(page, draft);
+  await page.route("**/console/api/runtime/proxy-groups", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            group_id: "US",
+            proxies: [],
+            bindings: [
+              { provider_id: provider.id, proxy_id: proxy.id, created_at: 1 },
+              {
+                provider_id: provider.id,
+                credential_id: credential.id,
+                proxy_id: proxy.id,
+                created_at: 2,
+              },
+              {
+                provider_id: provider.id,
+                credential_id: "missing-credential",
+                proxy_id: proxy.id,
+                created_at: 3,
+              },
+              {
+                provider_id: "missing-provider",
+                proxy_id: "missing-proxy",
+                created_at: 4,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/console/proxies");
+  const bindings = page.getByRole("table").filter({
+    has: page.getByRole("columnheader", { name: "Provider / credential" }),
+  });
+  const rows = bindings.locator("tbody").getByRole("row");
+  await expect(rows).toHaveCount(4);
+  for (const [index, owner, proxyName] of [
+    [0, "Primary gateway / inherited credentials", "US West"],
+    [1, "Primary gateway / Production key", "US West"],
+    [2, "Primary gateway / Unknown credential", "US West"],
+    [3, "Unknown provider / inherited credentials", "Unknown proxy"],
+  ] as const) {
+    const cells = rows.nth(index).getByRole("cell");
+    await expect(cells.nth(0)).toHaveText(owner);
+    await expect(cells.nth(1)).toHaveText(proxyName);
+  }
+  for (const id of [provider.id, credential.id, proxy.id]) {
+    await expect(bindings).not.toContainText(id);
+  }
+});
+
 test("a standalone node dialog appends to the selected group and preserves its settings and other groups", async ({
   page,
 }) => {

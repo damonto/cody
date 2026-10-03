@@ -1,5 +1,8 @@
 import { Plus, Trash2 } from "lucide-react";
-import type { ProxyGroupConfig } from "../../../../src/config/types";
+import type {
+  ProviderConfig,
+  ProxyGroupConfig,
+} from "../../../../src/config/types";
 import type { ProxyGroupStatus } from "../../../../src/gateway/proxies/schema";
 import { date } from "@/lib/format";
 import { DataTable } from "@/components/common";
@@ -17,6 +20,7 @@ import { ProxyNodeRow } from "./node-row";
 
 interface ProxyGroupCardProps {
   readonly group: ProxyGroupConfig;
+  readonly providers: readonly ProviderConfig[];
   readonly version: number;
   readonly live: ProxyGroupStatus | undefined;
   readonly timeZone: string | undefined;
@@ -31,6 +35,7 @@ interface ProxyGroupCardProps {
 
 export function ProxyGroupCard({
   group,
+  providers,
   version,
   live,
   timeZone,
@@ -43,6 +48,21 @@ export function ProxyGroupCard({
   clearHealth,
 }: ProxyGroupCardProps) {
   const healthById = new Map(live?.proxies.map((node) => [node.id, node]));
+  const providersById = new Map(
+    providers.map((provider) => [
+      provider.id,
+      {
+        name: provider.name,
+        credentials: new Map(
+          provider.credentials.map((credential) => [
+            credential.id,
+            credential.name,
+          ]),
+        ),
+      },
+    ]),
+  );
+  const proxyNames = new Map(group.proxies.map((node) => [node.id, node.name]));
   return (
     <Card className="shadow-none">
       <CardHeader className="flex-row items-center justify-between gap-3">
@@ -121,13 +141,23 @@ export function ProxyGroupCard({
                 {
                   id: "owner",
                   header: "Provider / credential",
-                  cell: ({ row }) =>
-                    `${row.original.provider_id}${row.original.credential_id ? ` / ${row.original.credential_id}` : " / inherited credentials"}`,
+                  cell: ({ row }) => {
+                    const provider = providersById.get(
+                      row.original.provider_id,
+                    );
+                    const credentialName = row.original.credential_id
+                      ? (provider?.credentials.get(
+                          row.original.credential_id,
+                        ) ?? "Unknown credential")
+                      : "inherited credentials";
+                    return `${provider?.name ?? "Unknown provider"} / ${credentialName}`;
+                  },
                 },
                 {
                   id: "proxy",
                   header: "Proxy",
-                  cell: ({ row }) => row.original.proxy_id,
+                  cell: ({ row }) =>
+                    proxyNames.get(row.original.proxy_id) ?? "Unknown proxy",
                 },
                 {
                   id: "created",
