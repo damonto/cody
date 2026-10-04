@@ -1,3 +1,4 @@
+import { antigravityFamilyModels } from "../../../../src/shared/antigravity-models.ts";
 import { useResourceEditor } from "@/lib/use-resource-editor";
 import { ResourceConflict } from "@/components/form/resource-conflict";
 import type { z } from "zod";
@@ -46,18 +47,41 @@ export function PriceForm({
   const save = useSaveModelPrice();
   const [trial, setTrial] = useState<ModelPrice | null>(null);
   const [tab, setTab] = useState("rates");
-  const initialPrice: ModelPrice = snapshot.prices?.find(
-    (entry) => entry.provider_id === providerId && entry.model === model,
-  ) ?? { provider_id: providerId, model };
+  const provider = snapshot.providers.find((item) => item.id === providerId);
+  if (!provider) throw new Error("Provider is missing from the configuration");
+  const members =
+    provider.type === "antigravity"
+      ? antigravityFamilyModels(provider.models, model)
+      : [];
+  const family = members.length > 0;
+  const physicalModels = family ? members : [model];
+  const prices = physicalModels.map((name) =>
+    snapshot.prices?.find(
+      (entry) => entry.provider_id === providerId && entry.model === name,
+    ),
+  );
+  const pricingValues = prices.map((price) => price?.pricing ?? null);
+  const mixed =
+    new Set(pricingValues.map((price) => JSON.stringify(price))).size > 1;
+  const initialPrice: ModelPrice = {
+    ...prices[0],
+    provider_id: providerId,
+    model,
+    ...(mixed ? { pricing: undefined } : {}),
+  };
+  const etag = family ? JSON.stringify(pricingValues) : undefined;
   const editor = useResourceEditor({
     version: snapshot.version,
     item: initialPrice,
+    etag,
   });
   const initial: z.input<typeof priceEditorSchema> = editor.initial;
-  const provider = snapshot.providers.find((item) => item.id === providerId);
-  const modelId = provider?.model_settings?.[model]?.id;
+  const modelId = provider.model_settings?.[physicalModels[0]]?.id;
   if (!modelId)
     throw new Error("Provider model is missing from the configuration");
+  const contextWindows = physicalModels.map(
+    (name) => provider.model_settings?.[name]?.context_window,
+  );
   const form = useAppForm({
     ...priceFormOptions,
     defaultValues: initial,
@@ -66,14 +90,21 @@ export function PriceForm({
       try {
         const saved = await save.mutateAsync({
           modelId,
+          family,
           pricing: price.pricing,
           version: editor.version,
         });
         const item =
           saved.item === null
             ? { provider_id: providerId, model }
-            : modelPriceSchema.parse(saved.item);
-        editor.accept({ version: saved.version, item });
+            : { ...modelPriceSchema.parse(saved.item), model };
+        editor.accept({
+          version: saved.version,
+          item,
+          etag: family
+            ? JSON.stringify(physicalModels.map(() => item.pricing ?? null))
+            : undefined,
+        });
         formApi.reset(item);
       } catch {
         /* Keep the form for correction. */
@@ -111,7 +142,8 @@ export function PriceForm({
               version={snapshot.version}
               providerId={providerId}
               modelId={modelId}
-              contextWindow={provider.model_settings?.[model]?.context_window}
+              contextWindows={contextWindows}
+              family={family}
             />
             <form
               className="space-y-6 pt-4"
@@ -194,6 +226,7 @@ export function PriceForm({
                   editor.accept({
                     version: snapshot.version,
                     item: initialPrice,
+                    etag,
                   });
                   form.reset(initialPrice);
                   save.reset();

@@ -18,6 +18,7 @@ import {
 } from "../../src/reporting/store.ts";
 import { usage } from "./fixtures.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
+import { parseUsageEvent } from "../../src/telemetry/schema.ts";
 import { checkExpiredUsageCorrection } from "../helpers/expired-usage.ts";
 
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
@@ -48,6 +49,37 @@ beforeEach(async () => {
   );
 });
 afterEach(() => vi.restoreAllMocks());
+
+test("requests without upstream model metadata remain readable beside new events", async () => {
+  const historical = usage("historical-model", now - HOUR_MS);
+  delete historical.upstream_model;
+  const parsed = parseUsageEvent(historical)!;
+  expect(parsed).toEqual(historical);
+  await ingestUsage(bindings.CODY_DB, parsed);
+  const current = usage("current-model", now - HOUR_MS + 1);
+  current.model = "gemini-3.8-flash";
+  current.upstream_model = "gemini-3.8-flash-high";
+  await ingestUsage(bindings.CODY_DB, current);
+
+  const stored = await bindings.CODY_DB.prepare(
+    "SELECT details_json FROM requests WHERE request_id = ?",
+  )
+    .bind(historical.request_id)
+    .first<{ details_json: string }>();
+  expect(JSON.parse(stored!.details_json)).not.toHaveProperty("upstream_model");
+
+  const list = await call("period=day&limit=50", "requests");
+  expect(list.status).toBe(200);
+  const body = await list.json<{ items: UsageEvent[] }>();
+  expect(body.items).toEqual([current, historical]);
+  for (const event of [historical, current]) {
+    const detail = await call("", `requests/${event.request_id}`);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toEqual(event);
+  }
+  for (const upstream_model of [null, 42, {}])
+    expect(() => parseUsageEvent({ ...historical, upstream_model })).toThrow();
+});
 
 test("late terminal usage corrects provisional failures and all rollup dimensions", async () => {
   await checkExpiredUsageCorrection(bindings.CODY_DB);
@@ -519,4 +551,50 @@ test("report APIs validate ranges and expose historical boundary limitations", a
     models: ["real-model"],
     clients: ["client"],
   });
+});
+
+test("Persisted canonical models share report filters and ranking without rewriting names", async () => {
+  const providerId = (await bindings.CODY_DB.prepare(
+    "SELECT id FROM providers WHERE type = 'antigravity'",
+  ).first<{ id: string }>())!.id;
+  const family = "gemini-3.8-flash";
+  for (const [index, level] of ["low", "medium", "high"].entries()) {
+    const event = usage(`family-${level}`, now - HOUR_MS + index);
+    event.provider_id = providerId;
+    event.model = family;
+    event.upstream_model = `${family}-${level}`;
+    await ingestUsage(bindings.CODY_DB, event);
+  }
+  const other = usage("ordinary-suffix", now - HOUR_MS);
+  other.model = `${family}-high`;
+  await ingestUsage(bindings.CODY_DB, other);
+  const range = window(now - 2 * HOUR_MS, now);
+  const totals = await summary(
+    bindings.CODY_DB,
+    range,
+    {},
+    { group_by: "model" },
+  );
+  expect(
+    totals.ranking.items.find((row) => row.value === family)?.totals
+      .requests_count,
+  ).toBe(3);
+  expect(
+    totals.ranking.items.find((row) => row.value === `${family}-high`)?.totals
+      .requests_count,
+  ).toBe(1);
+  const filtered = await requestList(
+    bindings.CODY_DB,
+    range,
+    { model: family },
+    { limit: 10 },
+  );
+  expect(filtered.items).toHaveLength(3);
+  expect(filtered.items.every((item) => item.model === family)).toBe(true);
+  expect(new Set(filtered.items.map((item) => item.upstream_model)).size).toBe(
+    3,
+  );
+  expect(
+    (await reportDimensions(bindings.CODY_DB, range, providerId)).models,
+  ).toEqual([family]);
 });

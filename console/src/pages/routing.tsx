@@ -1,3 +1,8 @@
+import {
+  publicProviderModels,
+  publicProviderModel,
+  supportsProviderModel,
+} from "../../../src/shared/antigravity-models.ts";
 import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useSaveModelRoutes } from "@/features/routing/api";
 import { useState } from "react";
@@ -34,6 +39,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Field, FieldLabel } from "@/components/ui/field";
+
+function publicTargetModel(
+  providers: RoutingResources["providers"],
+  model: string,
+): string {
+  const provider = providers.find((entry) => entry.models.includes(model));
+  return provider ? publicProviderModel(provider, model) : model;
+}
 
 export default function Routing() {
   const configuration = useRoutingResources();
@@ -134,7 +147,14 @@ export default function Routing() {
                 header: "Model",
                 cell: ({ row }) => (
                   <span className="font-mono text-xs">
-                    {row.original.model}
+                    {publicTargetModel(
+                      scopeProviders(config, scope).filter(
+                        (provider) =>
+                          !row.original.providers ||
+                          row.original.providers.includes(provider.id),
+                      ),
+                      row.original.model,
+                    )}
                   </span>
                 ),
               },
@@ -236,9 +256,7 @@ function RouteForm({
   const save = useSaveModelRoutes();
   const existing = routesFor(snapshot, scope)[alias];
   const availableProviders = scopeProviders(snapshot, scope);
-  const models = [
-    ...new Set(availableProviders.flatMap((provider) => provider.models)),
-  ];
+  const models = [...new Set(availableProviders.flatMap(publicProviderModels))];
   const form = useAppForm({
     defaultValues: {
       alias,
@@ -291,12 +309,15 @@ function RouteForm({
             <FieldLabel>Model</FieldLabel>
             <Choice
               label="Model"
-              value={field.state.value}
+              value={publicTargetModel(availableProviders, field.state.value)}
               onChange={(value) => {
                 field.handleChange(value);
                 form.setFieldValue("providers", []);
               }}
-              options={models.map((model) => ({ value: model, label: model }))}
+              options={models.map((model) => ({
+                value: model,
+                label: model,
+              }))}
             />
           </Field>
         )}
@@ -313,7 +334,9 @@ function RouteForm({
                     supporting this model.
                   </p>
                   {availableProviders
-                    .filter((provider) => provider.models.includes(model))
+                    .filter((provider) =>
+                      supportsProviderModel(provider, model),
+                    )
                     .map((provider) => (
                       <label
                         key={provider.name ?? provider.id}

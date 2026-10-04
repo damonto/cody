@@ -31,7 +31,13 @@ export function useSaveProvider() {
 }
 export function useDeleteProvider() {
   return useConfigurationMutation<{ version: number; id: string }>(
-    [resourceKeys.providers, resourceKeys.prices, ["entity-names"]],
+    [
+      resourceKeys.providers,
+      resourceKeys.prices,
+      resourceKeys.clients,
+      resourceKeys.routes,
+      ["entity-names"],
+    ],
     ({ id, version, operation_id }) =>
       read(
         rpc.providers[":id"].$delete({
@@ -116,15 +122,26 @@ export function useSaveModelSettings() {
     version: number;
     providerId: string;
     modelId: string;
+    family?: boolean;
     context_window: number | null;
   }>(
     [resourceKeys.providers, resourceKeys.native],
-    ({ version, operation_id, providerId, modelId, context_window }) =>
-      read(
-        rpc.providers[":id"].models[":modelId"].$put({
+    ({
+      version,
+      operation_id,
+      providerId,
+      modelId,
+      context_window,
+      family,
+    }) => {
+      const model = rpc.providers[":id"].models[":modelId"];
+      const resource = family ? model.family : model;
+      return read(
+        resource.$put({
           param: { id: providerId, modelId },
           json: { version, operation_id, settings: { context_window } },
         }),
-      ),
+      );
+    },
   );
 }

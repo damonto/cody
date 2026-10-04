@@ -8,6 +8,7 @@ export function requestDetails(event: UsageEvent): string {
   return JSON.stringify({
     connection_id: event.connection_id,
     response_id: event.response_id,
+    upstream_model: event.upstream_model,
     reported_model: event.reported_model,
     method: event.method,
     diagnostic_code: event.diagnostic_code,
@@ -54,6 +55,9 @@ export function hydrateRequest(
     provider_id: row.provider_id,
     credential_id: row.credential_id,
     model: row.model,
+    ...(details.upstream_model === undefined
+      ? {}
+      : { upstream_model: details.upstream_model }),
     requested_model: row.requested_model,
     reported_model: details.reported_model ?? "",
     endpoint: row.endpoint,

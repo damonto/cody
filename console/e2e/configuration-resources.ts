@@ -1,3 +1,8 @@
+import {
+  antigravityVariant,
+  antigravityFamilyModels,
+  providerModelNames,
+} from "../../src/shared/antigravity-models.ts";
 import { z } from "zod";
 import {
   maskedConfigurationSchema,
@@ -91,12 +96,20 @@ export function resourceRequest(
       ([, value]) => value.id === childId,
     )!;
     const settings = object.parse(body.settings);
-    provider.model_settings![model[0]] = {
-      id: childId,
-      ...(typeof settings.context_window === "number"
-        ? { context_window: settings.context_window }
-        : {}),
-    };
+    const members =
+      parts[4] === "family"
+        ? antigravityFamilyModels(
+            provider.models,
+            antigravityVariant(model[0])!.family,
+          )
+        : [model[0]];
+    for (const name of members)
+      provider.model_settings![name] = {
+        id: provider.model_settings![name].id,
+        ...(typeof settings.context_window === "number"
+          ? { context_window: settings.context_window }
+          : {}),
+      };
     item = provider.model_settings![model[0]];
   } else if (child === "model-routes" || resource === "model-routes") {
     const routes = maskedConfigurationSchema.parse({
@@ -110,9 +123,29 @@ export function resourceRequest(
     else config.model_routes = routes;
     item = routes;
   } else if (resource === "providers") {
-    if (method === "DELETE")
+    if (method === "DELETE") {
       config.providers = config.providers.filter((item) => item.id !== id);
-    else {
+      const models = new Set(config.providers.flatMap(providerModelNames));
+      const detachRoutes = (routes: GatewayConfig["model_routes"]) =>
+        Object.fromEntries(
+          Object.entries(routes).flatMap(([alias, route]) => {
+            const providers = route.providers?.filter(
+              (providerId) => providerId !== id,
+            );
+            return !models.has(route.model) || providers?.length === 0
+              ? []
+              : [[alias, { ...route, ...(providers ? { providers } : {}) }]];
+          }),
+        );
+      config.model_routes = detachRoutes(config.model_routes);
+      for (const client of config.api_keys) {
+        client.providers = client.providers.filter(
+          (providerId) => providerId !== id,
+        );
+        if (client.model_routes)
+          client.model_routes = detachRoutes(client.model_routes);
+      }
+    } else {
       const provider = {
         ...providerInputSchema.parse(body.provider),
         id: id ?? crypto.randomUUID(),
@@ -187,20 +220,30 @@ export function resourceRequest(
     const model = Object.entries(provider.model_settings!).find(
       ([, settings]) => settings.id === id,
     )![0];
+    const members =
+      child === "family"
+        ? antigravityFamilyModels(
+            provider.models,
+            antigravityVariant(model)!.family,
+          )
+        : [model];
     config.model_prices = config.model_prices?.filter(
-      (price) => price.provider_id !== provider.id || price.model !== model,
+      (price) =>
+        price.provider_id !== provider.id || !members.includes(price.model),
     );
     if (method !== "DELETE") {
       const parsed = maskedConfigurationSchema.parse({
         ...config,
-        model_prices: [
-          { provider_id: provider.id, model, pricing: body.pricing },
-        ],
+        model_prices: members.map((model) => ({
+          provider_id: provider.id,
+          model,
+          pricing: body.pricing,
+        })),
       });
-      item = parsed.model_prices![0];
+      item = parsed.model_prices!.find((price) => price.model === model);
       config.model_prices = [
         ...(config.model_prices ?? []),
-        parsed.model_prices![0],
+        ...parsed.model_prices!,
       ];
     }
   } else throw new Error(`Unexpected resource request: ${method} ${pathname}`);

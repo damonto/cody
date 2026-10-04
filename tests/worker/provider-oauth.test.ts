@@ -2909,3 +2909,165 @@ test("Antigravity account switching replays signed tool history without changing
     );
   }
 });
+
+test("Gemini family usage records the canonical model while quota switching retains the physical variant", async () => {
+  const { config, provider, accounts } = await balancingPool();
+  const family = "gemini-3.8-flash";
+  const high = `${family}-high`;
+  const low = `${family}-low`;
+  provider.models = [low, high];
+  provider.account_selection = "session_affinity";
+  config.model_routes = { alias: { model: family } };
+  const events: UsageEvent[] = [];
+  const meter = new RequestMeter({
+    requestId: "family-usage",
+    endpoint: "responses",
+    method: "POST",
+    protocol: "openai",
+    sink: {
+      send: async (event) => {
+        events.push(event);
+      },
+    },
+  });
+  meter.configure(config);
+  meter.authenticate(config.api_keys[0].id);
+  override = (request) =>
+    /:(?:streamG|g)enerateContent/.test(request.url) &&
+    request.headers.get("authorization") === "Bearer access-pool-a"
+      ? Response.json(quotaError(), { status: 429 })
+      : undefined;
+  const response = await infer(
+    config,
+    "responses",
+    { model: "alias", input: "hello", reasoning: { effort: "high" } },
+    { meter },
+  );
+  expect(response.status).toBe(200);
+  expect(await meter.response(response).json()).toMatchObject({
+    model: "alias",
+  });
+  await meter.drain();
+  expect(
+    inferenceRecords().map((record) => JSON.parse(record.body).model),
+  ).toEqual([high, high]);
+  expect(events.at(-1)).toMatchObject({
+    requested_model: "alias",
+    model: family,
+    upstream_model: high,
+    credential_id: provider.credentials[1].id,
+  });
+  expect(
+    (await antigravityModelAvailability(env, accounts[0].ref, high)).available,
+  ).toBe(false);
+  expect(
+    (await antigravityModelAvailability(env, accounts[0].ref, low)).available,
+  ).toBe(true);
+  override = undefined;
+  await recordAntigravityLimit(env, accounts[1].ref, high, {
+    code: "QUOTA_EXHAUSTED",
+    resets_at: Date.now() + 60_000,
+  });
+  const exhausted = await infer(config, "responses", {
+    model: family,
+    input: "hello",
+    reasoning: { effort: "high" },
+  });
+  expect(exhausted.status).toBe(429);
+  await exhausted.text();
+  expect(inferenceRecords()).toHaveLength(2);
+  const lowResponse = await infer(config, "responses", {
+    model: family,
+    input: "hello",
+    reasoning: { effort: "low" },
+    stream: true,
+  });
+  expect(lowResponse.status).toBe(200);
+  expect(await lowResponse.text()).toContain(family);
+  expect(JSON.parse(inferenceRecords().at(-1)!.body).model).toBe(low);
+  expect(inferenceRecords().at(-1)?.authorization).toBe("Bearer access-pool-a");
+});
+
+test("Gemini family missing levels fail before inference instead of changing the requested effort", async () => {
+  const { config, provider } = await balancingPool();
+  provider.models = ["gemini-3.8-flash-low"];
+  config.model_routes = {};
+  for (const reasoning of [undefined, { effort: "medium" }]) {
+    const response = await infer(config, "responses", {
+      model: "gemini-3.8-flash",
+      input: "hello",
+      reasoning,
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "unsupported_reasoning_effort" },
+    });
+  }
+  expect(inferenceRecords()).toHaveLength(0);
+});
+
+test("Gemini family catalogs advertise only enabled levels across all client formats", async () => {
+  const { connection, ref } = await ready();
+  const config = settings(connection, ref);
+  const family = "gemini-3.8-flash";
+  config.providers[0].models = [`${family}-medium`, `${family}-high`];
+  config.model_routes = { alias: { model: family } };
+  override = (request) =>
+    request.url.includes(":fetchAvailableModels")
+      ? Response.json({
+          models: Object.fromEntries(
+            ["low", "medium", "high"].map((level) => [
+              `${family}-${level}`,
+              {
+                displayName: `Gemini 3.8 Flash ${level}`,
+                inputTokenLimit: 1000000,
+                outputTokenLimit: 64000,
+                supportsThinking: true,
+              },
+            ]),
+          ),
+        })
+      : undefined;
+  for (const agent of ["other", "codex_cli", "claude-code"]) {
+    const response = await handleModels(
+      new Request("https://gateway.test/v1/models", {
+        headers: { "user-agent": agent },
+      }),
+      env,
+      config,
+      config.api_keys[0],
+    );
+    expect(response.status).toBe(200);
+    const payload = z
+      .record(z.string(), z.unknown())
+      .parse(await response.json());
+    const entries = z
+      .array(z.record(z.string(), z.unknown()))
+      .parse(payload[agent === "codex_cli" ? "models" : "data"]);
+    expect(entries.map((entry) => entry.id ?? entry.slug).sort()).toEqual([
+      "alias",
+      family,
+    ]);
+    for (const entry of entries) {
+      if (agent === "codex_cli")
+        expect(entry).toMatchObject({
+          default_reasoning_level: "high",
+          supported_reasoning_levels: [
+            { effort: "medium" },
+            { effort: "high" },
+          ],
+        });
+      else if (agent === "claude-code")
+        expect(entry).toMatchObject({
+          capabilities: {
+            effort: {
+              low: { supported: false },
+              medium: { supported: true },
+              high: { supported: true },
+            },
+          },
+        });
+      else expect(entry.thinking_levels).toEqual(["medium", "high"]);
+    }
+  }
+});

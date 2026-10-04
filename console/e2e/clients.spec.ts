@@ -393,7 +393,11 @@ test("a refreshed draft hides credentials without discarding unsaved form edits"
   const key = dialog.getByLabel("Gateway API key", { exact: true });
   await dialog.getByRole("button", { name: show }).click();
   await expect(key).toHaveValue(mock.clientKey("example-client"));
-  await dialog.getByRole("checkbox").uncheck();
+  const provider = dialog.getByRole("checkbox", {
+    name: "example-provider",
+    exact: true,
+  });
+  await provider.uncheck();
   mock.current().version += 1;
   await page.clock.fastForward(31_000);
   await context.setOffline(true);
@@ -406,7 +410,7 @@ test("a refreshed draft hides credentials without discarding unsaved form edits"
     .toBe(2);
   await expect(key).toHaveValue("");
   await expect(key).toHaveAttribute("type", "password");
-  await expect(dialog.getByRole("checkbox")).not.toBeChecked();
+  await expect(provider).not.toBeChecked();
   await dialog.getByRole("button", { name: show }).click();
   await expect(
     page.getByText("The draft changed; reload before viewing this key"),

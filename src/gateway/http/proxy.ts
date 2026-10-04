@@ -265,6 +265,7 @@ export async function handleInference(
     );
   }
   const route = resolveModelRoute(config, client, payload.model, {
+    payload,
     endpoint: upstreamPath,
     requiredCapabilities: [
       ...(upstreamPath === "alpha/search"
@@ -281,6 +282,13 @@ export async function handleInference(
     routing: { candidate_providers: candidateProviders },
   });
   if (route.targets.length === 0) {
+    if (route.resolutionError)
+      return apiError(
+        protocol,
+        route.resolutionError.status,
+        route.resolutionError.message,
+        { code: route.resolutionError.code, requestId },
+      );
     requestLog?.warn({ outcome: "model_not_found" });
     return apiError(
       protocol,

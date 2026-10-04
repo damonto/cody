@@ -1,5 +1,6 @@
+import { antigravityVariant } from "../../shared/antigravity-models.ts";
 import type { GatewayConfig } from "../../config/types.ts";
-import type { ModelRouteEntity } from "../entities.ts";
+import type { ModelRouteEntity, EntityRows } from "../entities.ts";
 import type { ConfigurationUnitOfWork } from "../unit-of-work.ts";
 import { ControlInputError, ControlNotFound, required } from "../errors.ts";
 import { live } from "../compiler.ts";
@@ -124,4 +125,34 @@ export function modelFor(config: GatewayConfig, id: string) {
     if (entry) return { provider, name: entry[0], settings: entry[1] };
   }
   throw new ControlNotFound("Provider model does not exist");
+}
+
+/** Resolve the complete family from authoritative entities within the fenced write. */
+export function modelFamily(
+  rows: Pick<EntityRows, "providers" | "provider_models">,
+  modelId: string,
+) {
+  const anchor = required(
+    live(rows.provider_models).find((row) => row.id === modelId),
+    "Provider model",
+  );
+  const provider = required(
+    live(rows.providers).find((row) => row.id === anchor.provider_id),
+    "Provider",
+  );
+  const models = live(rows.provider_models).filter(
+    (row) => row.provider_id === provider.id,
+  );
+  const variant = antigravityVariant(anchor.model);
+  if (
+    provider.type !== "antigravity" ||
+    !variant ||
+    models.some((row) => row.model === variant.family)
+  )
+    throw new ControlInputError(
+      "The selected model does not belong to an Antigravity thinking family",
+    );
+  return models.filter(
+    (row) => antigravityVariant(row.model)?.family === variant.family,
+  );
 }

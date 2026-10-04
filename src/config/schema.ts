@@ -1,3 +1,7 @@
+import {
+  providerModelNames,
+  supportsProviderModel,
+} from "../shared/antigravity-models.ts";
 import { tokenCountSchema } from "../billing/schema.ts";
 
 import {
@@ -361,7 +365,7 @@ export const clientSchema = z.strictObject({
   id: identifierSchema,
   name: z.string().trim().min(1).max(256).optional(),
   api_key: secretSchema,
-  providers: names,
+  providers: nameList,
   model_routes: routes(routeSchema).optional(),
 });
 
@@ -450,9 +454,7 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
   const providers = new Map(
     config.providers.map((provider) => [provider.id, provider]),
   );
-  const models = new Set(
-    config.providers.flatMap((provider) => provider.models),
-  );
+  const models = new Set(config.providers.flatMap(providerModelNames));
   const issue = (path: (string | number)[], message: string) =>
     context.addIssue({ code: "custom", path, message });
   const validateRoute = (
@@ -468,7 +470,7 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
       const provider = providers.get(id);
       if (!provider)
         issue([...path, "providers"], `references unknown provider ${id}`);
-      else if (!provider.models.includes(route.model))
+      else if (!supportsProviderModel(provider, route.model))
         issue(
           [...path, "model"],
           `${route.model} is not listed by provider ${id}`,
@@ -503,7 +505,7 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
         issue([...path], `references unknown proxy group ${reference}`);
     }
     for (const [alias, route] of Object.entries(provider.model_routes ?? {})) {
-      if (!provider.models.includes(route.model))
+      if (!supportsProviderModel(provider, route.model))
         issue(
           ["providers", index, "model_routes", alias, "model"],
           `${route.model} is not listed by provider ${provider.id}`,

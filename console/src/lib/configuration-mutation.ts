@@ -22,11 +22,13 @@ export function useConfigurationMutation<Input extends { version: number }>(
       const keys = typeof affected === "function" ? affected(input) : affected;
       // A locally confirmed write advances unchanged cached reads from the same version.
       // Older reads stay fenced; a response from an idempotent replay never moves them backwards.
+      // Invalidated resources must still refetch, including inactive queries from earlier writes.
       if (result.version === input.version + 1) {
         client.setQueriesData<{ version: number; item: unknown; etag: string }>(
           {
             queryKey: ["configuration"],
             predicate: (query) =>
+              !query.state.isInvalidated &&
               !keys.some((key) =>
                 key.every((part, index) => query.queryKey[index] === part),
               ),
@@ -34,7 +36,7 @@ export function useConfigurationMutation<Input extends { version: number }>(
           (value) =>
             value?.version === input.version
               ? { ...value, version: result.version }
-              : value,
+              : undefined,
         );
       }
       await Promise.all(

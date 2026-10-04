@@ -11,7 +11,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 
 ## Resource forms
 
-- Query resource endpoints independently and invalidate only affected resources. The shell reads `/config` metadata only. No whole-config writes, import/export, persisted drafts, manual publish, archive browser or per-entity restore controls.
+- Query resource endpoints independently and invalidate only affected resources. Later writes must not mark an invalidated cached resource fresh before it refetches. The shell reads `/config` metadata only. No whole-config writes, import/export, persisted drafts, manual publish, archive browser or per-entity restore controls.
 - Preserve editor baselines across background refreshes. Keep loaded forms visible on refresh failure, and keep conflicts/failed mutations open and retryable. Resource fingerprints must detect masked secret changes; unchanged masked credentials retain their saved value.
 - Give editable rows stable identities independent of array index and editable names. The server generates durable IDs; strip form-only metadata before saving and keep IDs out of the UI.
 - Save settings and account edits independently, taking effect immediately. Unsaved incomplete forms must not prune committed proxy bindings.
@@ -20,6 +20,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 
 - The Providers submenu contains only AI Gateway, Antigravity, Codex, Claude and xAI. Native providers are fixed singletons, disabled by default; expose neither creation nor deletion.
 - Native pages manage authorization, accounts and quotas directly. Top-right Settings dialogs own enabled state, priority, proxy, models, routes, retries and applicable account-selection/usage options. Antigravity/Codex selection and Codex automatic resets belong in those dialogs.
+- Antigravity Gemini selectors group low/medium/high variants under one family with expandable level checkboxes. Save only selected physical IDs, never auto-select newly discovered levels. Use canonical model IDs unchanged in pricing, route selectors, provider counts and badges; remove thinking-level suffixes through family grouping without title-casing or replacing hyphens. Pricing presents one family form; saves atomically apply rates/context to all enabled levels. Quota and cooldown cards use one family heading with separate level details, never summed quotas. Report filters/rankings use logical families; request details retain a separate thinking level.
 - Native account lists share the card grid and footer in `features/oauth-accounts/`. Keep common actions consistent (`Refresh`, `Refresh all`, `Manage`); compose provider-specific actions such as Codex resets into the shared footer.
 - Codex account cards show plan/subscription days, quota windows, credits, reset credits and cooldown state, following CPA-Manager-Plus. Spending a reset always asks for confirmation.
 - Claude and xAI extra usage remains opt-in. xAI owns device authorization, quotas and independent settings; do not expose unsupported provider capabilities.

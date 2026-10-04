@@ -1,3 +1,4 @@
+import { publicProviderModel } from "../shared/antigravity-models.ts";
 import {
   RequestOutcome,
   UsagePhase,
@@ -80,7 +81,7 @@ export class RequestMeter {
   private readonly accumulator: UsageAccumulator;
   private readonly work: Promise<boolean>[] = [];
   private terminalDelivery: Promise<boolean> | undefined;
-  private readonly data: UsageEvent;
+  private readonly data: UsageEvent & { upstream_model: string };
   private price: ModelPrice | undefined;
   private config: GatewayConfig | undefined;
   private finished = false;
@@ -111,6 +112,7 @@ export class RequestMeter {
       provider_id: "",
       credential_id: "",
       model: "",
+      upstream_model: "",
       requested_model: "",
       reported_model: "",
       endpoint: options.endpoint,
@@ -190,13 +192,13 @@ export class RequestMeter {
     const price = this.config?.model_prices?.find(
       (price) =>
         price.provider_id === this.data.provider_id &&
-        price.model === this.data.model,
+        price.model === this.data.upstream_model,
     );
     this.price = price ? structuredClone(price) : undefined;
     this.data.context_window =
       this.config?.providers.find(
         (provider) => provider.id === this.data.provider_id,
-      )?.model_settings?.[this.data.model]?.context_window ?? null;
+      )?.model_settings?.[this.data.upstream_model]?.context_window ?? null;
   }
 
   authenticate(clientId: string): void {
@@ -213,7 +215,13 @@ export class RequestMeter {
     if (this.finished || this.data.sequence !== 0) return;
     this.data.provider_id = target.providerId;
     this.data.credential_id = target.credentialId;
-    this.data.model = target.model;
+    this.data.upstream_model = target.model;
+    const provider = this.config?.providers.find(
+      (provider) => provider.id === target.providerId,
+    );
+    this.data.model = provider
+      ? publicProviderModel(provider, target.model)
+      : target.model;
     this.selectPrice();
     this.announceSelection();
   }

@@ -1,3 +1,4 @@
+import { publicProviderModels } from "../../shared/antigravity-models.ts";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { DEFAULT_REPORTING } from "../../billing/config.ts";
@@ -95,7 +96,7 @@ export const reportRoutes = new Hono<AdminContext>()
               (provider) =>
                 !query.provider_id || provider.id === query.provider_id,
             )
-            .flatMap((provider) => provider.models) ?? []),
+            .flatMap(publicProviderModels) ?? []),
         ]),
       });
     },

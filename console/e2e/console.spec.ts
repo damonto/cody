@@ -2,7 +2,7 @@ import { isConfigurationMutation } from "./fixtures";
 import { test, expect } from "@playwright/test";
 import type { UsageEvent } from "../src/lib/api";
 import { previewSchema } from "../../src/admin/schema";
-import { mockApi } from "./fixtures";
+import { mockApi, draftFixture } from "./fixtures";
 
 test("report ranges, filters, empty states, and mobile navigation work", async ({
   page,
@@ -165,12 +165,68 @@ test("failed provider deletion stays open with an error and can be retried", asy
   await expect(
     dialog.getByText("The draft changed; reload before saving"),
   ).toBeVisible();
-  expect(mock.current().config.providers).toHaveLength(1);
+  expect(
+    mock
+      .current()
+      .config.providers.filter((provider) => provider.type === "ai_gateway"),
+  ).toHaveLength(1);
   await dialog
     .getByRole("button", { name: "Remove provider", exact: true })
     .click();
   await expect(dialog).toBeHidden();
-  expect(mock.current().config.providers).toHaveLength(0);
+  expect(
+    mock
+      .current()
+      .config.providers.filter((provider) => provider.type === "ai_gateway"),
+  ).toHaveLength(0);
+  expect(
+    mock
+      .current()
+      .config.providers.filter((provider) => provider.type !== "ai_gateway"),
+  ).toHaveLength(4);
+});
+
+test("provider deletion detaches clients and refreshes cached routes", async ({
+  page,
+}) => {
+  const initial = draftFixture();
+  initial.config.model_routes = {
+    "removed-alias": {
+      model: "example-model",
+      providers: ["example-provider"],
+    },
+  };
+  initial.config.api_keys[0].model_routes = initial.config.model_routes;
+  const mock = await mockApi(page, initial);
+  await page.goto("/console/routing");
+  await expect(page.getByText("removed-alias", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Providers", exact: true }).click();
+  await page.getByRole("link", { name: "AI Gateway", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Delete example-provider", exact: true })
+    .click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("automatically");
+  await expect(dialog).toContainText("Affected clients: example-client");
+  await dialog
+    .getByRole("button", { name: "Remove provider", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  expect(mock.current().config.api_keys[0].providers).toEqual([]);
+  expect(mock.current().config.model_routes).toEqual({});
+  expect(mock.current().config.api_keys[0].model_routes).toBeUndefined();
+  await page.getByRole("link", { name: "Client keys", exact: true }).click();
+  await expect(
+    page.getByText("No providers — no upstream access"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Edit client", exact: true }).click();
+  await expect(
+    page.getByRole("dialog").getByRole("checkbox", { checked: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Save client", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await page.getByRole("link", { name: "Model routes", exact: true }).click();
+  await expect(page.getByText("removed-alias", { exact: true })).toHaveCount(0);
 });
 
 for (const protocol of ["openai", "anthropic"] as const) {
@@ -201,6 +257,7 @@ for (const protocol of ["openai", "anthropic"] as const) {
       provider_id: "example-provider",
       credential_id: "primary",
       model: "example-model",
+      upstream_model: "example-model",
       requested_model: "alias",
       reported_model: "example-model",
       endpoint: protocol === "openai" ? "responses" : "messages",
@@ -242,11 +299,13 @@ for (const protocol of ["openai", "anthropic"] as const) {
       first_text_ms: 250,
     };
     delete missingLatency.first_response_ms;
+    delete missingLatency.upstream_model;
+    const views = [event, missingLatency];
     await page.route("**/console/api/requests**", (route) =>
       route.fulfill({
-        json: [event, missingLatency].find((item) =>
+        json: views.find((item) =>
           new URL(route.request().url()).pathname.endsWith(item.request_id),
-        ) ?? { items: [event, missingLatency], next_cursor: null },
+        ) ?? { items: views, next_cursor: null },
       }),
     );
     await page.goto("/console/requests");
@@ -305,5 +364,11 @@ for (const protocol of ["openai", "anthropic"] as const) {
         .locator("..")
         .getByText("250 ms", { exact: true }),
     ).toBeVisible();
+    await dialog
+      .getByRole("tab", { name: "Routing & attempts", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("Thinking level", { exact: true }),
+    ).toHaveCount(0);
   });
 }

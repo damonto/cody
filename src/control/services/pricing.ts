@@ -5,7 +5,7 @@ import type { ControlStore } from "../store.ts";
 import { priceTables } from "../repository.ts";
 import { live, pricesFromEntities } from "../compiler.ts";
 import { required } from "../errors.ts";
-import { modelFor, put } from "./shared.ts";
+import { modelFor, modelFamily, put } from "./shared.ts";
 
 type Pricing = NonNullable<z.infer<typeof modelPriceSchema>["pricing"]>;
 export class PricingService {
@@ -28,21 +28,54 @@ export class PricingService {
     });
   }
   save(operation: ConfigurationOperation, id: string, pricing: Pricing) {
+    return this.write(operation, id, "model", pricing);
+  }
+  saveFamily(
+    operation: ConfigurationOperation,
+    id: string,
+    pricing: Pricing | null,
+  ) {
+    return this.write(operation, id, "family", pricing);
+  }
+  remove(operation: ConfigurationOperation, id: string) {
+    return this.write(operation, id, "model", null);
+  }
+  private write(
+    operation: ConfigurationOperation,
+    id: string,
+    scope: "model" | "family",
+    pricing: Pricing | null,
+  ) {
     return this.store.mutate(
       operation,
       (work) => {
-        required(
-          live(work.rows.provider_models).find((row) => row.id === id),
-          "Provider model",
-        );
-        const old = work.rows.model_prices.find(
-          (row) => row.provider_model_id === id,
-        );
-        put(work.rows.model_prices, {
-          ...work.metadata(old),
-          provider_model_id: id,
-          pricing_json: JSON.stringify(pricing),
-        });
+        const models =
+          scope === "family"
+            ? modelFamily(work.rows, id)
+            : [
+                required(
+                  live(work.rows.provider_models).find((row) => row.id === id),
+                  "Provider model",
+                ),
+              ];
+        if (pricing === null) {
+          const ids = new Set(models.map((model) => model.id));
+          work.rows.model_prices = work.rows.model_prices.filter(
+            (row) => !ids.has(row.provider_model_id),
+          );
+          return;
+        }
+        const pricingJson = JSON.stringify(pricing);
+        for (const model of models) {
+          const old = work.rows.model_prices.find(
+            (row) => row.provider_model_id === model.id,
+          );
+          put(work.rows.model_prices, {
+            ...work.metadata(old),
+            provider_model_id: model.id,
+            pricing_json: pricingJson,
+          });
+        }
       },
       (config) => {
         const model = modelFor(config, id);
@@ -55,21 +88,6 @@ export class PricingService {
         const { version_id: _version, ...item } = price;
         return item;
       },
-    );
-  }
-  remove(operation: ConfigurationOperation, id: string) {
-    return this.store.mutate(
-      operation,
-      (work) => {
-        required(
-          live(work.rows.provider_models).find((row) => row.id === id),
-          "Provider model",
-        );
-        work.rows.model_prices = work.rows.model_prices.filter(
-          (row) => row.provider_model_id !== id,
-        );
-      },
-      () => null,
     );
   }
 }

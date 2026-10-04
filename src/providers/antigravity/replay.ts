@@ -2,31 +2,29 @@ import { z } from "zod";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { ProviderRequestError } from "../errors.ts";
 
-export const partSchema = z
-  .object({
-    text: z.string().optional(),
-    thought: z.boolean().optional(),
-    thoughtSignature: z.string().optional(),
-    functionCall: z
-      .object({
-        name: z.string(),
-        args: z.unknown().optional(),
-        id: z.string().optional(),
-      })
-      .optional(),
-    functionResponse: z
-      .object({
-        name: z.string(),
-        response: z.unknown(),
-        id: z.string().optional(),
-      })
-      .optional(),
-    inlineData: z.object({ mimeType: z.string(), data: z.string() }).optional(),
-    fileData: z
-      .object({ mimeType: z.string().optional(), fileUri: z.string() })
-      .optional(),
-  })
-  .passthrough();
+export const partSchema = z.looseObject({
+  text: z.string().optional(),
+  thought: z.boolean().optional(),
+  thoughtSignature: z.string().optional(),
+  functionCall: z
+    .object({
+      name: z.string(),
+      args: z.unknown().optional(),
+      id: z.string().optional(),
+    })
+    .optional(),
+  functionResponse: z
+    .object({
+      name: z.string(),
+      response: z.unknown(),
+      id: z.string().optional(),
+    })
+    .optional(),
+  inlineData: z.object({ mimeType: z.string(), data: z.string() }).optional(),
+  fileData: z
+    .object({ mimeType: z.string().optional(), fileUri: z.string() })
+    .optional(),
+});
 export type NativePart = z.output<typeof partSchema>;
 export interface ReplayScope {
   client_id: string;

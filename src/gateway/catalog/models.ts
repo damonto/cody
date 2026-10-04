@@ -1,3 +1,8 @@
+import { antigravityCatalogModels } from "../../providers/antigravity/catalog.ts";
+import {
+  antigravityVariant,
+  supportsProviderModel,
+} from "../../shared/antigravity-models.ts";
 import {
   ProviderAvailabilityReason,
   HealthFailureScope,
@@ -452,10 +457,18 @@ function exposedClientModels(
   upstreamModel: string,
   routes: Record<string, ModelRouteConfig>,
 ): string[] {
-  if (!provider.models.includes(upstreamModel)) {
+  if (!supportsProviderModel(provider, upstreamModel)) {
     return [];
   }
-  const ids = Object.hasOwn(routes, upstreamModel) ? [] : [upstreamModel];
+  const variant =
+    provider.type === ProviderType.Antigravity
+      ? antigravityVariant(upstreamModel)
+      : undefined;
+  const hiddenVariant = variant && !provider.models.includes(variant.family);
+  const ids =
+    Object.hasOwn(routes, upstreamModel) || hiddenVariant
+      ? []
+      : [upstreamModel];
   for (const [clientModel, route] of Object.entries(routes)) {
     if (
       route.model === upstreamModel &&
@@ -465,6 +478,12 @@ function exposedClientModels(
     }
   }
   return [...new Set(ids)];
+}
+
+function catalogModels(result: ProviderModelsResult): UpstreamModel[] {
+  return result.provider.type === ProviderType.Antigravity
+    ? antigravityCatalogModels(result.models, result.provider.models)
+    : result.models;
 }
 
 export function aggregateStandardModels(
@@ -477,7 +496,7 @@ export function aggregateStandardModels(
     if (!result.success) {
       continue;
     }
-    for (const model of result.models) {
+    for (const model of catalogModels(result)) {
       const clientModels = exposedClientModels(
         result.provider,
         model.id,
@@ -510,7 +529,7 @@ function codexModelIds(
     if (!result.success) {
       continue;
     }
-    for (const model of result.models) {
+    for (const model of catalogModels(result)) {
       for (const clientModel of exposedClientModels(
         result.provider,
         model.id,
@@ -606,11 +625,17 @@ export function aggregateCodexModels(
       slug: model.id,
       display_name: model.display_name ?? model.id,
       description: "Antigravity account model",
-      default_reasoning_level:
-        model.supports_thinking === true ? "medium" : null,
+      default_reasoning_level: Array.isArray(model.thinking_levels)
+        ? model.default_thinking_level
+        : model.supports_thinking === true
+          ? "medium"
+          : null,
       supported_reasoning_levels:
-        model.supports_thinking === true
-          ? ["low", "medium", "high"].map((effort) => ({
+        Array.isArray(model.thinking_levels) || model.supports_thinking === true
+          ? (Array.isArray(model.thinking_levels)
+              ? model.thinking_levels
+              : ["low", "medium", "high"]
+            ).map((effort) => ({
               effort,
               description: `${effort} thinking budget`,
             }))
@@ -687,8 +712,11 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     catalog !== undefined &&
     typeof catalog.node_repl_disabled === "boolean" &&
     !catalog.node_repl_disabled;
-  const supportedEffortLevels =
-    model.supports_thinking === true
+  const supportedEffortLevels = Array.isArray(model.thinking_levels)
+    ? model.thinking_levels.filter(
+        (level): level is string => typeof level === "string",
+      )
+    : model.supports_thinking === true
       ? ["low", "medium", "high"]
       : Array.isArray(catalog?.supported_reasoning_levels)
         ? (catalog.supported_reasoning_levels as unknown[])

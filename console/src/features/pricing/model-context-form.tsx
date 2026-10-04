@@ -12,15 +12,23 @@ export function ModelContextForm({
   version,
   providerId,
   modelId,
-  contextWindow,
+  contextWindows,
+  family,
 }: {
   version: number;
   providerId: string;
   modelId: string;
-  contextWindow: number | undefined;
+  contextWindows: readonly (number | undefined)[];
+  family: boolean;
 }) {
   const save = useSaveModelSettings();
-  const editor = useResourceEditor({ version, item: contextWindow });
+  const contextWindow = contextWindows.every(
+    (value) => value === contextWindows[0],
+  )
+    ? contextWindows[0]
+    : undefined;
+  const etag = family ? JSON.stringify(contextWindows) : undefined;
+  const editor = useResourceEditor({ version, item: contextWindow, etag });
   const initial: z.input<typeof schema> = { context_window: editor.initial };
   const form = useAppForm({
     defaultValues: initial,
@@ -31,12 +39,16 @@ export function ModelContextForm({
           version: editor.version,
           providerId,
           modelId,
+          family,
           context_window: value.context_window ?? null,
         });
         const settings = schema.parse(saved.item);
         editor.accept({
           version: saved.version,
           item: settings.context_window,
+          etag: family
+            ? JSON.stringify(contextWindows.map(() => settings.context_window))
+            : undefined,
         });
         formApi.reset(settings);
       } catch {
@@ -64,7 +76,7 @@ export function ModelContextForm({
       <ResourceConflict
         conflict={editor.conflict}
         reload={() => {
-          editor.accept({ version, item: contextWindow });
+          editor.accept({ version, item: contextWindow, etag });
           form.reset({ context_window: contextWindow });
           save.reset();
         }}

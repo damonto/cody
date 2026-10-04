@@ -1,3 +1,6 @@
+import { publicProviderModel } from "../../../../src/shared/antigravity-models.ts";
+import { AntigravityModelSelector } from "./model-selector";
+import { publicProviderModels } from "../../../../src/shared/antigravity-models.ts";
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 import { CodexAccountSelection } from "../../../../src/config/values.ts";
 
@@ -16,7 +19,6 @@ import { useAppForm } from "@/lib/form";
 import { fieldErrors } from "@/lib/form-errors";
 import { Choice, ErrorNotice } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { FieldError } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -195,33 +197,11 @@ export function AntigravitySettingsForm({
               {(field) => (
                 <>
                   {models.size ? (
-                    <div className="relative grid max-h-80 gap-3 overflow-auto rounded-md border p-3">
-                      {[...models].map(([id, label]) => (
-                        <Label
-                          key={id}
-                          className="flex items-center gap-3 text-sm"
-                        >
-                          <Checkbox
-                            checked={field.state.value.includes(id)}
-                            onCheckedChange={(checked) =>
-                              field.handleChange(
-                                checked
-                                  ? [...field.state.value, id]
-                                  : field.state.value.filter(
-                                      (value) => value !== id,
-                                    ),
-                              )
-                            }
-                          />
-                          <span>
-                            {label}
-                            <span className="ml-2 font-mono text-xs text-muted-foreground">
-                              {id}
-                            </span>
-                          </span>
-                        </Label>
-                      ))}
-                    </div>
+                    <AntigravityModelSelector
+                      models={models}
+                      value={field.state.value}
+                      onChange={field.handleChange}
+                    />
                   ) : (
                     <p className="text-sm text-muted-foreground">
                       Authorize an account to discover models.
@@ -259,16 +239,15 @@ export function AntigravitySettingsForm({
                               {(selected) => (
                                 <Choice
                                   label="Model"
-                                  value={field.state.value}
+                                  value={publicProviderModel(
+                                    provider,
+                                    field.state.value,
+                                  )}
                                   onChange={field.handleChange}
-                                  options={[
-                                    ...new Set([
-                                      ...selected,
-                                      ...(field.state.value
-                                        ? [field.state.value]
-                                        : []),
-                                    ]),
-                                  ].map((model) => ({
+                                  options={publicProviderModels({
+                                    type: provider.type,
+                                    models: selected,
+                                  }).map((model) => ({
                                     value: model,
                                     label: model,
                                   }))}
@@ -297,7 +276,11 @@ export function AntigravitySettingsForm({
                       routes.pushValue({
                         rowId: crypto.randomUUID(),
                         alias: "",
-                        model: form.state.values.models[0] ?? "",
+                        model:
+                          publicProviderModels({
+                            type: provider.type,
+                            models: form.state.values.models,
+                          })[0] ?? "",
                       })
                     }
                   >

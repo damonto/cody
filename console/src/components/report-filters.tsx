@@ -50,7 +50,10 @@ export function ReportFilters({
   const choices = (items: string[] | undefined, selected?: string) =>
     [...new Set([...(items ?? []), ...(selected ? [selected] : [])])]
       .sort()
-      .map((value) => ({ value, label: names[value] ?? value }));
+      .map((value) => ({
+        value,
+        label: names[value] ?? value,
+      }));
   const period = (value: string) => {
     if (value !== "custom") return change("period", value);
     const to = range?.to ?? Date.now();

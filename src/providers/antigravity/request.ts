@@ -1,3 +1,7 @@
+import {
+  antigravityReasoning,
+  antigravityThinkingConfig,
+} from "./reasoning.ts";
 import { z } from "zod";
 import { ProviderRequestError } from "../errors.ts";
 import { object } from "./api.ts";
@@ -470,76 +474,16 @@ export async function translateRequest(
   if (stops !== undefined)
     generation.stopSequences =
       typeof stops === "string" ? [stops] : z.array(z.string()).parse(stops);
-  const reasoning = object(payload.reasoning);
-  const thinking = object(payload.thinking);
+  const reasoning = antigravityReasoning(payload);
   const claude = scope.model.toLowerCase().includes("claude");
-  const geminiLevel = /^gemini-(?:3[.-]|pro-agent)/i.test(scope.model);
-  const requestedEffort =
-    reasoning.effort ?? object(payload.output_config).effort;
-  const effort =
-    requestedEffort == null
-      ? undefined
-      : string(requestedEffort, "reasoning effort");
-  if (
-    thinking.budget_tokens !== undefined &&
-    !z.number().int().nonnegative().safeParse(thinking.budget_tokens).success
-  )
-    throw new ProviderRequestError(
-      "thinking.budget_tokens must be a non-negative integer",
-    );
-  if (thinking.type === "disabled" || effort === "none") {
-    if (!claude)
-      generation.thinkingConfig = { thinkingBudget: 0, includeThoughts: false };
-  } else if (thinking.type || effort) {
-    const budgets: Record<string, number> = {
-      minimal: 1024,
-      low: 2048,
-      medium: 8192,
-      high: 16384,
-      xhigh: 24576,
-      max: 24576,
-    };
-    if (effort && effort !== "auto" && !Object.hasOwn(budgets, effort))
-      throw new ProviderRequestError("Unsupported reasoning effort");
-    if (
-      geminiLevel &&
-      effort &&
-      effort !== "auto" &&
-      thinking.budget_tokens === undefined
-    ) {
-      let level =
-        effort === "minimal"
-          ? "low"
-          : ["max", "xhigh"].includes(effort)
-            ? "high"
-            : effort;
-      if (/^gemini-3-pro/i.test(scope.model) && level === "medium")
-        level = "high";
-      generation.thinkingConfig = {
-        thinkingLevel: level,
-        includeThoughts: true,
-      };
-    } else {
-      let budget =
-        typeof thinking.budget_tokens === "number"
-          ? thinking.budget_tokens
-          : effort === "auto" || (thinking.type === "adaptive" && !effort)
-            ? -1
-            : (budgets[effort ?? "medium"] ?? 8192);
-      // Match Antigravity's Claude budget constraints without raising the client's output limit.
-      if (
-        claude &&
-        typeof generation.maxOutputTokens === "number" &&
-        budget >= generation.maxOutputTokens
-      )
-        budget = generation.maxOutputTokens - 1;
-      if (!claude || budget === -1 || budget >= 1024)
-        generation.thinkingConfig = {
-          thinkingBudget: budget,
-          includeThoughts: true,
-        };
-    }
-  }
+  const thinkingConfig = antigravityThinkingConfig(
+    reasoning,
+    scope.model,
+    typeof generation.maxOutputTokens === "number"
+      ? generation.maxOutputTokens
+      : undefined,
+  );
+  if (thinkingConfig) generation.thinkingConfig = thinkingConfig;
   const format = object(
     object(payload.text).format ??
       object(payload.output_config).format ??
@@ -568,7 +512,7 @@ export async function translateRequest(
       tools.length > 0 &&
       choice !== "none" &&
       choiceObject.type !== "none" &&
-      ["enabled", "adaptive", "auto"].includes(String(thinking.type)),
+      reasoning.interleaved,
     sensitiveWords,
   );
   if (systemParts.length)

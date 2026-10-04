@@ -127,6 +127,11 @@ export default function Clients() {
                 header: "Allowed providers",
                 cell: ({ row }) => (
                   <div className="flex flex-wrap gap-1">
+                    {row.original.providers.length === 0 && (
+                      <span className="text-sm text-muted-foreground">
+                        No providers — no upstream access
+                      </span>
+                    )}
                     {row.original.providers.map((id) => (
                       <Badge
                         key={id}
@@ -340,6 +345,11 @@ function ClientForm({
                 </label>
               ))}
             </div>
+            {field.state.value.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                This client has no upstream access until a provider is selected.
+              </p>
+            )}
             <FieldError errors={fieldErrors(field)} />
           </Field>
         )}

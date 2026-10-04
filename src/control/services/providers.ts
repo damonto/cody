@@ -1,7 +1,12 @@
+import {
+  antigravityVariant,
+  providerModelNames,
+} from "../../shared/antigravity-models.ts";
 import type { ConfigurationOperation } from "../unit-of-work.ts";
 import { z } from "zod";
 import { providerSchema } from "../../config/schema.ts";
 import type { ControlStore } from "../store.ts";
+import type { EntityRows } from "../entities.ts";
 import type { ConfigurationUnitOfWork } from "../unit-of-work.ts";
 import {
   credentialInputSchema,
@@ -17,9 +22,9 @@ import {
   put,
   reorder,
   replaceRoutes,
-  removeRoutes,
   providerFor,
   modelFor,
+  modelFamily,
 } from "./shared.ts";
 
 type ProviderInput = z.infer<typeof providerInputSchema>;
@@ -67,6 +72,54 @@ function editable(work: ConfigurationUnitOfWork, id: string) {
     throw new ControlInputError("Use the native provider settings resource");
   return provider;
 }
+
+function detachProviderRoutes(
+  rows: Pick<
+    EntityRows,
+    "providers" | "provider_models" | "model_routes" | "model_route_providers"
+  >,
+  providerId: string,
+): void {
+  const modelsByProvider = new Map<string, string[]>();
+  for (const row of live(rows.provider_models)) {
+    const models = modelsByProvider.get(row.provider_id) ?? [];
+    models.push(row.model);
+    modelsByProvider.set(row.provider_id, models);
+  }
+  const supportedModels = new Set(
+    live(rows.providers)
+      .filter((provider) => provider.id !== providerId)
+      .flatMap((provider) =>
+        providerModelNames({
+          type: provider.type,
+          models: modelsByProvider.get(provider.id) ?? [],
+        }),
+      ),
+  );
+  const routesWithProviders = new Set(
+    live(rows.model_route_providers)
+      .filter((row) => row.provider_id !== providerId)
+      .map((row) => row.route_id),
+  );
+  const removedRoutes = new Set(
+    live(rows.model_routes)
+      .filter((row) =>
+        row.scope === "provider"
+          ? row.provider_id === providerId
+          : !supportedModels.has(row.model) ||
+            (row.restrict_providers === 1 && !routesWithProviders.has(row.id)),
+      )
+      .map((row) => row.id),
+  );
+  // Removing an empty restriction must retire the route, not make it unrestricted.
+  rows.model_routes = rows.model_routes.filter(
+    (row) => !removedRoutes.has(row.id),
+  );
+  rows.model_route_providers = rows.model_route_providers.filter(
+    (row) => row.provider_id !== providerId && !removedRoutes.has(row.route_id),
+  );
+}
+
 async function writeCredential(
   work: ConfigurationUnitOfWork,
   providerId: string,
@@ -143,11 +196,54 @@ function writeSettings(
   );
   for (const [position, model] of models.entries()) {
     const previous = before.find((row) => row.model === model);
+    const variant =
+      type === "antigravity" &&
+      !models.includes(antigravityVariant(model)?.family ?? "")
+        ? antigravityVariant(model)
+        : undefined;
+    const siblings = variant
+      ? before.filter(
+          (row) =>
+            row.deleted_at === null &&
+            antigravityVariant(row.model)?.family === variant.family,
+        )
+      : [];
+    const inherited =
+      (!previous || previous.deleted_at !== null) && siblings.length > 0;
+    const prices = inherited
+      ? siblings.map(
+          (row) =>
+            live(rows.model_prices).find(
+              (price) => price.provider_model_id === row.id,
+            )?.pricing_json ?? null,
+        )
+      : [];
+    if (
+      inherited &&
+      (new Set(prices).size > 1 ||
+        new Set(siblings.map((row) => row.context_window)).size > 1)
+    )
+      throw new ControlInputError(
+        "Set a shared family price and context window before enabling another thinking level",
+      );
+    const modelMetadata = work.metadata(previous);
+    if (inherited && prices[0] !== null)
+      put(rows.model_prices, {
+        ...work.metadata(
+          rows.model_prices.find(
+            (price) => price.provider_model_id === modelMetadata.id,
+          ),
+        ),
+        provider_model_id: modelMetadata.id,
+        pricing_json: prices[0],
+      });
     rows.provider_models.push({
-      ...work.metadata(previous),
+      ...modelMetadata,
       provider_id: id,
       model,
-      context_window: model_settings?.[model]?.context_window ?? null,
+      context_window:
+        model_settings?.[model]?.context_window ??
+        (inherited ? siblings[0].context_window : null),
       position,
     });
   }
@@ -257,6 +353,7 @@ export class ProviderService {
             .filter((row) => row.provider_id === id)
             .map((row) => row.id),
         );
+        detachProviderRoutes(rows, id);
         rows.providers = rows.providers.filter((row) => row.id !== id);
         rows.provider_credentials = rows.provider_credentials.filter(
           (row) => row.provider_id !== id,
@@ -267,7 +364,9 @@ export class ProviderService {
         rows.model_prices = rows.model_prices.filter(
           (row) => !models.has(row.provider_model_id),
         );
-        removeRoutes(work, "provider", id);
+        rows.client_providers = rows.client_providers.filter(
+          (row) => row.provider_id !== id,
+        );
       },
       () => null,
     );
@@ -461,6 +560,28 @@ export class ProviderService {
         "Provider model",
       ),
     };
+  }
+  saveModelFamily(
+    operation: ConfigurationOperation,
+    providerId: string,
+    modelId: string,
+    context: number | null,
+  ) {
+    return this.store.mutate(
+      operation,
+      (work) => {
+        const models = modelFamily(work.rows, modelId);
+        if (models[0].provider_id !== providerId)
+          throw new ControlInputError("Model belongs to a different provider");
+        for (const model of models)
+          Object.assign(model, {
+            context_window: context,
+            version: work.version,
+            updated_at: work.now,
+          });
+      },
+      (config) => ownedModel(config, providerId, modelId),
+    );
   }
   saveModel(
     operation: ConfigurationOperation,

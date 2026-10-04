@@ -190,6 +190,20 @@ export const providerRoutes = new Hono<AdminContext>()
   .get("/:id/models", validate("param", resourceIdSchema), async (c) => {
     return c.json(await service(c).models(c.req.valid("param").id));
   })
+  .put(
+    "/:id/models/:modelId/family",
+    validate("param", modelParams),
+    validate("json", modelBody),
+    async (c) =>
+      c.json(
+        await service(c).saveModelFamily(
+          operation(c, c.req.valid("json")),
+          c.req.valid("param").id,
+          c.req.valid("param").modelId,
+          c.req.valid("json").settings.context_window,
+        ),
+      ),
+  )
   .get("/:id/models/:modelId", validate("param", modelParams), async (c) => {
     return c.json(
       await service(c).model(

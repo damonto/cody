@@ -45,6 +45,57 @@ test("placeholders are numbered outside string literals", () => {
 });
 
 for (const [dialect, create] of Object.entries(factories)) {
+  test(`${dialect}: reporting groups persisted canonical models`, async () => {
+    const db = await create();
+    await applyMigrations(db, migrationDirectories(dialect, ROOT));
+    const provider = await db
+      .prepare("SELECT id FROM providers WHERE type = 'antigravity'")
+      .first();
+    const family = "gemini-3.8-flash";
+    const start = Date.UTC(2026, 8, 14, 10);
+    for (const level of ["low", "medium", "high"]) {
+      const event = usage(`family-${level}`, start + 1000);
+      event.provider_id = provider.id;
+      event.model = family;
+      event.upstream_model = `${family}-${level}`;
+      await ingestUsage(db, event);
+    }
+    const window = range(start, start + HOUR_MS);
+    const result = await summary(db, window, {}, { group_by: "model" });
+    assert.equal(result.ranking.items.length, 1);
+    assert.equal(result.ranking.items[0].value, family);
+    assert.equal(result.ranking.items[0].totals.requests_count, 3);
+    const requests = await requestList(
+      db,
+      window,
+      { model: family },
+      { limit: 10 },
+    );
+    assert.equal(requests.items.length, 3);
+    assert.ok(requests.items.every((item) => item.model === family));
+    const stored = await db
+      .prepare("SELECT model, details_json FROM requests")
+      .all();
+    assert.ok(stored.results.every((row) => row.model === family));
+    assert.deepEqual(
+      new Set(
+        stored.results.map(
+          (row) => JSON.parse(row.details_json).upstream_model,
+        ),
+      ),
+      new Set(["low", "medium", "high"].map((level) => `${family}-${level}`)),
+    );
+    // Reports depend only on stored facts, not the current provider configuration.
+    await db
+      .prepare("UPDATE providers SET type = 'ai_gateway' WHERE id = ?")
+      .bind(provider.id)
+      .run();
+    assert.deepEqual((await reportDimensions(db, window)).models, [family]);
+    assert.equal(
+      (await requestDetail(db, "family-high")).upstream_model,
+      `${family}-high`,
+    );
+  });
   test(`${dialect}: saves touch only changed rows and swap aliases atomically`, async () => {
     const db = await create();
     await applyMigrations(db, migrationDirectories(dialect, ROOT));

@@ -31,7 +31,10 @@ export interface UsageEvent {
   client_id: string;
   provider_id: string;
   credential_id: string;
+  /** Canonical model identity used by reports. */
   model: string;
+  /** Exact execution model; absent in events recorded before this metadata was added. */
+  upstream_model?: string | undefined;
   requested_model: string;
   reported_model: string;
   endpoint: string;

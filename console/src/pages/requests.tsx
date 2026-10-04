@@ -1,3 +1,4 @@
+import { antigravityVariant } from "../../../src/shared/antigravity-models.ts";
 import { useReporting } from "@/lib/resources";
 import { useEntityNames } from "@/lib/api";
 import { useMemo, useState } from "react";
@@ -444,9 +445,29 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 "Credential",
                 names[item.credential_id] ?? (item.credential_id || "—"),
               ],
-              ["Requested model", item.requested_model || "—"],
+              [
+                "Requested model",
+                (item.model &&
+                antigravityVariant(item.requested_model)?.family === item.model
+                  ? item.model
+                  : item.requested_model) || "—",
+              ],
               ["Routed model", item.model || "—"],
-              ["Reported model", item.reported_model || "—"],
+              ...(item.upstream_model && item.upstream_model !== item.model
+                ? [
+                    [
+                      "Thinking level",
+                      antigravityVariant(item.upstream_model)?.level ?? "—",
+                    ] satisfies [string, string],
+                  ]
+                : []),
+              [
+                "Reported model",
+                (item.model &&
+                antigravityVariant(item.reported_model)?.family === item.model
+                  ? item.model
+                  : item.reported_model) || "—",
+              ],
               ["Endpoint", `${item.method} /${item.endpoint}`],
               ["HTTP status", item.http_status ?? "—"],
               ["Response ID", item.response_id ?? "—"],

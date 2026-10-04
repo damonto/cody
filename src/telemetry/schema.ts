@@ -54,6 +54,7 @@ const usageEventSchema = z
     provider_id: z.string(),
     credential_id: z.string(),
     model: z.string(),
+    upstream_model: z.string().optional(),
     requested_model: z.string(),
     reported_model: z.string(),
     endpoint: z.string(),

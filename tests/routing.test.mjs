@@ -67,6 +67,20 @@ const config = parseConfig({
 });
 const client = config.api_keys[0];
 
+test("clients with no provider associations have no inference or catalog candidates", () => {
+  const detached = parseConfig({
+    ...config,
+    api_keys: [{ ...client, providers: [] }],
+  });
+  const detachedClient = detached.api_keys[0];
+  assert.deepEqual(allowedProviderCandidates(detached, detachedClient), []);
+  for (const model of ["grok-4.5", "gpt-5.6-sol", "codex-auto-review"])
+    assert.deepEqual(
+      resolveModelRoute(detached, detachedClient, model).targets,
+      [],
+    );
+});
+
 function routingEnvironment() {
   const healthObjects = new Map();
   const affinities = new Map();

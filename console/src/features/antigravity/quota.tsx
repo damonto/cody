@@ -1,3 +1,4 @@
+import { quotaModelGroups } from "./presentation";
 import type { QuotaSnapshot } from "../../../../src/providers/oauth/schema";
 import { date } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -43,7 +44,7 @@ export function AccountQuota({
         </p>
       )}
       <div className="space-y-3">
-        {quota.groups.map((group) => (
+        {quotaModelGroups(quota.groups).map((group) => (
           <div key={group.id} className="space-y-2">
             <p className="font-medium">{group.label}</p>
             {!group.buckets.length && <p>Unknown</p>}

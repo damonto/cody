@@ -62,6 +62,7 @@ test("only the reference's Messages tool/thinking combinations add the hint", as
     [scope.model, { thinking: { type: "adaptive" } }, true],
     [scope.model, { thinking: { type: "auto" } }, true],
     [scope.model, { thinking: { type: "disabled" } }, false],
+    [scope.model, { output_config: { effort: "none" } }, false],
     [scope.model, { tools: [] }, false],
     [scope.model, { tool_choice: "none" }, false],
     [scope.model, { tool_choice: { type: "none" } }, false],

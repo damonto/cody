@@ -798,3 +798,63 @@ for (const transport of ["http", "sse", "websocket"]) {
     assert.equal(previous.status, "partial");
   });
 }
+
+test("Antigravity metering freezes the family identity and physical price before delivery", async () => {
+  const { config } = await import("./admin/fixtures.ts");
+  const { publicProviderModel } =
+    await import("../src/shared/antigravity-models.ts");
+  const family = "gemini-3.8-flash";
+  for (const level of ["low", "medium", "high"]) {
+    const upstream = `${family}-${level}`;
+    const snapshot = config();
+    const provider = snapshot.providers[0];
+    provider.type = "antigravity";
+    provider.models = [upstream];
+    provider.model_settings = { [upstream]: { context_window: 123456 } };
+    snapshot.model_prices[0].model = upstream;
+    snapshot.model_prices[0].version_id =
+      "7ad97587-e0bc-426f-b30f-048bdfcb333a";
+    const events = [];
+    const meter = new RequestMeter({
+      requestId: `canonical-${level}`,
+      endpoint: "responses",
+      method: "POST",
+      protocol: "openai",
+      sink: { send: async (event) => events.push(event) },
+    });
+    meter.configure(snapshot);
+    meter.requestedModel("alias");
+    meter.select({
+      providerId: provider.id,
+      credentialId: "credential",
+      model: upstream,
+    });
+    // Later configuration must not reinterpret the selected event's identity.
+    provider.models.push(family);
+    assert.equal(publicProviderModel(provider, upstream), upstream);
+    meter.observe({
+      type: "response.completed",
+      response: {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        },
+      },
+    });
+    const finished = meter.finish("success", 200);
+    await meter.drain();
+    for (const event of events.filter((event) => event.sequence > 0)) {
+      assert.equal(event.model, family);
+      assert.equal(event.upstream_model, upstream);
+      assert.equal(event.requested_model, "alias");
+      assert.equal(event.context_window, 123456);
+    }
+    assert.equal(finished.billing.status, "complete");
+    assert.equal(
+      finished.billing.price_version,
+      snapshot.model_prices[0].version_id,
+    );
+    assert.equal(finished.billing.total_nano, 60000);
+  }
+});

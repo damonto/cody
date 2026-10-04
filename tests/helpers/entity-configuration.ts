@@ -43,7 +43,10 @@ export async function checkIncrementalConfiguration(
           providers: ["provider"],
         },
       ],
-      model_routes: { first: { model: "model" }, second: { model: "model" } },
+      model_routes: {
+        first: { model: "model", providers: ["provider"] },
+        second: { model: "model" },
+      },
       model_prices: [
         {
           provider_id: "provider",
@@ -158,4 +161,43 @@ export async function checkIncrementalConfiguration(
   await assert.rejects(
     duplicate.bind(crypto.randomUUID(), crypto.randomUUID()).run(),
   );
+
+  // Provider cascades must preserve identities and previously archived rows on every backend.
+  const beforeRemoval = await readEntities(db);
+  const previousConfig = await store.current();
+  await providers.remove(operation(6), id);
+  const removed = await store.current();
+  assert.equal(removed.revision, 7);
+  assert.deepEqual(removed.providers, []);
+  assert.deepEqual(removed.model_routes, {});
+  assert.deepEqual(removed.model_prices, []);
+  assert.deepEqual(removed.api_keys, [
+    { ...current.api_keys[0], providers: [] },
+  ]);
+  const afterRemoval = await readEntities(db);
+  assert.deepEqual(afterRemoval.clients, beforeRemoval.clients);
+  assert.deepEqual(
+    afterRemoval.model_routes.find((row) => row.id === archived.id),
+    archived,
+  );
+  for (const table of [
+    "providers",
+    "provider_credentials",
+    "provider_models",
+    "model_prices",
+    "client_providers",
+    "model_routes",
+    "model_route_providers",
+  ] as const) {
+    assert.equal(
+      afterRemoval[table].length,
+      beforeRemoval[table].length,
+      table,
+    );
+    assert.ok(
+      afterRemoval[table].every((row) => row.deleted_at !== null),
+      table,
+    );
+  }
+  assert.deepEqual(await store.revision(6), previousConfig);
 }

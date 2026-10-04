@@ -37,10 +37,13 @@ Code: `src/providers/antigravity/`.
 - Optional `sensitive_words` masks system text only. Never mutate conversation/tool history or native signatures. Signed history may move among configured accounts only after verifying client, provider, model and original content; retain source-account provenance.
 - Preserve available bindings across credential-priority recovery. `QUOTA_EXHAUSTED` and timed `RATE_LIMIT_EXCEEDED` cool the physical account and real upstream model, then permit an account switch before output. Inspect the first SSE event before committing the stream; later limits cool without replay. Unknown/capacity 429s only use configured retries.
 - Persist quota cooldowns at `quota:antigravity:<account_ref>:<encoded model>`; lookup/write failures fail closed.
+- Gemini `-low`, `-medium` and `-high` variants form a derived client-facing family when no real bare model is configured. Keep physical IDs in provider configuration and account discovery; catalogs, model selectors and the metered reporting model expose the family. `-tiered` and other suffixes stay independent. Explicit physical targets remain fixed.
+- Resolve families before account selection and quota checks. Responses `reasoning.effort` and Messages `output_config.effort` select the variant; explicit thinking budgets take precedence (0–1024 low, 1025–8192 medium, larger high), and disabled/none selects low with disabled thinking parameters. Minimal maps to low; xhigh/max to high. Absent/auto/adaptive effort defaults to high. Missing configured levels are errors, never implicit fallback or configuration changes.
+- Normalize reasoning into a typed mode before routing or native translation; reject malformed reasoning objects, unknown modes and empty efforts. Keep budget tables and native constraints inside `reasoning.ts`. Retries and quota account switches retain the resolved physical model, as do price lookup and replay signature scopes. Usage stores the canonical family in `model` and the execution variant in `upstream_model`. Responses retain the requested client model name. Signed history cannot cross physical variants; never strip or relax signatures to support an effort change.
 - Cache public Hub version metadata separately from config/OAuth state and refresh through shared maintenance, never on the inference critical path.
 - Node/Vercel direct transport uses pooled HTTP/1.1 without ALPN. SOCKS5 also omits ALPN; Worker direct `fetch` keeps the platform TLS implementation.
 
-Tests: `tests/antigravity*.test.mjs`, `tests/worker/provider-oauth.test.ts`.
+Tests: `tests/antigravity*.test.mjs` (including family routing/catalog coverage in `tests/antigravity-models.test.mjs`), `tests/worker/provider-oauth.test.ts`.
 
 ## Codex
 

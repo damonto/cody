@@ -15,6 +15,32 @@ export const modelPriceRoutes = new Hono<AdminContext>()
   .get("/", async (c) => {
     return c.json(await service(c).list());
   })
+  .put(
+    "/:id/family",
+    validate("param", resourceIdSchema),
+    validate("json", body),
+    async (c) =>
+      c.json(
+        await service(c).saveFamily(
+          operation(c, c.req.valid("json")),
+          c.req.valid("param").id,
+          c.req.valid("json").pricing,
+        ),
+      ),
+  )
+  .delete(
+    "/:id/family",
+    validate("param", resourceIdSchema),
+    validate("json", configurationOperationSchema),
+    async (c) =>
+      c.json(
+        await service(c).saveFamily(
+          operation(c, c.req.valid("json")),
+          c.req.valid("param").id,
+          null,
+        ),
+      ),
+  )
   .get("/:id", validate("param", resourceIdSchema), async (c) => {
     return c.json(await service(c).get(c.req.valid("param").id));
   })

@@ -1,3 +1,6 @@
+import { supportsProviderModel } from "../../shared/antigravity-models.ts";
+import { resolveAntigravityModel } from "../../providers/antigravity/reasoning.ts";
+import { ProviderRequestError } from "../../providers/errors.ts";
 import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
@@ -40,6 +43,7 @@ import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ModelRoute {
   requestedModel: string;
+  resolutionError?: ProviderRequestError;
   targets: ModelRoutedProvider[];
 }
 
@@ -115,6 +119,7 @@ type RequiredProviderCapability =
   "supports_websocket" | "supports_web_search" | "supports_context_management";
 
 export interface ResolveModelRouteOptions {
+  payload?: Record<string, unknown>;
   requiredCapabilities?: readonly RequiredProviderCapability[];
   endpoint?: ProviderEndpoint;
   transport?: ProviderTransport;
@@ -174,13 +179,6 @@ export function selectProviderCredential(provider: {
   return enabled.find((credential) => credential.priority === priority);
 }
 
-function providerSupportsModel(
-  provider: ProviderConfig,
-  upstreamModel: string,
-): boolean {
-  return provider.models.includes(upstreamModel);
-}
-
 function routeAllowsProvider(
   route: ModelRouteConfig | undefined,
   providerId: string,
@@ -216,7 +214,7 @@ function sortRoutedProviders<T extends RoutedProvider>(
   );
 }
 
-export function resolveModelRoute(
+function configuredModelRoute(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestedModel: string,
@@ -245,7 +243,7 @@ export function resolveModelRoute(
     const upstreamModel = configuredRoute?.model ?? requestedModel;
     if (
       !routeAllowsProvider(configuredRoute, provider.id) ||
-      !providerSupportsModel(provider, upstreamModel)
+      !supportsProviderModel(provider, upstreamModel)
     ) {
       return [];
     }
@@ -260,6 +258,41 @@ export function resolveModelRoute(
   };
 }
 
+/** Resolve physical variants only for inference, after configured eligibility is established. */
+export function resolveModelRoute(
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+  requestedModel: string,
+  options: ResolveModelRouteOptions = {},
+): ModelRoute {
+  const route = configuredModelRoute(config, client, requestedModel, options);
+  let resolutionError: ProviderRequestError | undefined;
+  const targets = route.targets.flatMap<ModelRoutedProvider>((target) => {
+    if (target.provider.type !== ProviderType.Antigravity) return [target];
+    try {
+      return [
+        {
+          ...target,
+          upstreamModel: resolveAntigravityModel(
+            target.provider.models,
+            target.upstreamModel,
+            options.payload,
+          ),
+        },
+      ];
+    } catch (error) {
+      if (!(error instanceof ProviderRequestError)) throw error;
+      resolutionError ??= error;
+      return [];
+    }
+  });
+  return {
+    requestedModel,
+    targets,
+    ...(!targets.length && resolutionError ? { resolutionError } : {}),
+  };
+}
+
 export function modelIsAvailableForClient(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
@@ -267,8 +300,8 @@ export function modelIsAvailableForClient(
   options: ResolveModelRouteOptions = {},
 ): boolean {
   return (
-    resolveModelRoute(config, client, requestedModel, options).targets.length >
-    0
+    configuredModelRoute(config, client, requestedModel, options).targets
+      .length > 0
   );
 }
 

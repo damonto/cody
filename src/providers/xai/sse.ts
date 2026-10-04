@@ -3,26 +3,20 @@ import type { Wire } from "./json.ts";
 import { z } from "zod";
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
-const eventSchema = z
-  .object({
-    type: z.string().min(1),
-    delta: z.string().optional(),
-    output_index: z.number().int().min(0).max(1023).optional(),
-    item: z
-      .object({ type: z.string().min(1) })
-      .passthrough()
-      .optional(),
-    response: z
-      .object({
-        output: z
-          .array(z.object({ type: z.string().min(1) }).passthrough())
-          .max(1024)
-          .optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
+const eventSchema = z.looseObject({
+  type: z.string().min(1),
+  delta: z.string().optional(),
+  output_index: z.number().int().min(0).max(1023).optional(),
+  item: z.looseObject({ type: z.string().min(1) }).optional(),
+  response: z
+    .looseObject({
+      output: z
+        .array(z.looseObject({ type: z.string().min(1) }))
+        .max(1024)
+        .optional(),
+    })
+    .optional(),
+});
 /** Bounded SSE parsing shared by both downstream dialects and nonstream aggregation. */
 export async function* xaiEvents(
   body: ReadableStream<Uint8Array>,

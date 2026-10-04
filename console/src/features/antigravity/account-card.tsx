@@ -1,3 +1,4 @@
+import { cooldownModelGroups } from "./presentation";
 import type { AntigravityProviderConfig } from "../../../../src/config/types";
 import type {
   AccountHealth,
@@ -62,15 +63,20 @@ export function AccountCard({
         </div>
       </CardHeader>
       <CardContent className="flex-1 space-y-3 break-words">
-        {health?.model_cooldowns?.map((block) => (
-          <p key={block.model} className="text-xs text-muted-foreground">
-            {block.model}:{" "}
-            {block.reason === "quota"
-              ? "Quota / rate limit"
-              : "Quota status unavailable"}
-            {block.until !== null &&
-              ` until ${new Date(block.until).toLocaleString()}`}
-          </p>
+        {cooldownModelGroups(health?.model_cooldowns ?? []).map((group) => (
+          <div key={group.model} className="text-xs text-muted-foreground">
+            <p>{group.label}</p>
+            {group.blocks.map((block) => (
+              <p key={block.model}>
+                {block.label && `${block.label}: `}
+                {block.reason === "quota"
+                  ? "Quota / rate limit"
+                  : "Quota status unavailable"}
+                {block.until !== null &&
+                  ` until ${new Date(block.until).toLocaleString()}`}
+              </p>
+            ))}
+          </div>
         ))}
         {account?.error && (
           <p role="alert" className="text-xs text-destructive">

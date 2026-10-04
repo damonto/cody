@@ -302,9 +302,8 @@ test("Antigravity saves account selection and displays per-model cooldowns", asy
     }),
   );
   await page.goto("/console/providers/antigravity");
-  await expect(
-    page.getByText(/gemini-real: Quota \/ rate limit until/),
-  ).toBeVisible();
+  await expect(page.getByText("gemini-real", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Quota \/ rate limit until/)).toBeVisible();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
@@ -1297,4 +1296,202 @@ test("a slow bulk quota refresh cannot restore an account disconnected in the ed
   await expect(
     page.getByRole("button", { name: "Refresh", exact: true }),
   ).toBeDisabled();
+});
+
+test("Gemini models are grouped while level selections save physical IDs and routes target the family", async ({
+  page,
+}) => {
+  const ready = account();
+  const family = "gemini-3.8-flash";
+  const variants = ["low", "medium", "high"].map(
+    (level) => `${family}-${level}`,
+  );
+  ready.models = variants.map((id) => ({ ...model, id, display_name: id }));
+  const initial = configured([ready]);
+  const provider = initial.config.providers.find(
+    (entry) => entry.type === "antigravity",
+  )!;
+  provider.models = [variants[2]];
+  const api = await mockApi(page, initial);
+  await mockOAuth(page, [ready]);
+  await page.goto("/console/providers/antigravity");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("tab", { name: "Models", exact: true }).click();
+  await expect(
+    dialog.getByText("gemini-3.8-flash", { exact: true }),
+  ).toHaveCount(1);
+  await dialog.getByText("Thinking levels: high", { exact: true }).click();
+  await expect(
+    dialog.getByRole("checkbox", { name: "gemini-3.8-flash low", exact: true }),
+  ).not.toBeChecked();
+  await expect(
+    dialog.getByRole("checkbox", {
+      name: "gemini-3.8-flash high",
+      exact: true,
+    }),
+  ).toBeChecked();
+  await dialog
+    .getByRole("checkbox", { name: "gemini-3.8-flash medium", exact: true })
+    .check();
+  await dialog
+    .getByRole("tab", { name: "Routing & retry", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Add model route", exact: true })
+    .click();
+  await dialog.getByLabel("Client model name", { exact: true }).fill("flash");
+  await dialog
+    .getByRole("button", { name: "Save settings", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  const saved = api
+    .current()
+    .config.providers.find((entry) => entry.type === "antigravity")!;
+  expect(saved.models).toEqual([variants[2], variants[1]]);
+  expect(saved.model_routes).toMatchObject({ flash: { model: family } });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await dialog.getByRole("tab", { name: "Models", exact: true }).click();
+  await dialog
+    .getByRole("checkbox", { name: "gemini-3.8-flash", exact: true })
+    .check();
+  await dialog
+    .getByRole("button", { name: "Save settings", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  expect(
+    api
+      .current()
+      .config.providers.find((entry) => entry.type === "antigravity")
+      ?.models.toSorted(),
+  ).toEqual(variants.toSorted());
+  await page.goto("/console/routing");
+  await page.getByRole("button", { name: "Add route", exact: true }).click();
+  await dialog
+    .getByLabel("Client model name", { exact: true })
+    .fill("public-flash");
+  await dialog.getByLabel("Model", { exact: true }).click();
+  await page
+    .getByRole("option", { name: "gemini-3.8-flash", exact: true })
+    .click();
+  await dialog
+    .getByRole("checkbox", { name: saved.name ?? saved.id, exact: true })
+    .check();
+  await dialog.getByRole("button", { name: "Save route", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(api.current().config.model_routes["public-flash"]).toMatchObject({
+    model: family,
+    providers: [saved.id],
+  });
+});
+
+test("Model pricing has one Gemini family and saves one price and context for all levels", async ({
+  page,
+}) => {
+  const ready = account();
+  const family = "gemini-3.8-flash";
+  const variants = ["low", "medium", "high"].map(
+    (level) => `${family}-${level}`,
+  );
+  ready.models = variants.map((id) => ({ ...model, id, display_name: id }));
+  ready.quota.groups = variants.map((id, index) => ({
+    id,
+    label: id,
+    buckets: [
+      {
+        id: "model",
+        label: "Remaining",
+        window: null,
+        remaining_fraction: (index + 1) / 4,
+        reset_at: null,
+      },
+    ],
+  }));
+  const initial = configured([ready]);
+  const provider = initial.config.providers.find(
+    (entry) => entry.type === "antigravity",
+  )!;
+  provider.models = variants;
+  provider.model_settings = Object.fromEntries(
+    variants.map((name) => [name, { id: crypto.randomUUID() }]),
+  );
+  const api = await mockApi(page, initial);
+  await mockOAuth(page, [ready]);
+  await page.route(
+    `**/console/api/provider-accounts/${ready.account_ref}/quota`,
+    (route) => route.fulfill({ json: ready }),
+  );
+  await page.goto(`/console/pricing?provider=${provider.id}`);
+  await expect(
+    page.getByRole("button", { name: /gemini-3.8-flash/ }),
+  ).toHaveCount(1);
+  for (const name of variants)
+    await expect(page.getByText(name, { exact: true })).toHaveCount(0);
+  await page.getByLabel("Context window (tokens)").fill("1000000");
+  await page
+    .getByRole("button", { name: "Save model settings", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      Object.values(
+        api
+          .current()
+          .config.providers.find((entry) => entry.id === provider.id)!
+          .model_settings!,
+      ).map((entry) => entry.context_window),
+    )
+    .toEqual([1000000, 1000000, 1000000]);
+  await page
+    .getByRole("button", { name: "Configure prices", exact: true })
+    .click();
+  await page.getByLabel("Input", { exact: true }).fill("2");
+  await page.getByLabel("Output", { exact: true }).fill("8");
+  await page.getByLabel("Cache write", { exact: true }).fill("0");
+  await page.getByLabel("Cache read", { exact: true }).fill("0");
+  await page
+    .getByRole("button", { name: "Save model price", exact: true })
+    .click();
+  await expect
+    .poll(
+      () =>
+        api
+          .current()
+          .config.model_prices?.filter(
+            (price) => price.provider_id === provider.id,
+          ).length,
+    )
+    .toBe(3);
+  expect(
+    api
+      .current()
+      .config.model_prices!.filter((price) => price.provider_id === provider.id)
+      .every(
+        (price) =>
+          price.pricing?.tiers[0].input === "2" &&
+          price.pricing.tiers[0].output === "8",
+      ),
+  ).toBe(true);
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: /gemini-3.8-flash/ }),
+  ).toHaveCount(1);
+  await expect(page.getByLabel("Input", { exact: true })).toHaveValue("2");
+  await page.goto("/console/providers/antigravity");
+  const quota = page.getByLabel("Account quota");
+  await expect(
+    quota.getByText("gemini-3.8-flash", { exact: true }),
+  ).toHaveCount(1);
+  for (const name of variants)
+    await expect(quota.getByText(name, { exact: true })).toHaveCount(0);
+  await expect(quota.getByText("25% left", { exact: true })).toBeVisible();
+  await expect(quota.getByText("75% left", { exact: true })).toBeVisible();
+  await page.goto("/console/overview");
+  await page.getByLabel("Filter by model", { exact: true }).click();
+  await expect(
+    page.getByRole("option", { name: "gemini-3.8-flash", exact: true }),
+  ).toHaveCount(1);
+  for (const name of variants)
+    await expect(page.getByRole("option", { name, exact: true })).toHaveCount(
+      0,
+    );
 });

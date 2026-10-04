@@ -38,6 +38,7 @@ Code: `src/platform/cloudflare/http-dispatch.ts`, `src/platform/cloudflare/http-
 
 Start with `src/telemetry/`, `src/reporting/`, `src/platform/standard/usage.ts` and `src/maintenance.ts`.
 
+- Meter selection freezes the canonical reporting `model` (for example `gemini-3.8-flash`) before usage delivery. New events persist the exact execution model separately as `upstream_model` in request details; price/context lookup uses it. This additive v2 metadata is optional when reading historical or queued events: preserve absence rather than infer a variant, and validate its type when present. Reports filter and aggregate stored `model` directly, without SQL normalization or configuration-dependent reinterpretation.
 - Production consumes v2 usage events only. Preserve durable delivery, retry/outbox behavior and metering identities from compiled price versions.
 - `npm run reporting:transfer` copies finished requests between D1 and standard databases with `ON CONFLICT DO NOTHING`; target rollup triggers recount them. Settled rollups whose requests were removed by retention become one-time adjustments.
 - Read live D1 with queries, never `d1 export`, which blocks the database. Do not commit transfer/migration backups or local database files.

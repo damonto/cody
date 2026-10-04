@@ -1,3 +1,4 @@
+import { publicProviderModels } from "../../src/shared/antigravity-models.ts";
 import {
   newAntigravityProvider,
   newCodexProvider,
@@ -460,7 +461,7 @@ export async function mockApi(
     } else if (url.pathname === "/console/api/report-options") {
       response = {
         providers: draft.config.providers.map((provider) => provider.id),
-        models: draft.config.providers.flatMap((provider) => provider.models),
+        models: draft.config.providers.flatMap(publicProviderModels),
         clients: draft.config.api_keys.map((client) => client.id),
         time_zone: "UTC",
       };
