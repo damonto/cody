@@ -1,17 +1,13 @@
+import { executeInferenceAttempt } from "./inference-attempt.ts";
+import { unavailableInference } from "./inference-unavailable.ts";
 import {
   recordXaiLimit,
   xaiQuotaResponse,
 } from "../../providers/xai/availability.ts";
 import { CredentialAuthType } from "../../config/values.ts";
-import {
-  antigravityQuotaResetsAt,
-  antigravityQuotaResponse,
-} from "../../providers/antigravity/exhaustion.ts";
+import { antigravityQuotaResponse } from "../../providers/antigravity/exhaustion.ts";
 import { recordAntigravityLimit } from "../../providers/antigravity/availability.ts";
-import {
-  claudeUsageLimit,
-  responseQuotaObservation,
-} from "../../providers/claude/limits.ts";
+import { responseQuotaObservation } from "../../providers/claude/limits.ts";
 import {
   ProviderAvailabilityReason,
   HealthFailureScope,
@@ -27,10 +23,7 @@ import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
-import type {
-  AccountLimit,
-  PreparedProviderResult,
-} from "../../providers/types.ts";
+import type { PreparedProviderResult } from "../../providers/types.ts";
 import {
   bounded,
   elapsedMs,
@@ -38,10 +31,9 @@ import {
   type RequestLogContext,
 } from "../../shared/log.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
-import { retryResponseUsage } from "../../telemetry/retry.ts";
+
 import {
   healthFailureScope,
-  recordCredentialFailure,
   recordCredentialQuotaCooldown,
   recordProviderFailure,
   recordProviderSuccess,
@@ -49,31 +41,16 @@ import {
   type HealthExecutionContext,
 } from "../health/health.ts";
 import { requestProtocol, type InferencePath } from "../protocol.ts";
-import { upstreamSecretValues } from "../routing/credentials.ts";
+
 import {
   credentialKey,
-  resolveModelRoute,
   selectAvailableProviderWithDetails,
 } from "../routing/routing.ts";
+
+import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
+import { discardBody } from "./body.ts";
+
 import {
-  codexUsageLimit,
-  codexUsageLimitResponse,
-  type CodexUsageLimit,
-} from "../../providers/codex/limits.ts";
-import {
-  blockedCodexQuotaResetsAt,
-  codexQuotaResetsAt,
-  restoreCodexAccount,
-} from "../../providers/codex/exhaustion.ts";
-import {
-  codexTurnMetadata,
-  contextManagementRequested,
-  contextManagementSessionMatches,
-} from "../sessions/context-management-protocol.ts";
-import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
-import { rewriteModel } from "./model-rewrite.ts";
-import {
-  fetchWithConfiguredRetries,
   type UpstreamRetryOptions,
   type UpstreamAttemptLog,
 } from "./upstream-retry.ts";
@@ -85,107 +62,13 @@ import {
   upstreamResponseLogFields,
 } from "./upstream-log.ts";
 
-interface InferencePayload {
-  [key: string]: unknown;
-  model: string;
-}
-
+import { prepareInferenceInput, upstreamBody } from "./inference-input.ts";
+export {
+  MAX_INFERENCE_BODY_BYTES,
+  sessionIdForInference,
+  upstreamBody,
+} from "./inference-input.ts";
 export type { InferencePath } from "../protocol.ts";
-
-const MAX_INFERENCE_BODY_MIB = 96;
-export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
-
-function nonBlankString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-/**
- * Reads the session id out of an Anthropic `metadata.user_id`. Claude Code
- * sends it as a JSON string holding `device_id` and `session_id`, so without
- * this the whole Anthropic protocol resolves no session and gets no affinity.
- */
-function anthropicMetadataSessionId(
-  payload: InferencePayload,
-): string | undefined {
-  const userId = asRecord(payload.metadata)?.user_id;
-  if (typeof userId === "string") {
-    try {
-      return nonBlankString(asRecord(JSON.parse(userId))?.session_id);
-    } catch {
-      return undefined;
-    }
-  }
-  return nonBlankString(asRecord(userId)?.session_id);
-}
-
-export function sessionIdForInference(
-  request: Request,
-  payload: InferencePayload,
-  upstreamPath: InferencePath,
-): string | undefined {
-  const headerSessionId = nonBlankString(request.headers.get("session-id"));
-  if (headerSessionId) {
-    return headerSessionId;
-  }
-  const clientMetadataSessionId = nonBlankString(
-    asRecord(payload.client_metadata)?.session_id,
-  );
-  if (clientMetadataSessionId) {
-    return clientMetadataSessionId;
-  }
-  const codexSessionId = nonBlankString(codexTurnMetadata(payload)?.session_id);
-  if (codexSessionId) {
-    return codexSessionId;
-  }
-  const metadataSessionId = anthropicMetadataSessionId(payload);
-  if (metadataSessionId) {
-    return metadataSessionId;
-  }
-  return upstreamPath === "alpha/search"
-    ? nonBlankString(payload.id)
-    : undefined;
-}
-
-function parseInferencePayload(text: string): InferencePayload {
-  let value: unknown;
-  try {
-    value = JSON.parse(text) as unknown;
-  } catch {
-    throw new Error("request body must be valid JSON");
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("request body must be a JSON object");
-  }
-  const model = (value as Record<string, unknown>).model;
-  if (typeof model !== "string" || model.trim() === "") {
-    throw new Error("request body must contain a non-empty model string");
-  }
-  return value as InferencePayload;
-}
-
-/**
- * Rewrites the upstream request body after a model rewrite, or passes the
- * original bytes through untouched when nothing changed. The rewrite splices
- * only the top-level `model` string in the client's own text, so large bodies
- * are never re-serialized; a body the splice cannot handle is re-serialized.
- */
-export function upstreamBody(
-  rawBody: Uint8Array<ArrayBuffer>,
-  payload: InferencePayload,
-  upstreamModel: string,
-  changed: boolean,
-  originalText?: string,
-): BodyInit {
-  if (!changed) return rawBody;
-  const text = originalText ?? new TextDecoder().decode(rawBody);
-  return rewriteModel(text, payload, upstreamModel);
-}
 
 export async function handleInference(
   request: Request,
@@ -199,104 +82,25 @@ export async function handleInference(
   requestLog?: RequestLogContext,
   meter?: RequestMeter,
 ): Promise<Response> {
-  requestLog?.registerSensitiveValues([
-    client.api_key,
-    ...upstreamSecretValues(config),
-  ]);
-  const protocol = requestProtocol(request, upstreamPath);
-  let rawBody: Uint8Array<ArrayBuffer>;
-  try {
-    rawBody = await readBodyWithinLimit(
-      request.body,
-      MAX_INFERENCE_BODY_BYTES,
-      request.headers.get("content-length"),
-    );
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) {
-      requestLog?.warn({
-        outcome: "request_too_large",
-        inference: { max_body_bytes: MAX_INFERENCE_BODY_BYTES },
-      });
-      return apiError(
-        protocol,
-        413,
-        `Request body exceeds the ${MAX_INFERENCE_BODY_MIB} MiB limit`,
-        { code: "request_too_large", requestId },
-      );
-    }
-    throw error;
-  }
-  const originalText = new TextDecoder().decode(rawBody);
-  requestLog?.mergeSection("inference", { body_bytes: rawBody.byteLength });
-  let payload: InferencePayload;
-  try {
-    payload = parseInferencePayload(originalText);
-  } catch (error) {
-    requestLog?.warn({
-      outcome: "invalid_request",
-      error: errorMessage(error),
-    });
-    return apiError(
-      protocol,
-      400,
-      error instanceof Error ? error.message : "invalid request body",
-      { requestId },
-    );
-  }
-
-  const contextManagement =
-    upstreamPath === "responses" && contextManagementRequested(payload);
-  const sessionId = sessionIdForInference(request, payload, upstreamPath);
-  if (contextManagement && !sessionId) {
-    return apiError(protocol, 400, "Context management requires a session id", {
-      code: "invalid_context_management_request",
-      requestId,
-    });
-  }
-  if (
-    contextManagement &&
-    !contextManagementSessionMatches(payload, sessionId)
-  ) {
-    return apiError(
-      protocol,
-      400,
-      "Context management session ids must match",
-      { code: "invalid_context_management_request", requestId },
-    );
-  }
-  const route = resolveModelRoute(config, client, payload.model, {
+  const input = await prepareInferenceInput(
+    request,
+    config,
+    client,
+    upstreamPath,
+    requestId,
+    requestLog,
+  );
+  if (input instanceof Response) return input;
+  const {
+    rawBody,
+    originalText,
     payload,
-    endpoint: upstreamPath,
-    requiredCapabilities: [
-      ...(upstreamPath === "alpha/search"
-        ? ["supports_web_search" as const]
-        : []),
-      ...(contextManagement ? ["supports_context_management" as const] : []),
-    ],
-  });
-  const candidateProviders = route.targets.map((target) => target.provider.id);
-  requestLog?.set({
-    model: {
-      requested: bounded(payload.model, 160),
-    },
-    routing: { candidate_providers: candidateProviders },
-  });
-  if (route.targets.length === 0) {
-    if (route.resolutionError)
-      return apiError(
-        protocol,
-        route.resolutionError.status,
-        route.resolutionError.message,
-        { code: route.resolutionError.code, requestId },
-      );
-    requestLog?.warn({ outcome: "model_not_found" });
-    return apiError(
-      protocol,
-      400,
-      `Model ${payload.model} is not available for this API key`,
-      { code: "model_not_found", requestId },
-    );
-  }
+    contextManagement,
+    sessionId,
+    route,
+    candidateProviders,
+  } = input;
+  const protocol = requestProtocol(request, upstreamPath);
   // Native account limits may switch within the selected provider before output.
   const excludedCredentials = new Set<string>();
   const proxySwitches = new Set<string>();
@@ -340,7 +144,6 @@ export async function handleInference(
           : {}),
       },
     );
-    const claude = selection.claudeQuota;
     const target = selection.target;
     const routing = {
       candidate_providers: candidateProviders,
@@ -374,126 +177,24 @@ export async function handleInference(
       requestLog?.set({ routing });
     }
     if (!target) {
-      if (selection.affinity?.status === SessionAffinityStatus.Forbidden) {
-        if (exhausted) await discardBody(exhausted.body);
-        return apiError(
-          protocol,
-          403,
-          "This context session belongs to another client",
-          { code: "context_session_forbidden", requestId },
-        );
-      }
-      if (selection.affinity?.status === SessionAffinityStatus.Failed) {
-        if (exhausted) await discardBody(exhausted.body);
-        return apiError(
-          protocol,
-          503,
-          "The session binding store is unavailable",
-          {
-            type: "server_error",
-            code: "session_affinity_unavailable",
-            requestId,
-          },
-        );
-      }
-      if (
-        [...selection.checks, ...selection.credentialChecks].some(
-          (check) =>
-            config.providers.some(
-              (provider) =>
-                provider.id === check.provider_id &&
-                provider.type === ProviderType.Antigravity,
-            ) && check.reason === ProviderAvailabilityReason.HealthReadFailed,
-        )
-      ) {
-        if (exhausted) await discardBody(exhausted.body);
-        meter?.diagnostic("quota_state_unavailable");
-        return apiError(
-          protocol,
-          503,
-          "The account quota store is unavailable",
-          { code: "quota_state_unavailable", requestId },
-        );
-      }
-      const antigravityReset = antigravityQuotaResetsAt(
+      const response = await unavailableInference({
+        env,
+        config,
+        route,
         routeForSelection,
         selection,
-      );
-      if (antigravityReset !== undefined) {
-        if (exhausted) await discardBody(exhausted.body);
-        meter?.diagnostic("usage_limit_reached");
-        return antigravityQuotaResponse(protocol, antigravityReset, requestId);
-      }
-      if (!resetConsumed) {
-        resetConsumed = true;
-        if (
-          await restoreCodexAccount(
-            env,
-            config,
-            route.targets,
-            selection,
-            excludedCredentials,
-            exhausted !== undefined,
-            requestId,
-          )
-        )
-          continue;
-      }
-      if (exhausted) {
-        requestLog?.warn({ outcome: "accounts_exhausted" });
-        meter?.diagnostic("usage_limit_reached");
-        return exhausted;
-      }
-      if (selection.affinity?.status === SessionAffinityStatus.Blocked) {
-        const resetsAt = blockedCodexQuotaResetsAt(selection);
-        if (resetsAt !== undefined) {
-          requestLog?.warn({ outcome: "usage_limit_reached" });
-          return codexUsageLimitResponse(resetsAt, requestId);
-        }
-        return apiError(
-          protocol,
-          503,
-          "The context session binding is unavailable",
-          {
-            type: "server_error",
-            code: "context_session_unavailable",
-            requestId,
-          },
-        );
-      }
-      if (selection.xaiQuota?.allBlocked)
-        return xaiQuotaResponse(protocol, selection.xaiQuota.until, requestId);
-      if (claude?.allBlocked) {
-        const response = apiError(
-          protocol,
-          429,
-          `Claude subscription quota exhausted${claude.until ? ` until ${new Date(claude.until).toISOString()}` : ""}`,
-          { code: "usage_limit_reached", requestId },
-        );
-        if (claude.until)
-          response.headers.set(
-            "retry-after",
-            String(Math.max(1, Math.ceil((claude.until - Date.now()) / 1000))),
-          );
-        return response;
-      }
-      const quotaResetsAt = codexQuotaResetsAt(
-        route.targets,
-        selection,
         excludedCredentials,
-      );
-      if (quotaResetsAt !== undefined) {
-        requestLog?.warn({ outcome: "usage_limit_reached" });
-        meter?.diagnostic("usage_limit_reached");
-        return codexUsageLimitResponse(quotaResetsAt, requestId);
-      }
-      requestLog?.warn({ outcome: "provider_cooling_down" });
-      return apiError(
+        exhausted,
+        resetConsumed,
         protocol,
-        503,
-        `No healthy provider is currently available for model ${payload.model}`,
-        { type: "server_error", code: "provider_cooling_down", requestId },
-      );
+        model: payload.model,
+        requestId,
+        requestLog,
+        meter,
+      });
+      if (response) return response;
+      resetConsumed = true;
+      continue;
     }
     if (exhausted) {
       await discardBody(exhausted.body);
@@ -612,112 +313,20 @@ export async function handleInference(
         modelRewritten,
         originalText,
       );
-    let usageLimit: CodexUsageLimit | undefined;
-    let nativeLimit: AccountLimit | undefined;
-    let claudeLimit: ReturnType<typeof claudeUsageLimit>;
-    const startedAt = performance.now();
-    const result = await fetchWithConfiguredRetries(
-      () =>
-        new Request(prepared.url, {
-          method: prepared.method ?? request.method,
-          headers,
-          body,
-          redirect: "manual",
-          signal: request.signal,
-        }),
-      provider.retry,
-      {
-        ...retryOptions,
-        ...((provider.type === ProviderType.Antigravity ||
-          provider.type === ProviderType.Xai) &&
-        accountDeadline !== undefined
-          ? { deadline: accountDeadline }
-          : {}),
-        send: async (upstreamRequest) => {
-          const response = await (retryOptions.send ?? prepared.send)(
-            upstreamRequest,
-          );
-          nativeLimit = undefined;
-          if (
-            (provider.type !== ProviderType.Antigravity &&
-              provider.type !== ProviderType.Xai) ||
-            !prepared.inspectResponse
-          )
-            return response;
-          const inspected = await prepared.inspectResponse(
-            response,
-            async (limit) => {
-              if (selectedCredential.auth.type === CredentialAuthType.OAuth) {
-                await scheduleHealthUpdate(
-                  context,
-                  provider.type === ProviderType.Xai
-                    ? recordXaiLimit(
-                        env,
-                        selectedCredential.auth.account_ref,
-                        prepared.oauthGeneration,
-                        limit,
-                      )
-                    : recordAntigravityLimit(
-                        env,
-                        selectedCredential.auth.account_ref,
-                        upstreamModel,
-                        limit,
-                      ),
-                );
-              }
-            },
-            upstreamRequest.signal,
-          );
-          nativeLimit = inspected.accountLimit;
-          return inspected.response;
-        },
-        ...(meter
-          ? {
-              observeDiscardedResponse: (response: Response) =>
-                prepared.retryUsage
-                  ? prepared.retryUsage(response)
-                  : retryResponseUsage(response, protocol),
-            }
-          : {}),
-        ...(provider.type === ProviderType.Claude
-          ? {
-              isTerminal: async (response: Response) => {
-                claudeLimit = claudeUsageLimit(response, upstreamModel);
-                return claudeLimit !== undefined;
-              },
-            }
-          : {}),
-        ...(provider.type === ProviderType.Antigravity ||
-        provider.type === ProviderType.Xai
-          ? { isTerminal: () => nativeLimit !== undefined }
-          : {}),
-        ...(provider.type === ProviderType.Codex
-          ? {
-              isTerminal: async (response: Response) => {
-                usageLimit = await codexUsageLimit(response);
-                return usageLimit !== undefined;
-              },
-            }
-          : {}),
-        onResponse: async (response, attempt) => {
-          await retryOptions.onResponse?.(response, attempt);
-          if (
-            healthFailureScope(response.status, protocol, provider.type) ===
-            HealthFailureScope.Credential
-          ) {
-            await scheduleHealthUpdate(
-              context,
-              recordCredentialFailure(
-                env,
-                provider.id,
-                selectedCredential.id,
-                requestId,
-              ),
-            );
-          }
-        },
-      },
-    );
+    const { result, startedAt, usageLimit, nativeLimit, claudeLimit } =
+      await executeInferenceAttempt({
+        request,
+        env,
+        target,
+        prepared,
+        body,
+        protocol,
+        requestId,
+        context,
+        retryOptions,
+        accountDeadline,
+        meter,
+      });
     for (const attempt of result.attempts) {
       logicalAttempts.push({ ...attempt, attempt: ++attemptCount });
     }

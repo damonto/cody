@@ -8,6 +8,7 @@ import {
   RequestLogContext,
 } from "../shared/log.ts";
 import { durableUsageSink } from "../telemetry/delivery.ts";
+import { RequestOutcome } from "../telemetry/values.ts";
 import { RequestMeter } from "../telemetry/meter.ts";
 import { apiError, bearerToken, findClientApiKey } from "./http/http.ts";
 import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
@@ -180,6 +181,18 @@ export function gatewayHandler(
       );
       return finish(response);
     } catch (error) {
+      if (request.signal.aborted) {
+        meter?.diagnostic("request_cancelled");
+        meter?.finish(RequestOutcome.Cancelled, 499);
+        requestLog.warn({ outcome: "request_cancelled" });
+        return finish(
+          apiError(protocol, 499, "The client cancelled the request", {
+            type: "invalid_request_error",
+            code: "request_cancelled",
+            requestId,
+          }),
+        );
+      }
       meter?.diagnostic("gateway_error");
       requestLog.error({
         outcome: "gateway_error",

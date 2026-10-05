@@ -1,20 +1,31 @@
+import {
+  storedSchema,
+  terminalSessionStatuses,
+  emptyQuota,
+  devicePending,
+  nextAccountAlarm,
+  safeError,
+  base64url,
+  type Stored,
+  type Session,
+} from "./state.ts";
+import { AccountInventory } from "./inventory.ts";
+import {
+  initializeCodexAccount,
+  initializeClaudeAccount,
+  initializeXaiAccount,
+} from "./initialization.ts";
+import { accountView } from "./presentation.ts";
 import { ControlStore } from "../../control/store.ts";
-import { XaiClient, xaiDeviceSchema, xaiIdentity } from "../xai/api.ts";
-import { xaiModels } from "../xai/models.ts";
+import { XaiClient, xaiIdentity } from "../xai/api.ts";
+
 import {
   ClaudeClient,
   CLAUDE_REDIRECT_URI,
   authorizationUrl as claudeAuthorizationUrl,
   parseProfile as parseClaudeProfile,
-  parseModels as parseClaudeModels,
-  parseUsage as parseClaudeUsage,
 } from "../claude/api.ts";
-import {
-  OAuthAccountViewStatus,
-  OAuthFlow,
-  OAuthSessionStatus,
-  OAuthAccountStatus,
-} from "./values.ts";
+import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
 import { ProviderType, CredentialAuthType } from "../../config/values.ts";
 
 import { z } from "zod";
@@ -22,13 +33,9 @@ import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 import { configureLogging, logWarn } from "../../shared/log.ts";
 import { antigravityVersion } from "../antigravity/version.ts";
-import {
-  AntigravityVerificationError,
-  mergeVerification,
-} from "../antigravity/verification.ts";
+import { AntigravityVerificationError } from "../antigravity/verification.ts";
 import {
   PROJECT_INITIALIZATION_TTL_MS,
-  projectInitializationSchema,
   pollProject,
   scheduleProjectRetry,
   retryableProjectError,
@@ -39,9 +46,6 @@ import {
   ANTIGRAVITY_REDIRECT_URI,
   AntigravityClient,
   authorizationUrl as antigravityAuthorizationUrl,
-  parseModels as parseAntigravityModels,
-  parseQuota,
-  parseSubscription,
 } from "../antigravity/api.ts";
 import {
   CODEX_DEVICE_REDIRECT_URI,
@@ -51,9 +55,6 @@ import {
   CodexClient,
   authorizationUrl as codexAuthorizationUrl,
   parseIdToken,
-  parseModels as parseCodexModels,
-  parseResetCredits,
-  parseUsage,
 } from "../codex/api.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import {
@@ -64,21 +65,13 @@ import {
 import { accountCommandSchema, type AccountCommand } from "./commands.ts";
 import {
   OAuthError,
-  accountViewSchema,
-  connectionSchema,
-  identitySchema,
-  oauthProviderTypeSchema,
-  quotaSnapshotSchema,
-  sessionStatusSchema,
   tokenSchema,
   type AccountReply,
   type AccountView,
-  type ConsumeResetResult,
   type OAuthProviderType,
   type ProviderConnection,
   type ProxyConfiguration,
   proxyConfigurationSchema,
-  type QuotaSnapshot,
   type SessionView,
 } from "./schema.ts";
 import { sqlDialect, type Bindings } from "../../platform/bindings.ts";
@@ -87,7 +80,6 @@ import type { ObjectContext } from "../../platform/object-context.ts";
 
 const SESSION_TTL_MS = 10 * 60_000;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
-const QUOTA_CACHE_TTL_MS = 60_000;
 type AccountEnv = Pick<
   Bindings,
   | "CODY_DB"
@@ -103,118 +95,32 @@ interface PendingRefresh {
   readonly result: Promise<void>;
 }
 
-const sessionSchema = z.object({
-  id: z.uuid(),
-  actor: z.string(),
-  status: sessionStatusSchema,
-  state: z.string(),
-  verifier: z.string(),
-  challenge: z.string(),
-  expires_at: z.number(),
-  connection: connectionSchema,
-  error: z.string().nullable(),
-  tokens: tokenSchema.nullable(),
-  identity: identitySchema.nullable(),
-  next_at: z.number(),
-  flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
-  // Device authorization polls the issuer from the alarm until approval.
-  xai_device: xaiDeviceSchema.optional(),
-  device_auth_id: z.string().nullable().default(null),
-  user_code: z.string().nullable().default(null),
-  poll_interval_ms: z.number().default(5000),
-});
-const storedSchema = z.object({
-  account_ref: z.uuid(),
-  provider_id: z.string(),
-  provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
-  generation: z.number(),
-  status: z.enum(OAuthAccountStatus),
-  connection: connectionSchema,
-  tokens: tokenSchema.nullable(),
-  identity: identitySchema.nullable(),
-  project_id: z.string().nullable(),
-  antigravity_initialization: projectInitializationSchema.nullable().optional(),
-  codex: accountViewSchema.shape.codex,
-  claude: accountViewSchema.shape.claude,
-  xai: accountViewSchema.shape.xai,
-  claude_quota_revision: z.number().default(0),
-  error: z.string().nullable(),
-  session: sessionSchema.nullable(),
-  models: accountViewSchema.shape.models,
-  models_updated_at: z.number().nullable(),
-  models_error: z.string().nullable(),
-  models_verification: accountViewSchema.shape.models_verification,
-  quota: quotaSnapshotSchema,
-});
-type Stored = z.output<typeof storedSchema>;
-type Session = z.output<typeof sessionSchema>;
-const terminalSessionStatuses: ReadonlySet<OAuthSessionStatus> = new Set([
-  OAuthSessionStatus.Complete,
-  OAuthSessionStatus.Cancelled,
-  OAuthSessionStatus.Expired,
-]);
-
-const emptyQuota = (): Stored["quota"] => ({
-  groups: [],
-  subscription: null,
-  updated_at: null,
-  last_error: null,
-  stale: true,
-});
-const devicePending = (session: Session): boolean =>
-  session.flow === OAuthFlow.Device &&
-  session.status === OAuthSessionStatus.Pending;
-function nextAccountAlarm(account: Stored): number | null {
-  const times: number[] = [];
-  const session = account.session;
-  if (session && !terminalSessionStatuses.has(session.status)) {
-    times.push(session.expires_at);
-    if (
-      session.status === OAuthSessionStatus.Initializing ||
-      devicePending(session)
-    )
-      times.push(session.next_at);
-  }
-  const project = account.antigravity_initialization;
-  if (project && project.error === null)
-    times.push(project.next_at, project.deadline);
-  return times.length ? Math.min(...times) : null;
-}
-function accountViewStatus(account: Stored): OAuthAccountViewStatus {
-  if (account.status === OAuthAccountStatus.Ready) return account.status;
-  if (account.antigravity_initialization)
-    return OAuthAccountViewStatus.Initializing;
-  if (account.status !== OAuthAccountStatus.Disconnected) return account.status;
-  switch (account.session?.status) {
-    case OAuthSessionStatus.Initializing:
-      return OAuthAccountViewStatus.Initializing;
-    case OAuthSessionStatus.Pending:
-    case OAuthSessionStatus.Exchanging:
-      return OAuthAccountViewStatus.Authorizing;
-    default:
-      return account.status;
-  }
-}
-function safeError(error: unknown): string {
-  return error instanceof OAuthError
-    ? error.message
-    : "The account operation failed; check the selected proxy and try again";
-}
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "");
-}
 /** One account owns its token lifecycle. Inference streams never pass through this object. */
 export class ProviderOAuthAccountCore {
   private account: Stored | null = null;
+  private readonly inventory: AccountInventory;
   private mutations: Promise<unknown> = Promise.resolve();
   private readonly refreshes = new Map<RefreshKind, PendingRefresh>();
   constructor(
     protected readonly ctx: ObjectContext,
     protected readonly env: AccountEnv,
   ) {
+    this.inventory = new AccountInventory(
+      {
+        current: () => this.requireAccount(),
+        update: (generation, update) =>
+          this.updateGeneration(generation, update),
+        refresh: (kind, generation, run) =>
+          this.shareRefresh(kind, generation, run),
+        resolve: () => this.resolve(),
+      },
+      {
+        antigravity: () => this.antigravity(),
+        codex: () => this.codex(),
+        claude: () => this.claude(),
+        xai: () => this.xai(),
+      },
+    );
     void this.ctx.blockConcurrencyWhile(async () => {
       const encrypted = await this.ctx.storage.get<string>("account");
       if (encrypted)
@@ -232,8 +138,8 @@ export class ProviderOAuthAccountCore {
   ): Promise<void> {
     const operation = this.mutations.then(async () => {
       configureLogging(this.env.LOG_LEVEL);
-      const next = await update(
-        this.account ? structuredClone(this.account) : null,
+      const next = storedSchema.parse(
+        await update(this.account ? structuredClone(this.account) : null),
       );
       const encrypted = await encryptConfig(
         next,
@@ -285,45 +191,9 @@ export class ProviderOAuthAccountCore {
     return result;
   }
   private view(): AccountView {
-    const account = this.requireAccount();
-    const project = account.antigravity_initialization;
-    const projectView: AccountView["project_initialization"] = project
-      ? {
-          status: project.error === null ? "pending" : "error",
-          next_retry_at: project.error === null ? project.next_at : null,
-          error: project.error,
-          verification: project.verification,
-        }
-      : null;
-    return {
-      generation: account.generation,
-      account_ref: account.account_ref,
-      provider_id: account.provider_id,
-      status: accountViewStatus(account),
-      email: account.identity?.email ?? project?.identity.email ?? null,
-      project_id: account.project_id,
-      ...(account.provider_type === ProviderType.Antigravity
-        ? { project_initialization: projectView }
-        : {}),
-      codex: account.codex,
-      claude: account.claude,
-      xai: account.xai,
-      expires_at: account.tokens?.expires_at ?? null,
-      error: account.error,
-      models: account.models,
-      models_updated_at: account.models_updated_at,
-      models_error: account.models_error,
-      models_verification: account.models_verification,
-      quota: {
-        ...account.quota,
-        stale:
-          account.status !== OAuthAccountStatus.Ready ||
-          account.quota.last_error !== null ||
-          account.quota.updated_at === null ||
-          Date.now() - account.quota.updated_at >= QUOTA_CACHE_TTL_MS,
-      },
-    };
+    return accountView(this.requireAccount());
   }
+
   private session(id: string, actor: string): Session {
     return this.ownedSession(this.requireAccount(), id, actor);
   }
@@ -573,7 +443,7 @@ export class ProviderOAuthAccountCore {
           account.provider_type !== providerType)
       )
         throw new OAuthError("Account belongs to another provider", 403);
-      account ??= {
+      account ??= storedSchema.parse({
         account_ref: accountRef,
         provider_id: connection.provider_id,
         provider_type: providerType,
@@ -591,7 +461,7 @@ export class ProviderOAuthAccountCore {
         models_updated_at: null,
         models_error: null,
         quota: emptyQuota(),
-      };
+      });
       account.generation++;
       account.session = session;
       account.antigravity_initialization = null;
@@ -1054,43 +924,7 @@ export class ProviderOAuthAccountCore {
         "This is a different ChatGPT account; add it as a new account instead",
       );
     await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (
-        !pending ||
-        pending.id !== session.id ||
-        pending.status !== OAuthSessionStatus.Initializing ||
-        !pending.tokens
-      )
-        throw new OAuthError("Authorization was cancelled", 409);
-      if (Date.now() >= pending.expires_at)
-        throw new OAuthError("Authorization session expired; start again", 410);
-      const refreshToken =
-        pending.tokens.refresh_token ?? account.tokens?.refresh_token;
-      if (!refreshToken)
-        throw new OAuthError(
-          "ChatGPT did not return a refresh token; start authorization again",
-        );
-      account.tokens = { ...pending.tokens, refresh_token: refreshToken };
-      account.identity = identity;
-      account.codex = {
-        account_id: claims.account_id,
-        ...(claims.is_fedramp ? { is_fedramp: true } : {}),
-        user_id: claims.user_id,
-        plan_type: claims.plan_type,
-        subscription_active_until: claims.subscription_active_until,
-      };
-      account.connection = pending.connection;
-      account.status = OAuthAccountStatus.Ready;
-      account.error = null;
-      account.generation++;
-      account.quota = emptyQuota();
-      account.models = [];
-      account.models_updated_at = null;
-      account.models_error = null;
-      pending.status = OAuthSessionStatus.Complete;
-      pending.tokens = null;
-      pending.state = "";
-      pending.verifier = "";
+      initializeCodexAccount(account, session, claims, identity);
     });
   }
   private async initializeClaude(
@@ -1108,37 +942,7 @@ export class ProviderOAuthAccountCore {
         "This is a different Claude account or organization; add it as a new account",
       );
     await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (
-        !pending ||
-        pending.id !== session.id ||
-        pending.status !== OAuthSessionStatus.Initializing ||
-        !pending.tokens
-      )
-        throw new OAuthError("Authorization was cancelled", 409);
-      if (Date.now() >= pending.expires_at)
-        throw new OAuthError("Authorization session expired", 410);
-      const refreshToken =
-        pending.tokens.refresh_token ?? account.tokens?.refresh_token;
-      if (!refreshToken)
-        throw new OAuthError(
-          "Claude did not return a refresh token; authorize again",
-        );
-      account.tokens = { ...pending.tokens, refresh_token: refreshToken };
-      account.identity = profile.identity;
-      account.claude = profile.claude;
-      account.connection = pending.connection;
-      account.status = OAuthAccountStatus.Ready;
-      account.error = null;
-      account.generation++;
-      account.quota = emptyQuota();
-      account.models = [];
-      account.models_updated_at = null;
-      account.models_error = null;
-      pending.status = OAuthSessionStatus.Complete;
-      pending.tokens = null;
-      pending.state = "";
-      pending.verifier = "";
+      initializeClaudeAccount(account, session, profile);
     });
   }
   private async initializeXai(
@@ -1153,36 +957,7 @@ export class ProviderOAuthAccountCore {
         400,
       );
     await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (
-        !pending ||
-        pending.id !== session.id ||
-        pending.status !== OAuthSessionStatus.Initializing ||
-        Date.now() >= pending.expires_at
-      )
-        throw new OAuthError("Authorization session is no longer active", 410);
-      const refresh_token =
-        tokens.refresh_token ?? account.tokens?.refresh_token;
-      if (!refresh_token)
-        throw new OAuthError(
-          "xAI did not return a refresh token; authorize again",
-        );
-      account.tokens = { ...tokens, refresh_token };
-      account.identity = { id: claims.sub, email: claims.email ?? null };
-      account.xai = { subject: claims.sub };
-      account.connection = pending.connection;
-      account.status = OAuthAccountStatus.Ready;
-      account.error = null;
-      account.generation++;
-      account.quota = emptyQuota();
-      account.models = xaiModels();
-      account.models_updated_at = Date.now();
-      account.models_error = null;
-      pending.status = OAuthSessionStatus.Complete;
-      pending.tokens = null;
-      pending.xai_device = undefined;
-      pending.state = "";
-      pending.verifier = "";
+      initializeXaiAccount(account, session, claims, tokens);
     });
   }
   private active() {
@@ -1322,227 +1097,6 @@ export class ProviderOAuthAccountCore {
     }
     const current = this.active();
     return { token: current.tokens.access_token, ...current.credential };
-  }
-  private refreshModels(): Promise<void> {
-    const generation = this.requireAccount().generation;
-    return this.shareRefresh("models", generation, async () => {
-      try {
-        if (this.requireAccount().provider_type === ProviderType.Xai) {
-          await this.updateGeneration(generation, (account) => {
-            account.models = xaiModels();
-            account.models_updated_at = Date.now();
-            account.models_error = null;
-          });
-          return;
-        }
-        const token = await this.resolve();
-        if ("xai_subject" in token)
-          throw new OAuthError("Unexpected account type", 500);
-        const models =
-          "claude_organization_id" in token
-            ? parseClaudeModels(await (await this.claude()).models(token.token))
-            : "account_id" in token
-              ? parseCodexModels(
-                  await (
-                    await this.codex()
-                  ).models(token.token, token.account_id),
-                )
-              : parseAntigravityModels(
-                  await (
-                    await this.antigravity()
-                  ).models(token.token, token.project_id),
-                );
-        await this.updateGeneration(generation, (account) => {
-          account.models = models;
-          account.models_updated_at = Date.now();
-          account.models_error = null;
-          delete account.models_verification;
-        });
-      } catch (error) {
-        if (this.account?.generation === generation)
-          await this.updateGeneration(generation, (account) => {
-            account.models_error = safeError(error);
-            account.models_verification =
-              error instanceof AntigravityVerificationError
-                ? error.verification
-                : undefined;
-          });
-      }
-    });
-  }
-  private async refreshQuota(force: boolean): Promise<void> {
-    if (!force && !this.view().quota.stale) return;
-    const generation = this.requireAccount().generation;
-    await this.shareRefresh("quota", generation, async () => {
-      try {
-        const token = await this.resolve();
-        if ("xai_subject" in token) {
-          const usage = await (
-            await this.xai()
-          ).quota(token.token, token.xai_subject);
-          await this.updateGeneration(generation, (account) => {
-            account.quota = { ...usage, xai_limits: account.quota.xai_limits };
-          });
-          return;
-        }
-        if ("claude_organization_id" in token) {
-          const revision = this.requireAccount().claude_quota_revision;
-          const usage = parseClaudeUsage(
-            await (await this.claude()).usage(token.token),
-          );
-          await this.updateGeneration(generation, (account) => {
-            if (account.claude_quota_revision !== revision) return;
-            account.quota = {
-              ...account.quota,
-              ...usage,
-              updated_at: Date.now(),
-              last_error: null,
-              stale: false,
-              subscription: {
-                tier_id: account.claude?.subscription_type ?? null,
-                tier_name: account.claude?.rate_limit_tier ?? null,
-                credits: [],
-              },
-            };
-          });
-          return;
-        }
-        if ("account_id" in token)
-          return await this.refreshCodexQuota(
-            generation,
-            token.token,
-            token.account_id,
-          );
-        let groups: QuotaSnapshot["groups"] | undefined;
-        let subscription: QuotaSnapshot["subscription"] | undefined;
-        const errors = new Set<string>();
-        const verification: NonNullable<QuotaSnapshot["verification"]> = [];
-        // Independent transports, serialized so a six-account batch has at most six requests in flight.
-        // Preparation and parsing belong to each operation's failure boundary too.
-        try {
-          groups = parseQuota(
-            await (
-              await this.antigravity()
-            ).quota(token.token, token.project_id),
-          );
-        } catch (error) {
-          errors.add(safeError(error));
-          if (error instanceof AntigravityVerificationError)
-            verification.push(...error.verification);
-        }
-        try {
-          subscription = parseSubscription(
-            await (await this.antigravity()).load(token.token),
-          );
-        } catch (error) {
-          errors.add(safeError(error));
-          if (error instanceof AntigravityVerificationError)
-            verification.push(...error.verification);
-        }
-        await this.updateGeneration(generation, (account) => {
-          if (groups !== undefined) {
-            account.quota.groups = groups;
-            account.quota.updated_at = Date.now();
-          }
-          if (subscription !== undefined)
-            account.quota.subscription = subscription;
-          account.quota.last_error = [...errors].join(" ") || null;
-          account.quota.verification = verification.length
-            ? mergeVerification(verification)
-            : undefined;
-        });
-      } catch (error) {
-        if (this.account?.generation === generation)
-          await this.updateGeneration(generation, (account) => {
-            account.quota.last_error = safeError(error);
-            delete account.quota.verification;
-          });
-      }
-    });
-  }
-  private async refreshCodexQuota(
-    generation: number,
-    token: string,
-    accountId: string,
-  ): Promise<void> {
-    let usage: ReturnType<typeof parseUsage> | undefined;
-    let lastError: string | null = null;
-    try {
-      usage = parseUsage(await (await this.codex()).usage(token, accountId));
-    } catch (error) {
-      lastError = safeError(error);
-    }
-    // A reset-credit lookup failure never hides the usage windows.
-    const resets = await this.fetchResetCredits(token, accountId);
-    await this.updateGeneration(generation, (account) => {
-      const now = Date.now();
-      if (usage) {
-        account.quota.groups = usage.groups;
-        account.quota.updated_at = now;
-        account.quota.limit_reached = usage.limit_reached;
-        account.quota.credits_balance = usage.credits_balance;
-        if (account.codex && usage.plan_type)
-          account.codex = { ...account.codex, plan_type: usage.plan_type };
-        account.quota.subscription = {
-          tier_id: usage.plan_type ?? account.codex?.plan_type ?? null,
-          tier_name: null,
-          credits: [],
-          active_until: account.codex?.subscription_active_until ?? null,
-        };
-      }
-      account.quota.reset_credits = resets;
-      account.quota.last_error = lastError;
-    });
-  }
-  private async fetchResetCredits(
-    token: string,
-    accountId: string,
-  ): Promise<NonNullable<QuotaSnapshot["reset_credits"]>> {
-    const previous = this.account?.quota.reset_credits;
-    try {
-      return {
-        ...parseResetCredits(
-          await (await this.codex()).resetCredits(token, accountId),
-        ),
-        updated_at: Date.now(),
-        error: null,
-      };
-    } catch (error) {
-      return {
-        available_count: previous?.available_count ?? 0,
-        credits: previous?.credits ?? [],
-        updated_at: previous?.updated_at ?? null,
-        error: safeError(error),
-      };
-    }
-  }
-  private async refreshResetCredits(): Promise<void> {
-    const generation = this.requireAccount().generation;
-    const token = await this.resolve();
-    if (!("account_id" in token))
-      throw new OAuthError("This operation is only available for Codex", 400);
-    const resets = await this.fetchResetCredits(token.token, token.account_id);
-    await this.updateGeneration(generation, (account) => {
-      account.quota.reset_credits = resets;
-    });
-  }
-  /** Spends one reset credit; the redeem ID makes a retried request idempotent upstream. */
-  private async consumeReset(
-    redeemRequestId: string,
-    creditId?: string,
-  ): Promise<{ result: ConsumeResetResult; account: AccountView }> {
-    const token = await this.resolve();
-    if (!("account_id" in token))
-      throw new OAuthError("This operation is only available for Codex", 400);
-    const result = await (
-      await this.codex()
-    ).consumeReset(token.token, token.account_id, redeemRequestId, creditId);
-    logWarn("oauth.codex.reset_consumed", {
-      code: result.code,
-      windows_reset: result.windows_reset,
-    });
-    await this.refreshQuota(true);
-    return { result, account: this.view() };
   }
   private async retry(id: string, actor: string): Promise<void> {
     await this.updateGeneration(this.requireAccount().generation, (account) => {
@@ -1692,19 +1246,22 @@ export class ProviderOAuthAccountCore {
       case "resolve":
         return this.resolve(command.connection, command.proxy_configuration);
       case "models":
-        await this.refreshModels();
+        await this.inventory.refreshModels();
         return this.view();
       case "quota":
-        await this.refreshQuota(command.force);
+        await this.inventory.refreshQuota(command.force);
         return this.view();
       case "disconnect":
         await this.disconnect();
         return this.view();
       case "reset_credits":
-        await this.refreshResetCredits();
+        await this.inventory.refreshResetCredits();
         return this.view();
       case "consume_reset":
-        return this.consumeReset(command.redeem_request_id, command.credit_id);
+        return this.inventory.consumeReset(
+          command.redeem_request_id,
+          command.credit_id,
+        );
       case "view":
         return this.view();
       case "readiness":

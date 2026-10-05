@@ -59,12 +59,15 @@ export async function handleContextManagement(
       request.body,
       MAX_CONTEXT_MANAGEMENT_BODY_BYTES,
       request.headers.get("content-length"),
+      undefined,
+      request.signal,
     );
     sessionId = parseContextManagementSession(
       new TextDecoder().decode(body),
       request.headers.get("session-id"),
     );
   } catch (error) {
+    request.signal.throwIfAborted();
     const tooLarge = error instanceof BodyTooLargeError;
     return apiError(
       protocol,

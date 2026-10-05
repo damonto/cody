@@ -4,10 +4,12 @@ import {
   applyD1Migrations,
   createExecutionContext,
   waitOnExecutionContext,
+  runInDurableObject,
   type D1Migration,
 } from "cloudflare:test";
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from "vitest";
 import worker from "../../src/worker.ts";
+import type { HttpExecution } from "../../src/platform/cloudflare/http-execution.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
 import {
   parseConfig,
@@ -326,6 +328,96 @@ test("disconnect before upstream headers aborts the one attempt", async () => {
   await result.body?.cancel();
   expect(upstream).toHaveBeenCalledTimes(1);
 });
+
+test.each([
+  "/responses",
+  "/v1/messages",
+  "/alpha/search",
+  "/alpha/notes/v2/read_file",
+])(
+  "disconnect during a stalled upload completes cancellation: %s",
+  async (path) => {
+    const config = await loadConfig(env);
+    config.providers[0]!.supports_context_management = true;
+    if (path === "/alpha/search") {
+      config.web_search = {
+        mode: "tavily",
+        api_key: "search-secret",
+        base_url: "https://tavily.test",
+        max_results: 3,
+        prefer_native: false,
+      };
+    }
+    await setTestConfiguration(
+      env.CODY_DB,
+      "gateway-config",
+      JSON.stringify(config),
+    );
+    clearConfigCacheForTests();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const metering = vi.spyOn(RequestMeter.prototype, "response");
+    // Construct the upload inside its owning DO: the RPC fetch transport does not
+    // forward cancellation to a synthetic caller-side ReadableStream callback.
+    // Exercise the real executor and retain assertions for source cancellation,
+    // response status, no upstream attempt, and durable metering completion.
+    const stub = env.HTTP_EXECUTION.get(env.HTTP_EXECUTION.newUniqueId());
+    await runInDurableObject(stub, async (instance: HttpExecution) => {
+      let upload!: ReadableStreamDefaultController<Uint8Array>;
+      let reading = false;
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            upload = controller;
+          },
+          pull() {
+            reading = true;
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      let settled = false;
+      const pending = instance
+        .fetch(new Request(request(path), { method: "POST", body }))
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      try {
+        await expect.poll(() => reading).toBe(true);
+        const cancellation = instance.cancel();
+        await expect.poll(() => settled, { timeout: 1000 }).toBe(true);
+        const response = await pending;
+        expect(response.status).toBe(499);
+        await response.body?.cancel();
+        await cancellation;
+        expect(cancelled).toBe(true);
+        expect(upstream).not.toHaveBeenCalled();
+        if (path === "/responses" || path === "/v1/messages") {
+          const meter = metering.mock.contexts[0];
+          expect(meter).toBeInstanceOf(RequestMeter);
+          if (!(meter instanceof RequestMeter))
+            throw new Error("Missing request meter");
+          expect(meter.checkpoint()).toMatchObject({
+            phase: "finished",
+            outcome: "cancelled",
+            http_status: 499,
+          });
+          expect(await meter.drain()).toBe(true);
+        }
+      } finally {
+        if (!cancelled) upload.close();
+        const response = await pending;
+        await response.body?.cancel().catch(() => {});
+        await instance.cancel();
+      }
+    });
+  },
+);
 
 test("disconnect drains cancelled usage even while the client stops reading", async () => {
   const metering = vi.spyOn(RequestMeter.prototype, "response");

@@ -1,3 +1,10 @@
+import {
+  planProxyGroupSync,
+  reconcileProxyNodes,
+  planProxySelection,
+  type ProxyGroupMetadata,
+  type ProxyNodeState,
+} from "../../gateway/proxies/coordination.ts";
 import { ProxyStrategy } from "../../config/values.ts";
 
 /**
@@ -8,12 +15,10 @@ import { ProxyStrategy } from "../../config/values.ts";
 import { identifierSchema } from "../../config/schema.ts";
 import { proxyOwnerKey } from "../../gateway/proxies/configuration.ts";
 import {
-  reconcileBindingOwners,
   type BindingOwners,
   type BindingOwnersSync,
 } from "../../gateway/proxies/binding-owners.ts";
 import {
-  chooseProxy,
   currentProxyHealth,
   freshProxyHealth,
   observeProxyHealth,
@@ -37,20 +42,6 @@ const NODE_PREFIX = "node:";
 const BINDING_PREFIX = "binding:";
 const OWNERS_KEY = "binding-owners";
 
-interface Metadata {
-  revision: number;
-  strategy: string;
-  signature: string;
-}
-
-interface StoredNode {
-  id: string;
-  fingerprint: string;
-  priority: number;
-  disabled: boolean;
-  health: StoredProxyHealth;
-}
-
 interface StoredBinding {
   provider_id: string;
   credential_id: string | null;
@@ -61,9 +52,13 @@ interface StoredBinding {
 export class ProxyGroupCore implements ProxyGroupObject {
   constructor(private readonly ctx: ObjectContext) {}
 
-  private async nodes(transaction: ObjectTransaction): Promise<StoredNode[]> {
+  private async nodes(
+    transaction: ObjectTransaction,
+  ): Promise<ProxyNodeState[]> {
     return [
-      ...(await transaction.list<StoredNode>({ prefix: NODE_PREFIX })).values(),
+      ...(
+        await transaction.list<ProxyNodeState>({ prefix: NODE_PREFIX })
+      ).values(),
     ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
@@ -84,14 +79,14 @@ export class ProxyGroupCore implements ProxyGroupObject {
 
   private async saveNode(
     transaction: ObjectTransaction,
-    node: StoredNode,
+    node: ProxyNodeState,
   ): Promise<void> {
     await transaction.put(`${NODE_PREFIX}${node.id}`, node);
   }
 
   private async refreshedHealth(
     transaction: ObjectTransaction,
-    node: StoredNode,
+    node: ProxyNodeState,
     now: number,
   ): Promise<StoredProxyHealth> {
     const health = currentProxyHealth(
@@ -108,22 +103,11 @@ export class ProxyGroupCore implements ProxyGroupObject {
     transaction: ObjectTransaction,
     group: ProxyGroupSnapshot,
   ): Promise<BindingOwnersSync> {
-    const signature = JSON.stringify([
-      group.id,
-      group.strategy,
-      [...group.proxies].sort((a, b) => a.id.localeCompare(b.id)),
-    ]);
-    const previous = await transaction.get<Metadata>(META_KEY);
-    if (
-      previous &&
-      group.revision < previous.revision &&
-      signature !== previous.signature
-    ) {
-      return { status: "stale_configuration" };
-    }
+    const previous = await transaction.get<ProxyGroupMetadata>(META_KEY);
     const oldOwners = await transaction.get<BindingOwners>(OWNERS_KEY);
-    const result = reconcileBindingOwners(group, oldOwners);
-    if (result.status === "stale_configuration") return result;
+    const plan = planProxyGroupSync(group, previous, oldOwners);
+    if (plan.status === "stale_configuration") return plan;
+    const result = plan.owners;
     if (result.prune) {
       const allowed = new Set(
         result.owners.keys.map((key) => `${BINDING_PREFIX}${key}`),
@@ -133,49 +117,23 @@ export class ProxyGroupCore implements ProxyGroupObject {
       }
     }
     if (result.write) await transaction.put(OWNERS_KEY, result.owners);
-    if (previous?.signature === signature) {
-      if (group.revision > previous.revision) {
-        await transaction.put(META_KEY, {
-          ...previous,
-          revision: group.revision,
-        });
+    if (plan.updateNodes) {
+      const changes = reconcileProxyNodes(group, await this.nodes(transaction));
+      for (const id of changes.removed) {
+        await transaction.delete(`${NODE_PREFIX}${id}`);
+        await this.deleteBindingsTo(transaction, id);
       }
-      return result;
-    }
-    const existing = new Map(
-      (await this.nodes(transaction)).map((node) => [node.id, node]),
-    );
-    const incoming = new Set(group.proxies.map((node) => node.id));
-    for (const id of existing.keys()) {
-      if (incoming.has(id)) continue;
-      await transaction.delete(`${NODE_PREFIX}${id}`);
-      await this.deleteBindingsTo(transaction, id);
-    }
-    if (previous && previous.strategy !== group.strategy) {
-      for (const key of (await this.bindings(transaction)).keys()) {
-        await transaction.delete(key);
+      if (plan.clearBindings) {
+        for (const key of (await this.bindings(transaction)).keys())
+          await transaction.delete(key);
+      }
+      for (const node of changes.nodes) {
+        await this.saveNode(transaction, node);
+        if (node.disabled) await this.deleteBindingsTo(transaction, node.id);
       }
     }
-    for (const node of group.proxies) {
-      const old = existing.get(node.id);
-      const changed =
-        !old ||
-        old.fingerprint !== node.fingerprint ||
-        old.disabled !== node.disabled;
-      await this.saveNode(transaction, {
-        id: node.id,
-        fingerprint: node.fingerprint,
-        priority: node.priority,
-        disabled: node.disabled,
-        health: changed || !old ? freshProxyHealth() : old.health,
-      });
-      if (node.disabled) await this.deleteBindingsTo(transaction, node.id);
-    }
-    await transaction.put(META_KEY, {
-      revision: Math.max(group.revision, previous?.revision ?? 0),
-      strategy: group.strategy,
-      signature,
-    } satisfies Metadata);
+    if (plan.updateNodes || plan.metadata.revision !== previous?.revision)
+      await transaction.put(META_KEY, plan.metadata);
     return result;
   }
 
@@ -185,62 +143,44 @@ export class ProxyGroupCore implements ProxyGroupObject {
       const synced = await this.sync(transaction, group);
       if (synced.status === "stale_configuration") return synced;
       const now = Date.now();
-      const nodes: (StoredNode & { state: StoredProxyHealth })[] = [];
+      const nodes: ProxyNodeState[] = [];
       for (const node of await this.nodes(transaction)) {
         nodes.push({
           ...node,
-          state: await this.refreshedHealth(transaction, node, now),
+          health: await this.refreshedHealth(transaction, node, now),
         });
       }
-      const healthy = nodes.filter(
-        (node) => !node.disabled && node.state.cooling_until === null,
-      );
-      const ownerKey = proxyOwnerKey(owner);
-      const key = `${BINDING_PREFIX}${ownerKey}`;
-      const owners = synced.owners;
-      // ConfigurationView OAuth calls can connect without resurrecting a active binding.
-      const mayBind = owners === undefined || owners.keys.includes(ownerKey);
-      if (group.owners !== undefined && !mayBind)
-        return { status: "unavailable" };
+      const key = `${BINDING_PREFIX}${proxyOwnerKey(owner)}`;
       const bound =
         group.strategy === ProxyStrategy.Sticky
           ? (await transaction.get<StoredBinding>(key))?.proxy_id
           : undefined;
-      const existing = healthy.find((node) => node.id === bound);
-      const selected =
-        existing && !exclude.includes(existing.id)
-          ? existing
-          : chooseProxy(
-              healthy.filter((node) => !exclude.includes(node.id)),
-              group.strategy,
-            );
-      if (group.strategy === ProxyStrategy.Sticky && !existing && mayBind) {
+      const plan = planProxySelection(
+        group,
+        owner,
+        synced.owners,
+        nodes,
+        bound,
+        exclude,
+      );
+      if (plan.replaceBinding) {
         await transaction.delete(key);
-        if (selected) {
+        if (plan.selection.status === "selected")
           await transaction.put(key, {
             provider_id: owner.provider_id,
             credential_id: owner.credential_id ?? null,
-            proxy_id: selected.id,
+            proxy_id: plan.selection.lease.proxy_id,
             created_at: now,
           } satisfies StoredBinding);
-        }
       }
-      return selected
-        ? {
-            status: "selected",
-            lease: {
-              proxy_id: selected.id,
-              generation: selected.state.generation,
-            },
-          }
-        : { status: "unavailable" };
+      return plan.selection;
     });
   }
 
   observe(value: unknown): Promise<void> {
     const event = proxyOutcomeSchema.parse(value);
     return this.ctx.storage.transaction(async (transaction) => {
-      const node = await transaction.get<StoredNode>(
+      const node = await transaction.get<ProxyNodeState>(
         `${NODE_PREFIX}${event.lease.proxy_id}`,
       );
       if (!node || node.disabled) return;
@@ -305,7 +245,7 @@ export class ProxyGroupCore implements ProxyGroupObject {
         throw new Error("Proxy configuration is stale");
       }
       if (!group.proxies.some((node) => node.id === id)) return false;
-      const node = await transaction.get<StoredNode>(`${NODE_PREFIX}${id}`);
+      const node = await transaction.get<ProxyNodeState>(`${NODE_PREFIX}${id}`);
       if (node) {
         await this.saveNode(transaction, {
           ...node,

@@ -1,3 +1,9 @@
+import {
+  planProxyGroupSync,
+  reconcileProxyNodes,
+  planProxySelection,
+  type ProxyGroupMetadata,
+} from "./coordination.ts";
 import { ProxyStrategy } from "../../config/values.ts";
 
 import { DurableObject } from "cloudflare:workers";
@@ -5,12 +11,10 @@ import { identifierSchema } from "../../config/schema.ts";
 import { proxyOwnerKey } from "./configuration.ts";
 import {
   bindingOwnersSchema,
-  reconcileBindingOwners,
   type BindingOwners,
   type BindingOwnersSync,
 } from "./binding-owners.ts";
 import {
-  chooseProxy,
   currentProxyHealth,
   freshProxyHealth,
   observeProxyHealth,
@@ -95,85 +99,59 @@ export class ProxyGroup extends DurableObject<Env> {
 
   private sync(group: ProxyGroupSnapshot): BindingOwnersSync {
     const sql = this.ctx.storage.sql;
-    const signature = JSON.stringify([
-      group.id,
-      group.strategy,
-      [...group.proxies].sort((a, b) => a.id.localeCompare(b.id)),
-    ]);
     const previous = sql
-      .exec<{ revision: number; strategy: string; signature: string }>(
+      .exec<ProxyGroupMetadata>(
         "SELECT revision, strategy, signature FROM proxy_metadata WHERE id = 1",
       )
       .toArray()[0];
-    if (
-      previous &&
-      group.revision < previous.revision &&
-      signature !== previous.signature
-    ) {
-      return { status: "stale_configuration" };
-    }
-    const oldOwners = this.bindingOwners();
-    const result = reconcileBindingOwners(group, oldOwners);
-    if (result.status === "stale_configuration") return result;
-    if (result.prune) {
+    const plan = planProxyGroupSync(group, previous, this.bindingOwners());
+    if (plan.status === "stale_configuration") return plan;
+    const result = plan.owners;
+    if (result.prune)
       sql.exec(
         "DELETE FROM proxy_bindings WHERE owner NOT IN (SELECT value FROM json_each(?))",
         JSON.stringify(result.owners.keys),
       );
-    }
-    if (result.write) {
+    if (result.write)
       sql.exec(
         "INSERT INTO proxy_binding_owners (id, revision, keys) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, keys = excluded.keys",
         result.owners.revision,
         JSON.stringify(result.owners.keys),
       );
-    }
-    if (previous?.signature === signature) {
-      if (group.revision > previous.revision) {
-        sql.exec(
-          "UPDATE proxy_metadata SET revision = ? WHERE id = 1",
-          group.revision,
-        );
-      }
-      return result;
-    }
-    const existing = new Map(this.rows().map((row) => [row.id, row]));
-    const incoming = new Set(group.proxies.map((node) => node.id));
-    for (const id of existing.keys()) {
-      if (incoming.has(id)) {
-        continue;
-      }
-      sql.exec("DELETE FROM proxy_nodes WHERE id = ?", id);
-      sql.exec("DELETE FROM proxy_bindings WHERE proxy_id = ?", id);
-    }
-    if (previous && previous.strategy !== group.strategy) {
-      sql.exec("DELETE FROM proxy_bindings");
-    }
-    for (const node of group.proxies) {
-      const old = existing.get(node.id);
-      const changed =
-        !old ||
-        old.fingerprint !== node.fingerprint ||
-        old.disabled !== Number(node.disabled);
-      const health = changed ? JSON.stringify(freshProxyHealth()) : old.health;
-      sql.exec(
-        "INSERT INTO proxy_nodes (id, fingerprint, priority, disabled, health) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint, priority = excluded.priority, disabled = excluded.disabled, health = excluded.health",
-        node.id,
-        node.fingerprint,
-        node.priority,
-        Number(node.disabled),
-        health,
+    if (plan.updateNodes) {
+      const changes = reconcileProxyNodes(
+        group,
+        this.rows().map((row) => ({
+          ...row,
+          disabled: !!row.disabled,
+          health: storedProxyHealthSchema.parse(JSON.parse(row.health)),
+        })),
       );
-      if (node.disabled) {
-        sql.exec("DELETE FROM proxy_bindings WHERE proxy_id = ?", node.id);
+      for (const id of changes.removed) {
+        sql.exec("DELETE FROM proxy_nodes WHERE id = ?", id);
+        sql.exec("DELETE FROM proxy_bindings WHERE proxy_id = ?", id);
+      }
+      if (plan.clearBindings) sql.exec("DELETE FROM proxy_bindings");
+      for (const node of changes.nodes) {
+        sql.exec(
+          "INSERT INTO proxy_nodes (id, fingerprint, priority, disabled, health) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint, priority = excluded.priority, disabled = excluded.disabled, health = excluded.health",
+          node.id,
+          node.fingerprint,
+          node.priority,
+          Number(node.disabled),
+          JSON.stringify(node.health),
+        );
+        if (node.disabled)
+          sql.exec("DELETE FROM proxy_bindings WHERE proxy_id = ?", node.id);
       }
     }
-    sql.exec(
-      "INSERT INTO proxy_metadata (id, revision, strategy, signature) VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, strategy = excluded.strategy, signature = excluded.signature",
-      Math.max(group.revision, previous?.revision ?? 0),
-      group.strategy,
-      signature,
-    );
+    if (plan.updateNodes || plan.metadata.revision !== previous?.revision)
+      sql.exec(
+        "INSERT INTO proxy_metadata (id, revision, strategy, signature) VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, strategy = excluded.strategy, signature = excluded.signature",
+        plan.metadata.revision,
+        plan.metadata.strategy,
+        plan.metadata.signature,
+      );
     return result;
   }
 
@@ -185,17 +163,10 @@ export class ProxyGroup extends DurableObject<Env> {
       const now = Date.now();
       const nodes = this.rows().map((node) => ({
         ...node,
-        state: this.health(node, now),
+        disabled: !!node.disabled,
+        health: this.health(node, now),
       }));
-      const healthy = nodes.filter(
-        (node) => !node.disabled && node.state.cooling_until === null,
-      );
       const key = proxyOwnerKey(owner);
-      const owners = synced.owners;
-      // ConfigurationView OAuth calls can connect without resurrecting a active binding.
-      const mayBind = owners === undefined || owners.keys.includes(key);
-      if (group.owners !== undefined && !mayBind)
-        return { status: "unavailable" };
       const bound =
         group.strategy === ProxyStrategy.Sticky
           ? this.ctx.storage.sql
@@ -205,39 +176,30 @@ export class ProxyGroup extends DurableObject<Env> {
               )
               .toArray()[0]?.proxy_id
           : undefined;
-      const existing = healthy.find((node) => node.id === bound);
-      const selected =
-        existing && !exclude.includes(existing.id)
-          ? existing
-          : chooseProxy(
-              healthy.filter((node) => !exclude.includes(node.id)),
-              group.strategy,
-            );
-      if (group.strategy === ProxyStrategy.Sticky && !existing && mayBind) {
+      const plan = planProxySelection(
+        group,
+        owner,
+        synced.owners,
+        nodes,
+        bound,
+        exclude,
+      );
+      if (plan.replaceBinding) {
         this.ctx.storage.sql.exec(
           "DELETE FROM proxy_bindings WHERE owner = ?",
           key,
         );
-        if (selected) {
+        if (plan.selection.status === "selected")
           this.ctx.storage.sql.exec(
             "INSERT INTO proxy_bindings (owner, provider_id, credential_id, proxy_id, created_at) VALUES (?, ?, ?, ?, ?)",
             key,
             owner.provider_id,
             owner.credential_id ?? null,
-            selected.id,
+            plan.selection.lease.proxy_id,
             now,
           );
-        }
       }
-      return selected
-        ? {
-            status: "selected",
-            lease: {
-              proxy_id: selected.id,
-              generation: selected.state.generation,
-            },
-          }
-        : { status: "unavailable" };
+      return plan.selection;
     });
   }
 

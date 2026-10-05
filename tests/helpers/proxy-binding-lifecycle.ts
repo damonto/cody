@@ -63,4 +63,53 @@ export async function proxyBindingLifecycle(
     "selected",
   );
   assert.equal((await stub.getStatus(group)).bindings.length, 1);
+
+  // Temporary request exclusions do not replace a healthy sticky binding.
+  const selection = await stub.select({ group, owner: inherited });
+  assert.equal(selection.status, "selected");
+  if (selection.status !== "selected") throw new Error("Missing proxy lease");
+  const oldGroup = structuredClone(group);
+  group.revision++;
+  group.proxies.push({
+    id: "other",
+    fingerprint: "b".repeat(64),
+    priority: 1,
+    disabled: false,
+  });
+  const temporary = await stub.select({
+    group,
+    owner: inherited,
+    exclude: ["node"],
+  });
+  assert.equal(temporary.status, "selected");
+  if (temporary.status !== "selected")
+    throw new Error("Missing alternate proxy");
+  assert.equal(temporary.lease.proxy_id, "other");
+  assert.equal((await stub.getStatus(group)).bindings[0]?.proxy_id, "node");
+  assert.equal(
+    (await stub.select({ group: oldGroup, owner: inherited })).status,
+    "stale_configuration",
+  );
+
+  // Changed endpoints invalidate outstanding health reports on both platforms.
+  group.revision++;
+  group.proxies[0]!.fingerprint = "c".repeat(64);
+  await stub.getStatus(group);
+  for (let i = 0; i < 3; i++)
+    await stub.observe({
+      lease: selection.lease,
+      event_id: crypto.randomUUID(),
+      outcome: "failure",
+      observed_at: Date.now(),
+    });
+  assert.equal(
+    (await stub.getStatus(group)).proxies.find((node) => node.id === "node")
+      ?.status,
+    "healthy",
+  );
+  group.revision++;
+  group.strategy = "random";
+  assert.deepEqual((await stub.getStatus(group)).bindings, []);
+  stub = await reopen();
+  assert.deepEqual((await stub.getStatus(group)).bindings, []);
 }

@@ -105,35 +105,7 @@ export function applyAccount(
   return codexProviderFormSchema.parse({ ...provider, credentials });
 }
 
-/** Toggles one account without opening its editor. */
-export function setAccountDisabled(
-  provider: CodexProviderConfig,
-  id: string,
-  disabled: boolean,
-): CodexProviderConfig {
-  return {
-    ...provider,
-    credentials: provider.credentials.map((credential) =>
-      credential.id === id ? { ...credential, disabled } : credential,
-    ),
-  };
-}
-
-export function moveAccount(
-  provider: CodexProviderConfig,
-  id: string,
-  direction: -1 | 1,
-): CodexProviderConfig {
-  const index = provider.credentials.findIndex(
-    (credential) => credential.id === id,
-  );
-  const target = index + direction;
-  if (index < 0 || target < 0 || target >= provider.credentials.length)
-    return provider;
-  const credentials = [...provider.credentials];
-  [credentials[index], credentials[target]] = [
-    credentials[target],
-    credentials[index],
-  ];
-  return { ...provider, credentials };
-}
+export {
+  moveAccount,
+  setAccountDisabled,
+} from "../oauth-accounts/account-order";

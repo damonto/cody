@@ -21,6 +21,7 @@ Start with `src/gateway/protocol.ts`, `src/gateway/routing/`, `src/gateway/http/
 - Match structured JSON/SSE error codes only during bounded preflight, before forwarding starts. Use raw upstream statuses for health and attempt logs before transforming final responses. AI Gateway returns the final upstream response unchanged; native adapters convert where required.
 - Do not add implicit retries, replay WebSocket frames or fall back across providers after an upstream request starts. Native account switching is allowed only for the documented quota cases, before client output begins.
 - Preserve cancellation, backpressure, timeout budgets and durable usage delivery when changing HTTP/SSE or WebSocket handling.
+- HTTP inference separates upload/route validation (`http/inference-input.ts`), unavailable-account decisions (`http/inference-unavailable.ts`) and prepared-attempt execution (`http/inference-attempt.ts`). `http/proxy.ts` alone orchestrates account switching. Pass the request signal to bounded upload reads for inference, configured search and context management; the shared handler records an aborted upload as cancelled (499), before any upstream attempt.
 
 ## Session identity and context management
 
@@ -66,6 +67,7 @@ Start with `src/gateway/proxies/` and `src/gateway/transport/`.
 - Three consecutive proxy connection failures in one minute cause five minutes of cooldown. Target CONNECT refusals, HTTP/TLS errors and client cancellation do not cool nodes. Proxy faults never count against provider/credential health.
 - Sticky inherited credentials bind by provider ID; explicit credential selections bind by provider ID plus credential ID. Persist bindings/cooldowns in the group object, fence late outcomes, and retain healthy bindings across edits and deployments.
 - Prune removed owners only when synchronizing committed configuration. Preserve explicit overrides and disabled owners still referencing the group. Unsaved forms and partial OAuth snapshots must neither prune bindings nor resurrect removed owners.
+- `proxies/coordination.ts` owns shared configuration fences, node reconciliation and sticky-selection decisions. Cloudflare SQL and standard-runtime storage adapters apply those decisions inside their own transactions; exercise both with `tests/helpers/proxy-binding-lifecycle.ts`.
 
 ## Catalog and web search
 

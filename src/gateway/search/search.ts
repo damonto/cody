@@ -41,6 +41,8 @@ export async function handleConfiguredWebSearch(
       request.body,
       MAX_SEARCH_BODY_BYTES,
       request.headers.get("content-length"),
+      undefined,
+      request.signal,
     );
   } catch (error) {
     if (error instanceof BodyTooLargeError) {

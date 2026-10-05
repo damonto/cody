@@ -119,21 +119,4 @@ export function applyAccount(
   return antigravityProviderFormSchema.parse({ ...provider, credentials });
 }
 
-export function moveAccount(
-  provider: AntigravityProviderConfig,
-  id: string,
-  direction: -1 | 1,
-): AntigravityProviderConfig {
-  const index = provider.credentials.findIndex(
-    (credential) => credential.id === id,
-  );
-  const target = index + direction;
-  if (index < 0 || target < 0 || target >= provider.credentials.length)
-    return provider;
-  const credentials = [...provider.credentials];
-  [credentials[index], credentials[target]] = [
-    credentials[target],
-    credentials[index],
-  ];
-  return { ...provider, credentials };
-}
+export { moveAccount } from "../oauth-accounts/account-order";
