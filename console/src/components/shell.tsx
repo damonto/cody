@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/components/theme-provider";
 import {
   Activity,
-  ArrowUpRight,
   ChevronRight,
   CircleDollarSign,
   Command,
@@ -105,17 +104,6 @@ const providerNavigation = [
   { path: "/providers/claude", title: "Claude" },
   { path: "/providers/xai", title: "xAI" },
 ];
-
-function currentConfigurationLabel(
-  configuration: ReturnType<typeof useConfigurationState>,
-): string {
-  if (configuration.isError) return "Connection unavailable";
-  if (configuration.isPending) return "Connecting…";
-  if (configuration.data.version > 0) {
-    return `Revision ${configuration.data.version}`;
-  }
-  return "No configuration saved";
-}
 
 export function Shell() {
   const { pathname } = useLocation();
@@ -255,16 +243,7 @@ export function Shell() {
             </SidebarGroup>
           ))}
         </SidebarContent>
-        <SidebarFooter className="gap-3 p-4">
-          <div className="rounded-lg border bg-background p-3 text-xs">
-            <div className="flex items-center justify-between font-medium">
-              Saved configuration
-              <ArrowUpRight className="size-3.5 text-muted-foreground" />
-            </div>
-            <p className="mt-2 text-muted-foreground">
-              {currentConfigurationLabel(configuration)}
-            </p>
-          </div>
+        <SidebarFooter className="p-4">
           <div className="flex items-center justify-between gap-2 px-1">
             <span
               className="truncate text-xs text-muted-foreground"
