@@ -1108,16 +1108,21 @@ test("project token rotation is persisted before a failed discovery and survives
   const { stub, session } = await start();
   await complete(stub, session);
   await settleSession(stub, session);
-  await runDurableObjectAlarm(stub);
-  override = (request) => {
+  await retryingProject(stub);
+  const discovery = deferred<void>();
+  let discoveryStarted = false;
+  override = async (request) => {
     if (request.url.includes("/token"))
       return Response.json({
         access_token: "rotated-project-access",
         refresh_token: "rotated-project-refresh",
         expires_in: 3600,
       });
-    if (request.url.includes(":loadCodeAssist"))
+    if (request.url.includes(":loadCodeAssist")) {
+      discoveryStarted = true;
+      await discovery.promise;
       return new Response("temporary", { status: 503 });
+    }
     return;
   };
   await rewrite(stub, (value) => {
@@ -1128,13 +1133,38 @@ test("project token rotation is persisted before a failed discovery and survives
     };
     value.antigravity_initialization = project;
   });
-  await runDurableObjectAlarm(stub);
-  expect(
-    tokenSchema.parse(
-      storedObject.parse((await storage(stub)).antigravity_initialization)
-        .tokens,
-    ).refresh_token,
-  ).toBe("rotated-project-refresh");
+  const before = storedObject.parse(
+    (await storage(stub)).antigravity_initialization,
+  );
+  const attempts = z.number().parse(before.attempts);
+  const polling = runDurableObjectAlarm(stub);
+  try {
+    // An automatic alarm may own this poll. Observe its durable result instead
+    // of assuming the manual trigger waited for that in-flight operation.
+    await vi.waitFor(async () => {
+      expect(discoveryStarted).toBe(true);
+      expect(
+        tokenSchema.parse(
+          storedObject.parse((await storage(stub)).antigravity_initialization)
+            .tokens,
+        ).refresh_token,
+      ).toBe("rotated-project-refresh");
+    });
+  } finally {
+    discovery.resolve();
+    await polling;
+  }
+  // Do not evict (or replace the upstream mock) until the failed discovery has
+  // persisted its retry state, even when workerd fired the alarm automatically.
+  await vi.waitFor(async () => {
+    const project = storedObject.parse(
+      (await storage(stub)).antigravity_initialization,
+    );
+    expect(project.attempts).toBeGreaterThan(attempts);
+    expect(tokenSchema.parse(project.tokens).refresh_token).toBe(
+      "rotated-project-refresh",
+    );
+  });
   await evictDurableObject(stub);
   override = undefined;
   await initialize(stub);
