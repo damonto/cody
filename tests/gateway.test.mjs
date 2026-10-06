@@ -1444,7 +1444,7 @@ test("model endpoints preserve standard and Codex formats without usage records"
   }
 });
 
-test("only messages and responses record rejected requests, including aliases", async () => {
+test("metered inference endpoints record rejected requests, including aliases", async () => {
   clearConfigCacheForTests();
   const events = [];
   const env = {
@@ -1485,7 +1485,13 @@ test("only messages and responses record rejected requests, including aliases", 
     await execution.drain();
     assert.deepEqual(
       events.map((event) => [event.endpoint, event.phase]),
-      endpoint === "messages" || endpoint === "responses"
+      [
+        "messages",
+        "responses",
+        "chat/completions",
+        "images/generations",
+        "images/edits",
+      ].includes(endpoint)
         ? [
             [endpoint, "started"],
             [endpoint, "finished"],

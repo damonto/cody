@@ -250,7 +250,7 @@ test("total reports include older history and preserve costs after request reten
   ]);
 });
 
-test("request pages omit historical endpoints other than messages and responses before pagination", async () => {
+test("request pages omit auxiliary endpoints before pagination", async () => {
   const at = Date.now() - 10_000;
   for (const event of [
     usage("response-old", at),
@@ -265,8 +265,8 @@ test("request pages omit historical endpoints other than messages and responses 
   }
   const hidden = [
     "responses/compact",
-    "chat/completions",
-    "images/generations",
+    "messages/count_tokens",
+    "alpha/search",
   ] as const;
   for (const [index, endpoint] of hidden.entries()) {
     await ingestUsage(bindings.CODY_DB, {
@@ -655,4 +655,37 @@ test("model API calls on the console hostname require only gateway client creden
     expect(request.headers.get("x-api-key")).toBeNull();
     expect(request.headers.get("cf-access-jwt-assertion")).toBeNull();
   }
+});
+
+test("image request details survive ingestion and replay without new rollup columns", async () => {
+  const event = usage("image-details", Date.now() - 5000);
+  event.endpoint = "images/edits";
+  Object.assign(event.usage.tokens, {
+    image_input_tokens: 100,
+    image_output_tokens: 20,
+    image_cache_read_tokens: 40,
+    image_cache_write_tokens: 15,
+  });
+  Object.assign(event.billing, {
+    image_input_nano: 1000,
+    image_output_nano: 2000,
+    image_cache_read_nano: 300,
+    image_cache_write_nano: 500,
+  });
+  event.attempts[0].usage = structuredClone(event.usage);
+  event.attempts[0].billing = structuredClone(event.billing);
+  await ingestUsage(bindings.CODY_DB, event);
+  await ingestUsage(bindings.CODY_DB, event);
+  const response = await call("/console/api/requests/image-details");
+  expect(response.status).toBe(200);
+  const result = (await response.json()) as UsageEvent;
+  expect(result.usage.tokens).toEqual(event.usage.tokens);
+  expect(result.billing).toEqual(event.billing);
+  expect(result.attempts[0].usage).toEqual(event.attempts[0].usage);
+  const listing = await call("/console/api/requests?period=total");
+  expect(
+    ((await listing.json()) as { items: UsageEvent[] }).items.map(
+      (item) => item.request_id,
+    ),
+  ).toContain(event.request_id);
 });

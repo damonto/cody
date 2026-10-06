@@ -27,6 +27,13 @@ Start with `src/config/schema.ts`, `src/control/resource-input.ts`, `src/admin/r
 - Provider model settings own `context_window`. Prices live in `model_prices` and `model_price_versions`; versions have generated UUIDs, a `model_price_id` foreign key and unique `(revision, model_price_id)`. Compiled snapshots carry `version_id`; metering never reconstructs identities from names. Antigravity family price/context APIs resolve members from authoritative entities and update them in one fenced transaction, preserving each physical model and price UUID. Newly enabled levels inherit consistent family rates/context; conflicting sibling settings require a shared edit first.
 - Global reporting and web-search settings live in `settings`, keyed by name, with encrypted credentials referenced by `secret_id`.
 
+## Image token pricing
+
+- Each price tier optionally sets `image_input`, `image_output`, `image_cache_read` and `image_cache_write` in currency units per million tokens. Omitted rates retain the ordinary charge and rounding; explicit zero is free. Total input still selects the context tier.
+- Image input includes cache-read and cache-write images. Charge uncached images separately from ordinary input, and cached images separately from ordinary cache reads/writes, without adding them to token totals again. Missing modality counters (including ambiguous cache writes) leave affected charges unknown when a separate rate is configured. Retain independently known image charges when the corresponding total is missing, and reject contradictory cached text/image subtotals. Do not estimate modality shares.
+- Image cache writes use `image_cache_write_tokens`, read from OpenAI-compatible `input_tokens_details.cache_write_tokens_details.image_tokens` (or `prompt_tokens_details`). Only explicit counters or provable zero totals determine the image share. The image write rate applies across durations; differing 5m/1h text rates require enough information to assign text writes to durations, otherwise that charge stays unknown.
+- Image details are additive v2 metadata stored in request/attempt JSON, not additional SQL aggregate columns. Preserve old price versions and recorded costs.
+
 ## Routes and retry validation
 
 - Optional global `model_routes` map client-facing names to upstream models supported by at least one provider. When a route specifies `providers`, each must exist and list the upstream model; routing intersects that list with the authenticated client's allowed providers.

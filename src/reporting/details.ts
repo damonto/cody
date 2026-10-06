@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { UsageEvent, AttemptRecord } from "../telemetry/types.ts";
 import { parseUsageEvent } from "../telemetry/schema.ts";
-import { USAGE_FIELDS } from "../billing/types.ts";
+import { SQL_USAGE_FIELDS, IMAGE_USAGE_FIELDS } from "../billing/types.ts";
 
 /** Persist only facts not already represented by indexed request columns. */
 export function requestDetails(event: UsageEvent): string {
@@ -16,10 +16,17 @@ export function requestDetails(event: UsageEvent): string {
     config_revision: event.config_revision,
     observation_issue: event.observation_issue,
     usage_raw: event.usage.raw,
+    image_usage: Object.fromEntries(
+      IMAGE_USAGE_FIELDS.map((field) => [field, event.usage.tokens[field]]),
+    ),
     billing: {
       price_version: event.billing.price_version,
       tier_index: event.billing.tier_index,
       context_tokens: event.billing.context_tokens,
+      image_input_nano: event.billing.image_input_nano,
+      image_output_nano: event.billing.image_output_nano,
+      image_cache_read_nano: event.billing.image_cache_read_nano,
+      image_cache_write_nano: event.billing.image_cache_write_nano,
       input_nano: event.billing.input_nano,
       output_nano: event.billing.output_nano,
       cache_write_nano: event.billing.cache_write_nano,
@@ -42,6 +49,7 @@ export function hydrateRequest(
   const row = record.parse(value);
   const details = record.parse(JSON.parse(z.string().parse(row.details_json)));
   const billing = record.parse(details.billing ?? {});
+  const imageUsage = record.parse(details.image_usage ?? {});
   const event = parseUsageEvent({
     schema_version: 2,
     sequence: row.event_sequence,
@@ -78,9 +86,14 @@ export function hydrateRequest(
     config_revision: details.config_revision ?? null,
     observation_issue: details.observation_issue ?? null,
     usage: {
-      tokens: Object.fromEntries(
-        USAGE_FIELDS.map((field) => [field, row[field] ?? null]),
-      ),
+      tokens: {
+        ...Object.fromEntries(
+          SQL_USAGE_FIELDS.map((field) => [field, row[field] ?? null]),
+        ),
+        ...Object.fromEntries(
+          IMAGE_USAGE_FIELDS.map((field) => [field, imageUsage[field] ?? null]),
+        ),
+      },
       status: row.usage_status,
       raw: details.usage_raw ?? {},
     },

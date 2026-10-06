@@ -11,7 +11,11 @@ import { durableUsageSink } from "../telemetry/delivery.ts";
 import { RequestOutcome } from "../telemetry/values.ts";
 import { RequestMeter } from "../telemetry/meter.ts";
 import { apiError, bearerToken, findClientApiKey } from "./http/http.ts";
-import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
+import {
+  requestProtocol,
+  isMeteredInferencePath,
+  type GatewayEndpoint,
+} from "./protocol.ts";
 import type { Bindings } from "../platform/bindings.ts";
 
 export type GatewayBindings = { Bindings: Bindings };
@@ -56,7 +60,7 @@ export function gatewayHandler(
     const meter =
       usageOutbox &&
       request.method === "POST" &&
-      (endpoint === "messages" || endpoint === "responses")
+      isMeteredInferencePath(endpoint)
         ? new RequestMeter({
             requestId,
             endpoint,

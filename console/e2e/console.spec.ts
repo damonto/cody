@@ -1,3 +1,4 @@
+import { calculateCost } from "../../src/billing/calculate";
 import { isConfigurationMutation } from "./fixtures";
 import { test, expect } from "@playwright/test";
 import type { UsageEvent } from "../src/lib/api";
@@ -235,6 +236,10 @@ for (const protocol of ["openai", "anthropic"] as const) {
   }) => {
     await mockApi(page);
     const tokens = {
+      image_input_tokens: 0,
+      image_output_tokens: 0,
+      image_cache_read_tokens: 0,
+      image_cache_write_tokens: 0,
       input_tokens: 220000,
       uncached_input_tokens: 60000,
       output_tokens: 4000,
@@ -284,6 +289,10 @@ for (const protocol of ["openai", "anthropic"] as const) {
         price_version: '[1,"example-provider","example-model"]',
         tier_index: 1,
         context_tokens: 220000,
+        image_input_nano: 0,
+        image_output_nano: 0,
+        image_cache_read_nano: 0,
+        image_cache_write_nano: 0,
         input_nano: 360000000,
         output_nano: 120000000,
         cache_write_nano: 150000000,
@@ -320,6 +329,11 @@ for (const protocol of ["openai", "anthropic"] as const) {
     ).toBeVisible();
     await page.getByRole("button", { name: /example-requ/ }).click();
     const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByText("Image input (including cached images)", {
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(
       dialog
         .getByText("First response", { exact: true })
@@ -372,3 +386,84 @@ for (const protocol of ["openai", "anthropic"] as const) {
     ).toHaveCount(0);
   });
 }
+
+test("image prices save, clear and drive separate calculator charges", async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.route("**/console/api/pricing/preview", async (route) => {
+    const input = previewSchema.parse(route.request().postDataJSON());
+    await route.fulfill({ json: calculateCost(input.usage, input.price) });
+  });
+  await page.goto("/console/pricing");
+  await page
+    .getByText("Optional image token prices", { exact: true })
+    .first()
+    .click();
+  for (const [label, value] of [
+    ["Input", "2"],
+    ["Output", "4"],
+    ["Cache read", "1"],
+    ["Cache write", "5"],
+    ["Image input", "8"],
+    ["Image output", "32"],
+    ["Image cache read", "3"],
+    ["Image cache write", "10"],
+  ]) {
+    await page.getByLabel(label, { exact: true }).first().fill(value);
+  }
+  await page.getByRole("button", { name: "Save model price" }).click();
+  await expect
+    .poll(
+      () =>
+        mock.current().config.model_prices?.[0].pricing?.tiers[0].image_input,
+    )
+    .toBe("8");
+  await page.getByRole("button", { name: "Test pricing" }).click();
+  const dialog = page.getByRole("dialog");
+  for (const [label, value] of [
+    ["Total input", "100"],
+    ["Output (including reasoning)", "50"],
+    ["Cache read", "30"],
+    ["Cache write", "20"],
+    ["Cache write · 5 minutes", "20"],
+    ["Cache write · 1 hour", "0"],
+    ["Reasoning", "0"],
+    ["Image input (including cached images)", "80"],
+    ["Image output", "30"],
+    ["Image cache read", "20"],
+    ["Image cache write", "15"],
+  ]) {
+    await dialog.getByLabel(label, { exact: true }).fill(value);
+  }
+  await dialog.getByRole("button", { name: "Calculate cost" }).click();
+  await expect(dialog.getByText("$0.001655", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("$0.00036", { exact: true })).toBeVisible();
+  await dialog.getByLabel("Image cache write", { exact: true }).fill("");
+  await dialog.getByRole("button", { name: "Calculate cost" }).click();
+  await expect(dialog.getByText("partial", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByLabel("Image cache write", { exact: true }).first().fill("");
+  await page.getByLabel("Image input", { exact: true }).first().fill("");
+  await page.getByLabel("Image output", { exact: true }).first().fill("0");
+  await page.getByRole("button", { name: "Save model price" }).click();
+  await expect
+    .poll(
+      () =>
+        mock.current().config.model_prices?.[0].pricing?.tiers[0].image_input,
+    )
+    .toBeUndefined();
+  await expect
+    .poll(
+      () =>
+        mock.current().config.model_prices?.[0].pricing?.tiers[0].image_output,
+    )
+    .toBe("0");
+  await expect
+    .poll(
+      () =>
+        mock.current().config.model_prices?.[0].pricing?.tiers[0]
+          .image_cache_write,
+    )
+    .toBeUndefined();
+});

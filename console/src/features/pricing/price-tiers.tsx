@@ -75,6 +75,45 @@ export const PriceTiers = withForm({
                 </div>
                 <details className="text-xs">
                   <summary className="cursor-pointer text-muted-foreground">
+                    Optional image token prices
+                  </summary>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    {(
+                      [
+                        ["image_input", "Image input", "input"],
+                        ["image_output", "Image output", "output"],
+                        [
+                          "image_cache_write",
+                          "Image cache write",
+                          "cache_write",
+                        ],
+                        ["image_cache_read", "Image cache read", "cache_read"],
+                      ] as const
+                    ).map(([key, label, fallback]) => (
+                      <form.AppField
+                        key={key}
+                        name={`pricing.tiers[${index}].${key}`}
+                      >
+                        {(field) => (
+                          <field.TextField
+                            label={label}
+                            emptyAsUndefined
+                            placeholder={tier[fallback] || "Use standard rate"}
+                          />
+                        )}
+                      </form.AppField>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-muted-foreground">
+                    Per million tokens. Leave blank to use the standard rate; 0
+                    means free. Separate prices require image counters. Missing
+                    counters produce an incomplete cost. Image cache writes use
+                    one rate across durations; mixed cache durations may leave
+                    the standard write cost unknown.
+                  </p>
+                </details>
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-muted-foreground">
                     Optional cache duration prices
                   </summary>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">

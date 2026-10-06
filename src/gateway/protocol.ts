@@ -37,6 +37,22 @@ export const INFERENCE_PATHS = [
 ] as const;
 export type InferencePath = (typeof INFERENCE_PATHS)[number];
 
+/** Inference endpoints whose request usage is persisted and shown in reports. */
+export const METERED_INFERENCE_PATHS = [
+  "messages",
+  "responses",
+  "chat/completions",
+  "images/generations",
+  "images/edits",
+] as const satisfies readonly InferencePath[];
+export type MeteredInferencePath = (typeof METERED_INFERENCE_PATHS)[number];
+
+export function isMeteredInferencePath(
+  path: string | undefined,
+): path is MeteredInferencePath {
+  return METERED_INFERENCE_PATHS.some((endpoint) => endpoint === path);
+}
+
 export function inferenceAliases(path: InferencePath): string[] {
   return path === "messages" || path === "messages/count_tokens"
     ? [`/v1/${path}`]

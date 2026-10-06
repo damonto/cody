@@ -1,7 +1,13 @@
+import { validImageUsage, uncachedImageTokens } from "./image-usage.ts";
 import { BillingStatus } from "./values.ts";
 
 import { parseRate } from "./config.ts";
-import type { CostBreakdown, ModelPrice, TokenUsage } from "./types.ts";
+import type {
+  CostBreakdown,
+  ModelPrice,
+  TokenUsage,
+  PriceTier,
+} from "./types.ts";
 
 // Prices are decimal currency units per million tokens. Monetary results are
 // integer nanounits, rounded half-up once per charge, never binary float sums.
@@ -19,6 +25,90 @@ export function tokenCost(tokens: number | null, rate: string): number | null {
   return Number(nanos);
 }
 
+interface TokenCharge {
+  standard: number | null;
+  image: number | null;
+}
+
+function splitTokenCost(
+  total: number | null,
+  image: number | null,
+  rate: string,
+  imageRate: string | undefined,
+): TokenCharge {
+  // Inherited rates retain the single legacy charge and its rounding.
+  if (imageRate === undefined)
+    return { standard: tokenCost(total, rate), image: 0 };
+  if (total === 0 && image === null) image = 0;
+  if (total !== null && image !== null && image > total)
+    throw new Error("Image tokens exceed total");
+  return {
+    standard:
+      total !== null && image !== null ? tokenCost(total - image, rate) : null,
+    image: tokenCost(image, imageRate),
+  };
+}
+
+function ordinaryCacheWriteCost(
+  usage: TokenUsage,
+  tier: PriceTier,
+): number | null {
+  if (usage.cache_write_tokens === 0) return 0;
+  if (tier.cache_write_5m === undefined && tier.cache_write_1h === undefined)
+    return tokenCost(usage.cache_write_tokens, tier.cache_write);
+  const short = usage.cache_write_5m_tokens;
+  const long = usage.cache_write_1h_tokens;
+  if (
+    short === null ||
+    long === null ||
+    short + long !== usage.cache_write_tokens
+  )
+    return null;
+  return (
+    (tokenCost(short, tier.cache_write_5m ?? tier.cache_write) ?? 0) +
+    (tokenCost(long, tier.cache_write_1h ?? tier.cache_write) ?? 0)
+  );
+}
+
+function cacheWriteCost(usage: TokenUsage, tier: PriceTier): TokenCharge {
+  if (tier.image_cache_write === undefined)
+    return { standard: ordinaryCacheWriteCost(usage, tier), image: 0 };
+  const total = usage.cache_write_tokens;
+  const image =
+    usage.image_cache_write_tokens ??
+    (total === 0 || usage.image_input_tokens === 0 ? 0 : null);
+  if (image === 0)
+    return { standard: ordinaryCacheWriteCost(usage, tier), image: 0 };
+  if (total !== null && image === total)
+    return { standard: 0, image: tokenCost(image, tier.image_cache_write) };
+  if (tier.cache_write_5m === undefined && tier.cache_write_1h === undefined)
+    return splitTokenCost(
+      total,
+      image,
+      tier.cache_write,
+      tier.image_cache_write,
+    );
+  const rate5m = tier.cache_write_5m ?? tier.cache_write;
+  const rate1h = tier.cache_write_1h ?? tier.cache_write;
+  if (Number(rate5m) === Number(rate1h))
+    return splitTokenCost(total, image, rate5m, tier.image_cache_write);
+  const short = usage.cache_write_5m_tokens;
+  const long = usage.cache_write_1h_tokens;
+  if (
+    short !== null &&
+    long !== null &&
+    total !== null &&
+    short + long === total
+  ) {
+    if (short === 0)
+      return splitTokenCost(total, image, rate1h, tier.image_cache_write);
+    if (long === 0)
+      return splitTokenCost(total, image, rate5m, tier.image_cache_write);
+  }
+  // A mixed-duration write total does not reveal the duration of its text tokens.
+  return { standard: null, image: tokenCost(image, tier.image_cache_write) };
+}
+
 export function emptyCost(
   status: CostBreakdown["status"] = BillingStatus.Unpriced,
 ): CostBreakdown {
@@ -28,6 +118,10 @@ export function emptyCost(
     price_version: null,
     tier_index: null,
     context_tokens: null,
+    image_input_nano: null,
+    image_output_nano: null,
+    image_cache_read_nano: null,
+    image_cache_write_nano: null,
     input_nano: null,
     output_nano: null,
     cache_write_nano: null,
@@ -41,6 +135,7 @@ export function calculateCost(
   price: ModelPrice | undefined,
   version: string | null = null,
 ): CostBreakdown {
+  if (!validImageUsage(usage)) throw new Error("Invalid image token counts");
   const result = emptyCost(
     price?.pricing ? BillingStatus.Unknown : BillingStatus.Unpriced,
   );
@@ -59,39 +154,44 @@ export function calculateCost(
   const tier = tiers[tierIndex];
   if (!tier) return result;
   result.tier_index = tierIndex;
-  result.input_nano = tokenCost(usage.uncached_input_tokens, tier.input);
-  result.output_nano = tokenCost(usage.output_tokens, tier.output);
-  result.cache_read_nano = tokenCost(usage.cache_read_tokens, tier.cache_read);
-  if (usage.cache_write_tokens === 0) {
-    result.cache_write_nano = 0;
-  } else if (
-    tier.cache_write_5m !== undefined ||
-    tier.cache_write_1h !== undefined
-  ) {
-    if (
-      usage.cache_write_5m_tokens !== null &&
-      usage.cache_write_1h_tokens !== null &&
-      usage.cache_write_5m_tokens + usage.cache_write_1h_tokens ===
-        usage.cache_write_tokens
-    ) {
-      result.cache_write_nano =
-        (tokenCost(
-          usage.cache_write_5m_tokens,
-          tier.cache_write_5m ?? tier.cache_write,
-        ) ?? 0) +
-        (tokenCost(
-          usage.cache_write_1h_tokens,
-          tier.cache_write_1h ?? tier.cache_write,
-        ) ?? 0);
-    }
-  } else {
-    result.cache_write_nano = tokenCost(
-      usage.cache_write_tokens,
-      tier.cache_write,
-    );
-  }
+  const input = splitTokenCost(
+    usage.uncached_input_tokens,
+    uncachedImageTokens(usage),
+    tier.input,
+    tier.image_input,
+  );
+  const output = splitTokenCost(
+    usage.output_tokens,
+    usage.image_output_tokens,
+    tier.output,
+    tier.image_output,
+  );
+  const cacheRead = splitTokenCost(
+    usage.cache_read_tokens,
+    usage.image_cache_read_tokens ??
+      (usage.image_input_tokens === 0 ? 0 : null),
+    tier.cache_read,
+    tier.image_cache_read,
+  );
+  result.input_nano = input.standard;
+  result.image_input_nano = input.image;
+  result.output_nano = output.standard;
+  result.image_output_nano = output.image;
+  result.cache_read_nano = cacheRead.standard;
+  result.image_cache_read_nano = cacheRead.image;
+  const cacheWrite = cacheWriteCost(usage, tier);
+  result.cache_write_nano = cacheWrite.standard;
+  result.image_cache_write_nano = cacheWrite.image;
   const parts = [
     result.input_nano,
+    ...(tier.image_input === undefined ? [] : [result.image_input_nano]),
+    ...(tier.image_output === undefined ? [] : [result.image_output_nano]),
+    ...(tier.image_cache_read === undefined
+      ? []
+      : [result.image_cache_read_nano]),
+    ...(tier.image_cache_write === undefined
+      ? []
+      : [result.image_cache_write_nano]),
     result.output_nano,
     result.cache_write_nano,
     result.cache_read_nano,

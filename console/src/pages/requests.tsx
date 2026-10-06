@@ -358,6 +358,19 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 "Output (including reasoning)",
                 number(item.usage.tokens.output_tokens),
               ],
+              [
+                "Image input (including cached images)",
+                number(item.usage.tokens.image_input_tokens),
+              ],
+              ["Image output", number(item.usage.tokens.image_output_tokens)],
+              [
+                "Image cache write",
+                number(item.usage.tokens.image_cache_write_tokens),
+              ],
+              [
+                "Image cache read",
+                number(item.usage.tokens.image_cache_read_tokens),
+              ],
               ["Cache read", number(item.usage.tokens.cache_read_tokens)],
               ["Cache write", number(item.usage.tokens.cache_write_tokens)],
               [
@@ -400,6 +413,28 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 money(item.billing.total_nano, item.billing.currency),
               ],
               ["Input", money(item.billing.input_nano, item.billing.currency)],
+              [
+                "Image input",
+                money(item.billing.image_input_nano, item.billing.currency),
+              ],
+              [
+                "Image output",
+                money(item.billing.image_output_nano, item.billing.currency),
+              ],
+              [
+                "Image cache write",
+                money(
+                  item.billing.image_cache_write_nano,
+                  item.billing.currency,
+                ),
+              ],
+              [
+                "Image cache read",
+                money(
+                  item.billing.image_cache_read_nano,
+                  item.billing.currency,
+                ),
+              ],
               [
                 "Output",
                 money(item.billing.output_nano, item.billing.currency),

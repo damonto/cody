@@ -52,7 +52,22 @@ async function rows(db, sql) {
 
 /** Finished requests over two hours, one in flight and one kept only in its rollup. */
 async function seed(db) {
-  await ingestUsage(db, usage("req-a", BASE + 60_000));
+  const image = usage("req-a", BASE + 60_000);
+  Object.assign(image.usage.tokens, {
+    image_input_tokens: 100,
+    image_output_tokens: 20,
+    image_cache_read_tokens: 40,
+    image_cache_write_tokens: 15,
+  });
+  Object.assign(image.billing, {
+    image_input_nano: 1000,
+    image_output_nano: 2000,
+    image_cache_read_nano: 300,
+    image_cache_write_nano: 500,
+  });
+  image.attempts[0].usage = structuredClone(image.usage);
+  image.attempts[0].billing = structuredClone(image.billing);
+  await ingestUsage(db, image);
   await ingestUsage(db, usage("req-b", BASE + 120_000, "EUR"));
   await ingestUsage(db, usage("req-c", BASE + HOUR_MS + 60_000));
   await ingestUsage(db, usage("req-old", BASE - 5 * HOUR_MS));

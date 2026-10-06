@@ -14,6 +14,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 - Query resource endpoints independently and invalidate only affected resources. Later writes must not mark an invalidated cached resource fresh before it refetches. The shell reads `/config` metadata only. No whole-config writes, import/export, persisted drafts, manual publish, archive browser or per-entity restore controls.
 - Preserve editor baselines across background refreshes. Keep loaded forms visible on refresh failure, and keep conflicts/failed mutations open and retryable. Resource fingerprints must detect masked secret changes; unchanged masked credentials retain their saved value.
 - Give editable rows stable identities independent of array index and editable names. The server generates durable IDs; strip form-only metadata before saving and keep IDs out of the UI.
+- Pricing defaults to a provider with configured models; an explicitly selected provider without models keeps the provider switcher and a link to its settings. Empty native defaults must not hide pricing for other providers.
 - Save settings and account edits independently, taking effect immediately. Unsaved incomplete forms must not prune committed proxy bindings.
 
 ## Native provider pages

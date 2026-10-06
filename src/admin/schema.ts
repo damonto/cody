@@ -1,3 +1,4 @@
+import { validImageUsage } from "../billing/image-usage.ts";
 import { HealthScope } from "../gateway/health/values.ts";
 
 import { z } from "zod";
@@ -61,6 +62,10 @@ export const previewSchema = z.strictObject({
   price: modelPriceSchema,
   usage: z
     .strictObject({
+      image_input_tokens: nullableCounter,
+      image_output_tokens: nullableCounter,
+      image_cache_read_tokens: nullableCounter,
+      image_cache_write_tokens: nullableCounter,
       input_tokens: nullableCounter,
       output_tokens: nullableCounter,
       cache_read_tokens: nullableCounter,
@@ -70,6 +75,13 @@ export const previewSchema = z.strictObject({
       reasoning_tokens: nullableCounter,
     })
     .superRefine((usage, context) => {
+      if (!validImageUsage(usage))
+        context.addIssue({
+          code: "custom",
+          path: ["image_input_tokens"],
+          message:
+            "Image counters must fit their input, output and cache totals",
+        });
       const {
         input_tokens: input,
         output_tokens: output,

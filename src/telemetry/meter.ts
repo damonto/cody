@@ -1,3 +1,7 @@
+import {
+  isMeteredInferencePath,
+  type MeteredInferencePath,
+} from "../gateway/protocol.ts";
 import { publicProviderModel } from "../shared/antigravity-models.ts";
 import {
   RequestOutcome,
@@ -12,6 +16,8 @@ import type { TerminalRequestOutcome } from "./values.ts";
 import { calculateCost, emptyCost } from "../billing/calculate.ts";
 import {
   USAGE_FIELDS,
+  IMAGE_USAGE_FIELDS,
+  IMAGE_COST_FIELDS,
   type ModelPrice,
   type NormalizedUsage,
 } from "../billing/types.ts";
@@ -52,7 +58,7 @@ interface MeterOptionsBase {
 }
 
 interface HttpMeterOptions extends MeterOptionsBase {
-  endpoint: "messages" | "responses";
+  endpoint: MeteredInferencePath;
   method: "POST";
   websocket?: false;
 }
@@ -64,6 +70,9 @@ interface WebSocketMeterOptions extends MeterOptionsBase {
 }
 
 export type MeterOptions = HttpMeterOptions | WebSocketMeterOptions;
+
+const imageUsageFields: ReadonlySet<string> = new Set(IMAGE_USAGE_FIELDS);
+const imageCostFields: ReadonlySet<string> = new Set(IMAGE_COST_FIELDS);
 
 const TYPE_PREFIX = /^\{\s*"type"\s*:\s*"([^"\\]{0,160})"/;
 
@@ -89,16 +98,16 @@ export class RequestMeter {
   private streamCompleted = false;
 
   constructor(private readonly options: MeterOptions) {
-    const endpointAllowed =
-      options.endpoint === "responses" ||
-      (!options.websocket && options.endpoint === "messages");
+    const endpointAllowed = options.websocket
+      ? options.endpoint === "responses"
+      : isMeteredInferencePath(options.endpoint);
     const methodAllowed =
       options.method === (options.websocket ? "WS" : "POST");
     if (!endpointAllowed || !methodAllowed) {
       throw new Error("Only inference requests can be metered");
     }
     this.now = options.now ?? Date.now;
-    this.accumulator = new UsageAccumulator(options.protocol);
+    this.accumulator = new UsageAccumulator(options.protocol, options.endpoint);
     this.data = {
       schema_version: 2,
       sequence: 0,
@@ -285,6 +294,8 @@ export class RequestMeter {
     if (
       [
         "response.completed",
+        "image_generation.completed",
+        "image_edit.completed",
         "response.failed",
         "response.incomplete",
         "message_stop",
@@ -368,6 +379,10 @@ export class RequestMeter {
       }
       for (const attempt of this.data.attempts.slice(0, -1)) {
         if (!attempt.usage) {
+          for (const field of IMAGE_USAGE_FIELDS)
+            this.data.usage.tokens[field] = null;
+          for (const field of IMAGE_COST_FIELDS)
+            this.data.billing[field] = null;
           this.data.usage.status =
             this.data.usage.status === UsageStatus.Invalid
               ? UsageStatus.Invalid
@@ -376,7 +391,10 @@ export class RequestMeter {
             this.data.billing.status = BillingStatus.Partial;
           continue;
         }
-        const previousUsage = new UsageAccumulator(this.options.protocol);
+        const previousUsage = new UsageAccumulator(
+          this.options.protocol,
+          this.options.endpoint,
+        );
         previousUsage.add(attempt.usage.raw);
         attempt.usage = previousUsage.snapshot(this.price);
         attempt.billing =
@@ -385,6 +403,13 @@ export class RequestMeter {
             : calculateCost(attempt.usage.tokens, this.price, version);
         for (const field of USAGE_FIELDS) {
           const previous = attempt.usage.tokens[field];
+          if (
+            imageUsageFields.has(field) &&
+            (previous === null || this.data.usage.tokens[field] === null)
+          ) {
+            this.data.usage.tokens[field] = null;
+            continue;
+          }
           if (previous !== null) {
             const total = (this.data.usage.tokens[field] ?? 0) + previous;
             if (!Number.isSafeInteger(total))
@@ -393,6 +418,7 @@ export class RequestMeter {
           }
         }
         for (const field of [
+          ...IMAGE_COST_FIELDS,
           "input_nano",
           "output_nano",
           "cache_write_nano",
@@ -400,6 +426,13 @@ export class RequestMeter {
           "total_nano",
         ] as const) {
           const previous = attempt.billing[field];
+          if (
+            imageCostFields.has(field) &&
+            (previous === null || this.data.billing[field] === null)
+          ) {
+            this.data.billing[field] = null;
+            continue;
+          }
           if (previous !== null) {
             const total = (this.data.billing[field] ?? 0) + previous;
             if (!Number.isSafeInteger(total))

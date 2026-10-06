@@ -1,3 +1,4 @@
+import { tokenCountSchema } from "../billing/schema.ts";
 import {
   UsagePhase,
   UsageTransport,
@@ -14,6 +15,10 @@ import { record } from "./usage.ts";
 const nullableNumber = z.number().nullable();
 const usageSchema = z.object({
   tokens: z.object({
+    image_input_tokens: tokenCountSchema.nullable().default(null),
+    image_output_tokens: tokenCountSchema.nullable().default(null),
+    image_cache_read_tokens: tokenCountSchema.nullable().default(null),
+    image_cache_write_tokens: tokenCountSchema.nullable().default(null),
     input_tokens: nullableNumber,
     uncached_input_tokens: nullableNumber,
     output_tokens: nullableNumber,
@@ -32,6 +37,10 @@ const costSchema = z.object({
   price_version: z.string().nullable(),
   tier_index: nullableNumber,
   context_tokens: nullableNumber,
+  image_input_nano: tokenCountSchema.nullable().default(null),
+  image_output_nano: tokenCountSchema.nullable().default(null),
+  image_cache_read_nano: tokenCountSchema.nullable().default(null),
+  image_cache_write_nano: tokenCountSchema.nullable().default(null),
   input_nano: nullableNumber,
   output_nano: nullableNumber,
   cache_write_nano: nullableNumber,

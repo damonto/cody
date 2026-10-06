@@ -858,3 +858,166 @@ test("Antigravity metering freezes the family identity and physical price before
     assert.equal(finished.billing.total_nano, 60000);
   }
 });
+
+for (const transport of ["json", "sse", "websocket"]) {
+  test(`image counters and charges survive ${transport} observation and retries`, async () => {
+    const events = [];
+    const meter = new RequestMeter({
+      requestId: "image",
+      endpoint: "responses",
+      method: transport === "websocket" ? "WS" : "POST",
+      protocol: "openai",
+      websocket: transport === "websocket",
+      sink: { send: async (event) => events.push(event) },
+    });
+    meter.configure({
+      revision: 8,
+      providers: [{ id: "a" }],
+      model_prices: [
+        {
+          provider_id: "a",
+          model: "real",
+          pricing: {
+            currency: "USD",
+            tiers: [
+              {
+                up_to_input_tokens: null,
+                input: "2",
+                output: "4",
+                cache_read: "1",
+                cache_write: "0",
+                image_input: "8",
+                image_output: "32",
+                image_cache_read: "3",
+                image_cache_write: "10",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    meter.select({ providerId: "a", credentialId: "key", model: "real" });
+    const raw = {
+      input_tokens: 100,
+      output_tokens: 50,
+      input_tokens_details: {
+        image_tokens: 80,
+        cached_tokens: 50,
+        cache_write_tokens: 5,
+        cache_write_tokens_details: { image_tokens: 3 },
+        cached_tokens_details: { image_tokens: 40 },
+      },
+      output_tokens_details: { image_tokens: 30 },
+    };
+    const { UsageAccumulator } = await import("../src/telemetry/usage.ts");
+    const previous = new UsageAccumulator("openai");
+    previous.add(raw);
+    meter.recordAttempts([
+      { attempt: 1, status: 503, duration_ms: 10, usage: previous.snapshot() },
+      { attempt: 2, status: 200, duration_ms: 20 },
+    ]);
+    const payload = { type: "response.completed", response: { usage: raw } };
+    if (transport === "websocket") {
+      meter.observe(payload);
+      meter.finish("success", 200);
+    } else {
+      const body =
+        transport === "json"
+          ? JSON.stringify(payload)
+          : `data: ${JSON.stringify(payload)}\n\n`;
+      const response = meter.response(
+        new Response(body, {
+          headers: {
+            "content-type":
+              transport === "json" ? "application/json" : "text/event-stream",
+          },
+        }),
+      );
+      assert.equal(await response.text(), body);
+    }
+    await meter.drain();
+    const finished = events.at(-1);
+    assert.equal(finished.usage.tokens.image_input_tokens, 160);
+    assert.equal(finished.usage.tokens.image_cache_read_tokens, 80);
+    assert.equal(finished.billing.image_input_nano, 592_000);
+    assert.equal(finished.billing.total_nano, 3_024_000);
+    assert.equal(finished.usage.tokens.image_cache_write_tokens, 6);
+    assert.equal(finished.billing.image_cache_write_nano, 60_000);
+    assert.equal(finished.billing.status, "complete");
+  });
+}
+
+test("image endpoints infer image output but do not infer cached image shares", async () => {
+  for (const endpoint of [
+    "images/generations",
+    "images/edits",
+    "chat/completions",
+  ]) {
+    const meter = new RequestMeter({
+      requestId: endpoint,
+      endpoint,
+      method: "POST",
+      protocol: "openai",
+      sink: { send: async () => {} },
+    });
+    meter.observe({
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        input_tokens_details: {
+          image_tokens: 5,
+          cached_tokens: 3,
+          cache_write_tokens: 0,
+        },
+      },
+    });
+    const event = meter.finish("success", 200);
+    assert.equal(
+      event.usage.tokens.image_output_tokens,
+      endpoint === "chat/completions" ? null : 20,
+    );
+    assert.equal(event.usage.tokens.image_cache_read_tokens, null);
+  }
+});
+
+test("old v2 events retain unknown image metadata without repricing", async () => {
+  const { parseUsageEvent } = await import("../src/telemetry/schema.ts");
+  const { meter } = fixture();
+  const old = structuredClone(meter.finish("success", 200));
+  for (const key of Object.keys(old.usage.tokens))
+    if (key.startsWith("image_")) delete old.usage.tokens[key];
+  for (const key of Object.keys(old.billing))
+    if (key.startsWith("image_")) delete old.billing[key];
+  const parsed = parseUsageEvent(old);
+  assert.equal(parsed.usage.tokens.image_input_tokens, null);
+  assert.equal(parsed.billing.image_input_nano, null);
+  assert.equal(parsed.billing.total_nano, old.billing.total_nano);
+  old.usage.tokens.image_input_tokens = -1;
+  assert.throws(() => parseUsageEvent(old));
+});
+
+test("unobserved retries keep image totals and charges unknown", () => {
+  const { meter } = fixture();
+  meter.recordAttempts([
+    { attempt: 1, status: 503, duration_ms: 10 },
+    { attempt: 2, status: 200, duration_ms: 20 },
+  ]);
+  meter.observe({
+    usage: {
+      input_tokens: 100,
+      output_tokens: 50,
+      input_tokens_details: {
+        image_tokens: 80,
+        cached_tokens: 50,
+        cache_write_tokens: 0,
+        cached_tokens_details: { image_tokens: 40 },
+      },
+      output_tokens_details: { image_tokens: 30 },
+    },
+  });
+  const result = meter.finish("success", 200);
+  assert.equal(result.usage.tokens.image_input_tokens, null);
+  assert.equal(result.usage.tokens.image_output_tokens, null);
+  assert.equal(result.billing.image_input_nano, null);
+  assert.equal(result.billing.status, "partial");
+});

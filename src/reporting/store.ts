@@ -1,3 +1,4 @@
+import { METERED_INFERENCE_PATHS } from "../gateway/protocol.ts";
 import { requestDetails, attemptDetails, hydrateRequest } from "./details.ts";
 import { UsagePhase } from "../telemetry/values.ts";
 
@@ -8,7 +9,7 @@ import {
   type ReportRange,
 } from "./ranges.ts";
 import type { UsageEvent } from "../telemetry/types.ts";
-import { USAGE_FIELDS } from "../billing/types.ts";
+import { SQL_USAGE_FIELDS } from "../billing/types.ts";
 import type { ReportQuery } from "./query.ts";
 import {
   AGGREGATE_FIELDS,
@@ -145,7 +146,7 @@ export async function ingestUsage(
     "first_text_ms",
     "context_tokens",
     "context_window",
-    ...USAGE_FIELDS,
+    ...SQL_USAGE_FIELDS,
     "usage_status",
     "billing_status",
     "cost_nano",
@@ -175,7 +176,7 @@ export async function ingestUsage(
     event.first_text_ms,
     event.context_tokens,
     event.context_window,
-    ...USAGE_FIELDS.map((field) => event.usage.tokens[field]),
+    ...SQL_USAGE_FIELDS.map((field) => event.usage.tokens[field]),
     event.usage.status,
     event.billing.status,
     event.billing.total_nano,
@@ -483,11 +484,18 @@ export async function requestList(
   const limit = Math.min(100, Math.max(1, options.limit));
   const rows = await db
     .prepare(
-      `SELECT * FROM requests WHERE endpoint IN ('messages', 'responses')
+      `SELECT * FROM requests WHERE endpoint IN (${METERED_INFERENCE_PATHS.map(() => "?").join(", ")})
     AND started_at >= ? AND started_at < ? ${filter.sql} ${cursorSql}
     ORDER BY started_at DESC, request_id DESC LIMIT ?`,
     )
-    .bind(range.from, range.to, ...filter.values, ...extra, limit + 1)
+    .bind(
+      ...METERED_INFERENCE_PATHS,
+      range.from,
+      range.to,
+      ...filter.values,
+      ...extra,
+      limit + 1,
+    )
     .all<Record<string, unknown>>();
   const events = await hydrateRows(db, rows.results);
   const more = events.length > limit;

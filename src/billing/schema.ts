@@ -35,6 +35,10 @@ export const reportingSchema = z.strictObject({
 
 export const priceTierSchema = z.strictObject({
   up_to_input_tokens: tokenCountSchema.positive().nullable(),
+  image_input: rateSchema.optional(),
+  image_output: rateSchema.optional(),
+  image_cache_read: rateSchema.optional(),
+  image_cache_write: rateSchema.optional(),
   input: rateSchema,
   output: rateSchema,
   cache_write: rateSchema,

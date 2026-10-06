@@ -16,6 +16,10 @@ export function PriceTrial({ price }: { price: ModelPrice }) {
   });
   const form = useAppForm({
     defaultValues: {
+      image_input_tokens: null,
+      image_output_tokens: null,
+      image_cache_read_tokens: null,
+      image_cache_write_tokens: null,
       input_tokens: 220000,
       output_tokens: 4000,
       cache_read_tokens: 140000,
@@ -45,6 +49,10 @@ export function PriceTrial({ price }: { price: ModelPrice }) {
         {(
           [
             ["input_tokens", "Total input"],
+            ["image_input_tokens", "Image input (including cached images)"],
+            ["image_output_tokens", "Image output"],
+            ["image_cache_write_tokens", "Image cache write"],
+            ["image_cache_read_tokens", "Image cache read"],
             ["output_tokens", "Output (including reasoning)"],
             ["cache_read_tokens", "Cache read"],
             ["cache_write_tokens", "Cache write"],
@@ -58,6 +66,10 @@ export function PriceTrial({ price }: { price: ModelPrice }) {
           </form.AppField>
         ))}
       </div>
+      <p className="text-xs text-muted-foreground">
+        Image counters are subsets of the totals, not additional tokens. Leave
+        unknown counters blank. Incomplete costs include only known charges.
+      </p>
       <Button type="submit" disabled={preview.isPending}>
         <Calculator />
         Calculate cost
@@ -81,6 +93,10 @@ export function PriceTrial({ price }: { price: ModelPrice }) {
             {(
               [
                 ["input_nano", "Input"],
+                ["image_input_nano", "Image input"],
+                ["image_output_nano", "Image output"],
+                ["image_cache_write_nano", "Image cache write"],
+                ["image_cache_read_nano", "Image cache read"],
                 ["output_nano", "Output"],
                 ["cache_write_nano", "Cache write"],
                 ["cache_read_nano", "Cache read"],
