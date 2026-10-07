@@ -21,7 +21,8 @@ test("downstream cancellation releases a pending read handed off by preflight", 
     inspection(async () => false),
   );
   t.mock.timers.tick(10);
-  const response = await pending;
+  const { response, stoppedBy } = await pending;
+  assert.equal(stoppedBy, "timeout");
   const reader = response.body.getReader();
   const read = reader.read();
   await reader.cancel("client disconnected");
@@ -50,7 +51,7 @@ test(
         { highWaterMark: 0 },
       ),
     );
-    const response = await inspectResponsePrefix(
+    const { response } = await inspectResponsePrefix(
       source,
       abort.signal,
       inspection(async () => {
@@ -80,7 +81,7 @@ test("forwarding preserves backpressure and releases an errored upstream reader"
       { highWaterMark: 0 },
     ),
   );
-  const response = await inspectResponsePrefix(
+  const { response } = await inspectResponsePrefix(
     source,
     new AbortController().signal,
     inspection(async () => true),
@@ -137,4 +138,84 @@ test("abort during prefix observation never hands out a cancelled response", asy
     /cancelled during prefix/,
   );
   assert.equal(source.body.locked, false);
+});
+
+test("a decisive observation at the byte boundary takes precedence over the size limit", async () => {
+  const { response, stoppedBy } = await inspectResponsePrefix(
+    new Response("limit"),
+    new AbortController().signal,
+    { maxBytes: 5, timeoutMs: 1000, observe: async () => true },
+  );
+  assert.equal(stoppedBy, "observer");
+  assert.equal(await response.text(), "limit");
+});
+
+test("small transport chunks are coalesced without changing bytes, observation or backpressure", async () => {
+  const input = bytes("α".repeat(1024) + "tail");
+  const seen = [];
+  let offset = 0;
+  let pulls = 0;
+  const source = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          pulls++;
+          const end = offset < 1024 ? offset + 1 : input.length;
+          controller.enqueue(input.subarray(offset, end));
+          offset = end;
+          if (offset === input.length) controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+  );
+  const { response, stoppedBy } = await inspectResponsePrefix(
+    source,
+    new AbortController().signal,
+    {
+      maxBytes: 1536,
+      timeoutMs: 10_000,
+      observe: async (chunk) => {
+        if (chunk) seen.push(...chunk);
+        return false;
+      },
+    },
+  );
+  assert.equal(stoppedBy, "size");
+  assert.equal(pulls, 1025);
+  const reader = response.body.getReader();
+  assert.deepEqual((await reader.read()).value, input.subarray(0, 1536));
+  assert.equal(pulls, 1025);
+  assert.deepEqual((await reader.read()).value, input.subarray(1536));
+  assert.equal((await reader.read()).done, true);
+  assert.deepEqual(new Uint8Array(seen), input);
+  assert.equal(source.body.locked, false);
+});
+
+test("fully observed streams report EOF and reject invalid limits before locking", async () => {
+  const { response, stoppedBy } = await inspectResponsePrefix(
+    new Response("complete"),
+    new AbortController().signal,
+    { maxBytes: 100, timeoutMs: 1000, observe: async () => false },
+  );
+  assert.equal(stoppedBy, "eof");
+  assert.equal(await response.text(), "complete");
+  for (const invalid of [
+    { maxBytes: 0 },
+    { maxBytes: Infinity },
+    { maxBytes: 1.5 },
+    { timeoutMs: 0 },
+    { timeoutMs: NaN },
+  ]) {
+    const source = new Response("unread");
+    await assert.rejects(
+      inspectResponsePrefix(source, new AbortController().signal, {
+        ...inspection(async () => false),
+        ...invalid,
+      }),
+      RangeError,
+    );
+    assert.equal(source.body.locked, false);
+    assert.equal(await source.text(), "unread");
+  }
 });

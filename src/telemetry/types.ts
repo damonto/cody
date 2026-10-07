@@ -8,6 +8,7 @@ import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
 import type { CostBreakdown, NormalizedUsage } from "../billing/types.ts";
 import type { UpstreamObservation } from "../shared/upstream-observation.ts";
+import type { RetryDiagnostic } from "../shared/retry-diagnostic.ts";
 
 export type { RequestOutcome } from "./values.ts";
 
@@ -16,6 +17,8 @@ export interface AttemptRecord {
   status: number | null;
   duration_ms: number;
   retry_delay_ms: number | null;
+  /** Absent on historical attempts and transports without HTTP retry inspection. */
+  retry_diagnostic?: RetryDiagnostic | undefined;
   usage: NormalizedUsage | null;
   billing: CostBreakdown | null;
 }

@@ -295,6 +295,10 @@ test("request pages omit auxiliary endpoints before pagination", async () => {
 
 test("request APIs preserve upstream observations and leave historical metadata absent", async () => {
   const observed = usage("upstream-observed", Date.now() - 10_000);
+  observed.attempts[0].retry_diagnostic = {
+    reason: "output_observed",
+    event_type: "response.output_text.delta",
+  };
   observed.upstream_observation = {
     request: {
       model: "real-model",
@@ -310,7 +314,9 @@ test("request APIs preserve upstream observations and leave historical metadata 
   const listing = await call("/console/api/requests?period=total");
   expect(await listing.json()).toMatchObject({ items: [observed, historical] });
   const old = await call("/console/api/requests/upstream-historical");
-  expect(await old.json()).not.toHaveProperty("upstream_observation");
+  const oldEvent = await old.json();
+  expect(oldEvent).not.toHaveProperty("upstream_observation");
+  expect(oldEvent).not.toHaveProperty("attempts.0.retry_diagnostic");
 });
 
 test("request reports always select inference regardless of removed kind filters", async () => {

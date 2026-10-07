@@ -1019,14 +1019,15 @@ test("project timeout retains authorization and retries after the OAuth session 
 
 test("onboarding can take more than five polls without failing authorization", async () => {
   let onboards = 0;
+  let finishOnboarding = false;
   override = (request) => {
     if (request.url.includes(":loadCodeAssist")) return Response.json({});
     if (request.url.includes(":onboardUser")) {
       onboards++;
       return Response.json(
-        onboards < 9
-          ? { done: false }
-          : { done: true, response: { projectId: "slow-project" } },
+        finishOnboarding
+          ? { done: true, response: { projectId: "slow-project" } }
+          : { done: false },
       );
     }
     return;
@@ -1034,8 +1035,16 @@ test("onboarding can take more than five polls without failing authorization", a
   const { stub, session } = await start();
   await complete(stub, session);
   expect((await settleSession(stub, session)).status).toBe("complete");
-  for (let i = 0; i < 8; i++) await runDurableObjectAlarm(stub);
-  expect(onboards).toBeGreaterThan(5);
+  // Automatic alarms may add polls; keep onboarding pending until released.
+  await vi.waitFor(async () => {
+    await runDurableObjectAlarm(stub);
+    expect(onboards).toBeGreaterThan(5);
+    const project = storedObject.parse(
+      (await storage(stub)).antigravity_initialization,
+    );
+    // Wait for every poll to commit, including the initial project lookup.
+    expect(project.attempts).toBe(onboards + 1);
+  });
   expect(
     await accountReply(stub.run({ action: "view" }), accountViewSchema),
   ).toMatchObject({
@@ -1043,6 +1052,7 @@ test("onboarding can take more than five polls without failing authorization", a
     project_initialization: { status: "pending", error: null },
   });
   await evictDurableObject(stub);
+  finishOnboarding = true;
   expect(await initialize(stub)).toMatchObject({
     status: "ready",
     project_id: "slow-project",

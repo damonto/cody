@@ -1,5 +1,6 @@
 import { antigravityVariant } from "../../../src/shared/antigravity-models.ts";
 import { UpstreamMismatchIndicator } from "@/features/requests/upstream-observation";
+import { RetryDecision } from "@/features/requests/retry-diagnostic";
 import { useReporting } from "@/lib/resources";
 import { useEntityNames } from "@/lib/api";
 import { useMemo, useState } from "react";
@@ -559,6 +560,13 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 id: "delay",
                 header: "Retry delay",
                 cell: ({ row }) => duration(row.original.retry_delay_ms),
+              },
+              {
+                id: "retry-decision",
+                header: "Retry decision",
+                cell: ({ row }) => (
+                  <RetryDecision value={row.original.retry_diagnostic} />
+                ),
               },
               {
                 id: "cost",

@@ -4,6 +4,8 @@ import { setImmediate } from "node:timers/promises";
 import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.ts";
 import { inspectRetryError } from "../src/gateway/http/retry-errors.ts";
 import { retryResponseUsage } from "../src/telemetry/retry.ts";
+import { RequestMeter } from "../src/telemetry/meter.ts";
+import { MAX_RETRY_RESPONSE_BYTES } from "../src/shared/response-limits.ts";
 
 const policy = {
   status_codes: [429],
@@ -125,6 +127,104 @@ test("empty output snapshots on failed responses do not count as generated conte
       await inspected.response.body.cancel();
     }
   }
+});
+
+test("large Responses metadata allows error-code retries and retains discarded usage", async () => {
+  const metadata = {
+    instructions: "private instructions ".repeat(5000),
+    tools: [
+      { type: "function", name: "example", description: "x".repeat(80 * 1024) },
+    ],
+  };
+  const failure = {
+    ...failed,
+    response: { ...metadata, ...failed.response },
+  };
+  for (const format of ["sse", "json"]) {
+    const body =
+      format === "sse"
+        ? event({
+            type: "response.created",
+            response: { ...metadata, status: "in_progress", output: [] },
+          }) +
+          event({
+            type: "response.in_progress",
+            response: { ...metadata, status: "in_progress", output: [] },
+          }) +
+          event(failure)
+        : JSON.stringify(failure);
+    const success = {
+      type: "response.completed",
+      response: { id: "done", output: [] },
+    };
+    const finalBody =
+      format === "sse" ? event(success) : JSON.stringify(success);
+    for (const chunkSize of [16384, Infinity]) {
+      let calls = 0;
+      const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+        send: async () => {
+          calls++;
+          const bytes = new TextEncoder().encode(
+            calls === 1 ? body : finalBody,
+          );
+          let offset = 0;
+          return new Response(
+            new ReadableStream({
+              pull(controller) {
+                if (offset === bytes.length) return controller.close();
+                const end = Math.min(bytes.length, offset + chunkSize);
+                controller.enqueue(bytes.subarray(offset, end));
+                offset = end;
+              },
+            }),
+            {
+              headers: {
+                "content-type":
+                  format === "sse" ? "text/event-stream" : "application/json",
+              },
+            },
+          );
+        },
+        wait: async () => {},
+        observeDiscardedResponse: (response) =>
+          retryResponseUsage(response, "openai"),
+      });
+      assert.equal(calls, 2, `${format}, chunk size ${chunkSize}`);
+      assert.equal(
+        result.attempts[0].retry_diagnostic.reason,
+        "error_code_match",
+      );
+      assert.equal(result.attempts[0].status, 200);
+      assert.equal(result.attempts[0].usage.tokens.input_tokens, 10);
+      assert.equal(await result.response.text(), finalBody);
+    }
+  }
+});
+
+test("output following large lifecycle metadata still prevents replay", async () => {
+  const prefix = event({
+    type: "response.created",
+    response: {
+      instructions: "x".repeat(100 * 1024),
+      status: "in_progress",
+      output: [],
+    },
+  });
+  const body =
+    prefix +
+    event({ type: "response.output_text.delta", delta: "hello" }) +
+    event(failed);
+  let calls = 0;
+  const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+    send: async () => {
+      calls++;
+      return sse(body);
+    },
+    wait: async () => {},
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.attempts[0].retry_diagnostic.reason, "output_observed");
+  assert.equal(await result.response.text(), body);
 });
 
 test("successful output after empty placeholders is forwarded byte for byte without replay", async () => {
@@ -553,15 +653,23 @@ test("WebSocket handshakes and unknown content types bypass body inspection", as
 });
 
 test("size boundary replays every byte and never classifies later errors", async () => {
-  const body = ":" + "x".repeat(70 * 1024) + "\n\n" + event(failed);
+  const body =
+    ":" + "x".repeat(MAX_RETRY_RESPONSE_BYTES + 1024) + "\n\n" + event(failed);
   const inspected = await inspectRetryError(
     sse(body),
     new AbortController().signal,
     policy.error_codes,
   );
   assert.equal(inspected.errorCode, undefined);
+  assert.equal(inspected.diagnostic.reason, "inspection_limit");
   assert.equal(await inspected.response.text(), body);
   assert.equal(inspected.errorCode, undefined);
+});
+
+test("discarded usage remains bounded when a response exceeds the retry prefix limit", async () => {
+  const body =
+    ":" + "x".repeat(MAX_RETRY_RESPONSE_BYTES + 1024) + "\n\n" + event(failed);
+  assert.equal(await retryResponseUsage(sse(body), "openai"), null);
 });
 
 test(
@@ -584,10 +692,12 @@ test(
       5,
     );
     assert.equal(inspected.errorCode, undefined);
+    assert.equal(inspected.diagnostic.reason, "inspection_timeout");
     source.enqueue(new TextEncoder().encode(event(failed)));
     source.close();
     assert.equal(await inspected.response.text(), preamble + event(failed));
     assert.equal(inspected.errorCode, undefined);
+    assert.equal(inspected.diagnostic.reason, "inspection_timeout");
   },
 );
 
@@ -739,4 +849,69 @@ test("a valid error code is not rejected because of an unrelated error type", as
   );
   assert.equal(inspected.errorCode, "rate_limit_exceeded");
   assert.equal(await inspected.response.text(), body);
+});
+
+test("late SSE diagnostics retain the event that prevented configured retries", async () => {
+  for (const [first, reason] of [
+    [{ type: "response.output_text.delta", delta: "" }, "output_observed"],
+    [{ type: "provider.heartbeat" }, "unrecognized_event"],
+    [
+      { type: "response.completed", response: { output: [] } },
+      "terminal_event",
+    ],
+  ]) {
+    let calls = 0;
+    const body = preamble + event(first) + event(failed);
+    const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+      send: async () => {
+        calls++;
+        return sse(body);
+      },
+      wait: async () => {},
+    });
+    const meter = new RequestMeter({
+      requestId: "retry-diagnostic",
+      endpoint: "responses",
+      method: "POST",
+      protocol: "openai",
+      sink: { send: async () => {} },
+    });
+    meter.recordAttempts(result.attempts);
+    assert.equal(await meter.response(result.response).text(), body);
+    const recorded = meter.checkpoint();
+    assert.equal(calls, 1);
+    assert.equal(recorded.http_status, 200);
+    assert.equal(recorded.outcome, "failed");
+    assert.equal(recorded.diagnostic_code, "rate_limit_exceeded");
+    assert.equal(recorded.observation_issue, null);
+    assert.deepEqual(recorded.attempts[0].retry_diagnostic, {
+      reason,
+      event_type: first.type,
+    });
+    await meter.drain();
+  }
+});
+
+test("retry diagnostics distinguish matching errors, exhausted policies and missing policies", async () => {
+  for (const [retry, expected] of [
+    [undefined, ["policy_disabled"]],
+    [{ status_codes: [429], delays_ms: [0] }, ["status_not_matched"]],
+    [policy, ["error_code_match", "error_code_match", "attempts_exhausted"]],
+  ]) {
+    const result = await fetchWithConfiguredRetries(makeRequest, retry, {
+      send: async () => sse(preamble + event(failed)),
+      wait: async () => {},
+    });
+    assert.deepEqual(
+      result.attempts.map((attempt) => attempt.retry_diagnostic.reason),
+      expected,
+    );
+    if (retry === policy)
+      assert.deepEqual(result.attempts[0].retry_diagnostic, {
+        reason: "error_code_match",
+        event_type: "response.failed",
+        error_code: "rate_limit_exceeded",
+      });
+    assert.equal(await result.response.text(), preamble + event(failed));
+  }
 });

@@ -585,69 +585,88 @@ test("concurrent requests have independent executors and cancellation", async ()
   expect(upstream).toHaveBeenCalledTimes(2);
 });
 
-test("SSE retries and final usage execute once inside the request object", async () => {
-  const config = structuredClone(await loadConfig(env));
-  config.providers[0]!.retry = {
-    status_codes: [429],
-    error_codes: ["rate_limit_exceeded"],
-    delays_ms: [0],
-  };
-  await setTestConfiguration(
-    env.CODY_DB,
-    "gateway-config",
-    JSON.stringify(config),
-  );
-  const metering = vi.spyOn(RequestMeter.prototype, "response");
-  const requests: string[] = [];
-  const event = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
-  const finalBody = event({
-    type: "response.completed",
-    response: {
-      id: "done",
-      status: "completed",
-      usage: { input_tokens: 3, output_tokens: 2 },
-    },
-  });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: Request) => {
-      expect(input.headers.get("authorization")).toBe("Bearer upstream-secret");
-      requests.push(await input.text());
-      const body =
-        requests.length === 1
-          ? event({
-              type: "response.created",
-              response: { status: "in_progress" },
-            }) +
-            event({
-              type: "response.output_item.added",
-              item: { type: "reasoning", summary: [] },
-            }) +
-            event({
-              type: "response.failed",
-              response: {
-                status: "failed",
-                error: { code: "rate_limit_exceeded" },
-              },
-            })
-          : finalBody;
-      return new Response(body, {
-        headers: { "content-type": "text/event-stream" },
-      });
-    }),
-  );
-  expect(await (await dispatch(request())).text()).toBe(finalBody);
-  expect(requests).toHaveLength(2);
-  expect(requests[0]).toBe(requests[1]);
-  expect(metering).toHaveBeenCalledTimes(1);
-  const meter = metering.mock.contexts[0];
-  if (!(meter instanceof RequestMeter))
-    throw new Error("Missing request meter");
-  expect(await meter.drain()).toBe(true);
-  expect(meter.checkpoint()).toMatchObject({
-    outcome: "success",
-    response_id: "done",
-    attempts: [{ status: 200, retry_delay_ms: 0 }, { status: 200 }],
-    usage: { tokens: { input_tokens: 3, output_tokens: 2 } },
-  });
-});
+test.each([0, 128 * 1024])(
+  "SSE retries with %i bytes of metadata execute once inside the request object",
+  async (metadataBytes) => {
+    const config = structuredClone(await loadConfig(env));
+    config.providers[0]!.retry = {
+      status_codes: [429],
+      error_codes: ["rate_limit_exceeded"],
+      delays_ms: [0],
+    };
+    await setTestConfiguration(
+      env.CODY_DB,
+      "gateway-config",
+      JSON.stringify(config),
+    );
+    const metering = vi.spyOn(RequestMeter.prototype, "response");
+    const requests: string[] = [];
+    const event = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+    const finalBody = event({
+      type: "response.completed",
+      response: {
+        id: "done",
+        status: "completed",
+        usage: { input_tokens: 3, output_tokens: 2 },
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: Request) => {
+        expect(input.headers.get("authorization")).toBe(
+          "Bearer upstream-secret",
+        );
+        requests.push(await input.text());
+        const body =
+          requests.length === 1
+            ? event({
+                type: "response.created",
+                response: {
+                  status: "in_progress",
+                  instructions: "x".repeat(metadataBytes),
+                },
+              }) +
+              event({
+                type: "response.output_item.added",
+                item: { type: "reasoning", summary: [] },
+              }) +
+              event({
+                type: "response.failed",
+                response: {
+                  status: "failed",
+                  error: { code: "rate_limit_exceeded" },
+                },
+              })
+            : finalBody;
+        return new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+    );
+    expect(await (await dispatch(request())).text()).toBe(finalBody);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toBe(requests[1]);
+    expect(metering).toHaveBeenCalledTimes(1);
+    const meter = metering.mock.contexts[0];
+    if (!(meter instanceof RequestMeter))
+      throw new Error("Missing request meter");
+    expect(await meter.drain()).toBe(true);
+    expect(meter.checkpoint()).toMatchObject({
+      outcome: "success",
+      response_id: "done",
+      attempts: [
+        {
+          status: 200,
+          retry_delay_ms: 0,
+          retry_diagnostic: {
+            reason: "error_code_match",
+            event_type: "response.failed",
+            error_code: "rate_limit_exceeded",
+          },
+        },
+        { status: 200, retry_diagnostic: { reason: "attempts_exhausted" } },
+      ],
+      usage: { tokens: { input_tokens: 3, output_tokens: 2 } },
+    });
+  },
+);

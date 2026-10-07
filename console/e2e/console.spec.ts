@@ -4,6 +4,55 @@ import { test, expect } from "@playwright/test";
 import type { UsageEvent } from "../src/lib/api";
 import { previewSchema } from "../../src/admin/schema";
 import { mockApi, draftFixture } from "./fixtures";
+import { usage } from "../../tests/admin/fixtures.ts";
+
+test("request details explain skipped retries and preserve unknown historical decisions", async ({
+  page,
+}) => {
+  await mockApi(page);
+  const event = usage("retry-failure", Date.now() - 5000);
+  event.outcome = "failed";
+  event.diagnostic_code = "rate_limit_exceeded";
+  event.attempts[0].retry_diagnostic = {
+    reason: "output_observed",
+    event_type: "response.output_text.delta",
+  };
+  const historical = structuredClone(event);
+  historical.request_id = "retry-historical";
+  delete historical.attempts[0].retry_diagnostic;
+  const items = [event, historical];
+  await page.route("**/console/api/requests**", (route) =>
+    route.fulfill({
+      json: items.find((item) =>
+        new URL(route.request().url()).pathname.endsWith(item.request_id),
+      ) ?? { items, next_cursor: null },
+    }),
+  );
+  await page.goto("/console/requests");
+  await page.getByRole("button", { name: "retry-failur" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("tab", { name: "Routing & attempts" }).click();
+  await expect(
+    dialog.getByText("rate_limit_exceeded", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("columnheader", { name: "Retry decision" }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Output detected; retry inspection stopped", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Event: response.output_text.delta", { exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "retry-histor" }).click();
+  await dialog.getByRole("tab", { name: "Routing & attempts" }).click();
+  await expect(
+    dialog.getByRole("cell", { name: "Not recorded", exact: true }),
+  ).toBeVisible();
+});
 
 test("report ranges, filters, empty states, and mobile navigation work", async ({
   page,

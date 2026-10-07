@@ -997,6 +997,38 @@ test("old v2 events retain unknown image metadata without repricing", async () =
   assert.throws(() => parseUsageEvent(old));
 });
 
+test("retry diagnostics survive usage validation without inventing historical decisions", async () => {
+  const { parseUsageEvent } = await import("../src/telemetry/schema.ts");
+  const { meter } = fixture();
+  const diagnostic = {
+    reason: "output_observed",
+    event_type: "response.output_text.delta",
+  };
+  meter.recordAttempts([
+    { attempt: 1, status: 200, duration_ms: 10, retry_diagnostic: diagnostic },
+  ]);
+  diagnostic.reason = "policy_disabled";
+  const event = meter.finish("failed", 200);
+  assert.deepEqual(parseUsageEvent(event).attempts[0].retry_diagnostic, {
+    reason: "output_observed",
+    event_type: "response.output_text.delta",
+  });
+  for (const invalid of [
+    { reason: "invented" },
+    { reason: "output_observed", event_type: "x".repeat(161) },
+    { reason: "output_observed", event_type: "event\nprivate payload" },
+    { reason: "error_code_match", error_code: "x".repeat(257) },
+  ]) {
+    event.attempts[0].retry_diagnostic = invalid;
+    assert.throws(() => parseUsageEvent(event));
+  }
+  delete event.attempts[0].retry_diagnostic;
+  assert.equal(
+    Object.hasOwn(parseUsageEvent(event).attempts[0], "retry_diagnostic"),
+    false,
+  );
+});
+
 test("unobserved retries keep image totals and charges unknown", () => {
   const { meter } = fixture();
   meter.recordAttempts([

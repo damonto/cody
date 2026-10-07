@@ -11,6 +11,10 @@ import { ApiProtocol } from "../gateway/protocol-values.ts";
 import { z } from "zod";
 import type { UsageEvent } from "./types.ts";
 import { record } from "./usage.ts";
+import {
+  RETRY_EVENT_TYPE_PATTERN,
+  RETRY_REASONS,
+} from "../shared/retry-diagnostic.ts";
 
 const nullableNumber = z.number().nullable();
 const metadataString = z
@@ -117,6 +121,13 @@ const usageEventSchema = z
         status: nullableNumber,
         duration_ms: z.number(),
         retry_delay_ms: nullableNumber,
+        retry_diagnostic: z
+          .object({
+            reason: z.enum(RETRY_REASONS),
+            event_type: z.string().regex(RETRY_EVENT_TYPE_PATTERN).optional(),
+            error_code: z.string().min(1).max(256).optional(),
+          })
+          .optional(),
         usage: usageSchema.nullable(),
         billing: costSchema.nullable(),
       }),

@@ -45,35 +45,39 @@ export async function inspectAntigravityResponse(
       firstEventSeen = true;
     },
   });
-  const forwarded = await inspectResponsePrefix(response, signal, {
-    maxBytes: MAX_PREFLIGHT_BYTES,
-    timeoutMs: MAX_ANTIGRAVITY_PREFLIGHT_MS,
-    async observe(chunk) {
-      if (httpLimit) {
-        if (!inspecting) return false;
-        json += decoder.decode(chunk, { stream: chunk !== undefined });
-        if (chunk === undefined) {
-          try {
-            accountLimit = antigravityAccountLimit(
-              JSON.parse(json),
-              response.headers,
-            );
-          } catch {
-            /* Keep malformed upstream errors intact. */
+  const { response: forwarded } = await inspectResponsePrefix(
+    response,
+    signal,
+    {
+      maxBytes: MAX_PREFLIGHT_BYTES,
+      timeoutMs: MAX_ANTIGRAVITY_PREFLIGHT_MS,
+      async observe(chunk) {
+        if (httpLimit) {
+          if (!inspecting) return false;
+          json += decoder.decode(chunk, { stream: chunk !== undefined });
+          if (chunk === undefined) {
+            try {
+              accountLimit = antigravityAccountLimit(
+                JSON.parse(json),
+                response.headers,
+              );
+            } catch {
+              /* Keep malformed upstream errors intact. */
+            }
           }
+          return false;
         }
-        return false;
-      }
-      observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
-      if (chunk === undefined) observer.end();
-      if (streamLimit && !accountLimit) {
-        const limit = streamLimit;
-        streamLimit = undefined;
-        await onStreamLimit(limit);
-      }
-      return firstEventSeen;
+        observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
+        if (chunk === undefined) observer.end();
+        if (streamLimit && !accountLimit) {
+          const limit = streamLimit;
+          streamLimit = undefined;
+          await onStreamLimit(limit);
+        }
+        return firstEventSeen;
+      },
     },
-  });
+  );
   inspecting = false;
   return { response: forwarded, ...(accountLimit ? { accountLimit } : {}) };
 }

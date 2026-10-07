@@ -5,6 +5,7 @@ import { SocksProxyError } from "../proxies/errors.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
 import { discardBody } from "./body.ts";
 import { inspectRetryError } from "./retry-errors.ts";
+import type { RetryDiagnostic } from "../../shared/retry-diagnostic.ts";
 
 export interface UpstreamRetryOptions {
   send?: UpstreamFetch;
@@ -25,6 +26,7 @@ export interface UpstreamAttemptLog {
   status?: number;
   duration_ms: number;
   retry_delay_ms?: number;
+  retry_diagnostic?: RetryDiagnostic;
   error?: string;
   usage?: NormalizedUsage | null;
 }
@@ -150,10 +152,25 @@ export async function fetchWithConfiguredRetries(
       throw error;
     }
     try {
-      if (terminal || !retry || delayMs === undefined)
+      if (terminal || !retry || delayMs === undefined) {
+        attempt.retry_diagnostic = {
+          reason: terminal
+            ? "provider_terminal"
+            : !retry
+              ? "policy_disabled"
+              : "attempts_exhausted",
+        };
         return { response, attempts };
+      }
 
       shouldRetry = retry.status_codes.includes(response.status);
+      attempt.retry_diagnostic = {
+        reason: shouldRetry
+          ? "status_match"
+          : request.headers.has("upgrade")
+            ? "upgrade"
+            : "status_not_matched",
+      };
       if (
         !shouldRetry &&
         retry.error_codes?.length &&
@@ -167,6 +184,7 @@ export async function fetchWithConfiguredRetries(
           remainingAttemptMs(options, startedAt),
         );
         response = inspected.response;
+        attempt.retry_diagnostic = inspected.diagnostic;
         shouldRetry = inspected.errorCode !== undefined;
         if (inspected.errorCode) attempt.error = inspected.errorCode;
         attempt.duration_ms = elapsedMs(startedAt);

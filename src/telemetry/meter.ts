@@ -51,6 +51,7 @@ export interface MeterAttempt {
   status?: number;
   duration_ms: number;
   retry_delay_ms?: number;
+  retry_diagnostic?: AttemptRecord["retry_diagnostic"];
   usage?: NormalizedUsage | null;
 }
 
@@ -299,6 +300,9 @@ export class RequestMeter {
         status: attempt.status ?? null,
         duration_ms: attempt.duration_ms,
         retry_delay_ms: attempt.retry_delay_ms ?? null,
+        ...(attempt.retry_diagnostic
+          ? { retry_diagnostic: { ...attempt.retry_diagnostic } }
+          : {}),
         usage: attempt.usage ?? null,
         billing: null,
       }));

@@ -3,8 +3,12 @@ import { SseObserver } from "../../telemetry/stream.ts";
 import { z } from "zod";
 import { responseFormat } from "./response-format.ts";
 import { inspectResponsePrefix } from "./response-prefix.ts";
+import {
+  RETRY_EVENT_TYPE_PATTERN,
+  type RetryDiagnostic,
+} from "../../shared/retry-diagnostic.ts";
+import { MAX_RETRY_RESPONSE_BYTES } from "../../shared/response-limits.ts";
 
-const MAX_PREFIX_BYTES = 64 * 1024;
 const RETRY_ERROR_INSPECTION_MS = 10_000;
 
 // Only known, empty placeholders may remain buffered. A new field or tool
@@ -62,8 +66,10 @@ const envelopeSchema = responseSchema.extend({
   part: z.unknown().optional(),
 });
 type RetryEnvelope = z.infer<typeof envelopeSchema>;
-type RetryDecision =
-  { kind: "inspect" } | { kind: "forward" } | { kind: "retry"; code: string };
+type FinalRetryDecision =
+  | { kind: "forward"; diagnostic: RetryDiagnostic }
+  | { kind: "retry"; code: string; diagnostic: RetryDiagnostic };
+type RetryDecision = { kind: "inspect" } | FinalRetryDecision;
 
 function hasOutput(output: RetryEnvelope["output"]): boolean {
   return (
@@ -121,7 +127,21 @@ function classifyPayload(
   codes: readonly string[],
 ): RetryDecision {
   const parsed = envelopeSchema.safeParse(value);
-  if (!parsed.success) return { kind: "forward" };
+  const code = upstreamErrorCode(value, event);
+  const eventType = parsed.success ? (parsed.data.type ?? event) : event;
+  const diagnostic = (reason: RetryDiagnostic["reason"]): RetryDiagnostic => ({
+    reason,
+    // Keep protocol identifiers, never arbitrary event text or payloads.
+    ...(RETRY_EVENT_TYPE_PATTERN.test(eventType)
+      ? { event_type: eventType }
+      : {}),
+    ...(code ? { error_code: code } : {}),
+  });
+  const forward = (reason: RetryDiagnostic["reason"]): FinalRetryDecision => ({
+    kind: "forward",
+    diagnostic: diagnostic(reason),
+  });
+  if (!parsed.success) return forward("invalid_envelope");
   const payload = parsed.data;
   const type = payload.type ?? event;
   const response = payload.response;
@@ -134,10 +154,10 @@ function classifyPayload(
       !emptyOutputItem.safeParse(payload.item).success) ||
     (payload.part !== undefined && !emptyPart.safeParse(payload.part).success)
   )
-    return { kind: "forward" };
+    return forward("output_observed");
   // An SSE event name and its JSON type must agree when both are present.
   if (event && payload.type && event !== payload.type)
-    return { kind: "forward" };
+    return forward("event_type_mismatch");
   const pending =
     [payload.status, response?.status].every(
       (status) =>
@@ -148,17 +168,16 @@ function classifyPayload(
   if (pending && isEmptyPreamble(payload, type)) return { kind: "inspect" };
   // Output and successful terminal events cannot authorize replay, even if
   // they carry an error field. Error envelopes otherwise need no event whitelist.
-  if (commitsProtocolEvent(type)) return { kind: "forward" };
+  if (commitsProtocolEvent(type)) return forward("terminal_event");
   if (
     [payload.status, response?.status].some(
       (status) => status !== undefined && status !== "failed",
     )
   )
-    return { kind: "forward" };
-  const code = upstreamErrorCode(value, event);
+    return forward("non_failure_status");
   return code && codes.includes(code)
-    ? { kind: "retry", code }
-    : { kind: "forward" };
+    ? { kind: "retry", code, diagnostic: diagnostic("error_code_match") }
+    : forward(code ? "error_code_not_matched" : "unrecognized_event");
 }
 
 /** Inspect before committing output, then replay the original bytes unchanged. */
@@ -167,17 +186,32 @@ export async function inspectRetryError(
   signal: AbortSignal,
   codes: readonly string[],
   timeoutMs = RETRY_ERROR_INSPECTION_MS,
-): Promise<{ response: Response; errorCode?: string }> {
+): Promise<{
+  response: Response;
+  errorCode?: string | undefined;
+  diagnostic: RetryDiagnostic;
+}> {
   const format = responseFormat(response);
-  if (!response.body || !format || timeoutMs <= 0) return { response };
+  if (!response.body || !format || timeoutMs <= 0)
+    return {
+      response,
+      diagnostic: {
+        reason: timeoutMs <= 0 ? "inspection_timeout" : "unsupported_response",
+      },
+    };
 
   const state: { decision: RetryDecision } = { decision: { kind: "inspect" } };
   const inspect = (value: unknown, event = "") => {
     if (state.decision.kind === "inspect")
       state.decision = classifyPayload(value, event, codes);
   };
-  const stop = () => {
-    if (state.decision.kind === "inspect") state.decision = { kind: "forward" };
+  const stop = (reason: RetryDiagnostic["reason"]): FinalRetryDecision => {
+    const final: FinalRetryDecision =
+      state.decision.kind === "inspect"
+        ? { kind: "forward", diagnostic: { reason } }
+        : state.decision;
+    state.decision = final;
+    return final;
   };
   const decoder = new TextDecoder();
   let json = "";
@@ -185,13 +219,13 @@ export async function inspectRetryError(
     format === "sse"
       ? new SseObserver({
           onEvent: inspect,
-          onIssue: stop,
-          onDone: stop,
-          maxEventChars: MAX_PREFIX_BYTES,
+          onIssue: () => stop("invalid_sse"),
+          onDone: () => stop("stream_ended"),
+          maxEventChars: MAX_RETRY_RESPONSE_BYTES,
         })
       : undefined;
-  const replay = await inspectResponsePrefix(response, signal, {
-    maxBytes: MAX_PREFIX_BYTES,
+  const prefix = await inspectResponsePrefix(response, signal, {
+    maxBytes: MAX_RETRY_RESPONSE_BYTES,
     timeoutMs: Math.min(timeoutMs, RETRY_ERROR_INSPECTION_MS),
     observe: async (chunk) => {
       if (state.decision.kind !== "inspect") return true;
@@ -208,7 +242,7 @@ export async function inspectRetryError(
           try {
             inspect(JSON.parse(json) as unknown);
           } catch {
-            stop();
+            stop("invalid_envelope");
           }
         }
       }
@@ -216,10 +250,16 @@ export async function inspectRetryError(
     },
   });
   // A timeout/size boundary commits the prefix. Later errors cannot trigger replay.
-  stop();
-  const final = state.decision;
+  const final = stop(
+    prefix.stoppedBy === "size"
+      ? "inspection_limit"
+      : prefix.stoppedBy === "timeout"
+        ? "inspection_timeout"
+        : "stream_ended",
+  );
   return {
-    response: replay,
+    response: prefix.response,
+    diagnostic: final.diagnostic,
     ...(final.kind === "retry" ? { errorCode: final.code } : {}),
   };
 }

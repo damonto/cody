@@ -53,34 +53,38 @@ export async function inspectXaiResponse(
         ready = true;
     },
   });
-  const forwarded = await inspectResponsePrefix(response, signal, {
-    maxBytes: 65536,
-    timeoutMs: 5000,
-    async observe(chunk) {
-      if (!sse) {
-        if (!inspecting) return true;
-        json += decoder.decode(chunk, { stream: chunk !== undefined });
-        let value: unknown;
-        try {
-          value = JSON.parse(json);
-        } catch {
-          return chunk === undefined;
+  const { response: forwarded } = await inspectResponsePrefix(
+    response,
+    signal,
+    {
+      maxBytes: 65536,
+      timeoutMs: 5000,
+      async observe(chunk) {
+        if (!sse) {
+          if (!inspecting) return true;
+          json += decoder.decode(chunk, { stream: chunk !== undefined });
+          let value: unknown;
+          try {
+            value = JSON.parse(json);
+          } catch {
+            return chunk === undefined;
+          }
+          if (response.status === 403 && xaiBadCredentials(value))
+            await onCredentialRejected?.();
+          found = xaiLimit(value, response.headers, model);
+          return true;
         }
-        if (response.status === 403 && xaiBadCredentials(value))
-          await onCredentialRejected?.();
-        found = xaiLimit(value, response.headers, model);
-        return true;
-      }
-      observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
-      if (chunk === undefined) observer.end();
-      if (late) {
-        const limit = late;
-        late = undefined;
-        await onLateLimit(limit);
-      }
-      return ready;
+        observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
+        if (chunk === undefined) observer.end();
+        if (late) {
+          const limit = late;
+          late = undefined;
+          await onLateLimit(limit);
+        }
+        return ready;
+      },
     },
-  });
+  );
   inspecting = false;
   return { response: forwarded, ...(found ? { accountLimit: found } : {}) };
 }

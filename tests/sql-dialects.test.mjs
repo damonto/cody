@@ -212,6 +212,10 @@ for (const [dialect, create] of Object.entries(factories)) {
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     const base = Date.UTC(2026, 8, 12, 10);
     const finished = usage("req-finished", base + 60_000);
+    finished.attempts[0].retry_diagnostic = {
+      reason: "output_observed",
+      event_type: "response.output_text.delta",
+    };
     const started = {
       ...finished,
       sequence: 0,
@@ -232,6 +236,10 @@ for (const [dialect, create] of Object.entries(factories)) {
 
     const detail = await requestDetail(db, "req-finished");
     assert.equal(detail?.request_id, "req-finished");
+    assert.deepEqual(
+      detail.attempts[0].retry_diagnostic,
+      finished.attempts[0].retry_diagnostic,
+    );
 
     const window = range(base, base + 2 * HOUR_MS);
     const report = await summary(db, window, {});

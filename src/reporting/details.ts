@@ -38,6 +38,7 @@ export function requestDetails(event: UsageEvent): string {
 export function attemptDetails(attempt: AttemptRecord): string {
   return JSON.stringify({
     retry_delay_ms: attempt.retry_delay_ms,
+    retry_diagnostic: attempt.retry_diagnostic,
     usage: attempt.usage,
     billing: attempt.billing,
   });
