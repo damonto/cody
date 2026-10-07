@@ -58,6 +58,14 @@ for (const [dialect, create] of Object.entries(factories)) {
       event.provider_id = provider.id;
       event.model = family;
       event.upstream_model = `${family}-${level}`;
+      if (level !== "low")
+        event.upstream_observation = {
+          request: {
+            model: event.upstream_model,
+            reasoning: { effort: level },
+          },
+          response: { model: `${family}-version` },
+        };
       await ingestUsage(db, event);
     }
     const window = range(start, start + HOUR_MS);
@@ -73,6 +81,22 @@ for (const [dialect, create] of Object.entries(factories)) {
     );
     assert.equal(requests.items.length, 3);
     assert.ok(requests.items.every((item) => item.model === family));
+    for (const item of requests.items) {
+      if (item.request_id === "family-low")
+        assert.equal(Object.hasOwn(item, "upstream_observation"), false);
+      else
+        assert.deepEqual(item.upstream_observation, {
+          request: {
+            model: item.upstream_model,
+            reasoning: { effort: item.request_id.slice("family-".length) },
+          },
+          response: { model: `${family}-version` },
+        });
+      assert.deepEqual(
+        (await requestDetail(db, item.request_id)).upstream_observation,
+        item.upstream_observation,
+      );
+    }
     const stored = await db
       .prepare("SELECT model, details_json FROM requests")
       .all();

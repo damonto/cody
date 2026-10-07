@@ -787,7 +787,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
     const meter = await this.usage.start(
       claimed.next.request_id,
-      parsedFrame.frame.model,
+      parsedFrame.frame,
       receivedAt,
     );
     await this.storage.scheduleAlarm();
@@ -1085,7 +1085,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       if (parsedFrame.kind === "response_create") {
         const meter = await this.usage.start(
           state.request_id,
-          parsedFrame.frame.model,
+          parsedFrame.frame,
           receivedAt,
         );
         const routingContext = await this.currentRoutingContext(state);

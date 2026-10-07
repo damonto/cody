@@ -13,6 +13,26 @@ import type { UsageEvent } from "./types.ts";
 import { record } from "./usage.ts";
 
 const nullableNumber = z.number().nullable();
+const metadataString = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => value.trim() !== "");
+const inferenceMetadataSchema = z.object({
+  model: metadataString.optional(),
+  reasoning: z
+    .object({
+      effort: metadataString.optional(),
+      mode: metadataString.optional(),
+      budget_tokens: z
+        .number()
+        .int()
+        .min(-1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .optional(),
+    })
+    .optional(),
+});
 const usageSchema = z.object({
   tokens: z.object({
     image_input_tokens: tokenCountSchema.nullable().default(null),
@@ -66,6 +86,12 @@ const usageEventSchema = z
     upstream_model: z.string().optional(),
     requested_model: z.string(),
     reported_model: z.string(),
+    upstream_observation: z
+      .object({
+        request: inferenceMetadataSchema,
+        response: inferenceMetadataSchema,
+      })
+      .optional(),
     endpoint: z.string(),
     method: z.string(),
     protocol: z.enum(ApiProtocol),

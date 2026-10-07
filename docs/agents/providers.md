@@ -11,6 +11,7 @@ Read the shared rules and the section for the provider being changed. Entry poin
 - Allocate round-robin bindings atomically in the session object through shared `rotation:<provider_id>` health objects, using the durable provider ID. Coordination failures fail closed. Preserve account provenance when quota switching is allowed.
 - Account switching stays within the selected provider and stops before downstream output. Persist explicit quota limits before switching. Generic 429s use only configured retries. Context-management sessions remain pinned.
 - Keep paid usage opt-in and never change upstream billing settings or spending limits. Tests mock paid entitlements and upstream calls.
+- Adapters changing inference bodies provide `inferenceMetadata` from the final translated body. Response converters notify the optional metadata observer from original parsed upstream frames before rewriting or synthesizing fields; never report echoed client parameters as upstream evidence. Reuse parsing without an extra stream consumer. Observer failures must not interrupt conversion. Antigravity reads native `modelVersion`; xAI reads native Responses metadata.
 
 ## AI Gateway
 

@@ -1,4 +1,6 @@
 import { ProviderType } from "../../config/values.ts";
+import { antigravityMetadata } from "./observation.ts";
+import { record } from "../../telemetry/usage.ts";
 import { ProviderTransport } from "../transport-values.ts";
 
 import { z } from "zod";
@@ -116,11 +118,15 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
       headers,
       method: "POST",
       body,
+      inferenceMetadata: antigravityMetadata(
+        input.model,
+        record(translated.request.generationConfig)?.thinkingConfig,
+      ),
       retryUsage: (response) =>
         retryResponseUsage(response, protocol, (value) =>
           translatedUsage(value, protocol),
         ),
-      transformResponse: async (response) => {
+      transformResponse: async (response, observe) => {
         if (endpoint === "messages/count_tokens" && response.ok) {
           const bytes = await readBodyWithinLimit(
             response.body,
@@ -142,6 +148,7 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
           tools: translated.tools,
           stream,
           request: payload,
+          ...(observe ? { observe } : {}),
         });
       },
     };

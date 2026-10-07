@@ -419,8 +419,9 @@ test("interleaved WebSocket generations measure first response from each request
     { send: async () => {} },
     { waitUntil: () => {} },
   );
-  const first = await usage.start("connection", "model", 1000);
-  const second = await usage.start("connection", "model", 2000);
+  const frame = { model: "model", payload: { model: "model" } };
+  const first = await usage.start("connection", frame, 1000);
+  const second = await usage.start("connection", frame, 2000);
   usage.observe({ type: "response.created", response: { id: "first" } }, 3200);
   usage.observe({ type: "response.created", response: { id: "second" } }, 3500);
   usage.observe(

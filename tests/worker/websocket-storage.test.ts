@@ -27,6 +27,10 @@ test("terminal records and their retry alarm commit or roll back together", asyn
   await runInDurableObject(proxy(), async (_instance, state) => {
     const store = new WebSocketStorage(state.storage);
     const event = usage("atomic-websocket", Date.now());
+    event.upstream_observation = {
+      request: { model: "real-model", reasoning: { effort: "high" } },
+      response: { model: "real-model-v2", reasoning: { effort: "low" } },
+    };
     await store.checkpoint(checkpoint(event));
     const transaction = state.storage.transaction.bind(state.storage);
     const failure = vi

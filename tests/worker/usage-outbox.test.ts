@@ -44,6 +44,10 @@ test.each(["D1", "Queue"])(
   async (destination) => {
     const outbox = env.USAGE_OUTBOX.getByName(`independent-${destination}`);
     const finished = usage(`independent-${destination}`, Date.now());
+    finished.upstream_observation = {
+      request: { model: "real-model", reasoning: { effort: "high" } },
+      response: { model: "real-model-v2", reasoning: { effort: "low" } },
+    };
     const progress: UsageEvent = {
       ...finished,
       phase: "started",

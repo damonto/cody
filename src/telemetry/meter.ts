@@ -28,6 +28,12 @@ import { deltaSignal, generationSignal } from "./generation.ts";
 import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
 import type { AttemptRecord, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
+import {
+  REASONING_METADATA_FIELDS,
+  type InferenceMetadata,
+  type ReasoningMetadata,
+} from "../shared/upstream-observation.ts";
+import { responseMetadata, isTerminalResponse } from "./inference-metadata.ts";
 
 export interface UsageSink {
   send(event: UsageEvent): Promise<unknown>;
@@ -70,6 +76,7 @@ interface WebSocketMeterOptions extends MeterOptionsBase {
 }
 
 export type MeterOptions = HttpMeterOptions | WebSocketMeterOptions;
+type ObservationSource = "upstream" | "downstream";
 
 const imageUsageFields: ReadonlySet<string> = new Set(IMAGE_USAGE_FIELDS);
 const imageCostFields: ReadonlySet<string> = new Set(IMAGE_COST_FIELDS);
@@ -96,6 +103,10 @@ export class RequestMeter {
   private finished = false;
   private wrapped = false;
   private streamCompleted = false;
+  private upstreamResponse: Response | undefined;
+  private readonly terminalMetadataFields = new Set<
+    "model" | keyof ReasoningMetadata
+  >();
 
   constructor(private readonly options: MeterOptions) {
     const endpointAllowed = options.websocket
@@ -220,6 +231,49 @@ export class RequestMeter {
       this.data.requested_model = name(model);
   }
 
+  upstreamRequest(metadata: InferenceMetadata): void {
+    if (this.finished || this.data.sequence !== 0) return;
+    this.data.upstream_observation = {
+      request: structuredClone(metadata),
+      response: {},
+    };
+    this.terminalMetadataFields.clear();
+  }
+
+  /** Only this exact response may use downstream bytes as upstream evidence. */
+  passthroughResponse(response: Response): Response {
+    this.upstreamResponse = response;
+    return response;
+  }
+
+  observeUpstream(metadata: InferenceMetadata, terminal = false): void {
+    const observation = this.data.upstream_observation;
+    if (this.finished || !observation) return;
+    const response = observation.response;
+    if (
+      metadata.model !== undefined &&
+      (terminal || !this.terminalMetadataFields.has("model"))
+    ) {
+      response.model = metadata.model;
+      if (terminal) this.terminalMetadataFields.add("model");
+    }
+    if (!metadata.reasoning) return;
+    const observeReasoning = <Field extends keyof ReasoningMetadata>(
+      field: Field,
+    ): void => {
+      const value = metadata.reasoning?.[field];
+      if (
+        value === undefined ||
+        (!terminal && this.terminalMetadataFields.has(field))
+      )
+        return;
+      const reasoning = (response.reasoning ??= {});
+      reasoning[field] = value;
+      if (terminal) this.terminalMetadataFields.add(field);
+    };
+    REASONING_METADATA_FIELDS.forEach(observeReasoning);
+  }
+
   select(target: MeterTarget): void {
     if (this.finished || this.data.sequence !== 0) return;
     this.data.provider_id = target.providerId;
@@ -257,8 +311,13 @@ export class RequestMeter {
     this.data.observation_issue ??= value;
   }
 
-  observe(value: unknown, event = "", at = this.now()): void {
-    this.observePayload(value, event, at);
+  observe(
+    value: unknown,
+    event = "",
+    at = this.now(),
+    source: ObservationSource = "downstream",
+  ): void {
+    this.observePayload(value, event, at, source);
   }
 
   /**
@@ -281,38 +340,30 @@ export class RequestMeter {
     value: unknown,
     event: string,
     at: number | null,
+    source: ObservationSource = "downstream",
   ): void {
     if (this.finished) return;
     const payload = record(value);
     if (!payload) return;
+    const terminal = isTerminalResponse(payload, event);
+    if (source === "upstream")
+      this.observeUpstream(
+        responseMetadata(payload, this.options.protocol),
+        at === null || terminal,
+      );
     const response = record(payload.response);
     const message = record(payload.message);
     this.accumulator.add(payload.usage);
     this.accumulator.add(response?.usage);
     this.accumulator.add(message?.usage);
     const type = name(payload.type) || event;
-    if (
-      [
-        "response.completed",
-        "image_generation.completed",
-        "image_edit.completed",
-        "response.failed",
-        "response.incomplete",
-        "message_stop",
-      ].includes(type)
-    )
-      this.streamCompleted = true;
+    if (terminal) this.streamCompleted = true;
     const responseId =
       response?.id ?? (payload.object === "response" ? payload.id : undefined);
     if (typeof responseId === "string")
       this.data.response_id = name(responseId);
     const model = response?.model ?? payload.model ?? message?.model;
     if (typeof model === "string") this.data.reported_model = name(model);
-    if (
-      Array.isArray(payload.choices) &&
-      payload.choices.some((item) => record(item)?.finish_reason)
-    )
-      this.streamCompleted = true;
     if (at !== null) {
       this.observeFirstResponse(at);
       const signal = generationSignal(payload, type);
@@ -468,6 +519,9 @@ export class RequestMeter {
   response(response: Response): Response {
     if (this.wrapped) return response;
     this.wrapped = true;
+    const source =
+      response === this.upstreamResponse ? "upstream" : "downstream";
+    this.upstreamResponse = undefined;
     this.data.http_status = response.status;
     if (!response.body) {
       this.finish(
@@ -487,7 +541,8 @@ export class RequestMeter {
     const decoder = new TextDecoder();
     const observer = sse
       ? new SseObserver({
-          onEvent: (value, event) => this.observe(value, event),
+          onEvent: (value, event) =>
+            this.observe(value, event, this.now(), source),
           onIssue: (issue) => this.issue(issue),
           onDone: () => {
             this.streamCompleted = true;
@@ -525,6 +580,7 @@ export class RequestMeter {
                   JSON.parse(jsonBody + decoder.decode()) as unknown,
                   "",
                   null,
+                  source,
                 );
             } catch {
               this.issue("invalid_response_json");

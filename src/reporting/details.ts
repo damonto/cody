@@ -10,6 +10,7 @@ export function requestDetails(event: UsageEvent): string {
     response_id: event.response_id,
     upstream_model: event.upstream_model,
     reported_model: event.reported_model,
+    upstream_observation: event.upstream_observation,
     method: event.method,
     diagnostic_code: event.diagnostic_code,
     context_source: event.context_source,
@@ -68,6 +69,9 @@ export function hydrateRequest(
       : { upstream_model: details.upstream_model }),
     requested_model: row.requested_model,
     reported_model: details.reported_model ?? "",
+    ...(details.upstream_observation === undefined
+      ? {}
+      : { upstream_observation: details.upstream_observation }),
     endpoint: row.endpoint,
     method: details.method ?? "POST",
     protocol: row.protocol,

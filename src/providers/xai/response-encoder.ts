@@ -1,4 +1,5 @@
 import { ProviderRequestError } from "../errors.ts";
+import type { UpstreamMetadataObserver } from "../../telemetry/inference-metadata.ts";
 import { object, records, text, type Wire } from "./json.ts";
 import { reasoningText, sealReasoning, type XaiScope } from "./replay.ts";
 import { restoreTool, type ToolMapping } from "./tools.ts";
@@ -13,6 +14,7 @@ export interface EncodingOptions {
   signal?: AbortSignal;
   search?: boolean;
   onCompleted?: (output: Wire[]) => Promise<void>;
+  observe?: UpstreamMetadataObserver;
 }
 export function xaiUsage(value: unknown, anthropic: boolean): Wire {
   const usage = object(value);

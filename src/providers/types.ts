@@ -2,6 +2,8 @@ import { type ProviderTransport } from "./transport-values.ts";
 import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
 import type { NormalizedUsage } from "../billing/types.ts";
+import type { InferenceMetadata } from "../shared/upstream-observation.ts";
+import type { UpstreamMetadataObserver } from "../telemetry/inference-metadata.ts";
 import type { ProviderConfig } from "../config/types.ts";
 import type { GatewayEndpoint } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
@@ -64,7 +66,12 @@ export interface PreparedUpstreamRequest {
   readonly headers: Headers;
   readonly method?: string;
   readonly body?: string;
-  readonly transformResponse?: (response: Response) => Promise<Response>;
+  /** Metadata from the adapter's final request body, before serialization. */
+  readonly inferenceMetadata?: InferenceMetadata;
+  readonly transformResponse?: (
+    response: Response,
+    observe?: UpstreamMetadataObserver,
+  ) => Promise<Response>;
   readonly parseModels?: (value: unknown) => unknown;
   readonly retryUsage?: (response: Response) => Promise<NormalizedUsage | null>;
 }

@@ -7,6 +7,7 @@ import {
 import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
 import type { CostBreakdown, NormalizedUsage } from "../billing/types.ts";
+import type { UpstreamObservation } from "../shared/upstream-observation.ts";
 
 export type { RequestOutcome } from "./values.ts";
 
@@ -37,6 +38,8 @@ export interface UsageEvent {
   upstream_model?: string | undefined;
   requested_model: string;
   reported_model: string;
+  /** Final wire request and original upstream response; absent in historical events. */
+  upstream_observation?: UpstreamObservation | undefined;
   endpoint: string;
   method: string;
   protocol: ApiProtocol;

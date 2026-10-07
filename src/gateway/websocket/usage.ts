@@ -1,4 +1,7 @@
 import { UsagePhase } from "../../telemetry/values.ts";
+import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
+import type { InferenceMetadata } from "../../shared/upstream-observation.ts";
+import type { ResponseCreateFrame } from "./websocket-protocol.ts";
 import { ApiProtocol } from "../protocol-values.ts";
 import { type TerminalRequestOutcome } from "../../telemetry/values.ts";
 
@@ -13,6 +16,10 @@ import type { WebSocketStorage } from "./storage.ts";
 /** Owns per-generation metering and delivery; it never operates on sockets. */
 export class WebSocketUsage {
   private readonly meters = new Set<RequestMeter>();
+  private readonly requests = new WeakMap<
+    RequestMeter,
+    { model: string; metadata: InferenceMetadata }
+  >();
   private readonly responses = new Map<string, RequestMeter>();
   private readonly completed = new Set<string>();
   private flushing: Promise<void> | undefined;
@@ -25,7 +32,7 @@ export class WebSocketUsage {
 
   async start(
     connectionId: string,
-    model: string,
+    frame: Pick<ResponseCreateFrame, "model" | "payload">,
     startedAt: number,
   ): Promise<RequestMeter | undefined> {
     const sink = this.sink;
@@ -47,7 +54,11 @@ export class WebSocketUsage {
       },
       executionContext: this.context,
     });
-    meter.requestedModel(model);
+    meter.requestedModel(frame.model);
+    this.requests.set(meter, {
+      model: frame.model,
+      metadata: inferenceMetadata(frame.payload, ApiProtocol.Openai),
+    });
     this.meters.add(meter);
     await this.storage.checkpoint(meter.checkpoint());
     return meter;
@@ -61,12 +72,21 @@ export class WebSocketUsage {
     if (!meter || !this.meters.has(meter)) return;
     meter.configure(context.config);
     meter.authenticate(context.client.id);
-    if (target)
+    if (target) {
+      const request = this.requests.get(meter);
+      if (request)
+        meter.upstreamRequest({
+          ...request.metadata,
+          ...(request.model === target.upstreamModel
+            ? {}
+            : { model: target.upstreamModel }),
+        });
       meter.select({
         providerId: target.provider.id,
         credentialId: target.credential.id,
         model: target.upstreamModel,
       });
+    }
     await this.storage.checkpoint(meter.checkpoint());
   }
 
@@ -85,7 +105,7 @@ export class WebSocketUsage {
       meter = [...this.meters].find((entry) => !id || !assigned.has(entry));
       if (meter && id) this.responses.set(id, meter);
     }
-    meter?.observe(payload, "", receivedAt);
+    meter?.observe(payload, "", receivedAt, "upstream");
     return meter;
   }
 

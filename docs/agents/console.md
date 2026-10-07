@@ -7,6 +7,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 - The UI is English-only. Use the existing React, Vite, Tailwind, shadcn/Radix and TanStack patterns described in `console/README.md`.
 - Preserve standard components and exports in `console/src/components/ui/`, even without current callers.
 - Keep routes lazy-loaded and shared browser contracts independent of feature schemas. Do not pull reporting libraries into the entry or non-reporting routes, or server OAuth registration/tokenizer code into browser bundles.
+- Request lists show one yellow warning icon for upstream-observation mismatches. Details show field-specific icons beside `Routed model` (the canonical routing model) and `Reasoning Effort` (the requested effort), without a separate reported-model row. Use the shared comparison's field differences for tooltips; do not reimplement comparison in components. Model comparison uses the final upstream request even when the displayed routing model groups physical variants. Tooltips preserve actual upstream values and open on keyboard focus as well as hover. Unspecified or historically unrecorded effort remains unknown. Never infer effort from token counts or use legacy `reported_model` as comparison evidence.
 - `tests/console-bundle.test.mjs` enforces a 500 kB minified JavaScript chunk budget and feature boundaries. Fix imports rather than raising the limit.
 
 ## Resource forms

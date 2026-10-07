@@ -1,4 +1,5 @@
 import { ProviderType } from "../config/values.ts";
+import { inferenceMetadata } from "../telemetry/inference-metadata.ts";
 import { ProviderTransport } from "./transport-values.ts";
 import { ApiProtocol } from "../gateway/protocol-values.ts";
 
@@ -73,7 +74,12 @@ async function emulateClaudeCode(
   context?.requestLog?.mergeSection("inference", {
     claude_code_emulation: "applied",
   });
-  return { ...prepared, body: JSON.stringify({ ...emulated, model }) };
+  const body = { ...emulated, model };
+  return {
+    ...prepared,
+    body: JSON.stringify(body),
+    inferenceMetadata: inferenceMetadata(body, ApiProtocol.Anthropic),
+  };
 }
 
 export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {

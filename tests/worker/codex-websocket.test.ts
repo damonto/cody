@@ -12,6 +12,7 @@ import {
   parseConfig,
 } from "../../src/config/store.ts";
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
+import { RequestMeter } from "../../src/telemetry/meter.ts";
 import { getCredentialAvailability } from "../../src/gateway/health/health.ts";
 import {
   accountReply,
@@ -25,6 +26,7 @@ const MODEL = "gpt-5.5-codex";
 const FIRST_FRAME = JSON.stringify({
   type: "response.create",
   model: MODEL,
+  reasoning: { effort: "high" },
   input: [{ role: "user", content: "hello" }],
 });
 
@@ -299,6 +301,7 @@ test("an exhausted account's handshake moves the connection to the next account"
 });
 
 test("a usage-limit error before any output resends the first frame on another account", async () => {
+  const metering = vi.spyOn(RequestMeter.prototype, "observeUpstream");
   const [first, second] = await pool();
   const [exhausted, fresh] = [crypto.randomUUID(), crypto.randomUUID()];
   handshakes.set(first.account, { connection: exhausted });
@@ -312,16 +315,35 @@ test("a usage-limit error before any output resends the first frame on another a
     type: "error",
     status: 429,
     error: usageLimit(300),
+    model: "exhausted-model",
+    reasoning: { effort: "low" },
   });
   expect(await nextUpstreamMessage(fresh)).toBe(FIRST_FRAME);
   expect(upgrades).toEqual([first.account, second.account]);
   await expectQuotaCooldown(first.id, 300);
 
-  const created = { type: "response.created", response: { id: "resp" } };
+  const created = {
+    type: "response.created",
+    response: {
+      id: "resp",
+      model: `${MODEL}-version`,
+      reasoning: { effort: "high" },
+    },
+  };
   await sendUpstream(fresh, created);
   await until(() => messages.length > 0, "client message");
   // The exhausted account's error never reaches the client.
   expect(messages.map((message) => JSON.parse(message))).toEqual([created]);
+  const meter = metering.mock.contexts[0];
+  if (!(meter instanceof RequestMeter))
+    throw new Error("Missing request meter");
+  expect(meter.checkpoint()).toMatchObject({
+    credential_id: second.id,
+    upstream_observation: {
+      request: { model: MODEL, reasoning: { effort: "high" } },
+      response: { model: `${MODEL}-version`, reasoning: { effort: "high" } },
+    },
+  });
   socket.close(1000, "done");
 });
 

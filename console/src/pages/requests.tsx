@@ -1,4 +1,5 @@
 import { antigravityVariant } from "../../../src/shared/antigravity-models.ts";
+import { UpstreamMismatchIndicator } from "@/features/requests/upstream-observation";
 import { useReporting } from "@/lib/resources";
 import { useEntityNames } from "@/lib/api";
 import { useMemo, useState } from "react";
@@ -88,14 +89,19 @@ export default function Requests() {
               {names[row.original.provider_id] ??
                 (row.original.provider_id || "Unrouted")}
             </p>
-            <p
-              className="truncate text-xs text-muted-foreground"
-              title={row.original.model}
-            >
-              {row.original.model ||
-                row.original.requested_model ||
-                row.original.endpoint}
-            </p>
+            <div className="flex items-center gap-1.5">
+              <p
+                className="min-w-0 truncate text-xs text-muted-foreground"
+                title={row.original.model}
+              >
+                {row.original.model ||
+                  row.original.requested_model ||
+                  row.original.endpoint}
+              </p>
+              <UpstreamMismatchIndicator
+                observation={row.original.upstream_observation}
+              />
+            </div>
           </div>
         ),
       },
@@ -294,6 +300,13 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
       </div>
     );
   const item = detail.data;
+  const observation = item.upstream_observation;
+  const effort = observation?.request.reasoning?.effort;
+  const reasoningEffort = effort
+    ? effort.charAt(0).toUpperCase() + effort.slice(1)
+    : observation
+      ? "Not specified"
+      : "Not recorded";
   return (
     <div className="space-y-5 p-6">
       <div className="flex items-center justify-between">
@@ -480,14 +493,20 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 "Credential",
                 names[item.credential_id] ?? (item.credential_id || "—"),
               ],
+              ["Requested model", item.requested_model || "—"],
               [
-                "Requested model",
-                (item.model &&
-                antigravityVariant(item.requested_model)?.family === item.model
-                  ? item.model
-                  : item.requested_model) || "—",
+                "Routed model",
+                <span
+                  key="routed-model"
+                  className="inline-flex items-center justify-end gap-1.5"
+                >
+                  <span>{item.model || "—"}</span>
+                  <UpstreamMismatchIndicator
+                    observation={observation}
+                    field="model"
+                  />
+                </span>,
               ],
-              ["Routed model", item.model || "—"],
               ...(item.upstream_model && item.upstream_model !== item.model
                 ? [
                     [
@@ -497,11 +516,17 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                   ]
                 : []),
               [
-                "Reported model",
-                (item.model &&
-                antigravityVariant(item.reported_model)?.family === item.model
-                  ? item.model
-                  : item.reported_model) || "—",
+                "Reasoning Effort",
+                <span
+                  key="reasoning-effort"
+                  className="inline-flex items-center justify-end gap-1.5"
+                >
+                  <span>{reasoningEffort}</span>
+                  <UpstreamMismatchIndicator
+                    observation={observation}
+                    field="effort"
+                  />
+                </span>,
               ],
               ["Endpoint", `${item.method} /${item.endpoint}`],
               ["HTTP status", item.http_status ?? "—"],

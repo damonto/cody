@@ -1,4 +1,9 @@
 import { ProviderRequestError } from "../errors.ts";
+import {
+  notifyUpstreamMetadata,
+  responseMetadata,
+  isTerminalResponse,
+} from "../../telemetry/inference-metadata.ts";
 import { apiError } from "../../gateway/http/http.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
@@ -52,6 +57,11 @@ export async function convertResponse(
   async function* translated() {
     try {
       for await (const event of source) {
+        notifyUpstreamMetadata(
+          options.observe,
+          responseMetadata(event, ApiProtocol.Openai),
+          isTerminalResponse(event),
+        );
         for (const output of await encoder.accept(event)) yield output;
         if (encoder.terminal) break;
       }

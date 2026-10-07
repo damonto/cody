@@ -265,6 +265,13 @@ for (const protocol of ["openai", "anthropic"] as const) {
       upstream_model: "example-model",
       requested_model: "alias",
       reported_model: "example-model",
+      upstream_observation: {
+        request: { model: "example-model", reasoning: { effort: "xhigh" } },
+        response: {
+          model: "provider/example-model-2026-10-01",
+          reasoning: { effort: "low" },
+        },
+      },
       endpoint: protocol === "openai" ? "responses" : "messages",
       method: "POST",
       protocol,
@@ -309,7 +316,40 @@ for (const protocol of ["openai", "anthropic"] as const) {
     };
     delete missingLatency.first_response_ms;
     delete missingLatency.upstream_model;
-    const views = [event, missingLatency];
+    delete missingLatency.upstream_observation;
+    const matching: UsageEvent = {
+      ...event,
+      request_id: "matching-observation",
+      reported_model: "provider/example-model",
+      upstream_observation: {
+        request: { model: "example-model", reasoning: { effort: "high" } },
+        response: {
+          model: "provider/example-model",
+          reasoning: { effort: "high" },
+        },
+      },
+    };
+    const unreported: UsageEvent = {
+      ...event,
+      request_id: "unreported-observation",
+      reported_model: "",
+      upstream_observation: {
+        request: { model: "example-model", reasoning: { effort: "high" } },
+        response: {},
+      },
+    };
+    const unspecified: UsageEvent = {
+      ...event,
+      request_id: "unspecified-observation",
+      upstream_observation: {
+        request: { model: "example-model" },
+        response: {
+          model: "provider/example-model",
+          reasoning: { effort: "xhigh" },
+        },
+      },
+    };
+    const views = [event, missingLatency, matching, unreported, unspecified];
     await page.route("**/console/api/requests**", (route) =>
       route.fulfill({
         json: views.find((item) =>
@@ -318,11 +358,32 @@ for (const protocol of ["openai", "anthropic"] as const) {
       }),
     );
     await page.goto("/console/requests");
+    const warning = page.getByRole("button", {
+      name: "Upstream response differs",
+      exact: true,
+    });
+    await expect(warning).toHaveCount(1);
+    await expect(page.getByText("Model mismatch", { exact: true })).toHaveCount(
+      0,
+    );
+    await warning.hover();
+    const tooltip = page.getByRole("tooltip");
+    for (const value of [
+      "Model mismatch",
+      "Reasoning effort mismatch",
+      "example-model",
+      "provider/example-model-2026-10-01",
+      "xhigh",
+      "low",
+    ])
+      await expect(tooltip.getByText(value, { exact: true })).toBeVisible();
+    await page.mouse.move(0, 0, { steps: 10 });
+    await expect(tooltip).toBeHidden();
     await expect(
       page.getByRole("columnheader", { name: "First response", exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByRole("cell", { name: "2.20 s", exact: true }),
+      page.getByRole("cell", { name: "2.20 s", exact: true }).first(),
     ).toBeVisible();
     await expect(
       page.getByRole("cell", { name: "220K / 1M", exact: true }).first(),
@@ -359,6 +420,55 @@ for (const protocol of ["openai", "anthropic"] as const) {
         .getByText("220K", { exact: true }),
     ).toBeVisible();
     await expect(dialog.getByText("1M", { exact: true })).toBeVisible();
+    await dialog
+      .getByRole("tab", { name: "Routing & attempts", exact: true })
+      .click();
+    for (const [title, value] of [
+      ["Requested model", "alias"],
+      ["Routed model", "example-model"],
+      ["Reasoning Effort", "Xhigh"],
+    ])
+      await expect(
+        dialog
+          .getByText(title, { exact: true })
+          .locator("..")
+          .getByText(value, { exact: true }),
+      ).toBeVisible();
+    for (const title of [
+      "Reported Model",
+      "Upstream request model",
+      "Upstream response model",
+      "Upstream request reasoning",
+      "Upstream response reasoning",
+      "Model comparison",
+      "Reasoning comparison",
+    ])
+      await expect(dialog.getByText(title, { exact: true })).toHaveCount(0);
+    const modelWarning = dialog
+      .getByText("Routed model", { exact: true })
+      .locator("..")
+      .getByRole("button", { name: "Model mismatch", exact: true });
+    await modelWarning.focus();
+    await expect(
+      tooltip.getByText("provider/example-model-2026-10-01", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      tooltip.getByText("Reasoning effort mismatch", { exact: true }),
+    ).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Refresh", exact: true }).focus();
+    await expect(tooltip).toBeHidden();
+    const effortWarning = dialog
+      .getByText("Reasoning Effort", { exact: true })
+      .locator("..")
+      .getByRole("button", { name: "Reasoning effort mismatch", exact: true });
+    await effortWarning.hover();
+    await expect(tooltip.getByText("low", { exact: true })).toBeVisible();
+    await expect(tooltip.getByText("xhigh", { exact: true })).toBeVisible();
+    await expect(
+      tooltip.getByText("Model mismatch", { exact: true }),
+    ).toHaveCount(0);
+    await page.mouse.move(0, 0, { steps: 10 });
+    await expect(tooltip).toBeHidden();
     await dialog.getByRole("tab", { name: "Pricing", exact: true }).click();
     await expect(
       dialog.getByText(event.billing.price_version!, { exact: true }),
@@ -384,6 +494,46 @@ for (const protocol of ["openai", "anthropic"] as const) {
     await expect(
       dialog.getByText("Thinking level", { exact: true }),
     ).toHaveCount(0);
+    await expect(
+      dialog
+        .getByText("Routed model", { exact: true })
+        .locator("..")
+        .getByText("example-model", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog
+        .getByText("Reasoning Effort", { exact: true })
+        .locator("..")
+        .getByText("Not recorded", { exact: true }),
+    ).toBeVisible();
+    for (const [id, effort] of [
+      ["matching-obs", "High"],
+      ["unreported-o", "High"],
+      ["unspecified-", "Not specified"],
+    ]) {
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: new RegExp(id) }).click();
+      await dialog
+        .getByRole("tab", { name: "Routing & attempts", exact: true })
+        .click();
+      await expect(
+        dialog
+          .getByText("Reasoning Effort", { exact: true })
+          .locator("..")
+          .getByText(effort, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        dialog
+          .getByText("Routed model", { exact: true })
+          .locator("..")
+          .getByText("example-model", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        dialog.getByRole("button", {
+          name: /mismatch/,
+        }),
+      ).toHaveCount(0);
+    }
   });
 }
 

@@ -911,6 +911,69 @@ test("session-id header and client metadata share the same persistent binding", 
   assert.deepEqual(targets[1], targets[0]);
 });
 
+test("upstream observations use the routed request and exclude configured retry responses", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.providers[0].retry = { status_codes: [503], delays_ms: [0] };
+  const env = testEnv(config);
+  const events = [];
+  env.USAGE_OUTBOX = {
+    getByName: () => ({ enqueue: async (event) => events.push(event) }),
+  };
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(await request.json());
+    return requests.length === 1
+      ? Response.json(
+          {
+            model: "retry-only-model",
+            reasoning: { effort: "low" },
+            error: { code: "overloaded" },
+          },
+          { status: 503 },
+        )
+      : Response.json({
+          model: "grok-4.5",
+          usage: { input_tokens: 10, output_tokens: 3 },
+        });
+  };
+  try {
+    const ctx = trackedExecutionContext();
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.6-sol",
+          input: "hello",
+          reasoning: { effort: "high" },
+        }),
+      }),
+      env,
+      ctx.context,
+    );
+    assert.equal(response.status, 200);
+    await response.text();
+    await ctx.drain();
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[0], requests[1]);
+    const event = events.at(-1);
+    assert.equal(event.attempts.length, 2);
+    assert.equal(event.requested_model, "gpt-5.6-sol");
+    assert.deepEqual(event.upstream_observation, {
+      request: { model: "grok-4.5", reasoning: { effort: "high" } },
+      response: { model: "grok-4.5" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Worker proxies Codex image generation and edits through model routing", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();

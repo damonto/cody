@@ -114,7 +114,8 @@ test("dispatch boundary includes registered HTTP routes and excludes other reque
 
 test("real execution DO authenticates and preserves raw request, query and upstream response", async () => {
   const metering = vi.spyOn(RequestMeter.prototype, "response");
-  const body = '{ "model": "model", "input": "hello", "extra": [1, 2] }';
+  const body =
+    '{ "model": "model", "reasoning": { "effort": "high" }, "input": "hello", "extra": [1, 2] }';
   const upstream = vi.fn(async (input: Request) => {
     expect(input.url).toBe("https://upstream.test/v1/responses?custom=1");
     expect(await input.text()).toBe(body);
@@ -122,7 +123,7 @@ test("real execution DO authenticates and preserves raw request, query and upstr
     expect(input.headers.has("x-api-key")).toBe(false);
     expect(input.headers.get("x-custom")).toBe("preserved");
     return new Response(
-      '{"id":"answer","usage":{"input_tokens":3,"output_tokens":2}}',
+      '{"id":"answer","model":"model-version","reasoning":{"effort":"low"},"usage":{"input_tokens":3,"output_tokens":2}}',
       {
         status: 201,
         headers: { "content-type": "application/json", "x-upstream": "yes" },
@@ -143,6 +144,10 @@ test("real execution DO authenticates and preserves raw request, query and upstr
   expect(meter.checkpoint()).toMatchObject({
     outcome: "success",
     usage: { tokens: { input_tokens: 3, output_tokens: 2 } },
+    upstream_observation: {
+      request: { model: "model", reasoning: { effort: "high" } },
+      response: { model: "model-version", reasoning: { effort: "low" } },
+    },
   });
 });
 

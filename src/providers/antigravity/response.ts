@@ -1,4 +1,9 @@
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
+import { antigravityMetadata } from "./observation.ts";
+import {
+  notifyUpstreamMetadata,
+  type UpstreamMetadataObserver,
+} from "../../telemetry/inference-metadata.ts";
 
 import { z } from "zod";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
@@ -76,6 +81,7 @@ interface EncodingOptions {
   tools: ToolMapping[];
   stream: boolean;
   request?: Readonly<Record<string, unknown>>;
+  observe?: UpstreamMetadataObserver;
 }
 interface ActivePart {
   part: NativePart;
@@ -422,6 +428,16 @@ class ResponseEncoder {
   async accept(value: unknown, completeParts: boolean) {
     const root = object(value);
     const raw = object(root.response ?? root);
+    notifyUpstreamMetadata(
+      this.options.observe,
+      antigravityMetadata(
+        raw.modelVersion,
+        object(raw.generationConfig).thinkingConfig,
+      ),
+      completeParts ||
+        object(Array.isArray(raw.candidates) ? raw.candidates[0] : undefined)
+          .finishReason !== undefined,
+    );
     if (root.error || raw.error) {
       const code = object(root.error ?? raw.error).code;
       throw new ProviderRequestError(

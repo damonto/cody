@@ -262,6 +262,10 @@ for (const endpoint of ["responses", "messages", "messages/count_tokens"]) {
         { env: { CONFIG_ENCRYPTION_KEY: key } },
       );
       const body = JSON.parse(prepared.body);
+      assert.deepEqual(prepared.inferenceMetadata, {
+        model: `${family}-${effort}`,
+        reasoning: { effort },
+      });
       assert.equal(
         body.request.generationConfig.thinkingConfig.thinkingLevel,
         effort,

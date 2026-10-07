@@ -1,4 +1,5 @@
 import { executeInferenceAttempt } from "./inference-attempt.ts";
+import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
 import { unavailableInference } from "./inference-unavailable.ts";
 import {
   recordXaiLimit,
@@ -284,6 +285,10 @@ export async function handleInference(
       credentialId: selectedCredential.id,
       model: upstreamModel,
     };
+    meter?.upstreamRequest(
+      prepared.inferenceMetadata ??
+        inferenceMetadata({ ...payload, model: upstreamModel }, protocol),
+    );
     // The meter freezes its first selection, so Codex waits until no account
     // switch can follow.
     if (
@@ -570,9 +575,16 @@ export async function handleInference(
         recordProviderFailure(env, provider.id, requestId),
       );
     }
-    if (!prepared.transformResponse) return upstreamResponse;
+    if (!prepared.transformResponse) {
+      return meter?.passthroughResponse(upstreamResponse) ?? upstreamResponse;
+    }
     try {
-      return await prepared.transformResponse(upstreamResponse);
+      return await prepared.transformResponse(
+        upstreamResponse,
+        meter
+          ? (metadata, terminal) => meter.observeUpstream(metadata, terminal)
+          : undefined,
+      );
     } catch (error) {
       meter?.diagnostic("invalid_upstream_response");
       return apiError(

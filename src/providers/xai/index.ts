@@ -1,4 +1,5 @@
 import { estimateInputTokens } from "./tokens.ts";
+import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
 import { accountReply, accountViewSchema } from "../oauth/schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import type { XaiProviderConfig } from "../../config/types.ts";
@@ -102,6 +103,7 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
       headers,
       method: "POST",
       body,
+      inferenceMetadata: inferenceMetadata(translated.body, ApiProtocol.Openai),
       oauthGeneration: credential.generation,
       inspectResponse: async (response, onLate, signal) => {
         const invalidate = async () => {
@@ -119,7 +121,7 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
         if (response.status === 401) await invalidate();
         return inspectXaiResponse(response, model, onLate, signal, invalidate);
       },
-      transformResponse: (response) =>
+      transformResponse: (response, observe) =>
         convertResponse(response, {
           anthropic,
           stream: payload.stream === true,
@@ -132,6 +134,7 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
           ),
           ...(onCompleted ? { onCompleted } : {}),
           signal: input.request.signal,
+          ...(observe ? { observe } : {}),
         }),
     };
   },
