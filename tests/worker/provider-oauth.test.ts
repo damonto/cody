@@ -274,33 +274,32 @@ async function complete(stub: Account, session: SessionView, code = "initial") {
   );
 }
 async function initialize(stub: Account) {
-  let initializationError: string | null | undefined;
-  for (let i = 0; i < 7; i++) {
+  return vi.waitFor(async () => {
     await runDurableObjectAlarm(stub);
     const view = await accountReply(
       stub.run({ action: "view" }),
       accountViewSchema,
     );
-    if (view.status === "ready") return view;
-    initializationError = view.project_initialization?.error ?? view.error;
-  }
-  throw new Error(
-    `Account did not become ready: ${initializationError ?? "still pending"}`,
-  );
+    expect(
+      view.status,
+      view.project_initialization?.error ?? view.error ?? undefined,
+    ).toBe("ready");
+    return view;
+  });
 }
 // Account alarms are due immediately, so workerd may fire them on its own
-// before the test does; drive them until the session leaves "initializing".
+// before the test does. A manual trigger can return without awaiting that
+// in-flight alarm, so wait for the resulting state rather than a trigger count.
 async function settleSession(stub: Account, session: SessionView) {
-  for (let i = 0; i < 7; i++) {
+  return vi.waitFor(async () => {
     await runDurableObjectAlarm(stub);
     const view = await accountReply(
       stub.run({ action: "session", actor, session_id: sessionId(session) }),
       sessionViewSchema,
     );
-    if (view.status !== "initializing") return view;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Session did not leave initialization");
+    expect(view.status).not.toBe("initializing");
+    return view;
+  });
 }
 async function failedProject(stub: Account) {
   return vi.waitFor(async () => {
@@ -631,11 +630,7 @@ test("explicit project prerequisites stop onboarding and remain retryable after 
   const { stub, session, connection } = await start();
   await complete(stub, session);
   expect((await settleSession(stub, session)).status).toBe("complete");
-  await runDurableObjectAlarm(stub);
-  const view = await accountReply(
-    stub.run({ action: "view" }),
-    accountViewSchema,
-  );
+  const view = await failedProject(stub);
   expect(view.project_initialization).toMatchObject({
     status: "error",
     next_retry_at: null,
@@ -853,12 +848,7 @@ test("completed onboarding without a project stops automatic retries and retains
   const { stub, connection, session } = await start();
   await complete(stub, session);
   expect((await settleSession(stub, session)).status).toBe("complete");
-  await runDurableObjectAlarm(stub);
-  await runDurableObjectAlarm(stub);
-  const failed = await accountReply(
-    stub.run({ action: "view" }),
-    accountViewSchema,
-  );
+  const failed = await failedProject(stub);
   expect(failed).toMatchObject({
     status: "initializing",
     project_id: null,
@@ -875,7 +865,7 @@ test("completed onboarding without a project stops automatic retries and retains
     ).refresh_token,
   ).toBe("refresh-token");
   await evictDurableObject(stub);
-  await runDurableObjectAlarm(stub);
+  expect(await runDurableObjectAlarm(stub)).toBe(false);
   expect(loads).toBe(1);
   expect(
     records.filter((record) => record.url.includes(":onboardUser")),
@@ -990,11 +980,7 @@ test("project timeout retains authorization and retries after the OAuth session 
       deadline: Date.now() - 1,
     };
   });
-  await runDurableObjectAlarm(stub);
-  const failed = await accountReply(
-    stub.run({ action: "view" }),
-    accountViewSchema,
-  );
+  const failed = await failedProject(stub);
   expect(failed.project_initialization).toMatchObject({
     status: "error",
     next_retry_at: null,
@@ -1076,11 +1062,7 @@ test("onboarding operation errors stop project retries without undoing OAuth", a
   const { stub, connection, session } = await start();
   await complete(stub, session);
   expect((await settleSession(stub, session)).status).toBe("complete");
-  for (let i = 0; i < 3; i++) await runDurableObjectAlarm(stub);
-  const failed = await accountReply(
-    stub.run({ action: "view" }),
-    accountViewSchema,
-  );
+  const failed = await failedProject(stub);
   expect(failed.project_initialization).toMatchObject({
     status: "error",
     next_retry_at: null,
@@ -2164,8 +2146,13 @@ async function savedNative(proxy = false) {
 }
 
 test("migrated defaults authorize and save a first account without saving settings", async () => {
-  override = (request) =>
-    request.url.includes(":loadCodeAssist") ? Response.json({}) : undefined;
+  // Keep setup pending even if workerd advances onboarding automatically.
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) return Response.json({});
+    if (request.url.includes(":onboardUser"))
+      return Response.json({ done: false });
+    return;
+  };
   const saved = await control().save({ providers: [], api_keys: [] }, 0, actor);
   const migration = bindings.TEST_MIGRATIONS.find(
     (item) => item.name === "0015_native_provider_defaults.sql",
@@ -2193,15 +2180,15 @@ test("migrated defaults authorize and save a first account without saving settin
     ).status,
   ).toBe(200);
   const stub = env.PROVIDER_OAUTH_ACCOUNT.getByName(session.account_ref);
-  await runDurableObjectAlarm(stub);
-  expect(
-    sessionViewSchema.parse(
-      await (await admin(`/oauth/sessions/${session.id}`)).json(),
-    ).status,
-  ).toBe("complete");
-  expect(
-    await accountReply(stub.run({ action: "view" }), accountViewSchema),
-  ).toMatchObject({
+  await vi.waitFor(async () => {
+    await runDurableObjectAlarm(stub);
+    expect(
+      sessionViewSchema.parse(
+        await (await admin(`/oauth/sessions/${session.id}`)).json(),
+      ).status,
+    ).toBe("complete");
+  });
+  expect(await retryingProject(stub)).toMatchObject({
     status: "initializing",
     project_initialization: { status: "pending" },
   });
@@ -2232,7 +2219,7 @@ test("migrated defaults authorize and save a first account without saving settin
       deadline: Date.now() - 1,
     };
   });
-  await runDurableObjectAlarm(stub);
+  await failedProject(stub);
   const retried = await admin(
     `/provider-accounts/${session.account_ref}/retry-project`,
     "POST",
