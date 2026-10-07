@@ -299,6 +299,9 @@ test("structured JSON and SSE error shapes match without searching message text"
       error: { code: "rate_limit_exceeded" },
     },
     failed,
+    { type: "custom.event", error: { code: "rate_limit_exceeded" } },
+    { type: "custom.failure", response: failed.response },
+    { type: "response.provider_failure", response: failed.response },
     { type: "error", code: "rate_limit_exceeded" },
   ];
   for (const payload of shapes) {
@@ -401,9 +404,8 @@ test("native terminal errors take precedence over error-code retries", async () 
   await upstream.body.cancel();
 });
 
-test("error-shaped fields in unknown or successful events never authorize replay", async () => {
+test("error-shaped fields in output or successful events never authorize replay", async () => {
   for (const payload of [
-    { type: "custom.event", error: { code: "rate_limit_exceeded" } },
     {
       type: "response.output_text.delta",
       delta: "hello",
@@ -640,3 +642,101 @@ test(
     assert.equal(cancelled, true);
   },
 );
+
+test("custom error envelopes use configured retries without an error event name", async () => {
+  for (const code of ["rate_limit_exceeded", "DeploymentNotFound"]) {
+    let calls = 0;
+    const result = await fetchWithConfiguredRetries(
+      makeRequest,
+      {
+        status_codes: [400, 429, 500, 503],
+        error_codes: ["rate_limit_exceeded", "DeploymentNotFound"],
+        delays_ms: [100, 300],
+      },
+      {
+        send: async () => {
+          calls++;
+          return calls === 1
+            ? sse(
+                preamble + event({ type: "provider.failure", error: { code } }),
+              )
+            : sse(
+                event({ type: "response.completed", response: { output: [] } }),
+              );
+        },
+        wait: async () => {},
+      },
+    );
+    assert.equal(calls, 2);
+    assert.equal(result.attempts[0].error, code);
+    assert.equal(result.attempts[0].retry_delay_ms, 100);
+    assert.equal(result.attempts[0].status, 200);
+    await result.response.text();
+  }
+});
+
+test("custom errors carrying output cannot authorize replay", async () => {
+  for (const output of [
+    { delta: "hello" },
+    { choices: [{ delta: { tool_calls: [{ index: 0 }] } }] },
+    { item: { type: "function_call", arguments: "" } },
+    { content: "hello" },
+  ]) {
+    const body = event({
+      type: "custom",
+      error: { code: "rate_limit_exceeded" },
+      ...output,
+    });
+    const inspected = await inspectRetryError(
+      sse(body),
+      new AbortController().signal,
+      policy.error_codes,
+    );
+    assert.equal(inspected.errorCode, undefined);
+    assert.equal(await inspected.response.text(), body);
+  }
+});
+
+test("content in lifecycle preambles and nested envelopes prevents retry", async () => {
+  for (const first of [
+    { type: "response.created", response: { output: [] }, delta: "hello" },
+    {
+      type: "response.in_progress",
+      response: { output: [], content: "hello" },
+    },
+    {
+      type: "provider.failure",
+      response: { ...failed.response, delta: "hello" },
+    },
+    {
+      type: "response.mcp_list_tools.in_progress",
+      error: failed.response.error,
+    },
+  ]) {
+    let calls = 0;
+    const body = event(first) + event(failed);
+    const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+      send: async () => {
+        calls++;
+        return sse(body);
+      },
+      wait: async () => {},
+    });
+    assert.equal(calls, 1, JSON.stringify(first));
+    assert.equal(await result.response.text(), body);
+  }
+});
+
+test("a valid error code is not rejected because of an unrelated error type", async () => {
+  const body = event({
+    type: "provider.failure",
+    error: { code: "rate_limit_exceeded", type: 123 },
+  });
+  const inspected = await inspectRetryError(
+    sse(body),
+    new AbortController().signal,
+    policy.error_codes,
+  );
+  assert.equal(inspected.errorCode, "rate_limit_exceeded");
+  assert.equal(await inspected.response.text(), body);
+});

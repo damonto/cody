@@ -1022,3 +1022,31 @@ test("unobserved retries keep image totals and charges unknown", () => {
   assert.equal(result.billing.image_input_nano, null);
   assert.equal(result.billing.status, "partial");
 });
+
+test("diagnostics share structured retry error code extraction", async () => {
+  for (const payload of [
+    { type: "provider.failure", error: { code: "rate_limit_exceeded" } },
+    {
+      type: "provider.failure",
+      error: { code: "rate_limit_exceeded", type: 123 },
+    },
+    {
+      type: "provider.failure",
+      response: { error: { code: "rate_limit_exceeded" } },
+    },
+    { type: "error", code: "rate_limit_exceeded" },
+    { type: "error", error: { type: "rate_limit_exceeded" } },
+  ]) {
+    const { meter, events } = fixture();
+    await meter
+      .response(
+        new Response(`data: ${JSON.stringify(payload)}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .text();
+    await meter.drain();
+    assert.equal(events.at(-1).diagnostic_code, "rate_limit_exceeded");
+    assert.equal(events.at(-1).outcome, "failed");
+  }
+});

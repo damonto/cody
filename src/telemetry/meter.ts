@@ -1,3 +1,4 @@
+import { upstreamErrorCode } from "../shared/upstream-error.ts";
 import {
   isMeteredInferencePath,
   type MeteredInferencePath,
@@ -371,16 +372,16 @@ export class RequestMeter {
       if (signal === "text")
         this.data.first_text_ms ??= Math.max(0, at - this.data.started_at);
     }
+    const errorCode = upstreamErrorCode(payload, event);
     if (
+      errorCode ||
       type === "error" ||
       type === "response.failed" ||
       payload.error ||
       response?.status === "failed"
     ) {
       this.data.outcome = RequestOutcome.Failed;
-      this.data.diagnostic_code =
-        name(record(payload.error ?? response?.error)?.code) ||
-        "upstream_stream_error";
+      this.data.diagnostic_code = errorCode ?? "upstream_stream_error";
     } else if (
       type === "response.incomplete" ||
       response?.status === "incomplete" ||

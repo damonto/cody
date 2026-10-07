@@ -1,3 +1,4 @@
+import { upstreamErrorCode } from "../../shared/upstream-error.ts";
 import { SseObserver } from "../../telemetry/stream.ts";
 import { z } from "zod";
 import { responseFormat } from "./response-format.ts";
@@ -6,8 +7,6 @@ import { inspectResponsePrefix } from "./response-prefix.ts";
 const MAX_PREFIX_BYTES = 64 * 1024;
 const RETRY_ERROR_INSPECTION_MS = 10_000;
 
-const codeSchema = z.string().min(1).max(256).nullish();
-const errorSchema = z.object({ code: codeSchema, type: codeSchema }).nullish();
 // Only known, empty placeholders may remain buffered. A new field or tool
 // item can carry output or start work, so it must commit the stream instead.
 const emptyArray = z.tuple([]);
@@ -30,6 +29,7 @@ const emptyReasoningPart = z.strictObject({
   text: z.literal(""),
 });
 const emptyMessagePart = z.union([emptyTextPart, emptyRefusalPart]);
+const emptyPart = z.union([emptyMessagePart, emptySummaryPart]);
 const emptyOutputItem = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("message"),
@@ -50,11 +50,13 @@ const emptyOutputItem = z.discriminatedUnion("type", [
 const responseSchema = z.object({
   status: z.string().optional(),
   output: z.array(z.unknown()).nullish(),
-  error: errorSchema,
+  error: z.unknown().optional(),
+  delta: z.unknown().optional(),
+  choices: z.unknown().optional(),
+  content: z.unknown().optional(),
 });
 const envelopeSchema = responseSchema.extend({
   type: z.string().optional(),
-  code: codeSchema,
   response: responseSchema.optional(),
   item: z.unknown().optional(),
   part: z.unknown().optional(),
@@ -85,7 +87,34 @@ function isEmptyPreamble(payload: RetryEnvelope, type: string): boolean {
   }
 }
 
-/** Unknown or contradictory envelopes never authorize replay. */
+/** Known protocol events may start work even without visible text. */
+function commitsProtocolEvent(type: string): boolean {
+  if (type === "response.completed" || type === "response.incomplete")
+    return true;
+  if (type.startsWith("response.") && type.includes("_call.")) return true;
+  return [
+    "response.output_",
+    "response.content_part.",
+    "response.reasoning_",
+    "response.function_call_",
+    "response.custom_tool_call_",
+    "response.mcp_list_tools.",
+    "content_block_",
+    "message_",
+    "chat.",
+  ].some((prefix) => type.startsWith(prefix));
+}
+
+function hasContent(payload: z.infer<typeof responseSchema>): boolean {
+  return (
+    hasOutput(payload.output) ||
+    payload.delta !== undefined ||
+    payload.choices !== undefined ||
+    payload.content !== undefined
+  );
+}
+
+/** Recognize errors separately from the decision to commit upstream output. */
 function classifyPayload(
   value: unknown,
   event: string,
@@ -96,7 +125,15 @@ function classifyPayload(
   const payload = parsed.data;
   const type = payload.type ?? event;
   const response = payload.response;
-  if (hasOutput(payload.output) || hasOutput(response?.output))
+  // Check content before accepting a lifecycle preamble. Otherwise an added
+  // delta on response.created could be buffered and replayed after a later error.
+  if (
+    hasContent(payload) ||
+    (response && hasContent(response)) ||
+    (payload.item !== undefined &&
+      !emptyOutputItem.safeParse(payload.item).success) ||
+    (payload.part !== undefined && !emptyPart.safeParse(payload.part).success)
+  )
     return { kind: "forward" };
   // An SSE event name and its JSON type must agree when both are present.
   if (event && payload.type && event !== payload.type)
@@ -109,17 +146,16 @@ function classifyPayload(
     !response?.error &&
     !payload.error;
   if (pending && isEmptyPreamble(payload, type)) return { kind: "inspect" };
-  if (type && type !== "error" && type !== "response.failed")
-    return { kind: "forward" };
+  // Output and successful terminal events cannot authorize replay, even if
+  // they carry an error field. Error envelopes otherwise need no event whitelist.
+  if (commitsProtocolEvent(type)) return { kind: "forward" };
   if (
     [payload.status, response?.status].some(
       (status) => status !== undefined && status !== "failed",
     )
   )
     return { kind: "forward" };
-  const error = payload.error ?? response?.error;
-  const code =
-    error?.code ?? (type === "error" ? payload.code : undefined) ?? error?.type;
+  const code = upstreamErrorCode(value, event);
   return code && codes.includes(code)
     ? { kind: "retry", code }
     : { kind: "forward" };
