@@ -121,7 +121,7 @@ export function XaiAccounts({
         </Button>
         <Button size="sm" disabled={pending} onClick={onAdd}>
           <Plus />
-          Add xAI account
+          Add SpaceXAI account
         </Button>
       </div>
       <div className="space-y-4">
@@ -136,8 +136,9 @@ export function XaiAccounts({
         )}
         {refresh.error && <ErrorNotice error={refresh.error} />}
         {!provider.credentials.length ? (
-          <Empty title="No xAI accounts">
-            Authorize an xAI subscription account to start balancing requests.
+          <Empty title="No SpaceXAI accounts">
+            Authorize a SpaceXAI subscription account to start balancing
+            requests.
           </Empty>
         ) : (
           <AccountCardGrid>

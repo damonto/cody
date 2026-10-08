@@ -340,7 +340,7 @@ test("Providers lists only implemented providers and Antigravity is a fixed acco
   await expect(
     page.getByRole("link", { name: "Codex", exact: true }),
   ).toBeVisible();
-  for (const name of ["Claude", "xAI"])
+  for (const name of ["Claude", "SpaceXAI"])
     await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Grok", exact: true }),

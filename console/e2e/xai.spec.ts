@@ -4,7 +4,7 @@ import { xaiProviderSchema } from "../../src/config/schema";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
 import type { ConfigurationView } from "./fixtures";
 
-test("xAI settings default to disabled, no extra usage and no resets", async ({
+test("SpaceXAI settings default to disabled, no extra usage and no resets", async ({
   page,
 }) => {
   await mockApi(page);
@@ -13,10 +13,12 @@ test("xAI settings default to disabled, no extra usage and no resets", async ({
   );
   await page.goto("/console/providers/xai");
   await expect(
-    page.getByRole("heading", { name: "xAI", exact: true }),
+    page.getByRole("heading", { name: "SpaceXAI", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(page.getByText("xAI settings", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("SpaceXAI settings", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("Allow Extra Usage", { exact: true }),
   ).toBeVisible();
@@ -42,7 +44,7 @@ test("xAI settings default to disabled, no extra usage and no resets", async ({
   ).toBeChecked();
 });
 
-test("xAI cards show native quota and paid usage without reset controls", async ({
+test("SpaceXAI cards show native quota and paid usage without reset controls", async ({
   page,
 }) => {
   const ref = crypto.randomUUID();
@@ -165,7 +167,7 @@ test("xAI cards show native quota and paid usage without reset controls", async 
   ).toBeEnabled();
 });
 
-test("xAI account editor requests device authorization and supports cancellation", async ({
+test("SpaceXAI account editor requests device authorization and supports cancellation", async ({
   page,
 }) => {
   const saved = draftFixture();
@@ -178,7 +180,7 @@ test("xAI account editor requests device authorization and supports cancellation
         {
           type: "xai",
           id: "xai",
-          name: "xAI",
+          name: "SpaceXAI",
           priority: 100,
           disabled: true,
           models: [],
@@ -242,19 +244,19 @@ test("xAI account editor requests device authorization and supports cancellation
     await route.fulfill({ json: session });
   });
   await page.goto("/console/providers/xai");
-  await page.getByRole("button", { name: "Add xAI account" }).click();
-  await page.getByRole("button", { name: "Authorize with xAI" }).click();
+  await page.getByRole("button", { name: "Add SpaceXAI account" }).click();
+  await page.getByRole("button", { name: "Authorize with SpaceXAI" }).click();
   await expect(page.getByLabel("Device code", { exact: true })).toHaveText(
     "TEST-CODE",
   );
   await expect(
-    page.getByRole("link", { name: "Open xAI authorization" }),
+    page.getByRole("link", { name: "Open SpaceXAI authorization" }),
   ).toHaveAttribute("href", "https://auth.x.ai/activate");
   await page.getByRole("button", { name: "Cancel authorization" }).click();
   await expect(page.getByText("Authorization: cancelled")).toBeVisible();
 });
 
-test("xAI distinguishes first failures, partial billing and retained data", async ({
+test("SpaceXAI distinguishes first failures, partial billing and retained data", async ({
   page,
 }) => {
   const ref = crypto.randomUUID();
@@ -387,7 +389,7 @@ test("xAI distinguishes first failures, partial billing and retained data", asyn
     );
     await expect(
       page.getByText(
-        "Remaining quota is not reported. Limits are enforced by xAI.",
+        "Remaining quota is not reported. Limits are enforced by SpaceXAI.",
       ),
     ).toBeVisible();
     await expect(page.getByText("100% left", { exact: true })).toHaveCount(0);

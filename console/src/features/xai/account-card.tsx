@@ -56,7 +56,7 @@ export function AccountCard({
   onRemove: () => void;
   onToggle: (enabled: boolean) => void;
 }) {
-  const title = account?.email ?? `xAI account ${index + 1}`;
+  const title = account?.email ?? `SpaceXAI account ${index + 1}`;
   const baseBadge = healthBadge(credential, account, health, now);
   const quota = account?.quota;
   const unreportedQuota = canUseXaiUnreportedQuota(quota, now);
@@ -146,7 +146,7 @@ export function AccountCard({
               group.buckets.some((bucket) => bucket.used_percent == null),
             )) && (
             <p className="text-xs text-muted-foreground">
-              Remaining quota is not reported. Limits are enforced by xAI.
+              Remaining quota is not reported. Limits are enforced by SpaceXAI.
             </p>
           )}
         {!unreportedQuota && quota && !quota.groups.length && (

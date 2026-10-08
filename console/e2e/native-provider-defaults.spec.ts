@@ -5,7 +5,7 @@ for (const [type, add] of [
   ["antigravity", "Add Google account"],
   ["codex", "Add ChatGPT account"],
   ["claude", "Add Claude account"],
-  ["xai", "Add xAI account"],
+  ["xai", "Add SpaceXAI account"],
 ]) {
   test(`${type}: add the first account without saving settings`, async ({
     page,

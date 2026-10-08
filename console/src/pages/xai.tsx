@@ -7,9 +7,9 @@ export default function Xai() {
   return (
     <NativeProviderPage
       type="xai"
-      title="xAI"
-      description="xAI accounts and subscription quotas."
-      accountLabel="xAI"
+      title="SpaceXAI"
+      description="SpaceXAI accounts and subscription quotas."
+      accountLabel="SpaceXAI"
       accounts={XaiAccounts}
       settings={XaiSettingsForm}
       accountForm={AccountForm}

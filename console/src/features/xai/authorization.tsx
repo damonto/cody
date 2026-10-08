@@ -91,7 +91,7 @@ export function Authorization({
             ? "Creating authorization…"
             : accountRef
               ? "Reauthorize account"
-              : "Authorize with xAI"}
+              : "Authorize with SpaceXAI"}
         </Button>
         {accountRef && (
           <>
@@ -176,7 +176,7 @@ export function Authorization({
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Open xAI authorization
+                  Open SpaceXAI authorization
                   <ExternalLink />
                 </a>
               </Button>
@@ -273,7 +273,7 @@ export function Authorization({
             <AlertDialogTitle>Disconnect this account?</AlertDialogTitle>
             <AlertDialogDescription>
               This deletes its local tokens immediately, including for active
-              configurations. It does not revoke your xAI grant. You can
+              configurations. It does not revoke your SpaceXAI grant. You can
               reauthorize the same account later.
             </AlertDialogDescription>
           </AlertDialogHeader>
