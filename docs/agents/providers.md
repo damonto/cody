@@ -56,6 +56,7 @@ Code: `src/providers/codex/`, `src/gateway/websocket/`.
 - This provider balances the operator's own ChatGPT accounts; it is not a resale interface. Use Codex CLI public OAuth registration for device-code and pasted `http://localhost:1455/auth/callback` PKCE flows.
 - Read `chatgpt_account_id` from the ID token; email is optional. Carry the FedRAMP claim into `X-OpenAI-Fedramp`. Partial refreshes preserve omitted/null token fields and reject workspace changes.
 - Forward HTTP/WebSocket to `https://chatgpt.com/backend-api/codex`, replacing account authorization and `ChatGPT-Account-ID`. Preserve client payloads; no instruction injection, client impersonation, forced streaming or unrelated field rewriting.
+- For HTTP `responses` with an absent or unrecognized response media type, detect JSON/SSE from a bounded prefix during existing reads. Metering, quota inspection and discarded-attempt usage share this parser. Preserve original headers/bytes and preflight budgets; failed detection records an observation issue, and output or budget boundaries still prohibit replay.
 - Implemented endpoints are `responses`, `responses/compact`, `images/generations`, `images/edits`, `models`, `memories/trace_summarize`, plus `alpha/search` and context-management paths when their capability flags allow them. `memories/trace_summarize` is OpenAI-dialect inference served only by Codex.
 
 ### Quota switching

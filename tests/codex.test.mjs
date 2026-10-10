@@ -591,12 +591,20 @@ test("an exhausted preflight budget still observes late Codex quota errors witho
       error: { code: "insufficient_quota", resets_in_seconds: 60 },
     },
   })}\n\n`;
-  for (const timeoutMs of [0, -1]) {
+  for (const [timeoutMs, detectFormat] of [
+    [0, false],
+    [-1, false],
+    [0, true],
+    [-1, true],
+  ]) {
     const limits = [];
     const inspected = await inspectCodexResponse(
-      new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      new Response(new TextEncoder().encode(body), {
+        headers: detectFormat ? {} : { "content-type": "text/event-stream" },
+      }),
       {
         now,
+        detectFormat,
         signal: new AbortController().signal,
         timeoutMs,
         onStreamLimit: async (limit) => {
@@ -614,6 +622,31 @@ test("an exhausted preflight budget still observes late Codex quota errors witho
     ]);
     assert.equal(inspected.diagnostic.reason, "inspection_timeout");
   }
+});
+
+test("cancelling format detection releases a partially read Codex stream", async () => {
+  const controller = new AbortController();
+  const reading = Promise.withResolvers();
+  let cancelled = false;
+  let chunks = 0;
+  const inspected = inspectCodexResponse(
+    new Response(
+      new ReadableStream({
+        pull(source) {
+          if (chunks++ === 0) source.enqueue(new TextEncoder().encode("da"));
+          else reading.resolve();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    ),
+    { signal: controller.signal, detectFormat: true },
+  );
+  await reading.promise;
+  controller.abort();
+  await assert.rejects(inspected, { name: "AbortError" });
+  assert.equal(cancelled, true);
 });
 
 test("aborting a Codex preflight cancels the upstream read", async () => {

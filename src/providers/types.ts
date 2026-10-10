@@ -68,6 +68,8 @@ export interface PreparedUpstreamRequest {
   readonly body?: string;
   /** Metadata from the adapter's final request body, before serialization. */
   readonly inferenceMetadata?: InferenceMetadata;
+  /** Detect JSON/SSE from a bounded body prefix when the media type is unknown. */
+  readonly detectResponseFormat?: boolean;
   readonly transformResponse?: (
     response: Response,
     observe?: UpstreamMetadataObserver,

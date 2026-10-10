@@ -586,7 +586,12 @@ export async function handleInference(
       );
     }
     if (!prepared.transformResponse) {
-      return meter?.passthroughResponse(upstreamResponse) ?? upstreamResponse;
+      return (
+        meter?.passthroughResponse(
+          upstreamResponse,
+          prepared.detectResponseFormat,
+        ) ?? upstreamResponse
+      );
     }
     try {
       return await prepared.transformResponse(

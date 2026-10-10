@@ -137,7 +137,9 @@ export async function executeInferenceAttempt({
             observeDiscardedResponse: (response: Response) =>
               prepared.retryUsage
                 ? prepared.retryUsage(response)
-                : retryResponseUsage(response, protocol),
+                : retryResponseUsage(response, protocol, {
+                    detectFormat: prepared.detectResponseFormat,
+                  }),
           }
         : {}),
       inspectResponse: async (response, signal, timeoutMs) => {
@@ -149,6 +151,7 @@ export async function executeInferenceAttempt({
               ...retry
             } = await inspectCodexResponse(response, {
               signal,
+              detectFormat: prepared.detectResponseFormat,
               timeoutMs,
               errorCodes: provider.retry?.error_codes,
               onStreamLimit: (limit) =>

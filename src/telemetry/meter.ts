@@ -26,7 +26,8 @@ import type { GatewayConfig } from "../config/types.ts";
 
 import { logWarn, type LogExecutionContext } from "../shared/log.ts";
 import { deltaSignal, generationSignal } from "./generation.ts";
-import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
+import { ResponseObserver } from "./response-observer.ts";
+import { responseFormat } from "../gateway/http/response-format.ts";
 import type { AttemptRecord, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
 import {
@@ -105,7 +106,8 @@ export class RequestMeter {
   private finished = false;
   private wrapped = false;
   private streamCompleted = false;
-  private upstreamResponse: Response | undefined;
+  private upstreamResponse:
+    { response: Response; detectFormat: boolean } | undefined;
   private readonly terminalMetadataFields = new Set<
     "model" | keyof ReasoningMetadata
   >();
@@ -243,8 +245,8 @@ export class RequestMeter {
   }
 
   /** Only this exact response may use downstream bytes as upstream evidence. */
-  passthroughResponse(response: Response): Response {
-    this.upstreamResponse = response;
+  passthroughResponse(response: Response, detectFormat = false): Response {
+    this.upstreamResponse = { response, detectFormat };
     return response;
   }
 
@@ -524,8 +526,11 @@ export class RequestMeter {
   response(response: Response): Response {
     if (this.wrapped) return response;
     this.wrapped = true;
-    const source =
-      response === this.upstreamResponse ? "upstream" : "downstream";
+    const upstream =
+      response === this.upstreamResponse?.response
+        ? this.upstreamResponse
+        : undefined;
+    const source = upstream ? "upstream" : "downstream";
     this.upstreamResponse = undefined;
     this.data.http_status = response.status;
     if (!response.body) {
@@ -535,19 +540,16 @@ export class RequestMeter {
       );
       return response;
     }
-    const contentType =
-      response.headers.get("content-type")?.toLowerCase() ?? "";
-    const sse = contentType.includes("text/event-stream");
-    if (sse) this.data.transport = UsageTransport.Sse;
-    const json =
-      !sse &&
-      (contentType.includes("application/json") ||
-        contentType.includes("+json"));
-    const decoder = new TextDecoder();
-    const observer = sse
-      ? new SseObserver({
-          onEvent: (value, event) =>
-            this.observe(value, event, this.now(), source),
+    const format =
+      responseFormat(response) ?? (upstream?.detectFormat ? "auto" : undefined);
+    if (format === "sse") this.data.transport = UsageTransport.Sse;
+    const observer = format
+      ? new ResponseObserver({
+          format,
+          onEvent: (value, event, format) =>
+            format === "sse"
+              ? this.observe(value, event, this.now(), source)
+              : this.observePayload(value, event, null, source),
           onIssue: (issue) => this.issue(issue),
           onDone: () => {
             this.streamCompleted = true;
@@ -556,20 +558,6 @@ export class RequestMeter {
           shouldParse: (data, event) => this.needsEvent(data, event),
         })
       : undefined;
-    let jsonBody = "";
-    let tooLarge = false;
-    const observeChunk = (bytes: Uint8Array): void => {
-      if (!sse && !json) return;
-      const text = decoder.decode(bytes, { stream: true });
-      if (observer) observer.push(text);
-      else if (!tooLarge) {
-        if (jsonBody.length + text.length > MAX_OBSERVED_JSON_CHARS) {
-          tooLarge = true;
-          jsonBody = "";
-          this.issue("json_body_too_large");
-        } else jsonBody += text;
-      }
-    };
     const reader = response.body.getReader();
     const body = new ReadableStream<Uint8Array>({
       pull: async (controller) => {
@@ -577,21 +565,12 @@ export class RequestMeter {
           const item = await reader.read();
           if (item.done) {
             try {
-              if (observer) {
-                observer.push(decoder.decode());
-                observer.end();
-              } else if (json && !tooLarge)
-                this.observePayload(
-                  JSON.parse(jsonBody + decoder.decode()) as unknown,
-                  "",
-                  null,
-                  source,
-                );
+              observer?.end();
             } catch {
-              this.issue("invalid_response_json");
+              this.issue("response_observer_failed");
             }
             if (
-              sse &&
+              observer?.format === "sse" &&
               response.ok &&
               !this.streamCompleted &&
               this.data.outcome === RequestOutcome.Pending
@@ -606,19 +585,23 @@ export class RequestMeter {
             controller.close();
           } else {
             try {
-              observeChunk(item.value);
+              observer?.push(item.value);
             } catch {
               this.issue("response_observer_failed");
             }
+            if (observer?.format === "sse")
+              this.data.transport = UsageTransport.Sse;
             controller.enqueue(item.value);
           }
         } catch (error) {
+          observer?.discard();
           this.issue("upstream_stream_read_failed");
           this.finish(RequestOutcome.Failed, response.status);
           controller.error(error);
         }
       },
       cancel: async (reason) => {
+        observer?.discard();
         this.finish(RequestOutcome.Cancelled, response.status);
         await reader.cancel(reason);
       },

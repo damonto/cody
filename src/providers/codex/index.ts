@@ -54,7 +54,15 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     headers.set("chatgpt-account-id", credential.account_id);
     headers.delete("x-openai-fedramp");
     if (credential.is_fedramp) headers.set("x-openai-fedramp", "true");
-    if (input.endpoint !== "models") return { url, headers };
+    if (input.endpoint !== "models")
+      return {
+        url,
+        headers,
+        ...(input.endpoint === "responses" &&
+        input.transport === ProviderTransport.Http
+          ? { detectResponseFormat: true }
+          : {}),
+      };
     return {
       url,
       headers,

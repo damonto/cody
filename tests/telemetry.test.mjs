@@ -377,6 +377,45 @@ test("an observer failure is distinct from invalid SSE JSON and preserves forwar
   assert.equal(events.at(-1).observation_issue, "response_observer_failed");
 });
 
+test("format detection is bounded and reports unsupported bodies without changing them", async () => {
+  for (const body of [
+    "<html>upstream unavailable</html>",
+    "dat",
+    "",
+    " ".repeat(2048) + 'data: {"type":"response.completed"}\n\n',
+  ]) {
+    const { meter, events } = fixture();
+    const original = new Response(new TextEncoder().encode(body));
+    const response = meter.response(meter.passthroughResponse(original, true));
+    assert.equal(await response.text(), body);
+    assert.equal(response.headers.get("content-type"), null);
+    await meter.drain();
+    const result = events.at(-1);
+    assert.equal(result.observation_issue, "unsupported_response_format");
+    assert.equal(result.usage.status, "missing");
+    assert.equal(result.first_response_ms, null);
+  }
+});
+
+test("format detection does not leak to an unregistered or replacement response", async () => {
+  const body =
+    'data: {"type":"response.completed","response":{"usage":{"input_tokens":10}}}\n\n';
+  for (const replacement of [false, true]) {
+    const { meter, events } = fixture();
+    if (replacement)
+      meter.passthroughResponse(new Response(new Uint8Array()), true);
+    const response = meter.response(
+      new Response(new TextEncoder().encode(body)),
+    );
+    assert.equal(await response.text(), body);
+    await meter.drain();
+    const result = events.at(-1);
+    assert.equal(result.transport, "http");
+    assert.equal(result.usage.status, "missing");
+    assert.equal(result.observation_issue, null);
+  }
+});
+
 test("first response survives invalid JSON and an error without generated content", async () => {
   for (const source of [
     'data: not-json\n\ndata: {"type":"response.completed"}\n\n',

@@ -15,6 +15,7 @@ interface CodexInspectionOptions {
   signal: AbortSignal;
   timeoutMs?: number | undefined;
   errorCodes?: readonly string[] | undefined;
+  detectFormat?: boolean | undefined;
   onStreamLimit?: (limit: CodexUsageLimit) => Promise<void>;
   now?: number;
 }
@@ -28,9 +29,11 @@ export async function inspectCodexResponse(
   response: Response,
   options: CodexInspectionOptions,
 ): Promise<CodexResponseInspection> {
-  const format = responseFormat(response);
+  const format =
+    responseFormat(response) ?? (options.detectFormat ? "auto" : undefined);
   const quotaResponse =
-    response.status === 429 || (response.ok && format === "sse");
+    response.status === 429 ||
+    (response.ok && (format === "sse" || format === "auto"));
   if (!quotaResponse && !options.errorCodes?.length)
     return { response, diagnostic: { reason: "unsupported_response" } };
 
@@ -45,6 +48,7 @@ export async function inspectCodexResponse(
     ],
     options.timeoutMs,
     {
+      ...(format ? { format } : {}),
       ...(response.status === 429
         ? { maxBytes: MAX_QUOTA_ERROR_BYTES, format: format ?? "json" }
         : {}),

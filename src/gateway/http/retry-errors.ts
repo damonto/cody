@@ -1,7 +1,10 @@
 import { upstreamErrorCode } from "../../shared/upstream-error.ts";
-import { SseObserver } from "../../telemetry/stream.ts";
+import { ResponseObserver } from "../../telemetry/response-observer.ts";
 import { z } from "zod";
-import { responseFormat } from "./response-format.ts";
+import {
+  responseFormat,
+  type ResponseObservationFormat,
+} from "./response-format.ts";
 import { inspectResponsePrefix } from "./response-prefix.ts";
 import {
   RETRY_EVENT_TYPE_PATTERN,
@@ -79,7 +82,7 @@ export interface RetryErrorInspection {
 
 interface RetryErrorInspectionOptions {
   maxBytes?: number;
-  format?: "json" | "sse";
+  format?: ResponseObservationFormat;
   /** Observe each parsed event, including events forwarded after preflight. */
   onEvent?: (
     value: unknown,
@@ -219,7 +222,7 @@ export async function inspectRetryError(
   if (
     !response.body ||
     !format ||
-    (timeoutMs <= 0 && (format !== "sse" || !options.onEvent))
+    (timeoutMs <= 0 && (format === "json" || !options.onEvent))
   )
     return {
       response,
@@ -246,46 +249,39 @@ export async function inspectRetryError(
     state.decision = final;
     return final;
   };
-  const decoder = new TextDecoder();
-  let json = "";
-  const observer =
-    format === "sse"
-      ? new SseObserver({
-          onEvent: inspect,
-          onIssue: () => stop("invalid_sse"),
-          onDone: () => stop("stream_ended"),
-          maxEventChars: maxBytes,
-        })
-      : undefined;
+  const observer = new ResponseObserver({
+    format,
+    onEvent: inspect,
+    onIssue: (issue, format) =>
+      stop(
+        issue === "unsupported_response_format"
+          ? "unsupported_response"
+          : format === "sse"
+            ? "invalid_sse"
+            : "invalid_envelope",
+      ),
+    onDone: () => stop("stream_ended"),
+    maxPayloadChars: maxBytes,
+  });
   const prefix = await inspectResponsePrefix(response, signal, {
     maxBytes,
     timeoutMs: Math.max(0, Math.min(timeoutMs, RETRY_ERROR_INSPECTION_MS)),
     observe: async (chunk) => {
-      if (state.decision.kind !== "inspect" && !(observer && options.onEvent))
+      if (
+        state.decision.kind !== "inspect" &&
+        !(observer.format !== "json" && options.onEvent)
+      )
         return true;
-      const text =
-        chunk === undefined
-          ? decoder.decode()
-          : decoder.decode(chunk, { stream: true });
-      if (observer) {
-        observer.push(text);
-        if (chunk === undefined) observer.end();
-      } else {
-        json += text;
-        if (chunk === undefined) {
-          try {
-            inspect(JSON.parse(json) as unknown);
-          } catch {
-            stop("invalid_envelope");
-          }
-        }
-      }
+      if (chunk === undefined) observer.end();
+      else observer.push(chunk);
       for (const event of events.splice(0))
         await options.onEvent?.(event.value, event.event, event.replayable);
+      if (state.decision.kind !== "inspect" && observer.format === "json")
+        observer.discard();
       return state.decision.kind !== "inspect";
     },
   });
-  json = "";
+  if (observer.format === "json" || !options.onEvent) observer.discard();
   // A timeout/size boundary commits the prefix. Later errors cannot trigger replay.
   const final = stop(
     prefix.stoppedBy === "size"

@@ -9,6 +9,9 @@ import { handleModels } from "../src/gateway/catalog/models.ts";
 import { decodeRequestBody } from "../src/gateway/http/content-encoding.ts";
 import { BodyTooLargeError } from "../src/gateway/http/body.ts";
 import { upstreamErrorEvent } from "../src/gateway/websocket/websocket-protocol.ts";
+import { RequestMeter } from "../src/telemetry/meter.ts";
+import { socksFetch } from "../src/gateway/transport/socks-fetch.ts";
+import { memoryProxy } from "./helpers/memory-socks.mjs";
 
 configureLogging("off");
 const MODEL = "gpt-5.5-codex";
@@ -126,7 +129,7 @@ const request = (
     headers: { "content-type": "application/json", ...headers },
     body,
   });
-const infer = (f, send, req = request(), retryOptions = {}) =>
+const infer = (f, send, req = request(), retryOptions = {}, meter) =>
   handleInference(
     req,
     f.env,
@@ -136,6 +139,8 @@ const infer = (f, send, req = request(), retryOptions = {}) =>
     "codex-test",
     undefined,
     { send, ...retryOptions },
+    undefined,
+    meter,
   );
 const event = (value) => `data: ${JSON.stringify(value)}\n\n`;
 const failed = (code = "insufficient_quota", output) => ({
@@ -149,6 +154,225 @@ const failed = (code = "insufficient_quota", output) => ({
 });
 const sse = (body) =>
   new Response(body, { headers: { "content-type": "text/event-stream" } });
+
+function fragmentedResponse(body, headers = {}, status = 200) {
+  const bytes = encoder.encode(body);
+  let offset = 0;
+  return new Response(
+    new ReadableStream({
+      pull(controller) {
+        if (offset === bytes.length) controller.close();
+        else controller.enqueue(bytes.slice(offset, ++offset));
+      },
+    }),
+    { headers, status },
+  );
+}
+
+function metering(f) {
+  const events = [];
+  const meter = new RequestMeter({
+    requestId: "codex-usage",
+    endpoint: "responses",
+    method: "POST",
+    protocol: "openai",
+    sink: { send: async (event) => events.push(event) },
+  });
+  meter.configure(f.config);
+  meter.authenticate(f.client.id);
+  return { meter, events };
+}
+
+const completedResponse = {
+  id: "resp-completed",
+  object: "response",
+  model: MODEL,
+  status: "completed",
+  usage: {
+    input_tokens: 100,
+    input_tokens_details: { cached_tokens: 40, cache_write_tokens: 0 },
+    output_tokens: 20,
+    output_tokens_details: { reasoning_tokens: 5 },
+  },
+};
+
+test("Codex meters fragmented SSE without a media type through direct and SOCKS responses", async () => {
+  const body =
+    "\ufeff: keepalive\r\n\r\n" +
+    event({ type: "response.created", response: { id: "resp-completed" } }) +
+    event({ type: "response.output_text.delta", delta: "你好" }) +
+    event({ type: "response.completed", response: completedResponse });
+  for (const transport of ["direct", "socks"]) {
+    const f = fixture();
+    const { meter, events } = metering(f);
+    const response = meter.response(
+      await infer(
+        f,
+        async () => {
+          if (transport === "direct")
+            return fragmentedResponse(body, { "x-upstream": "preserved" });
+          const bytes = Buffer.from(body);
+          return socksFetch(
+            new Request("http://upstream.test/responses"),
+            { url: "socks5://proxy.test:1080" },
+            memoryProxy(
+              Buffer.concat([
+                Buffer.from(
+                  `HTTP/1.1 200 OK\r\nContent-Length: ${bytes.length}\r\nx-upstream: preserved\r\n\r\n`,
+                ),
+                bytes,
+              ]),
+            ),
+          );
+        },
+        request(),
+        {},
+        meter,
+      ),
+    );
+    assert.equal(response.headers.get("content-type"), null);
+    assert.equal(response.headers.get("x-upstream"), "preserved");
+    assert.deepEqual(
+      new Uint8Array(await response.arrayBuffer()),
+      encoder.encode(body),
+    );
+    await meter.drain();
+    const result = events.at(-1);
+    assert.equal(result.transport, "sse");
+    assert.equal(result.outcome, "success");
+    assert.equal(result.response_id, "resp-completed");
+    assert.equal(result.usage.status, "reported");
+    assert.equal(result.usage.tokens.input_tokens, 100);
+    assert.equal(result.usage.tokens.cache_read_tokens, 40);
+    assert.equal(result.usage.tokens.output_tokens, 20);
+    assert.equal(result.usage.tokens.reasoning_tokens, 5);
+    assert.equal(result.upstream_observation.response.model, MODEL);
+    for (const timing of ["first_response_ms", "ttft_ms", "first_text_ms"])
+      assert.equal(typeof result[timing], "number");
+    assert.equal(result.observation_issue, null);
+  }
+});
+
+test("Codex preserves JSON usage and errors when the response media type is unknown", async () => {
+  for (const [payload, status] of [
+    [completedResponse, 200],
+    [{ error: { code: "invalid_request", message: "mock" } }, 400],
+  ]) {
+    const f = fixture();
+    const { meter, events } = metering(f);
+    const body = `\n ${JSON.stringify(payload)}`;
+    const response = meter.response(
+      await infer(
+        f,
+        async () =>
+          fragmentedResponse(body, { "content-type": "text/plain" }, status),
+        request(JSON.stringify({ model: MODEL, input: [], stream: false })),
+        {},
+        meter,
+      ),
+    );
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("content-type"), "text/plain");
+    assert.equal(await response.text(), body);
+    await meter.drain();
+    const result = events.at(-1);
+    assert.equal(result.transport, "http");
+    assert.equal(result.first_response_ms, null);
+    assert.equal(result.ttft_ms, null);
+    assert.equal(result.observation_issue, null);
+    if (status === 200) {
+      assert.equal(result.usage.tokens.input_tokens, 100);
+      assert.equal(result.response_id, "resp-completed");
+    } else {
+      assert.equal(result.outcome, "failed");
+      assert.equal(result.diagnostic_code, "invalid_request");
+    }
+  }
+});
+
+test("Codex detects unlabelled quota streams and switches only before output", async () => {
+  for (const emittedOutput of [false, true]) {
+    const f = fixture();
+    const { meter, events } = metering(f);
+    const calls = [];
+    const first = emittedOutput
+      ? { type: "response.output_text.delta", delta: "already sent" }
+      : {
+          type: "response.created",
+          response: { id: "resp-quota", output: [] },
+        };
+    const rejected = event(first) + event(failed());
+    const completed = event({
+      type: "response.completed",
+      response: completedResponse,
+    });
+    const response = meter.response(
+      await infer(
+        f,
+        async (req) => {
+          calls.push(req.headers.get("chatgpt-account-id"));
+          return fragmentedResponse(calls.length === 1 ? rejected : completed);
+        },
+        request(),
+        {},
+        meter,
+      ),
+    );
+    assert.equal(await response.text(), emittedOutput ? rejected : completed);
+    await meter.drain();
+    assert.deepEqual(
+      calls,
+      emittedOutput ? ["account-1"] : ["account-1", "account-2"],
+    );
+    assert.equal(
+      f.states.get("key:codex:account-1").getStatus().reason,
+      "quota",
+    );
+    assert.equal(events.at(-1).outcome, emittedOutput ? "failed" : "success");
+    assert.equal(events.at(-1).transport, "sse");
+  }
+});
+
+test("configured Codex retries retain usage from unlabelled discarded responses", async () => {
+  const f = fixture({
+    retry: {
+      delays_ms: [0],
+      status_codes: [],
+      error_codes: ["rate_limit_exceeded"],
+    },
+  });
+  const { meter, events } = metering(f);
+  const calls = [];
+  const response = meter.response(
+    await infer(
+      f,
+      async (req) => {
+        calls.push(req.headers.get("chatgpt-account-id"));
+        return fragmentedResponse(
+          event(
+            calls.length === 1
+              ? {
+                  ...failed("rate_limit_exceeded"),
+                  usage: { input_tokens: 10, output_tokens: 2 },
+                }
+              : { type: "response.completed", response: completedResponse },
+          ),
+        );
+      },
+      request(),
+      {},
+      meter,
+    ),
+  );
+  await response.text();
+  await meter.drain();
+  assert.deepEqual(calls, ["account-1", "account-1"]);
+  const result = events.at(-1);
+  assert.equal(result.usage.tokens.input_tokens, 110);
+  assert.equal(result.usage.tokens.output_tokens, 22);
+  assert.equal(result.attempts[0].usage.tokens.input_tokens, 10);
+  assert.equal(result.attempts[0].retry_diagnostic.reason, "error_code_match");
+});
 
 test("Codex quota switching never sends a started request to another provider", async () => {
   const f = fixture({ backup: true });

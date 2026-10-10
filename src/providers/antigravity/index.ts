@@ -123,9 +123,9 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
         record(translated.request.generationConfig)?.thinkingConfig,
       ),
       retryUsage: (response) =>
-        retryResponseUsage(response, protocol, (value) =>
-          translatedUsage(value, protocol),
-        ),
+        retryResponseUsage(response, protocol, {
+          extract: (value) => translatedUsage(value, protocol),
+        }),
       transformResponse: async (response, observe) => {
         if (endpoint === "messages/count_tokens" && response.ok) {
           const bytes = await readBodyWithinLimit(

@@ -1162,9 +1162,9 @@ test("native models and aliases appear in Codex without advertising Astra capabi
 
 test("native retry usage is normalized without consuming the final response path", async () => {
   const response = Response.json(native([], "STOP"), { status: 503 });
-  const usage = await retryResponseUsage(response, "openai", (value) =>
-    translatedUsage(value, "openai"),
-  );
+  const usage = await retryResponseUsage(response, "openai", {
+    extract: (value) => translatedUsage(value, "openai"),
+  });
   assert.equal(usage.tokens.input_tokens, 20);
   assert.equal(usage.tokens.output_tokens, 8);
   assert.equal(usage.tokens.reasoning_tokens, 3);

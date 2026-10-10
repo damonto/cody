@@ -3,7 +3,7 @@ import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
 import type { NormalizedUsage } from "../billing/types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
-import { SseObserver } from "./stream.ts";
+import { ResponseObserver } from "./response-observer.ts";
 import { responseFormat } from "../gateway/http/response-format.ts";
 import { MAX_RETRY_RESPONSE_BYTES } from "../shared/response-limits.ts";
 
@@ -11,20 +11,22 @@ import { MAX_RETRY_RESPONSE_BYTES } from "../shared/response-limits.ts";
 export async function retryResponseUsage(
   response: Response,
   protocol: ApiProtocol,
-  extract?: (payload: unknown) => unknown,
+  options: {
+    extract?: (payload: unknown) => unknown;
+    detectFormat?: boolean | undefined;
+  } = {},
 ): Promise<NormalizedUsage | null> {
-  const format = responseFormat(response);
+  const format =
+    responseFormat(response) ?? (options.detectFormat ? "auto" : undefined);
   if (!response.body || !format) return null;
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   const usage = new UsageAccumulator(protocol);
-  let text = "";
   let bytes = 0;
   let interrupted = false;
   let complete = false;
   const observe = (value: unknown, event = "") => {
     const payload = record(value);
-    if (extract) usage.add(extract(payload));
+    if (options.extract) usage.add(options.extract(payload));
     else {
       usage.add(payload?.usage);
       usage.add(record(payload?.response)?.usage);
@@ -42,19 +44,17 @@ export async function retryResponseUsage(
     )
       complete = true;
   };
-  const observer =
-    format === "sse"
-      ? new SseObserver({
-          onEvent: observe,
-          onIssue: () => {
-            interrupted = true;
-          },
-          onDone: () => {
-            complete = true;
-          },
-          maxEventChars: MAX_RETRY_RESPONSE_BYTES,
-        })
-      : undefined;
+  const observer = new ResponseObserver({
+    format,
+    onEvent: observe,
+    onIssue: () => {
+      interrupted = true;
+    },
+    onDone: () => {
+      complete = true;
+    },
+    maxPayloadChars: MAX_RETRY_RESPONSE_BYTES,
+  });
   const timeout = setTimeout(() => {
     interrupted = true;
     void reader.cancel().catch(() => {});
@@ -69,17 +69,12 @@ export async function retryResponseUsage(
         void reader.cancel().catch(() => {});
         break;
       }
-      const chunk = decoder.decode(item.value, { stream: true });
-      if (observer) observer.push(chunk);
-      else text += chunk;
+      observer.push(item.value);
       if (complete || interrupted) break;
     }
     if (interrupted) return null;
-    if (observer) {
-      observer.push(decoder.decode());
-      observer.end();
-      if (interrupted) return null;
-    } else observe(JSON.parse(text + decoder.decode()) as unknown);
+    observer.end();
+    if (interrupted) return null;
     const result = usage.snapshot();
     return result.status === UsageStatus.Missing ? null : result;
   } catch {
