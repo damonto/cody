@@ -14,6 +14,7 @@ import {
   quotaAvailability,
   claudeUsageLimit,
   headerQuota,
+  responseQuotaObservation,
 } from "../src/providers/claude/limits.ts";
 const ref = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 function config(extra = {}) {
@@ -431,5 +432,198 @@ test("Repeated scoped windows use the newest reset interval", () => {
   assert.equal(
     quotaAvailability(quota, "claude-opus-4-6", now).subscription,
     true,
+  );
+});
+
+test("Claude model discovery accepts nullable metadata and preserves explicit capabilities", async () => {
+  const pages = [
+    {
+      data: [
+        {
+          id: "claude-opus-4-6",
+          max_input_tokens: null,
+          max_tokens: null,
+          capabilities: {
+            thinking: { supported: true },
+            image_input: { supported: false },
+          },
+        },
+      ],
+      has_more: true,
+      last_id: "claude-opus-4-6",
+    },
+    {
+      data: [],
+      has_more: false,
+      first_id: null,
+      last_id: null,
+    },
+  ];
+  const urls = [];
+  const client = new ClaudeClient(async (request) => {
+    urls.push(new URL(request.url));
+    return Response.json(pages.shift());
+  }, new AbortController().signal);
+  assert.deepEqual(parseModels(await client.models("access")), [
+    {
+      id: "claude-opus-4-6",
+      display_name: "claude-opus-4-6",
+      input_token_limit: null,
+      output_token_limit: null,
+      supports_thinking: true,
+      supports_images: false,
+    },
+  ]);
+  assert.equal(urls[1].searchParams.get("after_id"), "claude-opus-4-6");
+  assert.equal(
+    parseModels({ data: [{ id: "unknown", capabilities: null }] })[0]
+      .supports_thinking,
+    null,
+  );
+});
+
+test("Partial Claude refresh grants accept absent, null and empty optional fields", async () => {
+  for (const refresh_token of [undefined, null, "", "rotated-refresh"]) {
+    const client = new ClaudeClient(async () => {
+      return Response.json({
+        access_token: "new-access",
+        refresh_token,
+        expires_in: 3600,
+        account: null,
+        organization: null,
+        scope: null,
+      });
+    }, new AbortController().signal);
+    const tokens = await client.refresh("old-refresh", {
+      account_id: "account",
+      organization_id: "org",
+    });
+    assert.equal(tokens.access_token, "new-access");
+    assert.equal(tokens.refresh_token, refresh_token || undefined);
+  }
+});
+
+test("Overage and 7d_oi rejections do not exhaust Claude subscription windows", () => {
+  const now = Date.now();
+  const cases = [
+    { "anthropic-ratelimit-unified-7d_oi-status": "rejected" },
+    {
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-5h-status": "allowed",
+      "anthropic-ratelimit-unified-7d-status": "allowed_warning",
+      "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+      "anthropic-ratelimit-unified-7d_oi-reset": String(
+        (now + 604800000) / 1000,
+      ),
+    },
+    ...["overage", "seven_day_overage_included"].map((claim) => ({
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-representative-claim": claim,
+      "anthropic-ratelimit-unified-7d-status": "allowed",
+      "anthropic-ratelimit-unified-5h-utilization": "0.00",
+      "anthropic-ratelimit-unified-overage-status": "rejected",
+      "anthropic-ratelimit-unified-reset": String((now + 30 * 86400000) / 1000),
+    })),
+  ];
+  for (const headers of cases) {
+    assert.equal(
+      claudeUsageLimit(
+        new Response(null, { status: 429, headers }),
+        "claude-opus-4-6",
+        now,
+      ),
+      undefined,
+    );
+    assert.deepEqual(
+      claudeUsageLimit(
+        new Response(null, {
+          status: 429,
+          headers: {
+            ...headers,
+            "anthropic-ratelimit-unified-5h-status": "rejected",
+            "anthropic-ratelimit-unified-5h-reset": String(
+              (now + 60000) / 1000,
+            ),
+          },
+        }),
+        "claude-opus-4-6",
+        now,
+      ),
+      { model: null, until: now + 60000 },
+    );
+  }
+});
+
+test("Successful responses still report exhausted subscription windows while using overage", () => {
+  const now = Date.now();
+  const headers = new Headers({
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "seven_day_opus",
+    "anthropic-ratelimit-unified-reset": String((now + 60000) / 1000),
+    "anthropic-ratelimit-unified-overage-status": "allowed",
+  });
+  assert.equal(
+    claudeUsageLimit(new Response(null, { headers }), "claude-opus-4-6", now),
+    undefined,
+  );
+  assert.deepEqual(responseQuotaObservation(headers, "claude-opus-4-6", now), {
+    groups: [],
+    limits: [{ model: "opus", until: now + 60000 }],
+    extra_usage_disabled_reason: null,
+  });
+});
+
+test("A missing aggregate reset does not replace a known window reset with a fallback", () => {
+  const now = Date.now();
+  const headers = new Headers({
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-5h-status": "rejected",
+    "anthropic-ratelimit-unified-5h-reset": String((now + 60000) / 1000),
+  });
+  assert.deepEqual(
+    claudeUsageLimit(
+      new Response(null, { status: 429, headers }),
+      "claude-sonnet-4-6",
+      now,
+    ),
+    {
+      model: null,
+      until: now + 60000,
+    },
+  );
+});
+
+test("Empty utilization headers remain unknown instead of indicating unused quota", () => {
+  for (const utilization of ["", " ", "NaN", "-0.1", "Infinity"]) {
+    assert.deepEqual(
+      headerQuota(
+        new Headers({
+          "anthropic-ratelimit-unified-5h-utilization": utilization,
+          "anthropic-ratelimit-unified-5h-reset": "1800000000",
+        }),
+      ),
+      [],
+    );
+  }
+});
+
+test("Unknown rejected claims remain scoped to the requested model", () => {
+  const now = Date.now();
+  const headers = new Headers({
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "model_specific_limit",
+    "anthropic-ratelimit-unified-reset": String((now + 60000) / 1000),
+  });
+  assert.deepEqual(
+    claudeUsageLimit(
+      new Response(null, { status: 429, headers }),
+      "claude-opus-4-6",
+      now,
+    ),
+    {
+      model: "claude-opus-4-6",
+      until: now + 60000,
+    },
   );
 });

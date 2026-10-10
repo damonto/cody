@@ -458,7 +458,7 @@ export async function recordCredentialQuotaCooldown(
   credentialId: string,
   until: number,
   requestId?: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const snapshot = await credentialHealthStub(
       env,
@@ -472,6 +472,7 @@ export async function recordCredentialQuotaCooldown(
       credential_id: credentialId,
       cooling_until: snapshot.cooling_until,
     });
+    return true;
   } catch (error) {
     logWarn("health.key_update.failed", {
       request_id: requestId,
@@ -480,6 +481,7 @@ export async function recordCredentialQuotaCooldown(
       scope: "inference",
       error: errorMessage(error),
     });
+    return false;
   }
 }
 
@@ -674,17 +676,17 @@ export async function listCoolingHealth(
   );
 }
 
-export function scheduleHealthUpdate(
+export async function scheduleHealthUpdate(
   context: HealthExecutionContext | undefined,
-  update: Promise<void>,
+  update: Promise<unknown>,
 ): Promise<void> {
   if (typeof context?.waitUntil === "function") {
     try {
       context.waitUntil(update);
-      return Promise.resolve();
+      return;
     } catch {
-      return update;
+      // If background scheduling is unavailable, finish the write inline.
     }
   }
-  return update;
+  await update;
 }

@@ -33,11 +33,11 @@ export function authorizationUrl(state: string, challenge: string): string {
 }
 const tokenResponse = z.object({
   access_token: z.string().min(1),
-  refresh_token: z.string().min(1).optional(),
+  refresh_token: z.string().nullish(),
   expires_in: z.number().positive(),
-  scope: z.string().optional(),
-  account: z.object({ uuid: z.string() }).optional(),
-  organization: z.object({ uuid: z.string() }).optional(),
+  scope: z.string().nullish(),
+  account: z.object({ uuid: z.string().min(1) }).nullish(),
+  organization: z.object({ uuid: z.string().min(1) }).nullish(),
 });
 const profileSchema = z.object({
   account: z.object({
@@ -229,12 +229,18 @@ const modelsSchema = z.object({
     z.object({
       id: z.string().min(1),
       display_name: z.string().optional(),
-      max_input_tokens: z.number().positive().optional(),
-      max_tokens: z.number().positive().optional(),
+      max_input_tokens: z.number().positive().nullish(),
+      max_tokens: z.number().positive().nullish(),
+      capabilities: z
+        .object({
+          thinking: z.object({ supported: z.boolean() }).optional(),
+          image_input: z.object({ supported: z.boolean() }).optional(),
+        })
+        .nullish(),
     }),
   ),
   has_more: z.boolean().optional(),
-  last_id: z.string().optional(),
+  last_id: z.string().nullish(),
 });
 export function parseModels(value: unknown): AccountModel[] {
   return modelsSchema.parse(value).data.map((model) => ({
@@ -242,8 +248,8 @@ export function parseModels(value: unknown): AccountModel[] {
     display_name: model.display_name ?? model.id,
     input_token_limit: model.max_input_tokens ?? null,
     output_token_limit: model.max_tokens ?? null,
-    supports_thinking: null,
-    supports_images: null,
+    supports_thinking: model.capabilities?.thinking?.supported ?? null,
+    supports_images: model.capabilities?.image_input?.supported ?? null,
   }));
 }
 export class ClaudeClient {
@@ -316,11 +322,14 @@ export class ClaudeClient {
         401,
         "invalid_grant",
       );
-    if (data.scope && !data.scope.split(" ").includes("user:inference"))
+    if (
+      data.scope != null &&
+      !data.scope.split(/\s+/).includes("user:inference")
+    )
       throw new OAuthError("Claude authorization lacks inference scope", 403);
     return {
       access_token: data.access_token,
-      refresh_token: data.refresh_token,
+      refresh_token: data.refresh_token || undefined,
       expires_at: Date.now() + data.expires_in * 1000,
     };
   }

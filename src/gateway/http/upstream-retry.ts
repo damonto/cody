@@ -4,15 +4,30 @@ import { elapsedMs, errorMessage } from "../../shared/log.ts";
 import { SocksProxyError } from "../proxies/errors.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
 import { discardBody } from "./body.ts";
-import { inspectRetryError } from "./retry-errors.ts";
+import {
+  inspectRetryError,
+  type RetryErrorInspection,
+} from "./retry-errors.ts";
 import type { RetryDiagnostic } from "../../shared/retry-diagnostic.ts";
+
+export interface UpstreamResponseInspection {
+  response: Response;
+  /** Terminal provider limits take precedence over configured retries. */
+  terminal: boolean;
+  /** Present when the provider already performed the shared retry preflight. */
+  retry?: Omit<RetryErrorInspection, "response">;
+}
 
 export interface UpstreamRetryOptions {
   send?: UpstreamFetch;
   wait?: (delayMs: number) => Promise<void>;
   onResponse?: (response: Response, attempt: number) => Promise<void> | void;
-  /** A terminal response is returned as it is, whatever the retry policy. */
-  isTerminal?: (response: Response) => Promise<boolean> | boolean;
+  /** Inspect provider limits and optionally share the error-code preflight. */
+  inspectResponse?: (
+    response: Response,
+    signal: AbortSignal,
+    timeoutMs: number | undefined,
+  ) => Promise<UpstreamResponseInspection> | UpstreamResponseInspection;
   attemptTimeoutMs?: number;
   /** Shared pre-response deadline across an Antigravity account-switch chain. */
   deadline?: number;
@@ -143,15 +158,21 @@ export async function fetchWithConfiguredRetries(
 
     // Hook failures are internal errors, not upstream transport failures.
     // Release the body and preserve their original propagation semantics.
-    let terminal: boolean;
     try {
       await options.onResponse?.(response, attempt.attempt);
-      terminal = (await options.isTerminal?.(response)) === true;
     } catch (error) {
       await discardBody(response.body);
       throw error;
     }
     try {
+      const inspection = await options.inspectResponse?.(
+        response,
+        request.signal,
+        remainingAttemptMs(options, startedAt),
+      );
+      if (inspection) response = inspection.response;
+      const terminal = inspection?.terminal === true;
+      attempt.duration_ms = elapsedMs(startedAt);
       if (terminal || !retry || delayMs === undefined) {
         attempt.retry_diagnostic = {
           reason: terminal
@@ -177,16 +198,21 @@ export async function fetchWithConfiguredRetries(
         response.status >= 200 &&
         !request.headers.has("upgrade")
       ) {
-        const inspected = await inspectRetryError(
-          response,
-          request.signal,
-          retry.error_codes,
-          remainingAttemptMs(options, startedAt),
-        );
-        response = inspected.response;
-        attempt.retry_diagnostic = inspected.diagnostic;
-        shouldRetry = inspected.errorCode !== undefined;
-        if (inspected.errorCode) attempt.error = inspected.errorCode;
+        let retryInspection = inspection?.retry;
+        if (!retryInspection) {
+          const inspected = await inspectRetryError(
+            response,
+            request.signal,
+            retry.error_codes,
+            remainingAttemptMs(options, startedAt),
+          );
+          response = inspected.response;
+          retryInspection = inspected;
+        }
+        attempt.retry_diagnostic = retryInspection.diagnostic;
+        shouldRetry = retryInspection.errorCode !== undefined;
+        if (retryInspection.errorCode)
+          attempt.error = retryInspection.errorCode;
         attempt.duration_ms = elapsedMs(startedAt);
       }
     } catch (error) {

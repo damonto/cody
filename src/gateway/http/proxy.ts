@@ -134,6 +134,7 @@ export async function handleInference(
       {
         contextManagement,
         skipXaiQuota: upstreamPath === "messages/count_tokens",
+        skipClaudeQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
         ...(sessionId
           ? {
@@ -300,7 +301,7 @@ export async function handleInference(
       meter?.select(meterTarget);
     headers.delete("content-length");
     const modelRewritten = payload.model !== upstreamModel;
-    if (modelRewritten) {
+    if (modelRewritten || prepared.body !== undefined) {
       headers.delete("content-md5");
       headers.delete("digest");
       headers.delete("content-digest");
@@ -326,6 +327,7 @@ export async function handleInference(
         prepared,
         body,
         protocol,
+        upstreamPath,
         requestId,
         context,
         retryOptions,
@@ -401,10 +403,14 @@ export async function handleInference(
     if (
       result.response &&
       provider.type === ProviderType.Claude &&
+      upstreamPath === "messages" &&
       selectedCredential.auth.type === CredentialAuthType.OAuth &&
       prepared.oauthGeneration !== undefined
     ) {
-      const observation = responseQuotaObservation(result.response.headers);
+      const observation = responseQuotaObservation(
+        result.response.headers,
+        upstreamModel,
+      );
       if (observation)
         await env.PROVIDER_OAUTH_ACCOUNT.getByName(
           selectedCredential.auth.account_ref,
@@ -448,23 +454,27 @@ export async function handleInference(
     }
     if (result.response && usageLimit) {
       // Awaited: the next selection must already see this account cooling.
-      await recordCredentialQuotaCooldown(
+      const persisted = await recordCredentialQuotaCooldown(
         env,
         provider.id,
         selectedCredential.id,
         usageLimit.resets_at,
         requestId,
       );
-      excludedCredentials.add(
-        credentialKey(provider.id, selectedCredential.id),
-      );
-      accountSwitches.push({
-        credential_id: selectedCredential.id,
-        code: usageLimit.code,
-        resets_at: usageLimit.resets_at,
-      });
-      exhausted = result.response;
-      continue;
+      if (persisted) {
+        lockedProvider = provider.id;
+        excludedCredentials.add(
+          credentialKey(provider.id, selectedCredential.id),
+        );
+        accountSwitches.push({
+          credential_id: selectedCredential.id,
+          code: usageLimit.code,
+          resets_at: usageLimit.resets_at,
+        });
+        exhausted = result.response;
+        continue;
+      }
+      requestLog?.warn({ outcome: "codex_quota_write_failed" });
     }
     if (
       provider.type === ProviderType.Codex ||

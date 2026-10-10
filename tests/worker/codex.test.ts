@@ -11,6 +11,7 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { zstdCompressSync } from "node:zlib";
 import { decryptConfig, encryptConfig } from "../../src/control/crypto.ts";
 import { app } from "../../src/worker.ts";
 import { parseConfig } from "../../src/config/store.ts";
@@ -425,6 +426,56 @@ test("session affinity fills the first account and moves a session only when it 
   expect(await servedBy(config, two)).toBe(secondAccount);
 });
 
+test("an available Codex session keeps its account when a higher-priority account recovers", async () => {
+  const [first, second] = await accounts(2);
+  const config = codexConfig([first, second], {
+    account_selection: "session_affinity",
+  });
+  config.providers[0].credentials[0].priority = 200;
+  const primaryHealth = env.HEALTH.getByName(
+    `key:codex:${first.connection.credential_id}`,
+  );
+  await primaryHealth.recordCooldownUntil(Date.now() + 600000, "quota");
+  const session = crypto.randomUUID();
+  expect(await servedBy(config, session)).toBe(
+    `acct-${second.connection.credential_id}`,
+  );
+  await primaryHealth.clear();
+  expect(await servedBy(config, session)).toBe(
+    `acct-${second.connection.credential_id}`,
+  );
+  expect(await servedBy(config, crypto.randomUUID())).toBe(
+    `acct-${first.connection.credential_id}`,
+  );
+});
+
+test("Worker inference accepts a native zstd request body", async () => {
+  const [account] = await accounts(1);
+  const config = codexConfig([account]);
+  const body = zstdCompressSync(
+    new TextEncoder().encode(JSON.stringify({ model: MODEL, input: "hello" })),
+  );
+  const response = await handleInference(
+    new Request("https://gateway.test/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-encoding": "zstd",
+      },
+      body,
+    }),
+    env,
+    config,
+    config.api_keys[0],
+    "responses",
+    crypto.randomUUID(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    account: `acct-${account.connection.credential_id}`,
+  });
+});
+
 test("automatic resets spend the earliest expiring credit only when enabled", async () => {
   const [only] = await accounts(1);
   const account = `acct-${only.connection.credential_id}`;
@@ -596,7 +647,11 @@ test("partial refresh survives eviction and rejects a changed workspace before s
   await expireAccessToken(account.stub);
   vi.stubGlobal("fetch", async (request: Request) =>
     request.url.endsWith("/oauth/token")
-      ? Response.json({ refresh_token: "rotated" })
+      ? Response.json({
+          refresh_token: "rotated",
+          access_token: null,
+          id_token: null,
+        })
       : send(request),
   );
   const command = {

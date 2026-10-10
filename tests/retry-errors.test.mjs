@@ -496,12 +496,28 @@ test("native terminal errors take precedence over error-code retries", async () 
       count++;
       return upstream;
     },
-    isTerminal: () => true,
+    inspectResponse: (response) => ({ response, terminal: true }),
   });
   assert.equal(count, 1);
   assert.equal(result.response, upstream);
   assert.equal(upstream.bodyUsed, false);
   await upstream.body.cancel();
+});
+
+test("native inspection without a quota limit preserves configured error-code retries", async () => {
+  let calls = 0;
+  const completed = event({
+    type: "response.completed",
+    response: { output: [] },
+  });
+  const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+    send: async () => (++calls === 1 ? sse(event(failed)) : sse(completed)),
+    inspectResponse: (response) => ({ response, terminal: false }),
+    wait: async () => {},
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.attempts[0].error, "rate_limit_exceeded");
+  assert.equal(await result.response.text(), completed);
 });
 
 test("error-shaped fields in output or successful events never authorize replay", async () => {
@@ -605,26 +621,51 @@ test("an exhausted inspection budget leaves the response untouched", async () =>
 });
 
 test("attempt callback failures release the response without becoming transport errors", async () => {
-  for (const callback of ["onResponse", "isTerminal"]) {
-    let cancelled = false;
-    await assert.rejects(
-      fetchWithConfiguredRetries(makeRequest, policy, {
-        send: async () =>
-          sse(
-            new ReadableStream({
-              cancel() {
-                cancelled = true;
-              },
-            }),
-          ),
-        [callback]: () => {
-          throw new Error("callback failed");
-        },
-      }),
-      /callback failed/,
-    );
-    assert.equal(cancelled, true);
-  }
+  let cancelled = false;
+  await assert.rejects(
+    fetchWithConfiguredRetries(makeRequest, policy, {
+      send: async () =>
+        sse(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        ),
+      onResponse: () => {
+        throw new Error("callback failed");
+      },
+    }),
+    /callback failed/,
+  );
+  assert.equal(cancelled, true);
+});
+
+test("response inspection failures release the body and stop configured retries", async () => {
+  let cancelled = false;
+  let calls = 0;
+  const failure = new Error("response inspection failed");
+  const result = await fetchWithConfiguredRetries(makeRequest, policy, {
+    send: async () => {
+      calls++;
+      return sse(
+        new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+    },
+    inspectResponse: () => {
+      throw failure;
+    },
+  });
+  assert.equal(result.error, failure);
+  assert.equal(result.response, undefined);
+  assert.equal(result.attempts[0].status, 200);
+  assert.equal(result.attempts[0].error, failure.message);
+  assert.equal(calls, 1);
+  assert.equal(cancelled, true);
 });
 
 test("WebSocket handshakes and unknown content types bypass body inspection", async () => {

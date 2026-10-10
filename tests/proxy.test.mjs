@@ -2,6 +2,7 @@ import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.t
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers/promises";
+import { zstdCompressSync } from "node:zlib";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 
 import { ProviderHealthState } from "../src/gateway/health/health.ts";
@@ -438,9 +439,13 @@ test("model routes rewrite only the model and invalidate body digests", async ()
           "content-md5": "stale-md5",
           digest: "stale-digest",
           "content-digest": "stale-content-digest",
-          "content-encoding": "gzip",
+          "content-encoding": "zstd",
         },
-        body: JSON.stringify({ model: "client-model", input: "hello" }),
+        body: zstdCompressSync(
+          Buffer.from(
+            JSON.stringify({ model: "client-model", input: "hello" }),
+          ),
+        ),
       }),
       fixture.env,
       fixture.config,

@@ -4,10 +4,8 @@ import { ApiProtocol } from "../protocol-values.ts";
 import { HealthFailureScope } from "../health/values.ts";
 
 import type { GatewayConfig } from "../../config/types.ts";
-import {
-  codexUsageLimit,
-  type CodexUsageLimit,
-} from "../../providers/codex/limits.ts";
+import type { CodexUsageLimit } from "../../providers/codex/limits.ts";
+import { inspectCodexResponse } from "../../providers/codex/inspect.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { errorMessage, logError } from "../../shared/log.ts";
 import {
@@ -121,9 +119,25 @@ export class UpstreamWebSocket {
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
           ...(target.provider.type === ProviderType.Codex
             ? {
-                isTerminal: async (response: Response) => {
-                  usageLimit = await codexUsageLimit(response);
-                  return usageLimit !== undefined;
+                inspectResponse: async (
+                  response: Response,
+                  signal: AbortSignal,
+                  timeoutMs: number | undefined,
+                ) => {
+                  const {
+                    response: inspectedResponse,
+                    usageLimit: limit,
+                    ...retry
+                  } = await inspectCodexResponse(response, {
+                    signal,
+                    timeoutMs,
+                  });
+                  usageLimit = limit;
+                  return {
+                    response: inspectedResponse,
+                    terminal: limit !== undefined,
+                    retry,
+                  };
                 },
               }
             : {}),

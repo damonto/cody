@@ -71,6 +71,23 @@ type FinalRetryDecision =
   | { kind: "retry"; code: string; diagnostic: RetryDiagnostic };
 type RetryDecision = { kind: "inspect" } | FinalRetryDecision;
 
+export interface RetryErrorInspection {
+  response: Response;
+  errorCode?: string | undefined;
+  diagnostic: RetryDiagnostic;
+}
+
+interface RetryErrorInspectionOptions {
+  maxBytes?: number;
+  format?: "json" | "sse";
+  /** Observe each parsed event, including events forwarded after preflight. */
+  onEvent?: (
+    value: unknown,
+    event: string,
+    replayable: boolean,
+  ) => Promise<void>;
+}
+
 function hasOutput(output: RetryEnvelope["output"]): boolean {
   return (
     output?.some((item) => !emptyOutputItem.safeParse(item).success) ?? false
@@ -180,19 +197,30 @@ function classifyPayload(
     : forward(code ? "error_code_not_matched" : "unrecognized_event");
 }
 
+/** Apply the same output guards to a complete WebSocket error frame. */
+export function retryErrorIsReplayable(
+  value: unknown,
+  event: string,
+  codes: readonly string[],
+): boolean {
+  return classifyPayload(value, event, codes).kind === "retry";
+}
+
 /** Inspect before committing output, then replay the original bytes unchanged. */
 export async function inspectRetryError(
   response: Response,
   signal: AbortSignal,
   codes: readonly string[],
   timeoutMs = RETRY_ERROR_INSPECTION_MS,
-): Promise<{
-  response: Response;
-  errorCode?: string | undefined;
-  diagnostic: RetryDiagnostic;
-}> {
-  const format = responseFormat(response);
-  if (!response.body || !format || timeoutMs <= 0)
+  options: RetryErrorInspectionOptions = {},
+): Promise<RetryErrorInspection> {
+  const format = options.format ?? responseFormat(response);
+  const maxBytes = options.maxBytes ?? MAX_RETRY_RESPONSE_BYTES;
+  if (
+    !response.body ||
+    !format ||
+    (timeoutMs <= 0 && (format !== "sse" || !options.onEvent))
+  )
     return {
       response,
       diagnostic: {
@@ -201,9 +229,14 @@ export async function inspectRetryError(
     };
 
   const state: { decision: RetryDecision } = { decision: { kind: "inspect" } };
+  const events: { value: unknown; event: string; replayable: boolean }[] = [];
   const inspect = (value: unknown, event = "") => {
-    if (state.decision.kind === "inspect")
+    let replayable = false;
+    if (state.decision.kind === "inspect") {
       state.decision = classifyPayload(value, event, codes);
+      replayable = state.decision.kind === "retry";
+    }
+    if (options.onEvent) events.push({ value, event, replayable });
   };
   const stop = (reason: RetryDiagnostic["reason"]): FinalRetryDecision => {
     const final: FinalRetryDecision =
@@ -221,14 +254,15 @@ export async function inspectRetryError(
           onEvent: inspect,
           onIssue: () => stop("invalid_sse"),
           onDone: () => stop("stream_ended"),
-          maxEventChars: MAX_RETRY_RESPONSE_BYTES,
+          maxEventChars: maxBytes,
         })
       : undefined;
   const prefix = await inspectResponsePrefix(response, signal, {
-    maxBytes: MAX_RETRY_RESPONSE_BYTES,
-    timeoutMs: Math.min(timeoutMs, RETRY_ERROR_INSPECTION_MS),
+    maxBytes,
+    timeoutMs: Math.max(0, Math.min(timeoutMs, RETRY_ERROR_INSPECTION_MS)),
     observe: async (chunk) => {
-      if (state.decision.kind !== "inspect") return true;
+      if (state.decision.kind !== "inspect" && !(observer && options.onEvent))
+        return true;
       const text =
         chunk === undefined
           ? decoder.decode()
@@ -246,9 +280,12 @@ export async function inspectRetryError(
           }
         }
       }
+      for (const event of events.splice(0))
+        await options.onEvent?.(event.value, event.event, event.replayable);
       return state.decision.kind !== "inspect";
     },
   });
+  json = "";
   // A timeout/size boundary commits the prefix. Later errors cannot trigger replay.
   const final = stop(
     prefix.stoppedBy === "size"

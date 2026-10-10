@@ -18,12 +18,12 @@ import {
   parseUsage,
 } from "../src/providers/codex/api.ts";
 import {
-  codexUsageLimit,
   codexUsageLimitEvent,
   codexUsageLimitFromError,
   codexUsageLimitResponse,
   DEFAULT_QUOTA_COOLDOWN_MS,
 } from "../src/providers/codex/limits.ts";
+import { inspectCodexResponse } from "../src/providers/codex/inspect.ts";
 import { aggregateCodexModels } from "../src/gateway/catalog/models.ts";
 
 const ref = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -510,24 +510,129 @@ test("quota exhaustion is recognised from the error and its reset time", () => {
     assert.equal(codexUsageLimitFromError(payload, none, now), undefined);
 });
 
-test("HTTP detection reads only 429 bodies and leaves the response intact", async () => {
+test("HTTP quota preflight preserves the response and ignores non-quota statuses", async () => {
   const body = JSON.stringify({
     error: { type: "usage_limit_reached", resets_in_seconds: 60 },
   });
   const response = new Response(body, { status: 429 });
-  assert.deepEqual(await codexUsageLimit(response, now), {
+  const options = { now, signal: new AbortController().signal };
+  const inspected = await inspectCodexResponse(response, options);
+  assert.deepEqual(inspected.usageLimit, {
     code: "usage_limit_reached",
     resets_at: now + 60_000,
   });
-  assert.equal(await response.text(), body);
+  assert.equal(await inspected.response.text(), body);
   assert.equal(
-    await codexUsageLimit(new Response(body, { status: 500 }), now),
+    (await inspectCodexResponse(new Response(body, { status: 500 }), options))
+      .usageLimit,
     undefined,
   );
   assert.equal(
-    await codexUsageLimit(new Response("not json", { status: 429 }), now),
+    (
+      await inspectCodexResponse(
+        new Response("not json", { status: 429 }),
+        options,
+      )
+    ).usageLimit,
     undefined,
   );
+});
+
+test(
+  "oversized 429 bodies finish preflight and forward every original byte",
+  { timeout: 2000 },
+  async () => {
+    const body = new Uint8Array(128 * 1024).fill(120);
+    for (const headers of [{}, { "content-length": String(body.length) }]) {
+      const inspected = await inspectCodexResponse(
+        new Response(body, { status: 429, headers }),
+        {
+          signal: new AbortController().signal,
+        },
+      );
+      assert.equal(inspected.usageLimit, undefined);
+      assert.equal(inspected.diagnostic.reason, "inspection_limit");
+      assert.deepEqual(
+        new Uint8Array(await inspected.response.arrayBuffer()),
+        body,
+      );
+    }
+  },
+);
+
+test(
+  "slow 429 preflight observes the time budget and downstream cancellation",
+  { timeout: 2000 },
+  async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 429 },
+    );
+    const inspected = await inspectCodexResponse(response, {
+      signal: new AbortController().signal,
+      timeoutMs: 10,
+    });
+    assert.equal(inspected.diagnostic.reason, "inspection_timeout");
+    await inspected.response.body.cancel();
+    assert.equal(cancelled, true);
+  },
+);
+
+test("an exhausted preflight budget still observes late Codex quota errors without authorizing replay", async () => {
+  const body = `data: ${JSON.stringify({
+    type: "response.failed",
+    response: {
+      status: "failed",
+      error: { code: "insufficient_quota", resets_in_seconds: 60 },
+    },
+  })}\n\n`;
+  for (const timeoutMs of [0, -1]) {
+    const limits = [];
+    const inspected = await inspectCodexResponse(
+      new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      {
+        now,
+        signal: new AbortController().signal,
+        timeoutMs,
+        onStreamLimit: async (limit) => {
+          limits.push(limit);
+        },
+      },
+    );
+    assert.equal(inspected.diagnostic.reason, "inspection_timeout");
+    assert.equal(inspected.errorCode, undefined);
+    assert.equal(inspected.usageLimit, undefined);
+    assert.deepEqual(limits, []);
+    assert.equal(await inspected.response.text(), body);
+    assert.deepEqual(limits, [
+      { code: "insufficient_quota", resets_at: now + 60_000 },
+    ]);
+    assert.equal(inspected.diagnostic.reason, "inspection_timeout");
+  }
+});
+
+test("aborting a Codex preflight cancels the upstream read", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const inspected = inspectCodexResponse(
+    new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 429 },
+    ),
+    { signal: controller.signal },
+  );
+  controller.abort();
+  await assert.rejects(inspected, { name: "AbortError" });
+  assert.equal(cancelled, true);
 });
 
 test("an all-accounts-exhausted reply tells Codex when usage returns", async () => {
@@ -643,6 +748,35 @@ test("partial token refreshes preserve omitted fields and the existing expiry", 
     access_token: newAccess,
     expires_at: 1900000000000,
   });
+});
+
+test("null refresh fields preserve old tokens while accepting a rotated access token", async () => {
+  const previous = {
+    access_token: "old-access",
+    refresh_token: "old-refresh",
+    id_token: "old-id",
+    expires_at: 1234,
+  };
+  const newAccess = jwt({ exp: 1900000000 });
+  for (const access_token of [null, newAccess]) {
+    const client = new CodexClient(async () =>
+      Response.json({
+        access_token,
+        id_token: null,
+        refresh_token: null,
+      }),
+    );
+    assert.deepEqual(await client.refresh(previous.refresh_token, previous), {
+      ...previous,
+      ...(access_token ? { access_token, expires_at: 1900000000000 } : {}),
+    });
+  }
+  await assert.rejects(
+    new CodexClient(async () => Response.json({ access_token: "" })).refresh(
+      "refresh",
+      previous,
+    ),
+  );
 });
 
 test("FedRAMP headers follow the selected account for HTTP and WebSocket", async () => {

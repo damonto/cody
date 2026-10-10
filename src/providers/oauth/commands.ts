@@ -6,6 +6,7 @@ import {
   connectionSchema,
   xaiLimitSchema,
   quotaGroupSchema,
+  quotaSnapshotSchema,
   oauthProviderTypeSchema,
   proxyConfigurationSchema,
 } from "./schema.ts";
@@ -29,6 +30,7 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("claude_usage"),
     extra_usage_disabled_reason: z.string().nullable().optional(),
+    limits: quotaSnapshotSchema.shape.claude_limits,
     generation: z.number(),
     groups: z.array(quotaGroupSchema),
   }),

@@ -121,6 +121,16 @@ const tokenResponse = z.object({
   id_token: z.string().min(1).optional(),
   expires_in: z.number().positive().optional(),
 });
+const optionalRefreshedToken = z
+  .string()
+  .min(1)
+  .nullish()
+  .transform((value) => value ?? undefined);
+const refreshResponse = tokenResponse.partial().extend({
+  access_token: optionalRefreshedToken,
+  refresh_token: optionalRefreshedToken,
+  id_token: optionalRefreshedToken,
+});
 function tokens(data: z.output<typeof tokenResponse>) {
   const exp = finite(jwtClaims(data.access_token).exp);
   return {
@@ -431,7 +441,7 @@ export class CodexClient {
     previous?: z.output<typeof tokenResponse> & { expires_at: number },
   ) {
     try {
-      const data = tokenResponse.partial().parse(
+      const data = refreshResponse.parse(
         await this.json(
           `${CODEX_ISSUER}/oauth/token`,
           {

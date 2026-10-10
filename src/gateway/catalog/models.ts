@@ -1,5 +1,6 @@
 import { antigravityCatalogModels } from "../../providers/antigravity/catalog.ts";
 import {
+  antigravityThinkingLevels,
   antigravityVariant,
   supportsProviderModel,
 } from "../../shared/antigravity-models.ts";
@@ -81,6 +82,11 @@ type JsonObject = Record<string, unknown>;
 interface UpstreamModel {
   id: string;
   raw: JsonObject;
+}
+
+interface ClientModel {
+  id: string;
+  upstream: UpstreamModel;
 }
 
 interface ProviderModelsResult {
@@ -359,7 +365,11 @@ async function fetchProviderModels(
       if (!upstreamError) {
         await discardBody(result.response.body);
       }
-      const failureScope = healthFailureScope(result.response.status, protocol);
+      const failureScope = healthFailureScope(
+        result.response.status,
+        protocol,
+        provider.type,
+      );
       if (failureScope === HealthFailureScope.Provider) {
         await scheduleHealthUpdate(
           context,
@@ -486,11 +496,11 @@ function catalogModels(result: ProviderModelsResult): UpstreamModel[] {
     : result.models;
 }
 
-export function aggregateStandardModels(
+function aggregateClientModels(
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
-): JsonObject[] {
-  const merged = new Map<string, JsonObject>();
+): ClientModel[] {
+  const merged = new Map<string, ClientModel>();
 
   for (const result of results) {
     if (!result.success) {
@@ -507,12 +517,21 @@ export function aggregateStandardModels(
           continue;
         }
         if (!merged.has(clientModel)) {
-          merged.set(clientModel, standardModel(model.raw, clientModel));
+          merged.set(clientModel, { id: clientModel, upstream: model });
         }
       }
     }
   }
   return [...merged.values()];
+}
+
+export function aggregateStandardModels(
+  results: ProviderModelsResult[],
+  routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
+): JsonObject[] {
+  return aggregateClientModels(results, routesByProvider).map(
+    ({ id, upstream }) => standardModel(upstream.raw, id),
+  );
 }
 
 function codexModelIds(
@@ -567,17 +586,125 @@ function withContextManagement(
   };
 }
 
+/** Only client presentation and prompting metadata can cross provider boundaries. */
+function codexClientMetadata(catalog: JsonObject | undefined): JsonObject {
+  if (!catalog) return {};
+  const metadata: JsonObject = {};
+  for (const field of [
+    "display_name",
+    "description",
+    "base_instructions",
+    "shell_type",
+    "apply_patch_tool_type",
+    "truncation_policy",
+    "effective_context_window_percent",
+    "priority",
+    "minimal_client_version",
+    "multi_agent_version",
+    "include_skills_usage_instructions",
+    "include_apps_usage_instructions",
+    "include_plugin_usage_instructions",
+    "reasoning_summary_format",
+    "default_reasoning_summary",
+    "comp_hash",
+  ]) {
+    if (catalog[field] !== undefined) metadata[field] = catalog[field];
+  }
+  if (isObject(catalog.model_messages)) {
+    const { instructions_template, instructions_variables, approvals } =
+      catalog.model_messages;
+    metadata.model_messages = {
+      instructions_template,
+      instructions_variables,
+      approvals,
+    };
+  }
+  return metadata;
+}
+
+function antigravityCodexModel(
+  { id, upstream }: ClientModel,
+  index: number,
+): JsonObject {
+  const model = upstream.raw;
+  // Match the real model before applying client aliases. Only Gemini thinking
+  // variants may reuse a family template; other suffixes remain independent.
+  const family = antigravityVariant(upstream.id)?.family;
+  const catalog =
+    codexModelBySlug.get(upstream.id) ??
+    (family ? codexModelBySlug.get(family) : undefined);
+  const catalogLevels = Array.isArray(catalog?.supported_reasoning_levels)
+    ? catalog.supported_reasoning_levels.filter(isObject)
+    : [];
+  const levels: readonly string[] = Array.isArray(model.thinking_levels)
+    ? model.thinking_levels.filter(
+        (level): level is string => typeof level === "string",
+      )
+    : model.supports_thinking === true
+      ? antigravityThinkingLevels
+      : [];
+  const defaultLevel = Array.isArray(model.thinking_levels)
+    ? model.default_thinking_level
+    : "medium";
+  const contextWindow =
+    typeof model.context_window === "number" ? model.context_window : null;
+  return {
+    display_name: model.display_name ?? id,
+    description: "Antigravity account model",
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: index,
+    base_instructions: "",
+    default_reasoning_summary: "none",
+    apply_patch_tool_type: "freeform",
+    truncation_policy: { mode: "bytes", limit: 10000 },
+    effective_context_window_percent: 95,
+    ...codexClientMetadata(catalog),
+    slug: id,
+    default_reasoning_level:
+      typeof defaultLevel === "string" && levels.includes(defaultLevel)
+        ? defaultLevel
+        : null,
+    supported_reasoning_levels: levels.map((effort) => {
+      const description = catalogLevels.find(
+        (level) => level.effort === effort,
+      )?.description;
+      return {
+        effort,
+        description:
+          typeof description === "string"
+            ? description
+            : `${effort} thinking budget`,
+      };
+    }),
+    // Account capabilities and limits remain authoritative, including unknown
+    // limits for incomplete families. Templates only supply client metadata.
+    supports_reasoning_summaries: model.supports_thinking === true,
+    support_verbosity: false,
+    context_window: contextWindow,
+    max_context_window: contextWindow,
+    supports_parallel_tool_calls: true,
+    experimental_supported_tools: [],
+    input_modalities: model.input_modalities ?? ["text"],
+    supports_experimental_context: false,
+    supports_search_tool: false,
+    node_repl_disabled: true,
+    prefer_websockets: false,
+    use_responses_lite: false,
+    supports_image_detail_original: false,
+  };
+}
+
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
   contextManagementModelIds: Set<string> = new Set(),
-  nativeModels: JsonObject[] = [],
+  nativeModels: ClientModel[] = [],
   codexAccountModels: JsonObject[] = [],
 ): JsonObject[] {
   const nativeById = new Map(
     nativeModels
-      .filter(
-        (model) => typeof model.id === "string" && clientModelIds.has(model.id),
-      )
+      .filter((model) => clientModelIds.has(model.id))
       .map((model) => [model.id, model]),
   );
   // A Codex account's own ModelInfo is authoritative for its slug; route
@@ -616,52 +743,10 @@ export function aggregateCodexModels(
           )
         : model,
     );
-  // Native aliases must not inherit OpenAI-only capabilities from a matching slug.
-  // Unknown limits remain null, allowing Codex's configured fallback to apply.
   return [
     ...account,
     ...standard,
-    ...[...nativeById.values()].map((model, index) => ({
-      slug: model.id,
-      display_name: model.display_name ?? model.id,
-      description: "Antigravity account model",
-      default_reasoning_level: Array.isArray(model.thinking_levels)
-        ? model.default_thinking_level
-        : model.supports_thinking === true
-          ? "medium"
-          : null,
-      supported_reasoning_levels:
-        Array.isArray(model.thinking_levels) || model.supports_thinking === true
-          ? (Array.isArray(model.thinking_levels)
-              ? model.thinking_levels
-              : ["low", "medium", "high"]
-            ).map((effort) => ({
-              effort,
-              description: `${effort} thinking budget`,
-            }))
-          : [],
-      shell_type: "shell_command",
-      visibility: "list",
-      supported_in_api: true,
-      priority: index,
-      base_instructions: "",
-      supports_reasoning_summaries: model.supports_thinking === true,
-      default_reasoning_summary: "none",
-      support_verbosity: false,
-      apply_patch_tool_type: "freeform",
-      truncation_policy: { mode: "bytes", limit: 10000 },
-      context_window:
-        typeof model.context_window === "number" ? model.context_window : null,
-      max_context_window:
-        typeof model.context_window === "number" ? model.context_window : null,
-      effective_context_window_percent: 95,
-      supports_parallel_tool_calls: true,
-      experimental_supported_tools: [],
-      input_modalities: model.input_modalities ?? ["text"],
-      supports_experimental_context: false,
-      supports_search_tool: false,
-      node_repl_disabled: true,
-    })),
+    ...[...nativeById.values()].map(antigravityCodexModel),
   ];
 }
 
@@ -999,7 +1084,7 @@ function modelsPayload(
             ),
             routesByProvider,
           ),
-          aggregateStandardModels(
+          aggregateClientModels(
             results.filter(
               ({ provider }) => provider.type === ProviderType.Antigravity,
             ),

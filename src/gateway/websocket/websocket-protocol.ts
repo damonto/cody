@@ -1,6 +1,7 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { codexTurnMetadata } from "../sessions/context-management-protocol.ts";
 const MAX_UPSTREAM_ERROR_BYTES = 32 * 1024;
+const UPSTREAM_ERROR_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_REASON_BYTES = 123;
 
 export type JsonObject = Record<string, unknown>;
@@ -232,25 +233,31 @@ export function errorStatus(value: JsonObject): number | undefined {
   return undefined;
 }
 
-export async function upstreamErrorText(
+async function upstreamErrorText(
   response: Response,
 ): Promise<string | undefined> {
   if (!response.body) {
     return undefined;
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPSTREAM_ERROR_TIMEOUT_MS);
   try {
     const body = await readBodyWithinLimit(
       response.body,
       MAX_UPSTREAM_ERROR_BYTES,
       response.headers.get("content-length"),
+      undefined,
+      controller.signal,
     );
     const text = new TextDecoder().decode(body);
     return text === "" ? undefined : text;
   } catch (error) {
-    if (error instanceof BodyTooLargeError) {
+    if (error instanceof BodyTooLargeError || controller.signal.aborted) {
       return undefined;
     }
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -267,5 +274,36 @@ export function gatewayErrorEvent(
       type: status >= 500 ? "server_error" : "invalid_request_error",
       code,
     },
+  });
+}
+
+/** Convert an HTTP upgrade rejection to the error event understood by Codex. */
+export async function upstreamErrorEvent(
+  response: Response,
+  fallback?: string,
+): Promise<string> {
+  const text = await upstreamErrorText(response);
+  const payload =
+    (text ? parseObject(text) : undefined) ??
+    (fallback ? parseObject(fallback) : undefined);
+  const error = payload?.error;
+  return JSON.stringify({
+    ...payload,
+    type: "error",
+    status: response.status || 502,
+    headers: Object.fromEntries(response.headers),
+    error:
+      typeof error === "object" && error !== null && !Array.isArray(error)
+        ? error
+        : {
+            type:
+              response.status >= 500 ? "server_error" : "invalid_request_error",
+            code: "websocket_upgrade_failed",
+            message:
+              typeof error === "string"
+                ? error
+                : (text ??
+                  `Upstream WebSocket upgrade failed with status ${response.status}`),
+          },
   });
 }

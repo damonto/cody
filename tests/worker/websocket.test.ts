@@ -1296,7 +1296,19 @@ test("a final upstream handshake rejection is forwarded and records provider hea
     JSON.stringify({ type: "response.create", model: "client-model" }),
   );
 
-  expect(await errorMessage).toBe('{"error":"temporarily unavailable"}');
+  const errorFrame = await errorMessage;
+  if (typeof errorFrame !== "string")
+    throw new Error("Expected a text error frame");
+  expect(JSON.parse(errorFrame)).toEqual({
+    type: "error",
+    status: 503,
+    headers: { "content-type": "application/json" },
+    error: {
+      type: "server_error",
+      code: "websocket_upgrade_failed",
+      message: "temporarily unavailable",
+    },
+  });
   expect((await closed).code).toBe(1011);
   await waitOnExecutionContext(context);
   expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(1);

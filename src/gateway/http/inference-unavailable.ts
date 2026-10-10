@@ -86,7 +86,8 @@ export async function unavailableInference({
         config.providers.some(
           (provider) =>
             provider.id === check.provider_id &&
-            provider.type === ProviderType.Antigravity,
+            (provider.type === ProviderType.Antigravity ||
+              provider.type === ProviderType.Codex),
         ) && check.reason === ProviderAvailabilityReason.HealthReadFailed,
     )
   ) {

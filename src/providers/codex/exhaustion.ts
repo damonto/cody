@@ -1,6 +1,9 @@
 import { SessionAffinityStatus } from "../../gateway/routing/values.ts";
 
-import { HealthCooldownReason } from "../../gateway/health/values.ts";
+import {
+  HealthCooldownReason,
+  ProviderAvailabilityReason,
+} from "../../gateway/health/values.ts";
 import { ProviderType } from "../../config/values.ts";
 
 import type { GatewayConfig } from "../../config/types.ts";
@@ -87,6 +90,13 @@ export async function restoreCodexAccount(
     provider?.type !== ProviderType.Codex ||
     !provider.auto_consume_resets ||
     selection.affinity?.status === SessionAffinityStatus.Blocked ||
+    selection.affinity?.status === SessionAffinityStatus.Failed ||
+    selection.affinity?.status === SessionAffinityStatus.Forbidden ||
+    [...selection.checks, ...selection.credentialChecks].some(
+      (check) =>
+        check.provider_id === provider.id &&
+        check.reason === ProviderAvailabilityReason.HealthReadFailed,
+    ) ||
     (!exhausted &&
       codexQuotaResetsAt(targets, selection, excluded) === undefined)
   )

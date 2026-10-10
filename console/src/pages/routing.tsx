@@ -66,6 +66,9 @@ export default function Routing() {
       />
     );
   const config = configuration.data;
+  const providerNames = new Map(
+    config.providers.map((provider) => [provider.id, provider.name]),
+  );
   const choices = [
     { value: GLOBAL_SCOPE_KEY, label: "Global routes" },
     ...config.providers.map((provider) => ({
@@ -163,10 +166,12 @@ export default function Routing() {
                 header: "Provider restriction",
                 cell: ({ row }) => (
                   <span className="text-sm text-muted-foreground">
-                    {scope.kind === "provider"
-                      ? scope.id
-                      : (row.original.providers?.join(", ") ??
-                        "Any permitted provider")}
+                    {(scope.kind === "provider"
+                      ? [scope.id]
+                      : row.original.providers
+                    )
+                      ?.map((id) => providerNames.get(id) ?? "Unknown provider")
+                      .join(", ") ?? "Any permitted provider"}
                   </span>
                 ),
               },

@@ -105,6 +105,7 @@ export interface ProviderSelectionOptions {
   upstreamModels?: ReadonlyMap<string, string>;
   scope?: HealthScope;
   skipXaiQuota?: boolean;
+  skipClaudeQuota?: boolean;
   contextManagement?: boolean;
   initialProviderIds?: readonly string[];
   /** Credentials this logical request already tried, keyed by `credentialKey`. */
@@ -320,6 +321,20 @@ export function allowedProviderCandidates(
   return sortRoutedProviders(targets, config);
 }
 
+/** Account quota decisions require a readable health snapshot. */
+function applyHealthReadPolicy(
+  provider: ProviderConfig,
+  health: ProviderAvailability,
+): ProviderAvailability {
+  if (
+    health.reason === ProviderAvailabilityReason.HealthReadFailed &&
+    (provider.type === ProviderType.Antigravity ||
+      provider.type === ProviderType.Codex)
+  )
+    return { ...health, available: false };
+  return health;
+}
+
 async function evaluateAvailability<T extends RoutedProvider>(
   env: Bindings,
   routedProviders: T[],
@@ -330,14 +345,13 @@ async function evaluateAvailability<T extends RoutedProvider>(
     routedProviders,
     PROVIDER_FAN_OUT_CONCURRENCY,
     async ({ provider }): Promise<ProviderSelectionCheck> => {
-      const health = await getProviderAvailability(env, provider.id, scope);
+      const health = applyHealthReadPolicy(
+        provider,
+        await getProviderAvailability(env, provider.id, scope),
+      );
       return {
         provider_id: provider.id,
         ...health,
-        ...(provider.type === ProviderType.Antigravity &&
-        health.reason === ProviderAvailabilityReason.HealthReadFailed
-          ? { available: false }
-          : {}),
       };
     },
   );
@@ -356,16 +370,12 @@ async function evaluateAvailability<T extends RoutedProvider>(
       provider,
       credential: key,
     }): Promise<CredentialSelectionCheck> => {
-      let health = await getCredentialAvailability(
-        env,
-        provider.id,
-        key.id,
-        scope,
+      let health = applyHealthReadPolicy(
+        provider,
+        await getCredentialAvailability(env, provider.id, key.id, scope),
       );
       const model = upstreamModels?.get(provider.id);
       if (provider.type === ProviderType.Antigravity) {
-        if (health.reason === ProviderAvailabilityReason.HealthReadFailed)
-          health = { ...health, available: false };
         if (health.available && key.auth.type === "oauth")
           health = await antigravityAccountAvailability(
             env,
@@ -476,6 +486,7 @@ function affinityCandidates(
     priority: provider.priority,
     supports_context_management: provider.supports_context_management,
     retain_available_account:
+      provider.type === ProviderType.Codex ||
       provider.type === ProviderType.Antigravity ||
       provider.type === ProviderType.Claude ||
       provider.type === ProviderType.Xai,
@@ -522,7 +533,7 @@ export async function selectAvailableProviderWithDetails(
   options: ProviderSelectionOptions = {},
 ): Promise<ProviderSelection> {
   const quota =
-    options.scope === HealthScope.Catalog
+    options.scope === HealthScope.Catalog || options.skipClaudeQuota
       ? { route, allBlocked: false, until: undefined }
       : await claudeQuotaRoute(
           env,
@@ -735,14 +746,18 @@ export async function targetIsAvailableForRoute(
   if (!routed?.credentials.some((key) => key.id === target.credential.id)) {
     return false;
   }
-  const [providerAvailability, credentialAvailability] = await Promise.all([
-    getProviderAvailability(env, target.provider.id, scope),
-    getCredentialAvailability(
-      env,
-      target.provider.id,
-      target.credential.id,
-      scope,
-    ),
-  ]);
-  return providerAvailability.available && credentialAvailability.available;
+  const availability = await evaluateAvailability(
+    env,
+    [
+      {
+        ...routed,
+        credentials: routed.credentials.filter(
+          (key) => key.id === target.credential.id,
+        ),
+      },
+    ],
+    scope,
+    new Map([[routed.provider.id, routed.upstreamModel]]),
+  );
+  return availability.candidates.length > 0;
 }

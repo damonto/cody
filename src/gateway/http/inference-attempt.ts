@@ -16,14 +16,13 @@ import { retryResponseUsage } from "../../telemetry/retry.ts";
 import {
   healthFailureScope,
   recordCredentialFailure,
+  recordCredentialQuotaCooldown,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "../health/health.ts";
 
-import {
-  codexUsageLimit,
-  type CodexUsageLimit,
-} from "../../providers/codex/limits.ts";
+import type { CodexUsageLimit } from "../../providers/codex/limits.ts";
+import { inspectCodexResponse } from "../../providers/codex/inspect.ts";
 
 import {
   fetchWithConfiguredRetries,
@@ -32,7 +31,7 @@ import {
 
 import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { PreparedProviderRequest } from "../../providers/types.ts";
-import type { ApiProtocol } from "../protocol.ts";
+import type { ApiProtocol, InferencePath } from "../protocol.ts";
 import type { FetchWithRetriesResult } from "./upstream-retry.ts";
 
 interface InferenceAttemptInput {
@@ -42,6 +41,7 @@ interface InferenceAttemptInput {
   prepared: PreparedProviderRequest;
   body: BodyInit;
   protocol: ApiProtocol;
+  upstreamPath: InferencePath;
   requestId: string;
   context: HealthExecutionContext | undefined;
   retryOptions: UpstreamRetryOptions;
@@ -64,6 +64,7 @@ export async function executeInferenceAttempt({
   prepared,
   body,
   protocol,
+  upstreamPath,
   requestId,
   context,
   retryOptions,
@@ -139,26 +140,46 @@ export async function executeInferenceAttempt({
                 : retryResponseUsage(response, protocol),
           }
         : {}),
-      ...(provider.type === ProviderType.Claude
-        ? {
-            isTerminal: async (response: Response) => {
-              claudeLimit = claudeUsageLimit(response, upstreamModel);
-              return claudeLimit !== undefined;
-            },
+      inspectResponse: async (response, signal, timeoutMs) => {
+        switch (provider.type) {
+          case ProviderType.Codex: {
+            const {
+              response: inspectedResponse,
+              usageLimit: limit,
+              ...retry
+            } = await inspectCodexResponse(response, {
+              signal,
+              timeoutMs,
+              errorCodes: provider.retry?.error_codes,
+              onStreamLimit: (limit) =>
+                scheduleHealthUpdate(
+                  context,
+                  recordCredentialQuotaCooldown(
+                    env,
+                    provider.id,
+                    selectedCredential.id,
+                    limit.resets_at,
+                    requestId,
+                  ),
+                ),
+            });
+            usageLimit = limit;
+            return {
+              response: inspectedResponse,
+              terminal: limit !== undefined,
+              retry,
+            };
           }
-        : {}),
-      ...(provider.type === ProviderType.Antigravity ||
-      provider.type === ProviderType.Xai
-        ? { isTerminal: () => nativeLimit !== undefined }
-        : {}),
-      ...(provider.type === ProviderType.Codex
-        ? {
-            isTerminal: async (response: Response) => {
-              usageLimit = await codexUsageLimit(response);
-              return usageLimit !== undefined;
-            },
-          }
-        : {}),
+          case ProviderType.Claude:
+            claudeLimit =
+              upstreamPath === "messages"
+                ? claudeUsageLimit(response, upstreamModel)
+                : undefined;
+            return { response, terminal: claudeLimit !== undefined };
+          default:
+            return { response, terminal: nativeLimit !== undefined };
+        }
+      },
       onResponse: async (response, attempt) => {
         await retryOptions.onResponse?.(response, attempt);
         if (

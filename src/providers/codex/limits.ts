@@ -1,14 +1,10 @@
-import { readBodyWithinLimit } from "../../gateway/http/body.ts";
-
-/** Upper bound read from a 429 body; quota errors are small JSON objects. */
-const LIMIT_BODY_BYTES = 64 * 1024;
 /** Used when the upstream names no reset time. */
 export const DEFAULT_QUOTA_COOLDOWN_MS = 15 * 60_000;
-const QUOTA_CODES = new Set([
+export const CODEX_QUOTA_CODES: readonly string[] = [
   "usage_limit_reached",
   "usage_not_included",
   "insufficient_quota",
-]);
+];
 
 export interface CodexUsageLimit {
   /** The upstream error type or code that marked the account as exhausted. */
@@ -63,11 +59,18 @@ export function codexUsageLimitFromError(
   header: HeaderLookup,
   now = Date.now(),
 ): CodexUsageLimit | undefined {
-  const error = record(record(payload)?.error);
+  const envelope = record(payload);
+  const error = record(
+    envelope?.type === "response.failed"
+      ? record(envelope.response)?.error
+      : envelope?.error,
+  );
   if (!error) return undefined;
   const type = typeof error.type === "string" ? error.type : undefined;
   const code = typeof error.code === "string" ? error.code : undefined;
-  const matched = [type, code].find((value) => value && QUOTA_CODES.has(value));
+  const matched = [type, code].find(
+    (value) => value && CODEX_QUOTA_CODES.includes(value),
+  );
   if (!matched) return undefined;
   const resetsAtSeconds = finite(error.resets_at);
   const resetsIn = finite(error.resets_in_seconds);
@@ -83,33 +86,6 @@ export function codexUsageLimitFromError(
     code: matched,
     resets_at: resetsAt ?? now + DEFAULT_QUOTA_COOLDOWN_MS,
   };
-}
-
-/**
- * Detects an exhausted account from an HTTP response without consuming it:
- * only a bounded clone of a 429 body is read.
- */
-export async function codexUsageLimit(
-  response: Response,
-  now = Date.now(),
-): Promise<CodexUsageLimit | undefined> {
-  if (response.status !== 429 || !response.body) return undefined;
-  let payload: unknown;
-  try {
-    const bytes = await readBodyWithinLimit(
-      response.clone().body,
-      LIMIT_BODY_BYTES,
-      response.headers.get("content-length"),
-    );
-    payload = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return undefined;
-  }
-  return codexUsageLimitFromError(
-    payload,
-    (name) => response.headers.get(name),
-    now,
-  );
 }
 
 function usageLimitError(resetsAt: number, now: number) {

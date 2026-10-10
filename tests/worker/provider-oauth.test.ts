@@ -2101,6 +2101,70 @@ test("native gateway supports both HTTP/SSE dialects and count_tokens", async ()
   });
 });
 
+test("Antigravity optional web search preserves agent requests and forced search never reaches upstream", async () => {
+  const { connection, ref } = await ready();
+  const config = settings(connection, ref);
+  for (const endpoint of ["responses", "messages"] as const)
+    for (const stream of [false, true]) {
+      const response = await infer(config, endpoint, {
+        model: "alias",
+        stream,
+        ...(endpoint === "responses"
+          ? {
+              input: "Inspect the file",
+              tools: [
+                { type: "web_search" },
+                {
+                  type: "function",
+                  name: "inspect",
+                  parameters: { type: "object" },
+                },
+              ],
+            }
+          : {
+              messages: [{ role: "user", content: "Inspect the file" }],
+              max_tokens: 50,
+              tools: [
+                { type: "web_search_20250305", name: "web_search" },
+                { name: "inspect", input_schema: { type: "object" } },
+              ],
+            }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+  const upstreamRequests = () =>
+    records.filter((record) => /:(?:streamG|g)enerateContent/.test(record.url));
+  expect(upstreamRequests()).toHaveLength(4);
+  for (const record of upstreamRequests()) {
+    const body = JSON.parse(record.body);
+    expect(body.requestType).toBe("agent");
+    expect(body.request.tools).toEqual([
+      {
+        functionDeclarations: [
+          { name: "inspect", parametersJsonSchema: { type: "object" } },
+        ],
+      },
+    ]);
+  }
+  const forced = await infer(config, "responses", {
+    model: "alias",
+    input: "Search the web",
+    tools: [{ type: "web_search" }],
+    tool_choice: { type: "web_search" },
+  });
+  expect(forced.status).toBe(400);
+  expect(await forced.json()).toMatchObject({
+    error: {
+      message: "Antigravity agent requests do not support native web search",
+    },
+  });
+  expect(upstreamRequests()).toHaveLength(4);
+  expect(
+    (await env.HEALTH.getByName(connection.provider_id).getStatus()).failures,
+  ).toBe(0);
+});
+
 const admin = (
   path: string,
   method = "GET",
@@ -3038,7 +3102,10 @@ test("Gemini family catalogs advertise only enabled levels across all client for
   const config = settings(connection, ref);
   const family = "gemini-3.8-flash";
   config.providers[0].models = [`${family}-medium`, `${family}-high`];
-  config.model_routes = { alias: { model: family } };
+  config.model_routes = {
+    alias: { model: family },
+    "gpt-6-astra": { model: family },
+  };
   override = (request) =>
     request.url.includes(":fetchAvailableModels")
       ? Response.json({
@@ -3074,17 +3141,31 @@ test("Gemini family catalogs advertise only enabled levels across all client for
     expect(entries.map((entry) => entry.id ?? entry.slug).sort()).toEqual([
       "alias",
       family,
+      "gpt-6-astra",
     ]);
     for (const entry of entries) {
-      if (agent === "codex_cli")
+      if (agent === "codex_cli") {
         expect(entry).toMatchObject({
+          display_name: "Gemini 3.8 Flash",
+          multi_agent_version: "v2",
+          truncation_policy: { mode: "tokens", limit: 10000 },
+          context_window: 1000000,
+          max_context_window: 1000000,
+          supports_experimental_context: false,
+          supports_search_tool: false,
+          node_repl_disabled: true,
           default_reasoning_level: "high",
           supported_reasoning_levels: [
             { effort: "medium" },
             { effort: "high" },
           ],
         });
-      else if (agent === "claude-code")
+        expect(entry.base_instructions).toEqual(expect.any(String));
+        expect(entry.base_instructions).not.toBe("");
+        expect(entry.model_messages).toMatchObject({
+          instructions_template: entry.base_instructions,
+        });
+      } else if (agent === "claude-code")
         expect(entry).toMatchObject({
           capabilities: {
             effort: {

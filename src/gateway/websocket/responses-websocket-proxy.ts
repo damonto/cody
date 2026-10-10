@@ -68,7 +68,7 @@ import {
   parseObject,
   rewriteResponseCreate,
   safeSend,
-  upstreamErrorText,
+  upstreamErrorEvent,
   type ResponseCreateFrame,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
@@ -78,10 +78,12 @@ import {
   restoreCodexAccount,
 } from "../../providers/codex/exhaustion.ts";
 import {
+  CODEX_QUOTA_CODES,
   codexUsageLimitEvent,
   codexUsageLimitFromError,
   type CodexUsageLimit,
 } from "../../providers/codex/limits.ts";
+import { retryErrorIsReplayable } from "../http/retry-errors.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 import type {
@@ -137,6 +139,8 @@ interface FirstFrameAttempt {
   readonly routingContext: CurrentRoutingContext;
   readonly meter: RequestMeter | undefined;
   readonly excluded: Set<string>;
+  /** Quota switching cannot leave the provider that accepted the first attempt. */
+  lockedProvider: string | undefined;
   switches: number;
   resetConsumed: boolean;
   /** The last exhausted account's error, returned when no account remains. */
@@ -422,8 +426,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       typeof message === "string" ? parseObject(message) : undefined;
     const status = payload ? errorStatus(payload) : undefined;
     const usageLimit =
-      payload?.type === "error" &&
-      status === 429 &&
+      payload &&
+      ((payload.type === "error" && status === 429) ||
+        payload.type === "response.failed") &&
       state.selected_provider_type === ProviderType.Codex
         ? codexUsageLimitFromError(payload, (name) =>
             eventHeader(payload, name),
@@ -434,6 +439,8 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       usageLimit &&
       typeof message === "string" &&
       attempt &&
+      (payload?.type !== "response.failed" ||
+        retryErrorIsReplayable(payload, "", CODEX_QUOTA_CODES)) &&
       this.receivedClientMessages <= 1
     ) {
       // Nothing but this error has reached the upstream's reply, and the
@@ -491,6 +498,12 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         );
       }
       await this.health.inactive();
+      if (usageLimit)
+        await this.closeAll(
+          1011,
+          "selected upstream key is cooling down",
+          "usage_limit_reached",
+        );
       return;
     }
     if (payload.type === "error") {
@@ -632,18 +645,21 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const socket = response.webSocket;
     if (response.status !== 101 || !socket) {
       if (result.usageLimit) {
-        const body = await upstreamErrorText(response);
+        const error = await upstreamErrorEvent(
+          response,
+          codexUsageLimitEvent(result.usageLimit.resets_at),
+        );
         const routing = await this.storage.transition(
           [SessionPhase.Connecting],
           (state) => ({ ...state, phase: SessionPhase.Routing }),
         );
         if (!routing) return;
-        await this.excludeAccount(
+        const excluded = await this.excludeAccount(
           attempt,
           result.usageLimit,
-          body ?? codexUsageLimitEvent(result.usageLimit.resets_at),
+          error,
         );
-        return "switch";
+        return excluded ? "switch" : undefined;
       }
       if (
         healthFailureScope(
@@ -654,16 +670,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       ) {
         await this.health.fail();
       }
-      const body = await upstreamErrorText(response);
-      safeSend(
-        this.clientSocket(),
-        body ??
-          gatewayErrorEvent(
-            response.status || 502,
-            `Upstream WebSocket upgrade failed with status ${response.status}`,
-            "websocket_upgrade_failed",
-          ),
-      );
+      safeSend(this.clientSocket(), await upstreamErrorEvent(response));
       logWarn("websocket.upgrade_rejected", {
         request_id: current.request_id,
         provider_id: target.provider.id,
@@ -863,6 +870,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       routingContext,
       meter,
       excluded: new Set(),
+      lockedProvider: undefined,
       switches: 0,
       resetConsumed: false,
       exhausted: undefined,
@@ -878,8 +886,16 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
    * to the next account.
    */
   private async routeFirstFrame(attempt: FirstFrameAttempt): Promise<void> {
-    const { frame, route, routingContext, sessionId } = attempt;
+    const { frame, routingContext, sessionId } = attempt;
     for (;;) {
+      const route = attempt.lockedProvider
+        ? {
+            ...attempt.route,
+            targets: attempt.route.targets.filter(
+              (candidate) => candidate.provider.id === attempt.lockedProvider,
+            ),
+          }
+        : attempt.route;
       const selection = await selectAvailableProviderWithDetails(
         this.env,
         route,
@@ -919,7 +935,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           )
             continue;
         }
-        await this.rejectUnroutable(attempt, selection);
+        await this.rejectUnroutable(attempt, route, selection);
         return;
       }
       if (
@@ -957,6 +973,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
 
   private async rejectUnroutable(
     attempt: FirstFrameAttempt,
+    route: ModelRoute,
     selection: ProviderSelection,
   ): Promise<void> {
     const status = selection.affinity?.status;
@@ -966,11 +983,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         : status === SessionAffinityStatus.Forbidden ||
             status === SessionAffinityStatus.Failed
           ? undefined
-          : codexQuotaResetsAt(
-              attempt.route.targets,
-              selection,
-              attempt.excluded,
-            );
+          : codexQuotaResetsAt(route.targets, selection, attempt.excluded);
     const exhausted =
       attempt.exhausted ??
       (resetsAt === undefined ? undefined : codexUsageLimitEvent(resetsAt));
@@ -990,17 +1003,28 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     attempt: FirstFrameAttempt,
     limit: CodexUsageLimit,
     error: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const target = attempt.target;
-    if (!target) return;
+    if (!target) return false;
     // Awaited: the next selection must already see this account cooling.
-    await recordCredentialQuotaCooldown(
+    const persisted = await recordCredentialQuotaCooldown(
       this.env,
       target.provider.id,
       target.credential.id,
       limit.resets_at,
       attempt.requestId,
     );
+    if (!persisted) {
+      await this.settleAttempt();
+      safeSend(this.clientSocket(), error);
+      await this.closeAll(
+        1013,
+        "quota coordination unavailable",
+        "codex_quota_write_failed",
+      );
+      return false;
+    }
+    attempt.lockedProvider = target.provider.id;
     attempt.excluded.add(
       credentialKey(target.provider.id, target.credential.id),
     );
@@ -1014,6 +1038,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       code: limit.code,
       resets_at: limit.resets_at,
     });
+    return true;
   }
 
   /** Drops the exhausted upstream and resends the first frame elsewhere. */
@@ -1038,8 +1063,8 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         }),
       );
       if (!routing) return;
-      await this.excludeAccount(attempt, limit, error);
-      await this.routeFirstFrame(attempt);
+      if (await this.excludeAccount(attempt, limit, error))
+        await this.routeFirstFrame(attempt);
     } finally {
       this.switching = undefined;
       settle();

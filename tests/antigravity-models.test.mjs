@@ -13,12 +13,16 @@ import {
   aggregateStandardModels,
   aggregateCodexModels,
 } from "../src/gateway/catalog/models.ts";
+import modelCatalog from "../src/gateway/catalog/models.json" with { type: "json" };
 import {
   resolveModelRoute,
   modelIsAvailableForClient,
 } from "../src/gateway/routing/routing.ts";
 
 const family = "gemini-3.8-flash";
+const familyTemplate = modelCatalog.models.find(
+  (model) => model.slug === family,
+);
 const models = ["low", "medium", "high"].map((level) => `${family}-${level}`);
 const ref = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -218,7 +222,9 @@ test("catalogs group native variants but keep explicit aliases and other provide
   assert.equal(grouped.context_window, 999998);
   assert.deepEqual(grouped.input_modalities, ["text"]);
   assert.deepEqual(grouped.thinking_levels, ["low", "medium", "high"]);
-  const codex = aggregateCodexModels(new Set([family]), new Set(), [grouped]);
+  const codex = aggregateCodexModels(new Set([family]), new Set(), [
+    { id: family, upstream: { id: family, raw: grouped } },
+  ]);
   assert.equal(codex[0].default_reasoning_level, "high");
   assert.deepEqual(
     codex[0].supported_reasoning_levels.map((entry) => entry.effort),
@@ -230,6 +236,110 @@ test("catalogs group native variants but keep explicit aliases and other provide
   );
   assert.equal(highOnly.length, 1);
   assert.deepEqual(highOnly[0].thinking_levels, ["high"]);
+});
+
+test("Codex native families retain static client metadata and account capabilities", () => {
+  const [grouped] = aggregateStandardModels(
+    catalog(config([models[1], models[2]])),
+    new Map(),
+  );
+  const [model] = aggregateCodexModels(new Set([family]), new Set(), [
+    { id: family, upstream: { id: family, raw: grouped } },
+  ]);
+  assert.equal(model.display_name, "Gemini 3.8 Flash");
+  assert.ok(familyTemplate.base_instructions.length > 0);
+  assert.equal(model.base_instructions, familyTemplate.base_instructions);
+  assert.deepEqual(model.model_messages, familyTemplate.model_messages);
+  assert.equal(model.multi_agent_version, familyTemplate.multi_agent_version);
+  assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 10000 });
+  assert.equal(model.context_window, 999998);
+  assert.equal(model.max_context_window, 999998);
+  assert.deepEqual(model.input_modalities, ["text"]);
+  assert.equal(model.default_reasoning_level, "high");
+  assert.deepEqual(
+    model.supported_reasoning_levels,
+    familyTemplate.supported_reasoning_levels.filter(
+      ({ effort }) => effort !== "low",
+    ),
+  );
+  assert.equal(model.support_verbosity, false);
+  assert.equal(model.supports_experimental_context, false);
+  assert.equal(model.supports_search_tool, false);
+  assert.equal(model.node_repl_disabled, true);
+  assert.equal(model.prefer_websockets, false);
+});
+
+test("Codex native aliases match their real model or thinking family", () => {
+  const [grouped] = aggregateStandardModels(catalog(), new Map());
+  const native = [
+    { id: "alias", upstream: { id: family, raw: grouped } },
+    { id: "gpt-6-astra", upstream: catalog()[0].models[2] },
+  ];
+  const listed = aggregateCodexModels(
+    new Set(native.map(({ id }) => id)),
+    new Set(["gpt-6-astra"]),
+    native,
+  );
+  assert.deepEqual(
+    listed.map(({ slug }) => slug),
+    ["alias", "gpt-6-astra"],
+  );
+  for (const model of listed) {
+    assert.equal(model.display_name, "Gemini 3.8 Flash");
+    assert.equal(model.base_instructions, familyTemplate.base_instructions);
+    assert.deepEqual(model.model_messages, familyTemplate.model_messages);
+    assert.equal(model.supports_experimental_context, false);
+    assert.equal(model.supports_search_tool, false);
+    assert.equal(model.node_repl_disabled, true);
+  }
+  assert.equal(listed[1].context_window, 999998);
+  assert.deepEqual(listed[1].input_modalities, ["text", "image"]);
+});
+
+test("native catalog matching does not use client names or unrelated suffixes", () => {
+  for (const id of [
+    `${family}-tiered`,
+    `${family}-preview`,
+    `${family}-high-low`,
+    "unknown-native-model",
+  ]) {
+    const [model] = aggregateCodexModels(new Set([family]), new Set(), [
+      {
+        id: family,
+        upstream: { id, raw: { display_name: id, context_window: 200000 } },
+      },
+    ]);
+    assert.equal(model.slug, family);
+    assert.equal(model.display_name, id);
+    assert.equal(model.base_instructions, "");
+    assert.equal(model.model_messages, undefined);
+    assert.equal(model.context_window, 200000);
+    assert.deepEqual(model.supported_reasoning_levels, []);
+  }
+});
+
+test("native templates retain instructions without inheriting endpoint settings", () => {
+  const sourceId = "gpt-6-astra";
+  const template = modelCatalog.models.find((model) => model.slug === sourceId);
+  const [model] = aggregateCodexModels(new Set(["native"]), new Set(), [
+    { id: "native", upstream: { id: sourceId, raw: {} } },
+  ]);
+  const { instructions_template, instructions_variables, approvals } =
+    template.model_messages;
+  assert.deepEqual(model.model_messages, {
+    instructions_template,
+    instructions_variables,
+    approvals,
+  });
+  assert.equal(model.supports_experimental_context, false);
+  assert.equal(model.supports_search_tool, false);
+  assert.equal(model.node_repl_disabled, true);
+  assert.equal(model.prefer_websockets, false);
+  assert.equal(model.context_window, null);
+  assert.equal(Object.hasOwn(model, "service_tiers"), false);
+  assert.equal(Object.hasOwn(model, "web_search_tool_type"), false);
+  assert.ok(Object.hasOwn(template, "service_tiers"));
+  assert.ok(Object.hasOwn(template.model_messages, "token_budget"));
 });
 
 for (const endpoint of ["responses", "messages", "messages/count_tokens"]) {
@@ -378,6 +488,18 @@ test("family catalogs have deterministic levels and conservative incomplete meta
   assert.equal(partial.max_output_tokens, null);
   assert.deepEqual(partial.input_modalities, []);
   assert.equal(partial.supports_thinking, false);
+  const [codex] = aggregateCodexModels(new Set([family]), new Set(), [
+    { id: family, upstream: { id: family, raw: partial } },
+  ]);
+  assert.equal(codex.base_instructions, familyTemplate.base_instructions);
+  assert.equal(codex.context_window, null);
+  assert.equal(codex.max_context_window, null);
+  assert.deepEqual(codex.input_modalities, []);
+  assert.equal(codex.supports_reasoning_summaries, false);
+  assert.deepEqual(
+    codex.supported_reasoning_levels.map(({ effort }) => effort),
+    ["high"],
+  );
 });
 
 test("invalid thinking modes and empty effort fail validation before variant selection", () => {

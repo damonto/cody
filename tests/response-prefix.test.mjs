@@ -5,6 +5,42 @@ import { inspectResponsePrefix } from "../src/gateway/http/response-prefix.ts";
 const bytes = (value) => new TextEncoder().encode(value);
 const inspection = (observe) => ({ maxBytes: 1024, timeoutMs: 10, observe });
 
+test("zero preflight budget observes only downstream reads and preserves backpressure", async () => {
+  let reads = 0;
+  const seen = [];
+  const source = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          reads++;
+          controller.enqueue(bytes("forwarded"));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+  );
+  const { response, stoppedBy } = await inspectResponsePrefix(
+    source,
+    new AbortController().signal,
+    {
+      maxBytes: 1024,
+      timeoutMs: 0,
+      observe: async (chunk) => {
+        seen.push(chunk ? new TextDecoder().decode(chunk) : null);
+        return true;
+      },
+    },
+  );
+  assert.equal(stoppedBy, "timeout");
+  assert.equal(reads, 0);
+  assert.deepEqual(seen, []);
+  assert.equal(await response.text(), "forwarded");
+  assert.equal(reads, 1);
+  assert.deepEqual(seen, ["forwarded", null]);
+  assert.equal(source.body.locked, false);
+});
+
 test("downstream cancellation releases a pending read handed off by preflight", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let cancelled;
@@ -204,7 +240,7 @@ test("fully observed streams report EOF and reject invalid limits before locking
     { maxBytes: 0 },
     { maxBytes: Infinity },
     { maxBytes: 1.5 },
-    { timeoutMs: 0 },
+    { timeoutMs: -1 },
     { timeoutMs: NaN },
   ]) {
     const source = new Response("unread");

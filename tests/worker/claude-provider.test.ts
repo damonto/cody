@@ -17,6 +17,7 @@ import {
 } from "../../src/providers/oauth/schema.ts";
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
 const sent: { token: string; body: string; headers: Headers }[] = [];
+const counted: { url: string; body: string; headers: Headers }[] = [];
 const usage = new Map<string, number>();
 const reject = new Set<string>();
 let generic429 = false;
@@ -24,9 +25,13 @@ let stream = false;
 let usageFails = false;
 let tokenLifetime = 3600;
 let refreshFails = false;
+let partialRefresh = false;
+let countTokensRejected = false;
+let messageHeaders: Record<string, string> = {};
 beforeAll(() => applyD1Migrations(env.CODY_DB, bindings.TEST_MIGRATIONS));
 beforeEach(async () => {
   sent.length = 0;
+  counted.length = 0;
   usage.clear();
   reject.clear();
   generic429 = false;
@@ -34,6 +39,9 @@ beforeEach(async () => {
   usageFails = false;
   tokenLifetime = 3600;
   refreshFails = false;
+  partialRefresh = false;
+  countTokensRejected = false;
+  messageHeaders = {};
   await env.CODY_CONFIG_KV.delete("gateway-config");
   vi.stubGlobal(
     "fetch",
@@ -53,6 +61,14 @@ beforeEach(async () => {
           access_token: id,
           refresh_token: id,
           expires_in: tokenLifetime,
+          ...(body.refresh_token && partialRefresh
+            ? {
+                refresh_token: null,
+                account: null,
+                organization: null,
+                scope: null,
+              }
+            : {}),
         });
       }
       if (url.pathname === "/api/oauth/profile")
@@ -84,6 +100,25 @@ beforeEach(async () => {
         return Response.json({
           data: [{ id: "claude-sonnet-4-6", display_name: "Sonnet" }],
         });
+      if (url.pathname === "/v1/messages/count_tokens") {
+        counted.push({
+          url: request.url,
+          body: await request.text(),
+          headers: request.headers,
+        });
+        return countTokensRejected
+          ? Response.json(
+              {
+                type: "error",
+                error: {
+                  type: "rate_limit_error",
+                  message: "token counting limit",
+                },
+              },
+              { status: 429, headers: messageHeaders },
+            )
+          : Response.json({ input_tokens: 42 });
+      }
       if (url.pathname === "/v1/messages") {
         sent.push({
           token,
@@ -113,15 +148,21 @@ beforeEach(async () => {
                 "anthropic-ratelimit-unified-reset": String(
                   Math.ceil(Date.now() / 1000) + 600,
                 ),
+                ...messageHeaders,
               },
             },
           );
         if (stream)
           return new Response(
             'event: message_start\ndata: {"type":"message_start"}\n\nevent: error\ndata: {"type":"error","error":{"type":"rate_limit_error"}}\n\n',
-            { headers: { "content-type": "text/event-stream" } },
+            {
+              headers: {
+                "content-type": "text/event-stream",
+                ...messageHeaders,
+              },
+            },
           );
-        return Response.json({ token });
+        return Response.json({ token }, { headers: messageHeaders });
       }
       throw new Error(`Unexpected request ${url}`);
     }),
@@ -190,10 +231,11 @@ async function infer(
   c: ReturnType<typeof config>,
   session = crypto.randomUUID(),
   model = "claude-sonnet-4-6",
+  endpoint: "messages" | "messages/count_tokens" = "messages",
 ) {
   const context = createExecutionContext();
   const response = await handleInference(
-    new Request("https://gateway.test/v1/messages?beta=true", {
+    new Request(`https://gateway.test/v1/${endpoint}?beta=true`, {
       method: "POST",
       headers: {
         "x-api-key": "secret",
@@ -211,7 +253,7 @@ async function infer(
     env,
     c,
     c.api_keys[0],
-    "messages",
+    endpoint,
     crypto.randomUUID(),
     context,
   );
@@ -357,4 +399,148 @@ test("An existing Claude session keeps its available account when priorities cha
   c.providers[0].credentials[1].priority = 200;
   expect(await (await infer(c, session)).json()).toEqual({ token: a.id });
   expect(await (await infer(c)).json()).toEqual({ token: b.id });
+});
+
+test("Claude count-tokens has independent limits and preserves the native request", async () => {
+  const a = await ready();
+  const c = config([a]);
+  usage.set(a.id, 100);
+  expect((await infer(c)).status).toBe(429);
+  usageFails = true;
+  await a.stub.run({ action: "quota", force: true });
+  const response = await infer(
+    c,
+    crypto.randomUUID(),
+    "claude-sonnet-4-6",
+    "messages/count_tokens",
+  );
+  expect(await response.json()).toEqual({ input_tokens: 42 });
+  expect(sent).toHaveLength(0);
+  expect(counted).toHaveLength(1);
+  expect(counted[0].url).toBe(
+    "https://api.anthropic.com/v1/messages/count_tokens?beta=true",
+  );
+  expect(counted[0].headers.get("authorization")).toBe(`Bearer ${a.id}`);
+  expect(counted[0].headers.get("anthropic-beta")).toBe("custom");
+  expect(JSON.parse(counted[0].body).unknown).toEqual({ keep: true });
+});
+
+test("Claude count-tokens rejection neither switches accounts nor cools Messages", async () => {
+  const accounts = await Promise.all([ready(), ready()]);
+  const c = config(accounts);
+  countTokensRejected = true;
+  messageHeaders = {
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-reset": String(
+      Math.ceil(Date.now() / 1000) + 600,
+    ),
+  };
+  const response = await infer(
+    c,
+    crypto.randomUUID(),
+    "claude-sonnet-4-6",
+    "messages/count_tokens",
+  );
+  expect(response.status).toBe(429);
+  expect(counted).toHaveLength(1);
+  for (const account of accounts) {
+    const view = await accountReply(
+      account.stub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    expect(view.quota.claude_limits ?? []).toEqual([]);
+  }
+  messageHeaders = {};
+  expect((await infer(c)).status).toBe(200);
+});
+
+test("Overage-only rejection preserves the upstream error without a subscription switch", async () => {
+  const [a, b] = await Promise.all([ready(), ready()]);
+  const c = config([a, b], { account_selection: "session_affinity" });
+  reject.add(a.id);
+  messageHeaders = {
+    "anthropic-ratelimit-unified-representative-claim":
+      "seven_day_overage_included",
+    "anthropic-ratelimit-unified-7d-status": "allowed",
+    "anthropic-ratelimit-unified-5h-utilization": "0.00",
+    "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+    "anthropic-ratelimit-unified-overage-status": "rejected",
+    "anthropic-ratelimit-unified-overage-disabled-reason":
+      "org_spend_cap_reached",
+  };
+  const response = await infer(c);
+  expect(response.status).toBe(429);
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: { type: "rate_limit_error", message: "quota exhausted" },
+  });
+  expect(sent).toHaveLength(1);
+  reject.clear();
+  messageHeaders = {};
+  expect(await (await infer(c)).json()).toEqual({ token: a.id });
+});
+
+test.each([false, true])(
+  "HTTP 200 quota observations persist without replay (SSE: %s)",
+  async (useStream) => {
+    const a = await ready();
+    const c = config([a]);
+    const until = (Math.ceil(Date.now() / 1000) + 600) * 1000;
+    messageHeaders = {
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-representative-claim": "seven_day_opus",
+      "anthropic-ratelimit-unified-reset": String(until / 1000),
+      "anthropic-ratelimit-unified-overage-status": "allowed",
+    };
+    stream = useStream;
+    const response = await infer(c, crypto.randomUUID(), "claude-opus-4-6");
+    expect(response.status).toBe(200);
+    if (useStream)
+      expect(await response.text()).toContain("event: message_start\n");
+    else expect(await response.json()).toEqual({ token: a.id });
+    expect(sent).toHaveLength(1);
+    await evictDurableObject(a.stub);
+    const view = await accountReply(
+      a.stub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    expect(view.quota.claude_limits).toEqual([{ model: "opus", until }]);
+    expect(
+      (await infer(c, crypto.randomUUID(), "claude-opus-4-6")).status,
+    ).toBe(429);
+    expect(sent).toHaveLength(1);
+    messageHeaders = {};
+    stream = false;
+    expect((await infer(c)).status).toBe(200);
+    expect(
+      (
+        await infer(
+          config([a], { allow_extra_usage: true }),
+          crypto.randomUUID(),
+          "claude-opus-4-6",
+        )
+      ).status,
+    ).toBe(200);
+  },
+);
+
+test("Partial refresh retains the old refresh token and account identity across eviction", async () => {
+  tokenLifetime = 30;
+  const a = await ready();
+  partialRefresh = true;
+  const command = {
+    action: "resolve" as const,
+    connection: { provider_id: "claude", credential_id: a.id },
+    proxy_configuration: { proxy_groups: [] },
+  };
+  expect((await a.stub.run(command)).ok).toBe(true);
+  await evictDurableObject(a.stub);
+  expect((await a.stub.run(command)).ok).toBe(true);
+  const view = await accountReply(
+    a.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(view.claude?.account_id).toBe(a.id);
+  expect(view.claude?.organization_id).toBe("org");
 });

@@ -1129,11 +1129,19 @@ test("native models and aliases appear in Codex without advertising Astra capabi
   const metadata = [
     {
       id: "gemini-real",
-      context_window: 1000000,
-      max_output_tokens: 32000,
-      display_name: "Gemini real",
+      upstream: {
+        id: "gemini-real",
+        raw: {
+          context_window: 1000000,
+          max_output_tokens: 32000,
+          display_name: "Gemini real",
+        },
+      },
     },
-    { id: "gpt-6-astra", context_window: 200000 },
+    {
+      id: "gpt-6-astra",
+      upstream: { id: "gemini-real", raw: { context_window: 200000 } },
+    },
   ];
   const models = aggregateCodexModels(
     new Set(["gemini-real", "gpt-6-astra"]),
@@ -1145,6 +1153,7 @@ test("native models and aliases appear in Codex without advertising Astra capabi
   assert.equal(models[0].context_window, 1000000);
   assert.equal(models[1].supports_experimental_context, false);
   assert.equal(models[1].model_messages, undefined);
+  assert.equal(models[1].base_instructions, "");
   assert.equal(
     aggregateCodexModels(new Set(["other"]), new Set(), metadata).length,
     0,

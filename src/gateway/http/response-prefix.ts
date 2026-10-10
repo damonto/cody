@@ -1,5 +1,6 @@
 interface PrefixInspection {
   readonly maxBytes: number;
+  /** Zero skips preflight; observation continues during downstream reads. */
   readonly timeoutMs: number;
   /** Observe bytes once. Return true when enough of the prefix has been seen. */
   readonly observe: (chunk: Uint8Array | undefined) => Promise<boolean>;
@@ -18,15 +19,16 @@ export async function inspectResponsePrefix(
 ): Promise<InspectedPrefix> {
   if (!Number.isSafeInteger(inspection.maxBytes) || inspection.maxBytes <= 0)
     throw new RangeError("maxBytes must be a positive safe integer");
-  if (!Number.isFinite(inspection.timeoutMs) || inspection.timeoutMs <= 0)
-    throw new RangeError("timeoutMs must be a positive finite number");
+  if (!Number.isFinite(inspection.timeoutMs) || inspection.timeoutMs < 0)
+    throw new RangeError("timeoutMs must be a non-negative finite number");
   if (!response.body) return { response, stoppedBy: "eof" };
   const reader = response.body.getReader();
   // Coalesce small transport chunks so the byte budget also bounds bookkeeping.
   // Grow on demand, as most responses need far less than the maximum capacity.
   let prefix = new Uint8Array(0);
   let prefixBytes = 0;
-  let stoppedBy: InspectedPrefix["stoppedBy"] = "size";
+  let stoppedBy: InspectedPrefix["stoppedBy"] =
+    inspection.timeoutMs === 0 ? "timeout" : "size";
   let pending: Promise<ReadableStreamReadResult<Uint8Array>> | undefined;
   let remainder: Uint8Array | undefined;
   let done = false;
@@ -61,7 +63,7 @@ export async function inspectResponsePrefix(
   const timer = setTimeout(expire, inspection.timeoutMs);
   try {
     signal.throwIfAborted();
-    while (prefixBytes < inspection.maxBytes) {
+    while (inspection.timeoutMs > 0 && prefixBytes < inspection.maxBytes) {
       pending ??= reader.read();
       const next = await Promise.race([pending, timeout]);
       signal.throwIfAborted();

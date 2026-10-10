@@ -1161,11 +1161,35 @@ export class ProviderOAuthAccountCore {
           account.quota.xai_limits = limits;
         });
         return this.view();
+      case "claude_limit":
       case "claude_usage":
         if (this.requireAccount().provider_type !== ProviderType.Claude)
           throw new OAuthError("Only available for Claude", 400);
         await this.updateGeneration(command.generation, (account) => {
           account.claude_quota_revision++;
+          const observations =
+            command.action === "claude_limit"
+              ? [command, ...(command.additional_limits ?? [])]
+              : (command.limits ?? []);
+          if (observations.length) {
+            const limits = (account.quota.claude_limits ?? []).filter(
+              (limit) => limit.until > Date.now(),
+            );
+            for (const observation of observations) {
+              const existing = limits.find(
+                (limit) => limit.model === observation.model,
+              );
+              if (existing)
+                existing.until = Math.max(existing.until, observation.until);
+              else
+                limits.push({
+                  model: observation.model,
+                  until: observation.until,
+                });
+            }
+            account.quota.claude_limits = limits;
+          }
+          if (command.action === "claude_limit") return;
           if (
             command.extra_usage_disabled_reason !== undefined &&
             account.quota.extra_usage
@@ -1193,32 +1217,6 @@ export class ProviderOAuthAccountCore {
                 account.quota.groups[index] = group;
             }
           }
-        });
-        return this.view();
-      case "claude_limit":
-        if (this.requireAccount().provider_type !== ProviderType.Claude)
-          throw new OAuthError("Only available for Claude", 400);
-        await this.updateGeneration(command.generation, (account) => {
-          account.claude_quota_revision++;
-          const limits = (account.quota.claude_limits ?? []).filter(
-            (limit) => limit.until > Date.now(),
-          );
-          for (const observation of [
-            command,
-            ...(command.additional_limits ?? []),
-          ]) {
-            const existing = limits.find(
-              (limit) => limit.model === observation.model,
-            );
-            if (existing)
-              existing.until = Math.max(existing.until, observation.until);
-            else
-              limits.push({
-                model: observation.model,
-                until: observation.until,
-              });
-          }
-          account.quota.claude_limits = limits;
         });
         return this.view();
       case "start":

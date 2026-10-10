@@ -16,6 +16,7 @@ import {
   contextManagementSessionMatches,
 } from "../sessions/context-management-protocol.ts";
 import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
+import { ContentEncodingError, decodeRequestBody } from "./content-encoding.ts";
 import { rewriteModel } from "./model-rewrite.ts";
 
 import { apiError } from "./http.ts";
@@ -148,12 +149,19 @@ export async function prepareInferenceInput(
   ]);
   const protocol = requestProtocol(request, upstreamPath);
   let rawBody: Uint8Array<ArrayBuffer>;
+  let decodedBody: Uint8Array<ArrayBuffer>;
   try {
     rawBody = await readBodyWithinLimit(
       request.body,
       MAX_INFERENCE_BODY_BYTES,
       request.headers.get("content-length"),
       undefined,
+      request.signal,
+    );
+    decodedBody = await decodeRequestBody(
+      rawBody,
+      request.headers.get("content-encoding"),
+      MAX_INFERENCE_BODY_BYTES,
       request.signal,
     );
   } catch (error) {
@@ -169,9 +177,11 @@ export async function prepareInferenceInput(
         { code: "request_too_large", requestId },
       );
     }
+    if (error instanceof ContentEncodingError)
+      return apiError(protocol, error.status, error.message, { requestId });
     throw error;
   }
-  const originalText = new TextDecoder().decode(rawBody);
+  const originalText = new TextDecoder().decode(decodedBody);
   requestLog?.mergeSection("inference", { body_bytes: rawBody.byteLength });
   let payload: InferencePayload;
   try {

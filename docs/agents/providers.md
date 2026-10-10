@@ -37,6 +37,7 @@ Code: `src/providers/antigravity/`.
 - `Credits.credit_amount` is an implicit-presence proto3 int64 in the official Antigravity 2.19.1 protocol. An omitted/null amount in a credit entry means zero; a missing credit inventory is not a known zero balance. Preserve integer strings without precision loss. Credits are informational; never enable credit spending.
 - Normalize tier eligibility fields and RPC metadata separately. Prefer Google's specific verification action (`ErrorInfo`, then `Help`) before a generic age-verification page. Merge repeated requirements without losing distinct instructions or help links; quota/subscription partial failures must retain both errors and the last successful data. Console verification actions must not hide a simultaneous refresh error.
 - Follow CLIProxyAPI request conventions: native header whitelist, Messages-only conditional interleaved-thinking hint for Claude thinking models, and removal of Claude Code billing attribution. Keep the old identity prompt disabled.
+- Agent requests omit recognized optional Responses/Messages web-search tool declarations, including nested declarations, while retaining function/custom tools. Reject forced native search and required selections with no available tools. Apply `allowed_tools` to active declarations without losing mappings for historical calls. Completed Responses `web_search_call` records are omitted as server execution metadata; preserve the surrounding assistant content and signed parts. Native search envelopes and grounding conversion are not implemented or advertised; the global `supports_web_search` flag controls the separate `alpha/search` endpoint.
 - Optional `sensitive_words` masks system text only. Never mutate conversation/tool history or native signatures. Signed history may move among configured accounts only after verifying client, provider, model and original content; retain source-account provenance.
 - Preserve available bindings across credential-priority recovery. `QUOTA_EXHAUSTED` and timed `RATE_LIMIT_EXCEEDED` cool the physical account and real upstream model, then permit an account switch before output. Inspect the first SSE event before committing the stream; later limits cool without replay. Unknown/capacity 429s only use configured retries.
 - Persist quota cooldowns at `quota:antigravity:<account_ref>:<encoded model>`; lookup/write failures fail closed.
@@ -53,16 +54,16 @@ Tests: `tests/antigravity*.test.mjs` (including family routing/catalog coverage 
 Code: `src/providers/codex/`, `src/gateway/websocket/`.
 
 - This provider balances the operator's own ChatGPT accounts; it is not a resale interface. Use Codex CLI public OAuth registration for device-code and pasted `http://localhost:1455/auth/callback` PKCE flows.
-- Read `chatgpt_account_id` from the ID token; email is optional. Carry the FedRAMP claim into `X-OpenAI-Fedramp`. Partial refreshes preserve omitted fields and reject workspace changes.
+- Read `chatgpt_account_id` from the ID token; email is optional. Carry the FedRAMP claim into `X-OpenAI-Fedramp`. Partial refreshes preserve omitted/null token fields and reject workspace changes.
 - Forward HTTP/WebSocket to `https://chatgpt.com/backend-api/codex`, replacing account authorization and `ChatGPT-Account-ID`. Preserve client payloads; no instruction injection, client impersonation, forced streaming or unrelated field rewriting.
 - Implemented endpoints are `responses`, `responses/compact`, `images/generations`, `images/edits`, `models`, `memories/trace_summarize`, plus `alpha/search` and context-management paths when their capability flags allow them. `memories/trace_summarize` is OpenAI-dialect inference served only by Codex.
 
 ### Quota switching
 
-- A 429 with `usage_limit_reached`, `usage_not_included` or `insufficient_quota` terminates configured retries. Await a credential quota cooldown and resend on another account of the same provider only before client output.
+- A 429 or Responses stream failure with `usage_limit_reached`, `usage_not_included` or `insufficient_quota` terminates configured retries. Share bounded preflight with error-code retries through the retry executor's response inspection result; output-bearing events and size/time boundaries prohibit replay. Await a successful credential quota cooldown before resending on another account of the same provider. Quota read/write failures fail closed; late stream failures cool without replay. Late HTTP cooldown writes use the shared health scheduler so slow storage does not block forwarding.
 - Resolve cooldown end from body `resets_at`, then the active limit's `x-codex-*-reset-at` headers, then a 15-minute fallback.
-- WebSocket switching covers handshake 429 or a first-frame `error` before any other upstream event. Once output starts or the client sends a second frame, forward the error, cool the account and close; do not replay.
-- When no account remains, return the last upstream 429. If all were already cooling, synthesize `usage_limit_reached` with the earliest `resets_at`. Pinned context sessions receive that error rather than moving.
+- WebSocket switching covers handshake 429 or a first-frame `error`/`response.failed` before any other upstream event. Wrap HTTP handshake rejections in an error event with `type`, `status`, upstream error details and headers; bound error-body reads by both size and time. Once output starts or the client sends a second frame, forward the error, cool the account and close; do not replay.
+- When no account remains, return the last upstream quota response unchanged. If all were already cooling, synthesize `usage_limit_reached` with the earliest `resets_at`. Pinned context sessions receive that error rather than moving. Ordinary sessions retain an available account across higher-priority account recovery.
 
 ### Reset credits
 
@@ -76,10 +77,11 @@ Tests: `tests/codex.test.mjs`, `tests/worker/codex.test.ts`, `tests/worker/codex
 
 Code: `src/providers/claude/`.
 
-- Use public Claude Code PKCE registration with pasted `code#state` or the official callback URL. This provider serves the operator's own subscriptions.
+- Use public Claude Code PKCE registration with pasted `code#state` or the official callback URL. This provider serves the operator's own subscriptions. Partial refresh grants preserve omitted/null/empty refresh tokens and absent identity fields; explicit account or organization changes still fail.
 - Serve Messages HTTP/SSE, count-tokens and models only. Preserve native bodies and application headers; never inject prompts, tools, beta headers or client fingerprints. Resets, remote sessions, files and WebSocket are unsupported.
-- Filter fresh subscription quota before account selection. Keep five-hour, global weekly and model-specific weekly windows separate; persist model-scoped observations. Missing/stale quota fails closed.
-- Explicit HTTP quota rejection may switch within Claude before output, never after SSE starts.
+- Model discovery accepts nullable token limits and pagination cursors and retains explicit `thinking`/`image_input` capabilities; missing capabilities remain unknown.
+- Filter fresh subscription quota before Messages account selection. Keep five-hour, global weekly and model-specific weekly windows separate; persist model-scoped observations. Missing/stale quota fails closed. Count-tokens has independent rate limits: do not gate it on Messages quota, record its headers as subscription limits or switch accounts on those headers.
+- Explicit HTTP 429 subscription rejection may switch within Claude before output, never after SSE starts. Persist subscription rejection headers on HTTP 200 too (upstream overage may be allowed), without replaying the response. `overage`/`seven_day_overage_included` and `7d_oi` alone do not prove subscription exhaustion; independent explicit subscription-window rejections still apply. Unrecognized claims stay scoped to the exact upstream model, never the whole family.
 - `allow_extra_usage` defaults false and permits existing paid usage only after subscription candidates are exhausted. Never enable billing or change spending limits; concurrent requests may still cross the upstream billing boundary.
 
 Tests: `tests/claude-provider.test.mjs`, `tests/worker/claude-provider.test.ts`.

@@ -14,6 +14,7 @@ import {
 import { gatewayApp as worker } from "../../src/gateway/app.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
 import { getCredentialAvailability } from "../../src/gateway/health/health.ts";
+import { ProviderHealthCore } from "../../src/gateway/health/provider-health.ts";
 import {
   accountReply,
   accountViewSchema,
@@ -65,6 +66,10 @@ const usageLimit = (seconds: number) => ({
 
 async function send(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.hostname === "backup.example") {
+    upgrades.push("backup");
+    return new Response("unexpected fallback", { status: 503 });
+  }
   if (url.href === "https://auth.openai.com/oauth/token") {
     const code =
       new URLSearchParams(
@@ -157,7 +162,7 @@ async function ready(credentialId: string) {
 }
 
 /** Two ready accounts under a session-affinity Codex, so the first is tried first. */
-async function pool() {
+async function pool(backup = false) {
   const prefix = crypto.randomUUID().slice(0, 8);
   const accounts = await Promise.all([
     ready(`${prefix}-0`),
@@ -179,9 +184,34 @@ async function pool() {
           auth: { type: "oauth", account_ref: ref },
         })),
       },
+      ...(backup
+        ? [
+            {
+              type: "ai_gateway",
+              id: "backup",
+              base_url: "https://backup.example/v1",
+              priority: 50,
+              disabled: false,
+              supports_websocket: true,
+              models: [MODEL],
+              credentials: [
+                {
+                  id: "backup-key",
+                  priority: 100,
+                  disabled: false,
+                  auth: { type: "api_key", api_key: "mock-backup" },
+                },
+              ],
+            },
+          ]
+        : []),
     ],
     api_keys: [
-      { id: "client", api_key: "client-secret", providers: ["codex"] },
+      {
+        id: "client",
+        api_key: "client-secret",
+        providers: backup ? ["codex", "backup"] : ["codex"],
+      },
     ],
   });
   await setTestConfiguration(
@@ -373,7 +403,7 @@ test("once output has started the usage-limit error is forwarded and the account
 });
 
 test("when every account's handshake is exhausted the client receives a usage-limit event", async () => {
-  const [first, second] = await pool();
+  const [first, second] = await pool(true);
   handshakes.set(first.account, { exhausted: 600 });
   handshakes.set(second.account, { exhausted: 120 });
   const socket = await openGatewaySocket();
@@ -384,7 +414,107 @@ test("when every account's handshake is exhausted the client receives a usage-li
   expect(upgrades).toEqual([first.account, second.account]);
   expect(messages).toHaveLength(1);
   expect(JSON.parse(messages[0])).toMatchObject({
+    type: "error",
+    status: 429,
     error: { type: "usage_limit_reached" },
   });
   await expectQuotaCooldown(second.id, 120);
 });
+
+test("a first-frame quota error keeps fallback within the selected provider", async () => {
+  const [first, second] = await pool(true);
+  const connection = crypto.randomUUID();
+  handshakes.set(first.account, { connection });
+  handshakes.set(second.account, { exhausted: 120 });
+  const socket = await openGatewaySocket();
+  const close = closed(socket);
+  const messages = received(socket);
+  socket.send(FIRST_FRAME);
+  await nextUpstreamMessage(connection);
+  await sendUpstream(connection, {
+    type: "error",
+    status: 429,
+    error: usageLimit(300),
+  });
+  expect((await close).code).toBe(1013);
+  expect(upgrades).toEqual([first.account, second.account]);
+  expect(JSON.parse(messages[0])).toMatchObject({ type: "error", status: 429 });
+});
+
+test.each(["handshake", "frame"])(
+  "a failed quota write stops WebSocket switching after a %s error",
+  async (mode) => {
+    const [first, second] = await pool();
+    const connection = crypto.randomUUID();
+    handshakes.set(
+      first.account,
+      mode === "handshake" ? { exhausted: 600 } : { connection },
+    );
+    handshakes.set(second.account, { connection: crypto.randomUUID() });
+    vi.spyOn(
+      ProviderHealthCore.prototype,
+      "recordCooldownUntil",
+    ).mockRejectedValue(new Error("mock quota storage failure"));
+    const socket = await openGatewaySocket();
+    const messages = received(socket);
+    const close = closed(socket);
+    socket.send(FIRST_FRAME);
+    if (mode === "frame") {
+      await nextUpstreamMessage(connection);
+      await sendUpstream(connection, {
+        type: "error",
+        status: 429,
+        error: usageLimit(600),
+      });
+    }
+    expect((await close).code).toBe(1013);
+    expect(upgrades).toEqual([first.account]);
+    expect(JSON.parse(messages[0])).toMatchObject({
+      type: "error",
+      status: 429,
+    });
+  },
+);
+
+test.each([false, true])(
+  "response.failed quota errors switch only before output (output started: %s)",
+  async (outputStarted) => {
+    const [first, second] = await pool();
+    const [connection, fresh] = [crypto.randomUUID(), crypto.randomUUID()];
+    handshakes.set(first.account, { connection });
+    handshakes.set(second.account, { connection: fresh });
+    const socket = await openGatewaySocket();
+    const messages = received(socket);
+    socket.send(FIRST_FRAME);
+    await nextUpstreamMessage(connection);
+    const output = { type: "response.output_text.delta", delta: "partial" };
+    if (outputStarted) {
+      await sendUpstream(connection, output);
+      await until(() => messages.length > 0, "output");
+    }
+    const close = outputStarted ? closed(socket) : undefined;
+    const error = {
+      type: "response.failed",
+      response: {
+        id: "resp-quota",
+        status: "failed",
+        error: { code: "usage_not_included", resets_in_seconds: 600 },
+      },
+    };
+    await sendUpstream(connection, error);
+    if (close) {
+      expect((await close).code).toBe(1011);
+      expect(upgrades).toEqual([first.account]);
+      expect(messages.map((message) => JSON.parse(message))).toEqual([
+        output,
+        error,
+      ]);
+    } else {
+      expect(await nextUpstreamMessage(fresh)).toBe(FIRST_FRAME);
+      expect(upgrades).toEqual([first.account, second.account]);
+      expect(messages).toEqual([]);
+      socket.close(1000, "done");
+    }
+    await expectQuotaCooldown(first.id, 600);
+  },
+);

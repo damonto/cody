@@ -85,13 +85,11 @@ export interface ClaudeLimit {
   model: string | null;
   until: number;
 }
-export function claudeUsageLimit(
-  response: Response,
+function subscriptionLimits(
+  headers: Headers,
   model: string,
-  now = Date.now(),
-): (ClaudeLimit & { additional_limits?: ClaudeLimit[] }) | undefined {
-  if (response.status !== 429) return undefined;
-  const headers = response.headers;
+  now: number,
+): ClaudeLimit[] {
   const blocks = new Map<string | null, number>();
   const deadline = (value: string | null): number | undefined => {
     const seconds = value ? Number(value) : NaN;
@@ -111,18 +109,9 @@ export function claudeUsageLimit(
     )
       add(null, headers.get(`anthropic-ratelimit-unified-${window}-reset`));
   }
-  if (headers.get("anthropic-ratelimit-unified-7d_oi-status") === "rejected")
-    add(
-      modelFamily(model),
-      headers.get("anthropic-ratelimit-unified-7d_oi-reset"),
-    );
   const claim = headers.get("anthropic-ratelimit-unified-representative-claim");
-  // Extra usage/fast-mode rejection alone does not exhaust subscription quota.
-  if (
-    headers.get("anthropic-ratelimit-unified-status") === "rejected" &&
-    claim !== "overage"
-  ) {
-    let scope: string | null;
+  if (headers.get("anthropic-ratelimit-unified-status") === "rejected") {
+    let scope: string | null | undefined;
     switch (claim) {
       case "seven_day_opus":
         scope = "opus";
@@ -136,14 +125,42 @@ export function claudeUsageLimit(
         scope = null;
         break;
       default:
-        scope = modelFamily(model);
+        // Overage and 7d_oi describe separate allowances. Their reset can be
+        // a billing boundary, not recovery of a subscription window.
+        if (
+          !blocks.size &&
+          !claim?.includes("overage") &&
+          headers.get("anthropic-ratelimit-unified-7d_oi-status") !==
+            "rejected" &&
+          headers.get("anthropic-ratelimit-unified-overage-status") !==
+            "rejected" &&
+          !headers.get("anthropic-ratelimit-unified-overage-disabled-reason")
+        )
+          scope = model;
     }
-    add(scope, headers.get("anthropic-ratelimit-unified-reset"));
+    const reset = headers.get("anthropic-ratelimit-unified-reset");
+    if (
+      scope !== undefined &&
+      (!blocks.has(scope) || deadline(reset) !== undefined)
+    )
+      add(scope, reset);
   }
-  const limits = [...blocks]
+  return [...blocks]
     .map(([model, until]) => ({ model, until }))
     .sort((left, right) => right.until - left.until);
-  const [first, ...additional] = limits;
+}
+
+export function claudeUsageLimit(
+  response: Response,
+  model: string,
+  now = Date.now(),
+): (ClaudeLimit & { additional_limits?: ClaudeLimit[] }) | undefined {
+  if (response.status !== 429) return undefined;
+  const [first, ...additional] = subscriptionLimits(
+    response.headers,
+    model,
+    now,
+  );
   return first
     ? {
         ...first,
@@ -164,7 +181,7 @@ export function headerQuota(headers: Headers): QuotaSnapshot["groups"] {
       `anthropic-ratelimit-unified-${header}-utilization`,
     );
     const reset = headers.get(`anthropic-ratelimit-unified-${header}-reset`);
-    if (raw === null || reset === null) return [];
+    if (!raw?.trim() || !reset?.trim()) return [];
     const used = Number(raw);
     const seconds = Number(reset);
     if (
@@ -196,15 +213,22 @@ export function headerQuota(headers: Headers): QuotaSnapshot["groups"] {
 }
 
 /** Translate observation headers without modifying the response itself. */
-export function responseQuotaObservation(headers: Headers) {
+export function responseQuotaObservation(
+  headers: Headers,
+  model: string,
+  now = Date.now(),
+) {
   const groups = headerQuota(headers);
+  const limits = subscriptionLimits(headers, model, now);
   const status = headers.get("anthropic-ratelimit-unified-overage-status");
   const reason = headers.get(
     "anthropic-ratelimit-unified-overage-disabled-reason",
   );
-  if (!groups.length && status === null && reason === null) return undefined;
+  if (!groups.length && !limits.length && status === null && reason === null)
+    return undefined;
   return {
     groups,
+    ...(limits.length ? { limits } : {}),
     ...(status !== null || reason !== null
       ? {
           extra_usage_disabled_reason:

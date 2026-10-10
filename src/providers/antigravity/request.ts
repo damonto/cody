@@ -29,6 +29,14 @@ export interface TranslatedRequest {
   tools: ToolMapping[];
 }
 const recordSchema = z.record(z.string(), z.unknown());
+const webSearchTypes = new Set([
+  "web_search",
+  "web_search_2025_08_26",
+  "web_search_preview",
+  "web_search_preview_2025_03_11",
+  "web_search_20250305",
+  "web_search_20260209",
+]);
 const string = (value: unknown, field: string): string => {
   if (typeof value !== "string")
     throw new ProviderRequestError(`${field} must be a string`);
@@ -121,6 +129,9 @@ async function toolsFor(value: unknown): Promise<ToolMapping[]> {
         await add(tool.tools, namespace);
         continue;
       }
+      // CLIProxyAPI also omits native search from ordinary agent requests;
+      // Antigravity requires a separate search envelope and capability check.
+      if (webSearchTypes.has(type)) continue;
       const custom = type === "custom";
       if (!["function", "custom"].includes(type))
         throw new ProviderRequestError(`Unsupported tool type: ${type}`);
@@ -186,6 +197,94 @@ function toolName(
     )?.native ?? name
   );
 }
+interface ToolSelection {
+  tools: ToolMapping[];
+  config: {
+    mode: "AUTO" | "VALIDATED" | "ANY" | "NONE";
+    allowedFunctionNames?: string[];
+  };
+}
+function selectTools(
+  tools: ToolMapping[],
+  choice: unknown,
+  claude: boolean,
+): ToolSelection {
+  const automatic = claude ? "VALIDATED" : "AUTO";
+  const selection = object(choice);
+  const type =
+    choice === undefined || choice === null
+      ? "auto"
+      : typeof choice === "string"
+        ? choice
+        : string(selection.type, "tool_choice.type");
+  const selectedTool = (
+    selected: Record<string, unknown>,
+  ): ToolMapping | undefined => {
+    const type = string(selected.type, "tool_choice tool type");
+    if (webSearchTypes.has(type)) return undefined;
+    if (!["function", "custom", "tool"].includes(type))
+      throw new ProviderRequestError(`Unsupported tool_choice type: ${type}`);
+    const name = string(
+      selected.name ?? object(selected.function).name,
+      "tool_choice name",
+    );
+    const namespace =
+      selected.namespace === undefined
+        ? undefined
+        : string(selected.namespace, "tool_choice namespace");
+    const tool = tools.find(
+      (tool) =>
+        (tool.name === name && tool.namespace === namespace) ||
+        (namespace === undefined &&
+          tool.namespace !== undefined &&
+          `${tool.namespace}.${tool.name}` === name),
+    );
+    if (!tool && type === "tool" && name === "web_search") return undefined;
+    if (!tool)
+      throw new ProviderRequestError(
+        "tool_choice must name a declared function or custom tool",
+      );
+    return tool;
+  };
+  let available = tools;
+  let mode = type;
+  if (type === "allowed_tools") {
+    mode = string(selection.mode, "tool_choice.mode");
+    if (mode !== "auto" && mode !== "required")
+      throw new ProviderRequestError("Unsupported tool_choice.mode");
+    const allowed = new Set(
+      records(selection.tools, "tool_choice.tools").map(selectedTool),
+    );
+    // Restrict declarations so automatic calls cannot select excluded tools.
+    // Keep all mappings for translating earlier calls and their signed history.
+    available = tools.filter((tool) => allowed.has(tool));
+  }
+  if (mode === "none") return { tools, config: { mode: "NONE" } };
+  if (mode === "auto")
+    return {
+      tools: available,
+      config: {
+        mode:
+          type === "allowed_tools" && !available.length ? "NONE" : automatic,
+      },
+    };
+  if (mode === "required" || mode === "any") {
+    if (!available.length)
+      throw new ProviderRequestError(
+        "tool_choice requires an available function or custom tool",
+      );
+    return { tools: available, config: { mode: "ANY" } };
+  }
+  const tool = selectedTool({ ...selection, type });
+  if (!tool)
+    throw new ProviderRequestError(
+      "Antigravity agent requests do not support native web search",
+    );
+  return {
+    tools,
+    config: { mode: "ANY", allowedFunctionNames: [tool.native] },
+  };
+}
 function image(part: Record<string, unknown>): NativePart {
   const source = object(part.source);
   if (source.type === "base64")
@@ -224,6 +323,8 @@ export async function translateRequest(
       "Antigravity requires full conversation history; previous_response_id is unsupported",
     );
   const tools = await toolsFor(payload.tools);
+  const claude = scope.model.toLowerCase().includes("claude");
+  const selection = selectTools(tools, payload.tool_choice, claude);
   const contents: NativeContent[] = [];
   const system: NativePart[] = [];
   const calls = new Map<string, { name: string; id?: string | undefined }>();
@@ -388,6 +489,10 @@ export async function translateRequest(
                     .join("")
                 : undefined,
             );
+        } else if (type === "web_search_call" && item.status === "completed") {
+          // This records a server-side search, not a client function to replay.
+          // Its assistant output remains in the surrounding message history.
+          continue;
         } else if (type === "function_call" || type === "custom_tool_call") {
           const id = string(item.call_id, "call_id");
           const name = toolName(
@@ -475,7 +580,6 @@ export async function translateRequest(
     generation.stopSequences =
       typeof stops === "string" ? [stops] : z.array(z.string()).parse(stops);
   const reasoning = antigravityReasoning(payload);
-  const claude = scope.model.toLowerCase().includes("claude");
   const thinkingConfig = antigravityThinkingConfig(
     reasoning,
     scope.model,
@@ -498,57 +602,24 @@ export async function translateRequest(
     contents,
     generationConfig: generation,
   };
-  if (tools.length)
+  if (selection.tools.length)
     request.tools = [
-      { functionDeclarations: tools.map((tool) => tool.declaration) },
+      { functionDeclarations: selection.tools.map((tool) => tool.declaration) },
     ];
-  const choice = payload.tool_choice;
-  const choiceObject = object(choice);
   const systemParts = antigravitySystemParts(
     system,
     endpoint !== "responses" &&
       claude &&
       scope.model.toLowerCase().includes("thinking") &&
-      tools.length > 0 &&
-      choice !== "none" &&
-      choiceObject.type !== "none" &&
+      selection.tools.length > 0 &&
+      selection.config.mode !== "NONE" &&
       reasoning.interleaved,
     sensitiveWords,
   );
   if (systemParts.length)
     request.systemInstruction = { role: "user", parts: systemParts };
-  if (tools.length || claude) {
-    const mode =
-      choice === "none" || choiceObject.type === "none"
-        ? "NONE"
-        : choice === "required" ||
-            ["any", "tool", "function", "custom"].includes(
-              String(choiceObject.type),
-            )
-          ? "ANY"
-          : claude
-            ? "VALIDATED"
-            : "AUTO";
-    const name = choiceObject.name ?? object(choiceObject.function).name;
-    request.toolConfig = {
-      functionCallingConfig: {
-        mode,
-        ...(typeof name === "string"
-          ? {
-              allowedFunctionNames: [
-                toolName(
-                  tools,
-                  name,
-                  typeof choiceObject.namespace === "string"
-                    ? choiceObject.namespace
-                    : undefined,
-                ),
-              ],
-            }
-          : {}),
-      },
-    };
-  }
+  if (tools.length || claude)
+    request.toolConfig = { functionCallingConfig: selection.config };
   if (sessionId) {
     const digest = new Uint8Array(
       await crypto.subtle.digest(
