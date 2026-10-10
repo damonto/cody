@@ -53,13 +53,6 @@ export function daysUntil(
 
 export type Tone = "ok" | "warn" | "bad";
 
-/** Remaining quota colour: empty is red, under 20% is amber. */
-export function remainingTone(percent: number): Tone {
-  if (percent <= 0) return "bad";
-  if (percent < 20) return "warn";
-  return "ok";
-}
-
 /** Subscription expiry colour: three days or less is red, a week is amber. */
 export function expiryTone(days: number): Tone {
   if (days <= 3) return "bad";
@@ -71,11 +64,6 @@ export const toneText: Readonly<Record<Tone, string>> = {
   ok: "text-emerald-700 dark:text-emerald-300",
   warn: "text-amber-700 dark:text-amber-300",
   bad: "text-red-700 dark:text-red-300",
-};
-export const toneBar: Readonly<Record<Tone, string>> = {
-  ok: "[&>[data-slot=progress-indicator]]:bg-emerald-500",
-  warn: "[&>[data-slot=progress-indicator]]:bg-amber-500",
-  bad: "[&>[data-slot=progress-indicator]]:bg-red-500",
 };
 
 const MINUTE_MS = 60_000;

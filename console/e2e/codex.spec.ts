@@ -308,6 +308,60 @@ test("account cards show plan, quota and cooldown, and spend a reset after confi
   await expect(card.getByText("Available", { exact: true })).toBeVisible();
 });
 
+test("quota bars preserve fractional values and distinguish unknown from exhausted", async ({
+  page,
+}) => {
+  const value = account();
+  value.quota.groups[0]!.buckets = [
+    { label: "Nearly empty", remaining_fraction: 0.004 },
+    { label: "Below warning threshold", remaining_fraction: 0.196 },
+    { label: "At warning threshold", remaining_fraction: 0.2 },
+    { label: "Exhausted", remaining_fraction: 0 },
+    { label: "Unknown", remaining_fraction: null },
+    { label: "Full", remaining_fraction: 1 },
+  ].map((bucket) => ({
+    ...bucket,
+    id: bucket.label,
+    window: null,
+    reset_at: null,
+  }));
+  await mockApi(page, configured([value]));
+  await mockCodex(page, [value]);
+  await page.goto("/console/providers/codex");
+
+  const bar = (label: string) =>
+    page.getByRole("progressbar", { name: `Codex ${label} remaining` });
+  const nearlyEmpty = bar("Nearly empty");
+  await expect(nearlyEmpty).toHaveAttribute("aria-valuenow", "0.4");
+  await expect(nearlyEmpty).toHaveAttribute("aria-valuetext", "<1% left");
+  await expect(page.getByText("<1% left", { exact: true })).toBeVisible();
+  await expect(bar("Below warning threshold")).toHaveAttribute(
+    "aria-valuenow",
+    "19.6",
+  );
+  await expect(bar("At warning threshold")).toHaveAttribute(
+    "aria-valuenow",
+    "20",
+  );
+  await expect(bar("Exhausted")).toHaveAttribute("aria-valuenow", "0");
+  await expect(bar("Exhausted")).toHaveAttribute("aria-valuetext", "0% left");
+  await expect(bar("Unknown")).not.toHaveAttribute("aria-valuenow");
+  await expect(bar("Unknown")).toHaveAttribute("aria-valuetext", "Unknown");
+  await expect(bar("Full")).toHaveAttribute("aria-valuenow", "100");
+
+  const color = (label: string) =>
+    bar(label)
+      .locator('[data-slot="progress-indicator"]')
+      .evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(await color("Below warning threshold")).toBe(
+    await color("Nearly empty"),
+  );
+  expect(await color("At warning threshold")).not.toBe(
+    await color("Below warning threshold"),
+  );
+  expect(await color("Exhausted")).not.toBe(await color("Nearly empty"));
+});
+
 test("a ChatGPT account authorizes with a device code", async ({ page }) => {
   await mockApi(page, configured([]));
   const controls = await mockCodex(page);

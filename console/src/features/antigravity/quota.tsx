@@ -2,7 +2,7 @@ import { quotaModelGroups } from "./presentation";
 import type { QuotaSnapshot } from "../../../../src/providers/oauth/schema";
 import { date } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
+import { QuotaProgress } from "@/features/oauth-accounts/quota-progress";
 import { AccountError } from "./account-error";
 
 function resetTime(value: string | null): string {
@@ -50,24 +50,12 @@ export function AccountQuota({
             {!group.buckets.length && <p>Unknown</p>}
             {group.buckets.map((bucket) => (
               <div key={bucket.id} className="space-y-1.5">
-                <div className="flex flex-wrap justify-between gap-x-3 gap-y-1">
-                  <span>
-                    {bucket.label}
-                    {` · ${bucket.window ?? "Unknown window"}`}
-                  </span>
-                  <span>
-                    {bucket.remaining_fraction === null
-                      ? "Unknown"
-                      : `${Math.round(bucket.remaining_fraction * 100)}% left`}
-                  </span>
-                </div>
-                {bucket.remaining_fraction !== null && (
-                  <Progress
-                    value={bucket.remaining_fraction * 100}
-                    aria-label={`${group.label} ${bucket.label} remaining`}
-                  />
-                )}
-                <p className="text-muted-foreground">
+                <QuotaProgress
+                  label={`${bucket.label} · ${bucket.window ?? "Unknown window"}`}
+                  remainingFraction={bucket.remaining_fraction}
+                  ariaLabel={`${group.label} ${bucket.label} remaining`}
+                />
+                <p className="text-[11px] text-muted-foreground">
                   {resetTime(bucket.reset_at)}
                 </p>
               </div>
