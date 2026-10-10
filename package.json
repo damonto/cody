@@ -15,6 +15,7 @@
     "build:node": "npm run build:console && node scripts/build-standard.mjs node",
     "start:node": "node --env-file-if-exists=.env dist/server.mjs",
     "deploy:node": "npm run build:node && npm run db:migrate",
+    "heroku-postbuild": "npm run build:node",
     "build:vercel": "npm run build:console && node scripts/build-standard.mjs vercel",
     "deploy:vercel": "npm run build:vercel && npm run db:migrate",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/migrate.ts",
