@@ -22,6 +22,10 @@ export const priceVersionQuerySchema = z.object({
 });
 export const requestIdSchema = z.object({ id: z.string().min(1).max(256) });
 export const runtimeQuerySchema = z.object({
+  model: z
+    .string()
+    .refine((value) => value.trim().length > 0)
+    .optional(),
   client_id: z.string().min(1).max(256),
   scope: z.enum(HealthScope).optional(),
   cursor: z.string().min(1).max(2048).optional(),
@@ -45,6 +49,7 @@ export const sessionListSchema = z.object({
   data: z.array(
     z.object({
       session_id: z.string(),
+      model: z.string().nullable(),
       provider_id: z.string(),
       credential_id: z.string(),
       created_at: z.number(),

@@ -18,6 +18,9 @@ function validateEntry(entry: SessionAffinityIndexEntry): void {
   if (
     typeof entry !== "object" ||
     entry === null ||
+    (entry.model !== undefined &&
+      entry.model !== null &&
+      (typeof entry.model !== "string" || entry.model.trim() === "")) ||
     typeof entry.session_digest !== "string" ||
     !DIGEST_PATTERN.test(entry.session_digest) ||
     typeof entry.session_id !== "string" ||
@@ -42,21 +45,28 @@ export class SessionAffinityIndex extends DurableObject<Env> {
         CREATE TABLE IF NOT EXISTS sessions (
           session_digest TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
+          model TEXT,
           binding_id TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           generation INTEGER NOT NULL
         )
       `);
+      const columns = this.ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(sessions)")
+        .toArray();
+      if (!columns.some((column) => column.name === "model"))
+        this.ctx.storage.sql.exec("ALTER TABLE sessions ADD COLUMN model TEXT");
     });
   }
 
   register(entry: SessionAffinityIndexEntry): SessionAffinityIndexEntry {
     validateEntry(entry);
     this.ctx.storage.sql.exec(
-      `INSERT INTO sessions (session_digest, session_id, binding_id, created_at, generation)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO sessions (session_digest, session_id, model, binding_id, created_at, generation)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_digest) DO UPDATE SET
          session_id = excluded.session_id,
+         model = excluded.model,
          binding_id = excluded.binding_id,
          created_at = excluded.created_at,
          generation = excluded.generation
@@ -67,6 +77,7 @@ export class SessionAffinityIndex extends DurableObject<Env> {
           )`,
       entry.session_digest,
       entry.session_id,
+      entry.model ?? null,
       entry.binding_id,
       entry.created_at,
       entry.generation,
@@ -88,7 +99,7 @@ export class SessionAffinityIndex extends DurableObject<Env> {
     return (
       this.ctx.storage.sql
         .exec<SessionAffinityIndexRow>(
-          `SELECT session_digest, session_id, binding_id, created_at, generation
+          `SELECT session_digest, session_id, model, binding_id, created_at, generation
        FROM sessions
        WHERE session_digest = ?`,
           sessionDigest,
@@ -111,7 +122,7 @@ export class SessionAffinityIndex extends DurableObject<Env> {
       cursor === null
         ? this.ctx.storage.sql
             .exec<SessionAffinityIndexRow>(
-              `SELECT session_digest, session_id, binding_id, created_at, generation
+              `SELECT session_digest, session_id, model, binding_id, created_at, generation
          FROM sessions
          ORDER BY session_digest
          LIMIT ?`,
@@ -120,7 +131,7 @@ export class SessionAffinityIndex extends DurableObject<Env> {
             .toArray()
         : this.ctx.storage.sql
             .exec<SessionAffinityIndexRow>(
-              `SELECT session_digest, session_id, binding_id, created_at, generation
+              `SELECT session_digest, session_id, model, binding_id, created_at, generation
          FROM sessions
          WHERE session_digest > ?
          ORDER BY session_digest

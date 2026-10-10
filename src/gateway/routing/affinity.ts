@@ -28,6 +28,8 @@ export interface AffinityProviderCandidate {
 }
 
 export interface SessionAffinityRecord {
+  /** Absent only in deployed records from before model-scoped affinity. */
+  model?: string | null;
   provider_id: string;
   credential_id: string;
   updated_at: number;
@@ -51,12 +53,16 @@ export interface AffinitySelection {
 }
 
 export interface SessionAffinityRegistration {
+  /** null denotes session-wide context management. */
+  model: string | null;
   registry_name: string;
+  /** Digest of [session ID, requested model], or just session ID for context. */
   session_digest: string;
   session_id: string;
 }
 
 export interface SessionAffinityIdentity extends SessionAffinityRegistration {
+  /** Stable client/session address shared by every model binding. */
   object_name: string;
 }
 
@@ -231,13 +237,14 @@ export function affinityRegistryName(clientId: string): Promise<string> {
   return sha256Hex(clientId);
 }
 
-function affinitySessionDigest(sessionId: string): Promise<string> {
+export function affinitySessionDigest(sessionId: string): Promise<string> {
   return sha256Hex(sessionId);
 }
 
 export async function sessionAffinityIdentity(
   clientId: string,
   sessionId: string,
+  model: string | null = null,
 ): Promise<SessionAffinityIdentity> {
   const [registryName, sessionDigest] = await Promise.all([
     affinityRegistryName(clientId),
@@ -245,8 +252,12 @@ export async function sessionAffinityIdentity(
   ]);
   return {
     registry_name: registryName,
-    session_digest: sessionDigest,
+    session_digest:
+      model === null
+        ? sessionDigest
+        : await sha256Hex(JSON.stringify([sessionId, model])),
     session_id: sessionId,
+    model,
     object_name: affinityObjectNameFromDigests(registryName, sessionDigest),
   };
 }

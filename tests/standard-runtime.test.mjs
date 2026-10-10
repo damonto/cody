@@ -35,6 +35,7 @@ import {
   recordAntigravityLimit,
 } from "../src/providers/antigravity/availability.ts";
 import { nextRotationCredential } from "../src/gateway/health/health.ts";
+import { sessionModelBindings } from "./helpers/session-model-bindings.ts";
 import { proxyBindingLifecycle } from "./helpers/proxy-binding-lifecycle.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -424,6 +425,7 @@ for (const [name, open] of Object.entries(databases)) {
           const registration = await sessionAffinityIdentity(
             "rotation-client",
             `session-${index}`,
+            "model",
           );
           const bindings = index % 2 ? second.bindings : env;
           return bindings.SESSION_AFFINITY.getByName(
@@ -600,9 +602,31 @@ for (const [name, open] of Object.entries(databases)) {
     );
 
     await t.test(
+      "model bindings persist and promote atomically across runtimes",
+      async () => {
+        let restarted;
+        try {
+          await sessionModelBindings(env, async () => {
+            await runtime.tasks.drain();
+            restarted = await createRuntime({
+              target: "node",
+              root: ROOT,
+              source: settings,
+              resources: { ...resources, redis: new MemoryRedis() },
+            });
+            return restarted.bindings;
+          });
+        } finally {
+          await restarted?.close();
+        }
+      },
+    );
+
+    await t.test(
       "affinity, ownership and session index survive a new runtime",
       async () => {
         const registration = {
+          model: null,
           registry_name: "a".repeat(64),
           session_digest: "b".repeat(64),
           session_id: "shared-session",

@@ -127,17 +127,21 @@ export class SessionAffinity extends DurableObject<Env> {
   releaseContextSession(clientId: string) {
     return this.core.releaseContextSession(clientId);
   }
-  getStatus() {
-    return this.core.getStatus();
+  getStatus(sessionDigest?: string) {
+    return this.core.getStatus(sessionDigest);
   }
   clear() {
     return this.core.clear();
   }
-  clearIfBindingId(bindingId: string, generation: number) {
-    return this.core.clearIfBindingId(bindingId, generation);
+  clearIfBindingId(
+    bindingId: string,
+    generation: number,
+    sessionDigest?: string,
+  ) {
+    return this.core.clearIfBindingId(bindingId, generation, sessionDigest);
   }
-  clearManaged(registration: SessionAffinityRegistration) {
-    return this.core.clearManaged(registration);
+  clearManaged(registration: SessionAffinityRegistration, allModels?: boolean) {
+    return this.core.clearManaged(registration, allModels);
   }
   override alarm() {
     return this.core.alarm();

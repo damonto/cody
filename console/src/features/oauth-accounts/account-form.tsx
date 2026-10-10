@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { fieldErrors } from "@/lib/form-errors";
 import type { AuthorizationOptions } from "./use-authorization";
+import { accountName } from "./account-name";
 import {
   accountEditorSchema,
   newAccount,
@@ -99,9 +100,14 @@ export function OAuthAccountForm({
                 occupied={provider.credentials
                   .filter((entry) => entry.id !== initial.id)
                   .map((entry) => entry.auth.account_ref)}
-                onAuthorized={(ref) =>
-                  form.setFieldValue("auth.account_ref", ref)
-                }
+                onAuthorized={(account) => {
+                  form.setFieldValue("auth.account_ref", account.account_ref);
+                  if (!credentialId)
+                    form.setFieldValue(
+                      "name",
+                      accountName(provider.type, account),
+                    );
+                }}
               />
             </>
           )}

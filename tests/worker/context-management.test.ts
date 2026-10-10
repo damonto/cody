@@ -360,9 +360,11 @@ test("ordinary sessions retain their binding when enabling context management af
   const identity = await sessionAffinityIdentity(
     settings.api_keys[0].id,
     session,
+    "gpt-6-astra",
   );
   const affinity = env.SESSION_AFFINITY.getByName(identity.object_name);
-  const original = await affinity.getStatus();
+  const original = await affinity.getStatus(identity.session_digest);
+  expect(original).not.toBeNull();
 
   settings.api_keys[0].api_key = "rotated-client-secret";
   for (const provider of settings.providers) {
@@ -382,9 +384,12 @@ test("ordinary sessions retain their binding when enabling context management af
     ).status,
   ).toBe(200);
   expect(await affinity.getStatus()).toMatchObject({
-    binding_id: original?.binding_id,
+    provider_id: original?.provider_id,
+    credential_id: original?.credential_id,
+    model: null,
     context_management: true,
   });
+  expect(await affinity.getStatus(identity.session_digest)).toBeNull();
   expect(hosts).toEqual(["primary.example", "primary.example"]);
 });
 
@@ -837,4 +842,51 @@ test("astra catalog defaults follow accessible capable model routes without chan
   expect(restrictedBody.models[0].model_messages.token_budget.enabled).toBe(
     false,
   );
+});
+
+test("HTTP model switches and aliases retain independent bindings across client key rotation", async () => {
+  const settings = config();
+  settings.providers[1].models = ["other-model"];
+  settings.model_routes = {
+    "gpt-6-astra": { model: "upstream-astra" },
+    alias: { model: "upstream-astra" },
+  };
+  const sessionId = crypto.randomUUID();
+  const hosts: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      hosts.push(new URL(request.url).hostname);
+      return Response.json({ output: [] });
+    }),
+  );
+  for (const model of ["gpt-6-astra", "other-model", "alias", "gpt-6-astra"]) {
+    expect(
+      (
+        await call(settings, "/responses", {
+          ...inferencePayload(sessionId, false),
+          model,
+        })
+      ).status,
+    ).toBe(200);
+  }
+  expect(hosts).toEqual([
+    "primary.example",
+    "secondary.example",
+    "primary.example",
+    "primary.example",
+  ]);
+  settings.api_keys[0].api_key = "rotated-key";
+  const response = await call(settings, "/sessions", undefined, {
+    authorization: "Bearer rotated-key",
+  });
+  const list = await response.json<{
+    data: { session_id: string; model: string }[];
+  }>();
+  expect(list.data.map((entry) => entry.model).sort()).toEqual([
+    "alias",
+    "gpt-6-astra",
+    "other-model",
+  ]);
+  expect(list.data.every((entry) => entry.session_id === sessionId)).toBe(true);
 });

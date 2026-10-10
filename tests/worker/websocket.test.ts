@@ -21,6 +21,7 @@ import type {
   AiGatewayProviderConfig,
 } from "../../src/config/types.ts";
 import { requestDetail } from "../../src/reporting/store.ts";
+import { sessionAffinityIdentity } from "../../src/gateway/routing/affinity.ts";
 import type { UsageEvent } from "../../src/telemetry/types.ts";
 
 beforeAll(async () => {
@@ -1612,6 +1613,42 @@ test("a later response.create that requires another target closes and rebinds on
   const secondUpstreamClosed = nextUpstreamClose(secondUpstream);
   second.socket.close(1000, "done");
   await secondUpstreamClosed;
+});
+
+test("model changes reuse an open socket when their bindings select the same target", async () => {
+  const config = gatewayConfig();
+  await putConfig(config);
+  const upstream = upstreamPair();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => openUpstream(upstream)),
+  );
+  const sessionId = crypto.randomUUID();
+  const { socket } = await openGatewaySocket("/responses", {
+    "session-id": sessionId,
+  });
+  for (const model of ["client-model", "other-model", "client-model"]) {
+    const forwarded = nextUpstreamMessage(upstream);
+    socket.send(JSON.stringify({ type: "response.create", model }));
+    expect(JSON.parse((await forwarded) as string).model).toBe(
+      model === "client-model" ? "upstream-model" : model,
+    );
+  }
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const identities = await Promise.all(
+    ["client-model", "other-model"].map((model) =>
+      sessionAffinityIdentity(config.api_keys[0].id, sessionId, model),
+    ),
+  );
+  const stub = env.SESSION_AFFINITY.getByName(identities[0].object_name);
+  for (const identity of identities)
+    expect(await stub.getStatus(identity.session_digest)).toMatchObject({
+      model: identity.model,
+      provider_id: "primary",
+    });
+  const closed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await closed;
 });
 
 test("a recovered higher-priority provider changes affinity and requires WebSocket reconnect", async () => {

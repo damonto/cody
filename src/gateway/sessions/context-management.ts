@@ -86,6 +86,7 @@ export async function handleContextManagement(
 
   const selection = await selectAvailableTargetWithDetails(env, candidates, {
     contextManagement: true,
+    requestedModel: "gpt-6-astra",
     // The first hint precedes inference and carries no model. Bootstrap using
     // Astra's effective routes; existing sessions retain their original target.
     initialProviderIds: resolveModelRoute(config, client, "gpt-6-astra", {

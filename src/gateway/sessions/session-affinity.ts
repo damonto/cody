@@ -4,6 +4,11 @@ import { XaiReplayStore } from "../../providers/xai/replay-store.ts";
 import { nextRotationCredential } from "../health/health.ts";
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
 import {
+  mapWithConcurrency,
+  PROVIDER_FAN_OUT_CONCURRENCY,
+} from "../../shared/concurrency.ts";
+import {
+  affinitySessionDigest,
   affinitySelectionIsHighestPriority,
   chooseAffinityCandidate,
   resolveStoredAffinity,
@@ -19,7 +24,11 @@ import type {
   ClearedSessionAffinityBinding,
   SessionAffinityResolveOptions,
 } from "../../platform/bindings.ts";
-import type { ObjectContext } from "../../platform/object-context.ts";
+import type {
+  ObjectContext,
+  ObjectTransaction,
+  ObjectStorageReader,
+} from "../../platform/object-context.ts";
 
 const AFFINITY_STORAGE_KEY = "affinity";
 const CONTEXT_OWNER_STORAGE_KEY = "context_owner";
@@ -27,7 +36,7 @@ const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 
 interface AffinityTransactionResult {
   resolution: SessionAffinityResolution | undefined;
-  obsolete?: SessionAffinityRecord;
+  obsolete: SessionAffinityRecord[];
 }
 
 interface ContextOwnerRecord {
@@ -63,6 +72,9 @@ function validRecord(value: unknown): value is SessionAffinityRecord {
     typeof record.session_id === "string" &&
     record.session_id.length > 0 &&
     typeof record.index_registered === "boolean" &&
+    (record.model === undefined ||
+      record.model === null ||
+      (typeof record.model === "string" && record.model.trim() !== "")) &&
     (record.context_management === undefined ||
       typeof record.context_management === "boolean") &&
     validGeneration(record.generation)
@@ -89,12 +101,116 @@ function nextBindingGeneration(
 
 function indexEntry(record: SessionAffinityRecord) {
   return {
+    model: record.model ?? null,
     session_digest: record.session_digest,
     session_id: record.session_id,
     binding_id: record.binding_id,
     created_at: record.created_at,
     generation: record.generation,
   };
+}
+
+function storageKey(
+  record: Pick<SessionAffinityRecord, "model" | "session_digest">,
+): string {
+  return record.model == null
+    ? AFFINITY_STORAGE_KEY
+    : `${AFFINITY_STORAGE_KEY}:${record.session_digest}`;
+}
+
+async function records(
+  storage: ObjectStorageReader,
+): Promise<SessionAffinityRecord[]> {
+  return [
+    ...(await storage.list<unknown>({ prefix: AFFINITY_STORAGE_KEY })).values(),
+  ].filter(validRecord);
+}
+
+function matchesSession(
+  record: SessionAffinityRecord,
+  registration: SessionAffinityRegistration,
+): boolean {
+  return (
+    record.registry_name === registration.registry_name &&
+    record.session_id === registration.session_id
+  );
+}
+
+function active(
+  record: SessionAffinityRecord | undefined,
+  now: number,
+): record is SessionAffinityRecord {
+  return (
+    record !== undefined && record.updated_at + SESSION_AFFINITY_TTL_MS > now
+  );
+}
+
+/** Context pins take precedence over every requested model. Legacy ordinary
+ * bindings have no model attribution and must never be adopted by a model. */
+async function currentBinding(
+  storage: ObjectStorageReader,
+  registration: SessionAffinityRegistration,
+  now: number,
+): Promise<SessionAffinityRecord | undefined> {
+  const session = await storage.get<unknown>(AFFINITY_STORAGE_KEY);
+  if (
+    validRecord(session) &&
+    session.context_management &&
+    matchesSession(session, registration) &&
+    active(session, now)
+  )
+    return session;
+  const model = await storage.get<unknown>(storageKey(registration));
+  return validRecord(model) &&
+    model.model === registration.model &&
+    matchesSession(model, registration) &&
+    model.session_digest === registration.session_digest
+    ? model
+    : undefined;
+}
+
+async function scheduleExpiry(
+  transaction: ObjectTransaction,
+  change?: {
+    previous: readonly SessionAffinityRecord[];
+    next: SessionAffinityRecord | undefined;
+  },
+): Promise<void> {
+  const alarm = await transaction.getAlarm();
+  // A write cannot move the nearest deadline unless it changes a record at
+  // that deadline or introduces an earlier one. Avoid listing unrelated models.
+  if (
+    change &&
+    alarm !== null &&
+    !change.previous.some(
+      (record) => record.updated_at + SESSION_AFFINITY_TTL_MS === alarm,
+    )
+  ) {
+    if (change.next) {
+      const expiresAt = change.next.updated_at + SESSION_AFFINITY_TTL_MS;
+      if (expiresAt < alarm) await transaction.setAlarm(expiresAt);
+    }
+    return;
+  }
+  let nearest = Infinity;
+  for (const record of await records(transaction)) {
+    nearest = Math.min(nearest, record.updated_at + SESSION_AFFINITY_TTL_MS);
+  }
+  if (nearest === Infinity) await transaction.deleteAlarm();
+  else if (nearest !== alarm) await transaction.setAlarm(nearest);
+}
+
+async function invalidateIndex(
+  transaction: ObjectTransaction,
+  record: SessionAffinityRecord,
+): Promise<void> {
+  // A rejected conditional delete may remove a stale index row afterwards.
+  // Let the next resolve repair the surviving binding without rebinding it.
+  if (record.index_registered)
+    await transaction.put(storageKey(record), {
+      ...record,
+      index_registered: false,
+    });
 }
 
 export class SessionAffinityCore {
@@ -123,15 +239,9 @@ export class SessionAffinityCore {
     // that short RPC with the binding write so concurrent frames in the same
     // session cannot reserve multiple positions. No upstream I/O runs here.
     return this.ctx.blockConcurrencyWhile(async () => {
-      const raw = await this.ctx.storage.get<unknown>(AFFINITY_STORAGE_KEY);
-      const stored =
-        validRecord(raw) &&
-        raw.registry_name === registration.registry_name &&
-        raw.session_digest === registration.session_digest &&
-        raw.session_id === registration.session_id &&
-        raw.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
-          ? raw
-          : undefined;
+      const now = Date.now();
+      const current = await currentBinding(this.ctx.storage, registration, now);
+      const stored = active(current, now) ? current : undefined;
       const eligible = options.contextManagement
         ? candidates.filter(
             (candidate) => candidate.supports_context_management,
@@ -198,23 +308,60 @@ export class SessionAffinityCore {
         (candidate) => candidate.supports_context_management,
       );
     }
-    const now = Date.now();
-    const result: AffinityTransactionResult =
-      await this.ctx.storage.transaction(async (transaction) => {
-        const rawStored = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-        const current = validRecord(rawStored) ? rawStored : undefined;
-        const stored =
-          current &&
-          current.registry_name === registration.registry_name &&
-          current.session_digest === registration.session_digest &&
-          current.session_id === registration.session_id
-            ? current
-            : undefined;
-        const storedActive =
-          stored !== undefined &&
-          stored.updated_at + SESSION_AFFINITY_TTL_MS > now;
-        if (storedActive) {
-          if (stored.context_management || contextManagement) {
+    const nextRegistration: SessionAffinityRegistration = {
+      registry_name: registration.registry_name,
+      session_id: registration.session_id,
+      model: contextManagement ? null : registration.model,
+      session_digest: contextManagement
+        ? await affinitySessionDigest(registration.session_id)
+        : registration.session_digest,
+    };
+    const result =
+      await this.ctx.storage.transaction<AffinityTransactionResult>(
+        async (transaction) => {
+          const now = Date.now();
+          const current = await currentBinding(transaction, registration, now);
+          const stored = active(current, now) ? current : undefined;
+          const obsolete: SessionAffinityRecord[] = [];
+          const remove = async (record: SessionAffinityRecord) => {
+            await transaction.delete(storageKey(record));
+            obsolete.push(record);
+          };
+          const finish = async (
+            resolution: SessionAffinityResolution | undefined,
+          ): Promise<AffinityTransactionResult> => {
+            if (resolution?.context_management) {
+              // Promotion atomically makes the context pin the only binding.
+              // Subsequent context hits need neither cleanup nor a full scan.
+              if (!stored?.context_management) {
+                for (const record of await records(transaction)) {
+                  if (record.model != null) await remove(record);
+                }
+              }
+              await transaction.setAlarm(
+                resolution.updated_at + SESSION_AFFINITY_TTL_MS,
+              );
+            } else {
+              await scheduleExpiry(transaction, {
+                previous: current ? [...obsolete, current] : obsolete,
+                next: resolution,
+              });
+            }
+            return { resolution, obsolete };
+          };
+          // Old ordinary bindings cannot be assigned to a requested model. Keep
+          // deployed context pins, and retire expired or unattributed records.
+          const legacy = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+          if (legacy !== undefined && !validRecord(legacy))
+            await transaction.delete(AFFINITY_STORAGE_KEY);
+          if (
+            validRecord(legacy) &&
+            (!active(legacy, now) ||
+              (!legacy.context_management && legacy.model === undefined))
+          )
+            await remove(legacy);
+
+          if (stored && (stored.context_management || contextManagement)) {
             const provider = candidates.find(
               (candidate) => candidate.provider_id === stored.provider_id,
             );
@@ -224,101 +371,85 @@ export class SessionAffinityCore {
                 (key) => key.credential_id === stored.credential_id,
               )
             ) {
-              return {
-                resolution: {
-                  ...stored,
-                  status: SessionAffinityStatus.Blocked,
-                },
-              };
+              return finish({
+                ...stored,
+                status: SessionAffinityStatus.Blocked,
+              });
             }
-            const next = {
+            const promoting = !stored.context_management;
+            const next: SessionAffinityRecord = {
               ...stored,
+              ...(promoting
+                ? {
+                    ...nextRegistration,
+                    binding_id: crypto.randomUUID(),
+                    generation: nextBindingGeneration(stored),
+                    index_registered: false,
+                  }
+                : {}),
+              model: null,
               context_management: true,
               updated_at: now,
             };
             await transaction.put(AFFINITY_STORAGE_KEY, next);
-            return {
-              resolution: { ...next, status: SessionAffinityStatus.Hit },
+            return finish({ ...next, status: SessionAffinityStatus.Hit });
+          }
+          if (stored) {
+            const decision = resolveStoredAffinity(
+              stored,
+              candidates,
+              preferred,
+            );
+            if (!decision.selection) {
+              await remove(stored);
+              return finish(undefined);
+            }
+            const rebound = decision.status === SessionAffinityStatus.Rebound;
+            const next: SessionAffinityRecord = {
+              ...stored,
+              ...decision.selection,
+              updated_at: now,
+              ...(rebound
+                ? {
+                    binding_id: crypto.randomUUID(),
+                    created_at: now,
+                    generation: nextBindingGeneration(stored),
+                    index_registered: false,
+                  }
+                : {}),
             };
+            if (rebound) obsolete.push(stored);
+            await transaction.put(storageKey(next), next);
+            return finish({ ...next, status: decision.status });
           }
-          const decision = resolveStoredAffinity(stored, candidates, preferred);
-          if (!decision.selection) {
-            await transaction.delete(AFFINITY_STORAGE_KEY);
-            return { resolution: undefined, obsolete: stored };
-          }
-          const rotateBinding =
-            decision.status === SessionAffinityStatus.Rebound;
-          const next: SessionAffinityRecord = rotateBinding
-            ? {
-                ...stored,
-                ...decision.selection,
-                updated_at: now,
-                binding_id: crypto.randomUUID(),
-                created_at: now,
-                generation: nextBindingGeneration(stored),
-                index_registered: false,
-              }
-            : {
-                ...stored,
-                ...decision.selection,
-                updated_at: now,
-              };
-          await transaction.put(AFFINITY_STORAGE_KEY, next);
-          return {
-            resolution: { ...next, status: decision.status },
-            ...(rotateBinding ? { obsolete: stored } : {}),
+          const initialCandidates =
+            initialProviderIds === undefined
+              ? candidates
+              : candidates.filter((candidate) =>
+                  initialProviderIds.includes(candidate.provider_id),
+                );
+          const selected = affinitySelectionIsHighestPriority(
+            preferred,
+            initialCandidates,
+          )
+            ? preferred
+            : chooseAffinityCandidate(initialCandidates);
+          if (current) await remove(current);
+          if (!selected) return finish(undefined);
+          const next: SessionAffinityRecord = {
+            ...selected,
+            ...nextRegistration,
+            updated_at: now,
+            binding_id: crypto.randomUUID(),
+            created_at: now,
+            generation: nextBindingGeneration(current),
+            index_registered: false,
+            ...(contextManagement ? { context_management: true } : {}),
           };
-        }
-
-        const initialCandidates =
-          initialProviderIds === undefined
-            ? candidates
-            : candidates.filter((candidate) =>
-                initialProviderIds.includes(candidate.provider_id),
-              );
-        const selected = affinitySelectionIsHighestPriority(
-          preferred,
-          initialCandidates,
-        )
-          ? preferred
-          : chooseAffinityCandidate(initialCandidates);
-        if (!selected) {
-          await transaction.delete(AFFINITY_STORAGE_KEY);
-          return {
-            resolution: undefined,
-            ...(current ? { obsolete: current } : {}),
-          };
-        }
-        const next: SessionAffinityRecord = {
-          ...selected,
-          updated_at: now,
-          binding_id: crypto.randomUUID(),
-          created_at: now,
-          generation: nextBindingGeneration(current),
-          registry_name: registration.registry_name,
-          session_digest: registration.session_digest,
-          session_id: registration.session_id,
-          index_registered: false,
-          ...(contextManagement ? { context_management: true } : {}),
-        };
-        await transaction.put(AFFINITY_STORAGE_KEY, next);
-        return {
-          resolution: { ...next, status: SessionAffinityStatus.Created },
-          ...(current ? { obsolete: current } : {}),
-        };
-      });
-
-    try {
-      if (result.resolution) {
-        await this.ctx.storage.setAlarm(
-          result.resolution.updated_at + SESSION_AFFINITY_TTL_MS,
-        );
-      } else {
-        await this.ctx.storage.deleteAlarm();
-      }
-    } catch (error) {
-      logWarn("affinity.alarm_update.failed", { error: errorMessage(error) });
-    }
+          await transaction.put(storageKey(next), next);
+          return finish({ ...next, status: SessionAffinityStatus.Created });
+        },
+      );
     this.scheduleIndexSync(result.obsolete, result.resolution);
     return result.resolution;
   }
@@ -360,16 +491,14 @@ export class SessionAffinityCore {
   }
 
   private scheduleIndexSync(
-    obsolete: SessionAffinityRecord | undefined,
+    obsolete: SessionAffinityRecord[],
     resolution: SessionAffinityResolution | undefined,
   ): void {
-    if (!obsolete && (!resolution || resolution.index_registered)) {
+    if (!obsolete.length && (!resolution || resolution.index_registered)) {
       return;
     }
     const task = (async () => {
-      if (obsolete) {
-        await this.unregister(obsolete);
-      }
+      for (const record of obsolete) await this.unregister(record);
       if (resolution && !resolution.index_registered) {
         await this.ensureIndexed(resolution);
       }
@@ -395,8 +524,9 @@ export class SessionAffinityCore {
         ) {
           const retained = await this.ctx.storage.transaction(
             async (transaction) => {
-              const rawCurrent =
-                await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+              const rawCurrent = await transaction.get<unknown>(
+                storageKey(candidate),
+              );
               const current = validRecord(rawCurrent) ? rawCurrent : undefined;
               if (
                 current &&
@@ -406,7 +536,7 @@ export class SessionAffinityCore {
                 current.session_id === candidate.session_id &&
                 current.generation === candidate.generation
               ) {
-                await transaction.put(AFFINITY_STORAGE_KEY, {
+                await transaction.put(storageKey(candidate), {
                   ...current,
                   index_registered: true,
                 });
@@ -430,8 +560,9 @@ export class SessionAffinityCore {
         }
         const replacement = await this.ctx.storage.transaction(
           async (transaction) => {
-            const rawCurrent =
-              await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+            const rawCurrent = await transaction.get<unknown>(
+              storageKey(candidate),
+            );
             const current = validRecord(rawCurrent) ? rawCurrent : undefined;
             if (
               !current ||
@@ -451,7 +582,7 @@ export class SessionAffinityCore {
               generation: generation + 1,
               index_registered: false,
             };
-            await transaction.put(AFFINITY_STORAGE_KEY, next);
+            await transaction.put(storageKey(candidate), next);
             return next;
           },
         );
@@ -489,97 +620,142 @@ export class SessionAffinityCore {
     }
   }
 
-  async getStatus(): Promise<SessionAffinityRecord | null> {
-    const stored = await this.ctx.storage.get<unknown>(AFFINITY_STORAGE_KEY);
-    if (
-      !validRecord(stored) ||
-      stored.updated_at + SESSION_AFFINITY_TTL_MS <= Date.now()
-    ) {
-      return null;
+  async getStatus(
+    sessionDigest?: string,
+  ): Promise<SessionAffinityRecord | null> {
+    const stored = await this.readScoped(this.ctx.storage, sessionDigest);
+    return active(stored, Date.now()) ? stored : null;
+  }
+
+  private async readScoped(
+    storage: ObjectStorageReader,
+    sessionDigest?: string,
+  ): Promise<SessionAffinityRecord | undefined> {
+    if (sessionDigest !== undefined) {
+      const model = await storage.get<unknown>(
+        `${AFFINITY_STORAGE_KEY}:${sessionDigest}`,
+      );
+      if (validRecord(model) && model.session_digest === sessionDigest)
+        return model;
     }
-    return stored;
+    const session = await storage.get<unknown>(AFFINITY_STORAGE_KEY);
+    return validRecord(session) &&
+      (sessionDigest === undefined || session.session_digest === sessionDigest)
+      ? session
+      : undefined;
   }
 
   async clear(): Promise<void> {
-    const stored = await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-      await transaction.delete(AFFINITY_STORAGE_KEY);
-      await transaction.deleteAlarm();
+    const cleared = await this.ctx.storage.transaction(async (transaction) => {
+      const current = await records(transaction);
+      for (const record of current)
+        await transaction.delete(storageKey(record));
+      await scheduleExpiry(transaction);
       return current;
     });
-    if (validRecord(stored)) {
-      await this.unregister(stored);
-    }
+    for (const record of cleared) await this.unregister(record);
   }
 
   async clearIfBindingId(
     bindingId: string,
     generation: number,
+    sessionDigest?: string,
   ): Promise<boolean> {
     if (
       typeof bindingId !== "string" ||
       bindingId.trim() === "" ||
       !validGeneration(generation)
-    ) {
+    )
       return false;
-    }
     return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+      const current = await this.readScoped(transaction, sessionDigest);
+      if (!current) return false;
       if (
-        !validRecord(current) ||
         current.binding_id !== bindingId ||
         current.generation !== generation
       ) {
+        await invalidateIndex(transaction, current);
         return false;
       }
-      await transaction.delete(AFFINITY_STORAGE_KEY);
-      await transaction.deleteAlarm();
+      await transaction.delete(storageKey(current));
+      await scheduleExpiry(transaction);
       return true;
     });
   }
 
   async clearManaged(
     registration: SessionAffinityRegistration,
-  ): Promise<ClearedSessionAffinityBinding | null> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-      if (
-        !validRecord(current) ||
-        current.registry_name !== registration.registry_name ||
-        current.session_digest !== registration.session_digest ||
-        current.session_id !== registration.session_id
-      ) {
-        return null;
+    allModels = false,
+  ): Promise<ClearedSessionAffinityBinding[]> {
+    const index = this.env.SESSION_AFFINITY_INDEX.getByName(
+      registration.registry_name,
+    );
+    const snapshots = (await records(this.ctx.storage)).filter(
+      (record) =>
+        matchesSession(record, registration) &&
+        (allModels ||
+          (record.session_digest === registration.session_digest &&
+            (record.model ?? null) === registration.model)),
+    );
+    // Read the index before entering the storage transaction. Fence deletions
+    // against its observed version, or the record snapshot when unindexed.
+    // A stale index row is removed without deleting its replacement binding.
+    const targets = await mapWithConcurrency(
+      snapshots,
+      PROVIDER_FAN_OUT_CONCURRENCY,
+      async (record) => ({
+        record,
+        indexed: await index.get(record.session_digest),
+      }),
+    );
+    const cleared = await this.ctx.storage.transaction(async (transaction) => {
+      const cleared: ClearedSessionAffinityBinding[] = [];
+      for (const { record, indexed } of targets) {
+        const current = await transaction.get<unknown>(storageKey(record));
+        const expected =
+          indexed?.session_id === record.session_id ? indexed : record;
+        if (!validRecord(current) || !matchesSession(current, registration))
+          continue;
+        if (
+          current.binding_id !== expected.binding_id ||
+          current.generation !== expected.generation
+        ) {
+          await invalidateIndex(transaction, current);
+          continue;
+        }
+        await transaction.delete(storageKey(current));
+        cleared.push({
+          session_digest: current.session_digest,
+          binding_id: current.binding_id,
+          generation: current.generation,
+        });
       }
-      await transaction.delete(AFFINITY_STORAGE_KEY);
-      await transaction.deleteAlarm();
-      return {
-        binding_id: current.binding_id,
-        generation: current.generation,
-      };
+      await scheduleExpiry(transaction);
+      return cleared;
     });
+    for (const { record, indexed } of targets) {
+      const obsolete = indexed ?? record;
+      await index.remove(
+        obsolete.session_digest,
+        obsolete.binding_id,
+        obsolete.generation,
+      );
+    }
+    return cleared;
   }
 
   async alarm(): Promise<void> {
     if (await new XaiReplayStore(this.ctx.storage).alarm()) return;
     const expired = await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-      if (!validRecord(current)) {
-        await transaction.delete(AFFINITY_STORAGE_KEY);
-        await transaction.deleteAlarm();
-        return undefined;
-      }
-      const expiresAt = current.updated_at + SESSION_AFFINITY_TTL_MS;
-      if (expiresAt <= Date.now()) {
-        await transaction.delete(AFFINITY_STORAGE_KEY);
-        await transaction.deleteAlarm();
-        return current;
-      }
-      await transaction.setAlarm(expiresAt);
-      return undefined;
+      const now = Date.now();
+      const expired = (await records(transaction)).filter(
+        (record) => !active(record, now),
+      );
+      for (const record of expired)
+        await transaction.delete(storageKey(record));
+      await scheduleExpiry(transaction);
+      return expired;
     });
-    if (expired) {
-      await this.unregister(expired);
-    }
+    for (const record of expired) await this.unregister(record);
   }
 }

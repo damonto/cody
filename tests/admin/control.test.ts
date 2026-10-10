@@ -1,3 +1,4 @@
+import { sessionAffinityIdentity } from "../../src/gateway/routing/affinity.ts";
 import { antigravityProviderSchema } from "../../src/config/schema.ts";
 import { parseConfig } from "../../src/config/store.ts";
 import { z } from "zod";
@@ -1293,4 +1294,59 @@ test("enabling a new thinking level inherits the shared family price and context
   )!;
   expect(reenabled.pricing).toEqual(prices[0].pricing);
   expect(reenabled.id).toBe(lowPriceId);
+});
+
+test("runtime session proxy preserves model fields and forwards exact deletion scopes", async () => {
+  await save();
+  const snapshot = await loadConfig(env);
+  const client = snapshot.api_keys[0];
+  const sessionId = crypto.randomUUID();
+  const models = ["alias", "model/with?characters"];
+  const candidates = [
+    {
+      provider_id: snapshot.providers[0].id,
+      priority: 1,
+      credentials: [
+        { credential_id: snapshot.providers[0].credentials[0].id, priority: 1 },
+      ],
+    },
+  ];
+  for (const model of models) {
+    const identity = await sessionAffinityIdentity(client.id, sessionId, model);
+    const stub = env.SESSION_AFFINITY.getByName(identity.object_name);
+    await stub.resolve(candidates, undefined, identity);
+    await expect
+      .poll(
+        async () =>
+          (await stub.getStatus(identity.session_digest))?.index_registered,
+      )
+      .toBe(true);
+  }
+  const query = `client_id=${encodeURIComponent(client.id)}`;
+  const list = async () =>
+    (await call(`/runtime/sessions?${query}`)).json<{
+      data: { model: string }[];
+    }>();
+  expect((await list()).data.map((row) => row.model).sort()).toEqual(models);
+  expect(
+    (
+      await call(
+        `/runtime/sessions/${sessionId}?${query}&model=${encodeURIComponent(models[1])}`,
+        "DELETE",
+      )
+    ).status,
+  ).toBe(200);
+  expect((await list()).data.map((row) => row.model)).toEqual(["alias"]);
+  expect(
+    (
+      await call(
+        `/runtime/sessions/${sessionId}?${query}&model=alias&release_context_ownership=true`,
+        "DELETE",
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (await call(`/runtime/sessions/${sessionId}?${query}`, "DELETE")).status,
+  ).toBe(200);
+  expect((await list()).data).toEqual([]);
 });

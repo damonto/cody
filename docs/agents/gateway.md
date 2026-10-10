@@ -39,10 +39,13 @@ Resolve the affinity session ID in this order:
 5. Top-level `id` for `alpha/search`.
 
 - Claude Code carries its session only in `metadata.user_id`. All session bindings and indexes use the stable client ID, including ordinary inference. Fail closed if affinity storage is unavailable; do not introduce credential-keyed compatibility registries.
+- Ordinary inference binds by client ID, Session ID and `ModelRoute.requestedModel`; aliases remain independent even when they resolve to the same upstream model. Preserve the client/session object address, store bindings under structured tuple digests, and fence each binding independently. Each has a 30-day idle expiry; the object alarm removes only expired entries and schedules the nearest remaining expiry. Deployed ordinary bindings without a model are re-elected on first use; deployed context pins retain their target.
 - `supports_context_management` defaults to false. Native history/notes use a dedicated model-less handler, require a consistent `context.session_id`, and bootstrap new sessions from the client's effective Astra routes.
-- Context sessions pin provider and credential and retain upstream ownership by client ID. Unavailable bindings fail closed; quota exhaustion does not move a pinned context session.
+- Context sessions pin provider and credential across models and retain upstream ownership by client ID. Atomically promote the requested model's existing binding (Astra for history/notes), removing superseded model bindings. Unavailable bindings fail closed; quota exhaustion does not move a pinned context session.
+- Session lists include the requested `model`, or `null` for context/legacy bindings. Resolve index entries through the original Session ID, not the model digest. `DELETE /sessions/:id?model=…` clears only that model; omitting `model` clears all bindings for the session and returns their count. Model-specific deletion cannot release context ownership; that requires the existing explicit session-wide release operation.
+- Conditional deletion fences against the observed binding ID and generation. Removing a stale index row must leave a surviving binding eligible for index repair on its next resolve, including after object eviction.
 - Auxiliary history/notes calls make one upstream HTTP attempt, do not alter inference health, and preserve encrypted payloads and truncation headers.
-- The Responses WebSocket object accepts only Codex `response.create` frames; its status classification is OpenAI-shaped. Preserve v2 stored snapshots.
+- The Responses WebSocket object accepts only Codex `response.create` frames; its status classification is OpenAI-shaped. Resolve the requested model's binding on every frame. Continue on the connected provider/credential, otherwise require client reconnection without replay. Preserve v2 stored snapshots.
 
 ## Health
 

@@ -1,9 +1,15 @@
+import { SessionAffinityCore } from "../src/gateway/sessions/session-affinity.ts";
+import {
+  AlarmState,
+  BackedObjectStorage,
+  MemoryObjectBackend,
+  StandardObjectContext,
+} from "../src/platform/standard/objects.ts";
 import { snapshotDatabase } from "./helpers/configuration.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  resolveStoredAffinity,
   SESSION_AFFINITY_TTL_MS,
   sessionAffinityIdentity,
 } from "../src/gateway/routing/affinity.ts";
@@ -59,6 +65,7 @@ function gatewayConfig() {
 function testEnv(config) {
   const healthObjects = new Map();
   const affinities = new Map();
+  const affinityBackend = new MemoryObjectBackend();
   const sessionIndexes = new Map();
   const sessionIndex = (name) => {
     if (!sessionIndexes.has(name)) {
@@ -66,25 +73,7 @@ function testEnv(config) {
     }
     return sessionIndexes.get(name);
   };
-  const removeIndexEntry = (record) => {
-    if (
-      !record?.registry_name ||
-      !record.session_digest ||
-      !record.binding_id
-    ) {
-      return false;
-    }
-    const index = sessionIndex(record.registry_name);
-    const current = index.get(record.session_digest);
-    if (
-      current?.binding_id !== record.binding_id ||
-      current.generation !== record.generation
-    ) {
-      return false;
-    }
-    return index.delete(record.session_digest);
-  };
-  return {
+  const env = {
     CODY_DB: snapshotDatabase(() => config),
     CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     CODY_CONFIG_KV: {
@@ -99,113 +88,21 @@ function testEnv(config) {
       },
     },
     SESSION_AFFINITY: {
-      getByName: (name) => ({
-        resolve: async (candidates, preferred, registration) => {
-          const stored = affinities.get(name);
-          if (stored) {
-            const decision = resolveStoredAffinity(
-              stored,
-              candidates,
-              preferred,
-              () => 0,
-            );
-            if (!decision.selection) {
-              affinities.delete(name);
-              removeIndexEntry(stored);
-              return undefined;
-            }
-            const now = Date.now();
-            const next = {
-              ...stored,
-              ...decision.selection,
-              updated_at: now,
-            };
-            if (decision.status === "rebound" && stored.binding_id) {
-              next.binding_id = crypto.randomUUID();
-              next.created_at = now;
-              next.generation = stored.generation + 1;
-              next.index_registered = true;
-              removeIndexEntry(stored);
-              sessionIndex(stored.registry_name).set(stored.session_digest, {
-                session_digest: stored.session_digest,
-                session_id: stored.session_id,
-                binding_id: next.binding_id,
-                created_at: next.created_at,
-                generation: next.generation,
-              });
-            }
-            affinities.set(name, next);
-            return { ...next, status: decision.status };
-          }
-          if (!preferred) {
-            affinities.delete(name);
-            return undefined;
-          }
-          if (!registration) {
-            throw new Error("session affinity registration is required");
-          }
-          const now = Date.now();
-          const next = {
-            ...preferred,
-            updated_at: now,
-            binding_id: crypto.randomUUID(),
-            created_at: now,
-            generation: 1,
-            registry_name: registration.registry_name,
-            session_digest: registration.session_digest,
-            session_id: registration.session_id,
-            index_registered: true,
-          };
-          affinities.set(name, next);
-          sessionIndex(registration.registry_name).set(
-            registration.session_digest,
-            {
-              session_digest: registration.session_digest,
-              session_id: registration.session_id,
-              binding_id: next.binding_id,
-              created_at: now,
-              generation: next.generation,
-            },
+      getByName: (name) => {
+        if (!affinities.has(name)) {
+          const storage = new BackedObjectStorage(
+            affinityBackend,
+            "affinity",
+            name,
+            new AlarmState(affinityBackend, "affinity", name),
           );
-          return { ...next, status: "created" };
-        },
-        getStatus: async () => {
-          const stored = affinities.get(name);
-          return stored &&
-            stored.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
-            ? stored
-            : null;
-        },
-        clearIfBindingId: async (bindingId, generation) => {
-          const stored = affinities.get(name);
-          if (
-            !stored ||
-            stored.binding_id !== bindingId ||
-            stored.generation !== generation
-          ) {
-            return false;
-          }
-          affinities.delete(name);
-          return true;
-        },
-        clearManaged: async (registration) => {
-          const stored = affinities.get(name);
-          if (
-            !stored ||
-            stored.binding_id === undefined ||
-            stored.registry_name !== registration.registry_name ||
-            stored.session_digest !== registration.session_digest ||
-            stored.session_id !== registration.session_id
-          ) {
-            return null;
-          }
-          affinities.delete(name);
-          return {
-            binding_id: stored.binding_id,
-            generation: stored.generation,
-          };
-        },
-      }),
+          affinities.set(
+            name,
+            new SessionAffinityCore(new StandardObjectContext(storage), env),
+          );
+        }
+        return affinities.get(name);
+      },
     },
     SESSION_AFFINITY_INDEX: {
       getByName: (name) => ({
@@ -264,6 +161,7 @@ function testEnv(config) {
       }),
     },
   };
+  return env;
 }
 
 async function captureLogs(run) {
@@ -2464,6 +2362,7 @@ test("authenticated clients can page, inspect, and delete only their session bin
   const unindexedIdentity = await sessionAffinityIdentity(
     config.api_keys[0].id,
     "unindexed",
+    "gpt-5.6-sol",
   );
   const unindexedRegistry = env.SESSION_AFFINITY_INDEX.getByName(
     unindexedIdentity.registry_name,
@@ -2654,9 +2553,10 @@ test("a stale indexed delete protects the replacement and remains retryable", as
     const identity = await sessionAffinityIdentity(
       config.api_keys[0].id,
       "stale-index-session",
+      "gpt-5.6-sol",
     );
     const affinity = env.SESSION_AFFINITY.getByName(identity.object_name);
-    const current = await affinity.getStatus();
+    const current = await affinity.getStatus(identity.session_digest);
     assert.ok(current?.binding_id);
     const index = env.SESSION_AFFINITY_INDEX.getByName(identity.registry_name);
     assert.equal(
@@ -2687,7 +2587,7 @@ test("a stale indexed delete protects the replacement and remains retryable", as
       session_id: "stale-index-session",
       deleted: 0,
     });
-    assert.notEqual(await affinity.getStatus(), null);
+    assert.notEqual(await affinity.getStatus(identity.session_digest), null);
     assert.equal(await index.get(identity.session_digest), null);
 
     // The failed conditional delete is safe to retry after the stale index
@@ -2705,7 +2605,7 @@ test("a stale indexed delete protects the replacement and remains retryable", as
       session_id: "stale-index-session",
       deleted: 1,
     });
-    assert.equal(await affinity.getStatus(), null);
+    assert.equal(await affinity.getStatus(identity.session_digest), null);
   } finally {
     globalThis.fetch = originalFetch;
   }

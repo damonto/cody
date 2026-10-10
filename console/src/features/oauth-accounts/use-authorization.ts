@@ -30,7 +30,7 @@ export interface AuthorizationOptions {
   connection: ProviderConnection & { provider_type: OAuthProviderType };
   version: number;
   configurationVersion: number;
-  onAuthorized: (ref: string) => void;
+  onAuthorized: (account: AccountView) => void;
 }
 
 const pendingStatuses: readonly SessionView["status"][] = [
@@ -160,7 +160,7 @@ export function useAuthorization({
       submit.reset();
       retry.reset();
       cancel.reset();
-      onAuthorized(value.account_ref);
+      onAuthorized(value);
       if (discover) refresh.mutate({ ref: value.account_ref, kind: "models" });
     },
   });

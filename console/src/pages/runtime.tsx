@@ -37,7 +37,7 @@ import {
 
 type ClearAction =
   | { kind: "health"; providerId: string; credentialId?: string }
-  | { kind: "session"; sessionId: string };
+  | { kind: "session"; sessionId: string; model: string | null };
 export default function Runtime() {
   const names = useEntityNames();
   const [selected, setSelected] = useState("");
@@ -91,7 +91,7 @@ export default function Runtime() {
         return read(
           rpc.runtime.sessions[":id"].$delete({
             param: { id: encodeURIComponent(action.sessionId) },
-            query,
+            query: { ...query, model: action.model ?? undefined },
           }),
         );
       }
@@ -280,6 +280,11 @@ export default function Runtime() {
                         ),
                       },
                       {
+                        id: "model",
+                        header: "Model",
+                        cell: ({ row }) => row.original.model ?? "—",
+                      },
+                      {
                         id: "route",
                         header: "Provider / credential",
                         cell: ({ row }) => (
@@ -323,6 +328,7 @@ export default function Runtime() {
                                 action: {
                                   kind: "session",
                                   sessionId: row.original.session_id,
+                                  model: row.original.model,
                                 },
                                 title: "Clear this session binding?",
                                 description:

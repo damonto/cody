@@ -189,7 +189,7 @@ export async function createRuntime(
           call((core) => core.claimContextSession(...args)),
         releaseContextSession: (...args) =>
           call((core) => core.releaseContextSession(...args)),
-        getStatus: () => call((core) => core.getStatus()),
+        getStatus: (...args) => call((core) => core.getStatus(...args)),
         clear: () => call((core) => core.clear()),
         clearIfBindingId: (...args) =>
           call((core) => core.clearIfBindingId(...args)),

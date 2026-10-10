@@ -17,6 +17,9 @@ function validateEntry(entry: SessionAffinityIndexEntry): void {
   if (
     typeof entry !== "object" ||
     entry === null ||
+    (entry.model !== undefined &&
+      entry.model !== null &&
+      (typeof entry.model !== "string" || entry.model.trim() === "")) ||
     typeof entry.session_digest !== "string" ||
     !DIGEST_PATTERN.test(entry.session_digest) ||
     typeof entry.session_id !== "string" ||
@@ -50,6 +53,7 @@ export class SessionAffinityIndexCore implements SessionAffinityIndexObject {
           entry.binding_id === current.binding_id)
       ) {
         const stored: SessionAffinityIndexEntry = {
+          model: entry.model ?? null,
           session_digest: entry.session_digest,
           session_id: entry.session_id,
           binding_id: entry.binding_id,

@@ -44,6 +44,7 @@ async function runtime(
     "scope",
     "cursor",
     "limit",
+    "model",
     "release_context_ownership",
   ] as const) {
     const value = incoming.searchParams.get(name);

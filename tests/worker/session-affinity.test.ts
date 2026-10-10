@@ -35,6 +35,7 @@ function digest(): string {
 
 function registration(sessionId: string) {
   return {
+    model: null,
     registry_name: digest(),
     session_digest: digest(),
     session_id: sessionId,
@@ -249,6 +250,7 @@ test("new managed bindings are indexed and conditionally cleared", async () => {
       candidates,
       { provider_id: "first", credential_id: "first-a" },
       {
+        model: null,
         registry_name: registryName,
         session_digest: sessionDigest,
         session_id: "managed-session",
@@ -290,6 +292,7 @@ test("managed bindings can be cleared without an index entry", async () => {
   const registryName = "4".repeat(64);
   const sessionDigest = "5".repeat(64);
   const registration = {
+    model: null,
     registry_name: registryName,
     session_digest: sessionDigest,
     session_id: "unindexed-managed-session",
@@ -313,12 +316,15 @@ test("managed bindings can be cleared without an index entry", async () => {
       ...registration,
       session_id: "another-session",
     }),
-  ).toBeNull();
+  ).toEqual([]);
   expect(await stub.getStatus()).not.toBeNull();
-  expect(await stub.clearManaged(registration)).toEqual({
-    binding_id: created.binding_id,
-    generation: created.generation,
-  });
+  expect(await stub.clearManaged(registration)).toEqual([
+    {
+      session_digest: sessionDigest,
+      binding_id: created.binding_id,
+      generation: created.generation,
+    },
+  ]);
   expect(await stub.getStatus()).toBeNull();
 });
 
@@ -329,6 +335,7 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     `${registryName}:${sessionDigest}`,
   );
   const registration = {
+    model: null,
     registry_name: registryName,
     session_digest: sessionDigest,
     session_id: "rebound-managed-session",
@@ -408,6 +415,7 @@ test("a stale equal-timestamp index entry is replaced by a newer generation", as
       candidates,
       { provider_id: "first", credential_id: "first-a" },
       {
+        model: null,
         registry_name: registryName,
         session_digest: sessionDigest,
         session_id: "generation-session",
@@ -446,6 +454,7 @@ test("a managed affinity alarm removes its index entry", async () => {
     candidates,
     { provider_id: "first", credential_id: "first-a" },
     {
+      model: null,
       registry_name: registryName,
       session_digest: sessionDigest,
       session_id: "expiring-session",
@@ -532,6 +541,7 @@ test("unsupported generation-less managed records are replaced", async () => {
       updated_at: Date.now(),
       binding_id: "old-binding",
       created_at: Date.now(),
+      model: null,
       registry_name: identity.registry_name,
       session_digest: identity.session_digest,
       session_id: identity.session_id,

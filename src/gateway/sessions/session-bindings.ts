@@ -6,6 +6,7 @@ import {
 import type { RequestLogContext } from "../../shared/log.ts";
 import { jsonResponse, openAiError } from "../http/http.ts";
 import {
+  affinitySessionDigest,
   affinityObjectNameFromDigests,
   affinityRegistryName,
   SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE,
@@ -22,6 +23,7 @@ const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
 
 interface SessionBindingView {
   session_id: string;
+  model: string | null;
   provider_id: string;
   credential_id: string;
   created_at: number;
@@ -96,13 +98,16 @@ function sessionIndex(env: Bindings, registryName: string) {
   return env.SESSION_AFFINITY_INDEX.getByName(registryName);
 }
 
-function sessionAffinity(
+async function sessionAffinity(
   env: Bindings,
   registryName: string,
-  sessionDigest: string,
+  sessionId: string,
 ) {
   return env.SESSION_AFFINITY.getByName(
-    affinityObjectNameFromDigests(registryName, sessionDigest),
+    affinityObjectNameFromDigests(
+      registryName,
+      await affinitySessionDigest(sessionId),
+    ),
   );
 }
 
@@ -117,6 +122,7 @@ function sessionView(
     !Number.isSafeInteger(status.generation) ||
     status.generation < 1 ||
     status.session_id !== entry.session_id ||
+    (status.model ?? null) !== (entry.model ?? null) ||
     status.registry_name !== registryName ||
     status.session_digest !== entry.session_digest ||
     status.created_at !== entry.created_at ||
@@ -135,6 +141,7 @@ function sessionView(
   }
   return {
     session_id: entry.session_id,
+    model: status.model ?? null,
     provider_id: status.provider_id,
     credential_id: status.credential_id,
     created_at: status.created_at,
@@ -162,11 +169,12 @@ export async function handleSessionList(
     page.data,
     PROVIDER_FAN_OUT_CONCURRENCY,
     async (entry) => {
-      const status = await sessionAffinity(
+      const affinity = await sessionAffinity(
         env,
         registryName,
-        entry.session_digest,
-      ).getStatus();
+        entry.session_id,
+      );
+      const status = await affinity.getStatus(entry.session_digest);
       const view = status
         ? sessionView(entry, status, registryName)
         : undefined;
@@ -202,10 +210,11 @@ async function clearIndexedEntry(
   registryName: string,
   entry: SessionAffinityIndexEntry,
 ): Promise<boolean> {
-  const affinity = sessionAffinity(env, registryName, entry.session_digest);
+  const affinity = await sessionAffinity(env, registryName, entry.session_id);
   const cleared = await affinity.clearIfBindingId(
     entry.binding_id,
     entry.generation,
+    entry.session_digest,
   );
   await sessionIndex(env, registryName).remove(
     entry.session_digest,
@@ -218,22 +227,15 @@ async function clearIndexedEntry(
 async function clearManagedByIdentity(
   env: Bindings,
   identity: SessionAffinityRegistration,
-): Promise<boolean> {
-  const affinity = sessionAffinity(
+  allModels: boolean,
+): Promise<number> {
+  const affinity = await sessionAffinity(
     env,
     identity.registry_name,
-    identity.session_digest,
+    identity.session_id,
   );
-  const cleared = await affinity.clearManaged(identity);
-  if (cleared) {
-    await sessionIndex(env, identity.registry_name).remove(
-      identity.session_digest,
-      cleared.binding_id,
-      cleared.generation,
-    );
-    return true;
-  }
-  return false;
+  const cleared = await affinity.clearManaged(identity, allModels);
+  return cleared.length;
 }
 
 export async function handleSessionClearAll(
@@ -267,9 +269,13 @@ export async function handleSessionClearOne(
   client: ClientApiKeyConfig,
   sessionId: string,
   requestLog: RequestLogContext,
-  options: { releaseContextOwnership?: boolean } = {},
+  options: { releaseContextOwnership?: boolean; model?: string } = {},
 ): Promise<Response> {
-  const identity = await sessionAffinityIdentity(client.id, sessionId);
+  const identity = await sessionAffinityIdentity(
+    client.id,
+    sessionId,
+    options.model ?? null,
+  );
   let ownershipReleased = false;
   if (options.releaseContextOwnership) {
     const released = await env.SESSION_AFFINITY.getByName(
@@ -286,23 +292,11 @@ export async function handleSessionClearOne(
     }
     ownershipReleased = released === "released";
   }
-  let deleted = 0;
-  const index = sessionIndex(env, identity.registry_name);
-  const entry = await index.get(identity.session_digest);
-  if (entry && entry.session_id !== sessionId) {
-    await index.remove(
-      identity.session_digest,
-      entry.binding_id,
-      entry.generation,
-    );
-    deleted = Number(await clearManagedByIdentity(env, identity));
-  } else if (entry) {
-    deleted = Number(
-      await clearIndexedEntry(env, identity.registry_name, entry),
-    );
-  } else {
-    deleted = Number(await clearManagedByIdentity(env, identity));
-  }
+  const deleted = await clearManagedByIdentity(
+    env,
+    identity,
+    options.model === undefined,
+  );
   requestLog.set({
     sessions: {
       action: "clear_one",

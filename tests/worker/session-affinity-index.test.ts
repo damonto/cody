@@ -1,7 +1,28 @@
 import { env } from "cloudflare:workers";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { expect, test } from "vitest";
 
 const digest = (value: string): string => value.repeat(64);
+
+test("deployed index tables gain model scope without losing existing rows", async () => {
+  const stub = env.SESSION_AFFINITY_INDEX.getByName(crypto.randomUUID());
+  const legacy = {
+    session_digest: digest("f"),
+    session_id: "legacy",
+    binding_id: "old",
+    created_at: 1,
+    generation: 7,
+  };
+  await stub.register(legacy);
+  await runInDurableObject(stub, async (_instance, state) => {
+    state.storage.sql.exec("ALTER TABLE sessions DROP COLUMN model");
+  });
+  await evictDurableObject(stub);
+  expect(await stub.get(legacy.session_digest)).toEqual({
+    ...legacy,
+    model: null,
+  });
+});
 
 test("session affinity indexes paginate and remove only matching bindings", async () => {
   const stub = env.SESSION_AFFINITY_INDEX.getByName(
@@ -9,6 +30,7 @@ test("session affinity indexes paginate and remove only matching bindings", asyn
   );
   const entries = [
     {
+      model: null,
       session_digest: digest("a"),
       session_id: "first",
       binding_id: "binding-first",
@@ -16,6 +38,7 @@ test("session affinity indexes paginate and remove only matching bindings", asyn
       generation: 1,
     },
     {
+      model: null,
       session_digest: digest("b"),
       session_id: "second",
       binding_id: "binding-second",
@@ -23,6 +46,7 @@ test("session affinity indexes paginate and remove only matching bindings", asyn
       generation: 1,
     },
     {
+      model: null,
       session_digest: digest("c"),
       session_id: "third",
       binding_id: "binding-third",
@@ -56,6 +80,7 @@ test("an index upsert protects a replacement binding from stale deletion", async
   );
   const sessionDigest = digest("d");
   await stub.register({
+    model: null,
     session_digest: sessionDigest,
     session_id: "session",
     binding_id: "old-binding",
@@ -63,6 +88,7 @@ test("an index upsert protects a replacement binding from stale deletion", async
     generation: 1,
   });
   await stub.register({
+    model: null,
     session_digest: sessionDigest,
     session_id: "session",
     binding_id: "new-binding",
@@ -70,6 +96,7 @@ test("an index upsert protects a replacement binding from stale deletion", async
     generation: 2,
   });
   await stub.register({
+    model: null,
     session_digest: sessionDigest,
     session_id: "session",
     binding_id: "old-binding",
@@ -79,6 +106,7 @@ test("an index upsert protects a replacement binding from stale deletion", async
 
   expect(await stub.remove(sessionDigest, "old-binding", 1)).toBe(false);
   expect(await stub.get(sessionDigest)).toEqual({
+    model: null,
     session_digest: sessionDigest,
     session_id: "session",
     binding_id: "new-binding",

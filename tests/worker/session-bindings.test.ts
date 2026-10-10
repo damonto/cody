@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { expect, test } from "vitest";
 import {
   affinityRegistryName,
+  sessionAffinityIdentity,
   type SessionAffinityRecord,
 } from "../../src/gateway/routing/affinity.ts";
 import { RequestLogContext } from "../../src/shared/log.ts";
@@ -41,7 +42,7 @@ async function seed(
   const index = env.SESSION_AFFINITY_INDEX.getByName(registry);
   await index.register(record);
   const stub = env.SESSION_AFFINITY.getByName(
-    `${registry}:${record.session_digest}`,
+    (await sessionAffinityIdentity(client.id, record.session_id)).object_name,
   );
   if (active) {
     await runInDurableObject(stub, async (_instance, state) => {

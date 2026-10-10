@@ -15,6 +15,7 @@ import { type ProviderTransport } from "../../providers/transport-values.ts";
 
 import {
   chooseAffinityCandidate,
+  affinitySessionDigest,
   sessionAffinityIdentity,
   type AffinityProviderCandidate,
   type AffinitySelection,
@@ -107,6 +108,8 @@ export interface ProviderSelectionOptions {
   skipXaiQuota?: boolean;
   skipClaudeQuota?: boolean;
   contextManagement?: boolean;
+  /** Client-facing model, including aliases; omitted for model-less calls. */
+  requestedModel?: string;
   initialProviderIds?: readonly string[];
   /** Credentials this logical request already tried, keyed by `credentialKey`. */
   excludedCredentials?: ReadonlySet<string>;
@@ -553,6 +556,7 @@ export async function selectAvailableProviderWithDetails(
     xai.route.targets,
     {
       ...options,
+      requestedModel: route.requestedModel,
       upstreamModels: new Map(
         route.targets.map((target) => [
           target.provider.id,
@@ -623,6 +627,7 @@ export async function selectAvailableTargetWithDetails(
       const identity = await sessionAffinityIdentity(
         options.session.clientId,
         options.session.sessionId,
+        options.requestedModel ?? null,
       );
       const resolution = await env.SESSION_AFFINITY.getByName(
         identity.object_name,
@@ -653,7 +658,7 @@ export async function selectAvailableTargetWithDetails(
       if (resolution.context_management) {
         if (
           !(await env.SESSION_AFFINITY.getByName(
-            `context-owner:${identity.session_digest}`,
+            `context-owner:${await affinitySessionDigest(options.session.sessionId)}`,
           ).claimContextSession(options.session.clientId))
         ) {
           return {

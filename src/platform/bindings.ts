@@ -127,6 +127,7 @@ export interface SessionAffinityResolveOptions {
 }
 
 export interface ClearedSessionAffinityBinding {
+  session_digest: string;
   binding_id: string;
   generation: number;
 }
@@ -144,15 +145,22 @@ export interface SessionAffinityObject {
   releaseContextSession(
     clientId: string,
   ): Promise<"released" | "missing" | "forbidden">;
-  getStatus(): Promise<SessionAffinityRecord | null>;
+  getStatus(sessionDigest?: string): Promise<SessionAffinityRecord | null>;
   clear(): Promise<void>;
-  clearIfBindingId(bindingId: string, generation: number): Promise<boolean>;
+  clearIfBindingId(
+    bindingId: string,
+    generation: number,
+    sessionDigest?: string,
+  ): Promise<boolean>;
   clearManaged(
     registration: SessionAffinityRegistration,
-  ): Promise<ClearedSessionAffinityBinding | null>;
+    allModels?: boolean,
+  ): Promise<ClearedSessionAffinityBinding[]>;
 }
 
 export interface SessionAffinityIndexEntry {
+  /** Absent in legacy entries; null denotes session scope. */
+  model?: string | null;
   session_digest: string;
   session_id: string;
   binding_id: string;

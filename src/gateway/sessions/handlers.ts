@@ -20,6 +20,22 @@ export async function handleSessions(
   matchedRoute: SessionAction,
   requestLog: RequestLogContext,
 ): Promise<Response> {
+  const models = incomingUrl.searchParams.getAll("model");
+  const model = models[0];
+  if (
+    models.length > 0 &&
+    (models.length !== 1 ||
+      !model?.trim() ||
+      matchedRoute.action !== "clear" ||
+      incomingUrl.searchParams.get("release_context_ownership") === "true")
+  ) {
+    return openAiError(
+      400,
+      "model must occur once, be non-empty, and requires a single session without ownership release",
+      "invalid_request_error",
+      "invalid_session_model_query",
+    );
+  }
   const releaseValues = incomingUrl.searchParams.getAll(
     "release_context_ownership",
   );
@@ -57,6 +73,7 @@ export async function handleSessions(
     );
   }
   return handleSessionClearOne(env, client, sessionId, requestLog, {
+    model,
     releaseContextOwnership: releaseOwnership === "true",
   });
 }
