@@ -1116,6 +1116,31 @@ function modelsPayload(
   }
 }
 
+function isCachedModelsPayload(
+  value: unknown,
+  format: ModelsFormat,
+): value is JsonObject {
+  if (!isObject(value)) return false;
+  const models = format === "codex" ? value.models : value.data;
+  const identity = format === "codex" ? "slug" : "id";
+  if (
+    !Array.isArray(models) ||
+    !models.every(
+      (model: unknown) =>
+        isObject(model) && typeof model[identity] === "string",
+    )
+  )
+    return false;
+  if (format === "openai") return value.object === "list";
+  if (format === "anthropic")
+    return (
+      value.has_more === false &&
+      (value.first_id === null || typeof value.first_id === "string") &&
+      (value.last_id === null || typeof value.last_id === "string")
+    );
+  return true;
+}
+
 export async function handleModels(
   request: Request,
   env: Bindings,
@@ -1151,6 +1176,35 @@ export async function handleModels(
     return jsonResponse(cachedPayload);
   }
 
+  if (ttlMs > 0 && env.MODELS_CACHE) {
+    try {
+      const raw = await env.MODELS_CACHE.get(cacheKey);
+      const cached: unknown = raw === null ? null : JSON.parse(raw);
+      const now = Date.now();
+      if (
+        isObject(cached) &&
+        typeof cached.expires_at === "number" &&
+        Number.isSafeInteger(cached.expires_at) &&
+        cached.expires_at > now &&
+        cached.expires_at <= now + MAX_MODELS_CACHE_TTL_SECONDS * 1000 &&
+        isCachedModelsPayload(cached.payload, format)
+      ) {
+        modelsCache.write(
+          cacheKey,
+          cached.payload,
+          Math.min(ttlMs, cached.expires_at - now),
+          now,
+        );
+        requestLog?.mergeSection("catalog", { cache: "shared_hit" });
+        return jsonResponse(cached.payload);
+      }
+    } catch {
+      // Model results are disposable. Coordination still uses its normal
+      // failure policy when rebuilding a missing or unavailable cache.
+      requestLog?.mergeSection("catalog", { shared_cache: "unavailable" });
+    }
+  }
+
   requestLog?.mergeSection("catalog", { cache: "miss" });
 
   try {
@@ -1168,7 +1222,22 @@ export async function handleModels(
     if (result.partialSuccess) {
       requestLog?.warn({ outcome: "partial_success" });
     }
-    modelsCache.write(cacheKey, result.payload, ttlMs);
+    const now = Date.now();
+    modelsCache.write(cacheKey, result.payload, ttlMs, now);
+    if (ttlMs > 0 && env.MODELS_CACHE) {
+      try {
+        await env.MODELS_CACHE.put(
+          cacheKey,
+          JSON.stringify({
+            expires_at: now + ttlMs,
+            payload: result.payload,
+          }),
+          ttlMs,
+        );
+      } catch {
+        requestLog?.mergeSection("catalog", { shared_cache: "unavailable" });
+      }
+    }
     return jsonResponse(result.payload);
   } catch (error) {
     if (error instanceof ModelsRequestError) {

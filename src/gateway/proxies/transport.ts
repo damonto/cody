@@ -5,7 +5,6 @@ import type { HealthExecutionContext } from "../health/health.ts";
 import type { UpstreamTransport } from "../transport/index.ts";
 import {
   DEFAULT_SOCKS_CONNECT_TIMEOUT_MS,
-  socksFetch,
   type SocksFetchOptions,
   type SocksStage,
 } from "../transport/socks-fetch.ts";
@@ -16,6 +15,7 @@ import {
   proxyErrorDetails,
 } from "./errors.ts";
 import { ProxyGroupClient } from "./group-client.ts";
+import { fetchWithProxyRetries } from "./retry.ts";
 import type { ProxyLease } from "./schema.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
@@ -156,10 +156,10 @@ export function createProxyTransport(
           let success: Promise<boolean> | undefined;
           phase = "proxy";
           try {
-            return await socksFetch(outgoing, node, {
+            return await fetchWithProxyRetries(outgoing, node, {
               ...socksOptions,
               clientSignal: runtime.clientSignal,
-              connectTimeoutMs: Math.max(1, deadline - Date.now()),
+              deadline,
               onStage(stage) {
                 phase = stage;
                 if (stage === "request") {
@@ -189,7 +189,8 @@ export function createProxyTransport(
             if (
               switchReason !== undefined ||
               runtime.proxySwitches?.has(reference.groupId) ||
-              signal.aborted
+              signal.aborted ||
+              Date.now() >= deadline
             ) {
               if (awaitHealth) {
                 await failure;

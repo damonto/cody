@@ -200,7 +200,7 @@ test("WebSocket setup switches proxy once and an established socket keeps its co
   );
   socket.send("second");
   await vi.waitFor(() => expect(upstream.frames).toHaveLength(2));
-  expect(dialed).toEqual(["bad.test", "good.test"]);
+  expect(dialed).toEqual([...Array(4).fill("bad.test"), "good.test"]);
   socket.close(1000, "done");
   await vi.waitFor(() => expect(upstream.closes).toBe(1));
   await waitOnExecutionContext(context);

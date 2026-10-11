@@ -43,7 +43,11 @@ export interface ObjectChange {
 /** Raw per-object storage; values are JSON text. */
 export interface ObjectBackend {
   /** Pins the storage revision for one invocation, fencing stale writers. */
-  scope?(namespace: string, name: string): Promise<ObjectBackend>;
+  scope?(
+    namespace: string,
+    name: string,
+    lock?: ObjectLock,
+  ): Promise<ObjectBackend>;
   get(namespace: string, name: string, key: string): Promise<string | null>;
   list(
     namespace: string,
@@ -80,7 +84,18 @@ export class RedisObjectBackend implements ObjectBackend {
   constructor(
     private readonly redis: RedisClient,
     private readonly prefix = "cody",
+    private readonly lock?: ObjectLock,
   ) {}
+
+  async scope(
+    _namespace: string,
+    _name: string,
+    lock?: ObjectLock,
+  ): Promise<ObjectBackend> {
+    if (!lock?.condition)
+      throw new Error("Redis object storage requires a fenced lock");
+    return new RedisObjectBackend(this.redis, this.prefix, lock);
+  }
 
   private hashKey(namespace: string, name: string): string {
     return `${this.prefix}:o:${namespace}:${name}`;
@@ -92,6 +107,10 @@ export class RedisObjectBackend implements ObjectBackend {
 
   get(namespace: string, name: string, key: string): Promise<string | null> {
     return this.redis.hget(this.hashKey(namespace, name), key);
+  }
+
+  count(namespace: string, name: string): Promise<number> {
+    return this.redis.hlen(this.hashKey(namespace, name));
   }
 
   async list(
@@ -120,7 +139,13 @@ export class RedisObjectBackend implements ObjectBackend {
       commands.push(["zrem", this.alarmKey(namespace), name]);
     else if (change.alarm !== undefined)
       commands.push(["zadd", this.alarmKey(namespace), change.alarm, name]);
-    await this.redis.multi(commands);
+    if (change.alarm !== undefined && change.alarm !== null)
+      commands.push(["pexpire", hash, Math.max(1, change.alarm - Date.now())]);
+    if (
+      !this.lock?.condition ||
+      !(await this.redis.compareAndWrite([this.lock.condition], commands))
+    )
+      throw new Error("Object lock was lost");
   }
 
   getAlarm(namespace: string, name: string): Promise<number | null> {
@@ -544,6 +569,7 @@ export async function runAlarmHandler(
 // ---------------------------------------------------------------------------
 
 export interface ObjectLock {
+  readonly condition?: { readonly key: string; readonly value: string };
   assertHeld(): Promise<void>;
   release(): Promise<void>;
 }
@@ -593,6 +619,7 @@ export class RedisObjectLocks implements ObjectLocks {
     }, LOCK_RENEW_MS);
     renewal.unref?.();
     return {
+      condition: { key, value: token },
       assertHeld: async () => {
         if (lost || (await this.redis.get(key)) !== token)
           throw new Error("Object lock was lost");
@@ -734,7 +761,8 @@ export class ObjectRuntime {
           return;
         }
         try {
-          const scoped = (await backend.scope?.(namespace, name)) ?? backend;
+          const scoped =
+            (await backend.scope?.(namespace, name, lock)) ?? backend;
           await lock.assertHeld();
           const storage = new BackedObjectStorage(
             scoped,

@@ -73,12 +73,18 @@ const terminalResponseEvents = new Set([
   "image_edit.completed",
 ]);
 
-export function isTerminalResponse(value: unknown, event = ""): boolean {
+/** Whole-response boundaries; a Chat Completions choice may finish earlier. */
+export function isResponseStreamEnd(value: unknown, event = ""): boolean {
   const payload = record(value);
   const type =
     typeof payload?.type === "string" && payload.type ? payload.type : event;
+  return terminalResponseEvents.has(type);
+}
+
+export function isTerminalResponse(value: unknown, event = ""): boolean {
+  const payload = record(value);
   return (
-    terminalResponseEvents.has(type) ||
+    isResponseStreamEnd(payload, event) ||
     (Array.isArray(payload?.choices) &&
       payload.choices.some((choice) => record(choice)?.finish_reason))
   );

@@ -3,7 +3,7 @@ import type { ObjectStorage } from "../../platform/object-context.ts";
 
 const TTL = 60 * 60 * 1000;
 const CHUNK_SIZE = 64 * 1024;
-const metaSchema = z.object({
+export const xaiReplayMetaSchema = z.object({
   version: z.string(),
   expires: z.number(),
   chunks: z.number().int().min(0).max(64),
@@ -19,7 +19,8 @@ export class XaiReplayStore {
   begin(): Promise<XaiReplaySnapshot> {
     return this.storage.transaction(async (tx) => {
       const raw = await tx.get("xai_replay");
-      const previous = raw === undefined ? undefined : metaSchema.parse(raw);
+      const previous =
+        raw === undefined ? undefined : xaiReplayMetaSchema.parse(raw);
       const alive = previous && previous.expires > Date.now();
       const parts: string[] = [];
       for (let i = 0; i < (previous?.chunks ?? 0); i++) {
@@ -47,7 +48,7 @@ export class XaiReplayStore {
     return this.storage.transaction(async (tx) => {
       const raw = await tx.get("xai_replay");
       if (raw === undefined) return false;
-      const previous = metaSchema.parse(raw);
+      const previous = xaiReplayMetaSchema.parse(raw);
       if (previous.version !== version || previous.expires <= Date.now())
         return false;
       const chunks = value === null ? 0 : Math.ceil(value.length / CHUNK_SIZE);
@@ -69,7 +70,7 @@ export class XaiReplayStore {
     return this.storage.transaction(async (tx) => {
       const raw = await tx.get("xai_replay");
       if (raw === undefined) return false;
-      const meta = metaSchema.parse(raw);
+      const meta = xaiReplayMetaSchema.parse(raw);
       if (meta.expires > Date.now()) {
         await tx.setAlarm(meta.expires);
         return true;

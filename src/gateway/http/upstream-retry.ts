@@ -1,5 +1,6 @@
 import type { NormalizedUsage } from "../../billing/types.ts";
 import type { ProviderRetryConfig } from "../../config/types.ts";
+import { abortableDelay } from "../../shared/abort.ts";
 import { elapsedMs, errorMessage } from "../../shared/log.ts";
 import { SocksProxyError } from "../proxies/errors.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
@@ -50,21 +51,6 @@ export interface FetchWithRetriesResult {
   response?: Response;
   attempts: UpstreamAttemptLog[];
   error?: unknown;
-}
-
-function wait(delayMs: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export class UpstreamAttemptTimeoutError extends Error {
@@ -239,7 +225,7 @@ export async function fetchWithConfiguredRetries(
           : Math.max(0, Math.min(delayMs, options.deadline - Date.now()));
       attempt.retry_delay_ms = boundedDelay;
       if (options.wait) await options.wait(boundedDelay);
-      else await wait(boundedDelay, request.signal);
+      else await abortableDelay(boundedDelay, request.signal);
       request.signal.throwIfAborted();
     } catch (error) {
       return { attempts, error };

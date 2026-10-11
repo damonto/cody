@@ -70,6 +70,7 @@ Start with `src/gateway/health/health.ts` and `src/gateway/health/provider-healt
 Start with `src/gateway/proxies/` and `src/gateway/transport/`.
 
 - One logical request may switch nodes once within its selected group, only before any upstream HTTP bytes are sent. Keep authentication, the original timeout budget and the shared switch allowance across configured retries. Never fall back to direct access. Established streams and WebSockets retain their connection.
+- Before switching nodes, retry proxy-scoped connection failures on the same node after 100, 300 and 500 ms, with each delay measured from the preceding failure. The initial connection and three retries share one health outcome: success clears the failure streak; exhaustion records one failure. Replacement nodes get the same retries without renewing the shared setup deadline or switch allowance. Check the remaining deadline before every dial and fallback, even when a timeout callback is delayed. Cancellation stops waits without recording a failure; setup deadlines stop retries and count at most one failure for the node.
 - Three consecutive proxy connection failures in one minute cause five minutes of cooldown. Target CONNECT refusals, HTTP/TLS errors and client cancellation do not cool nodes. Proxy faults never count against provider/credential health.
 - Sticky inherited credentials bind by provider ID; explicit credential selections bind by provider ID plus credential ID. Persist bindings/cooldowns in the group object, fence late outcomes, and retain healthy bindings across edits and deployments.
 - Prune removed owners only when synchronizing committed configuration. Preserve explicit overrides and disabled owners still referencing the group. Unsaved forms and partial OAuth snapshots must neither prune bindings nor resurrect removed owners.
@@ -77,7 +78,7 @@ Start with `src/gateway/proxies/` and `src/gateway/transport/`.
 
 ## Catalog and web search
 
-- Catalog fetches time out after three seconds and cache successful aggregates for a short, configurable isolate-local TTL.
+- Catalog fetches time out after three seconds and cache successful aggregates for a short, configurable isolate-local TTL. Node/Vercel also share these results in Redis, preserving the client/config/request cache key and original expiry; cache failures do not replace ordinary routing health checks.
 - User agents containing `codex` receive `{models: [...]}`; other clients receive the standard model-list shape. A model served by Codex uses that account's upstream `ModelInfo` instead of the static catalog entry for Codex clients.
 - Antigravity Codex models reuse explicitly selected static client metadata by real upstream ID or Gemini thinking family, before applying client aliases. Account limits, input modalities and enabled reasoning levels remain authoritative, including unknown limits for incomplete families. Only instruction fields from `model_messages` are reusable; templates must not enable unsupported native capabilities.
 - `web_search` is global. Proxy mode sends `alpha/search` to providers with `supports_web_search`; Tavily/Exa modes execute in the gateway.

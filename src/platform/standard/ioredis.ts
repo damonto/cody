@@ -2,6 +2,7 @@ import type { Redis } from "ioredis";
 import { logWarn } from "../../shared/log.ts";
 import type {
   RedisClient,
+  RedisCondition,
   RedisSetOptions,
   RedisWriteCommand,
 } from "./redis.ts";
@@ -118,6 +119,10 @@ export class IoRedisClient implements RedisClient {
     return this.run((redis) => redis.hget(key, field));
   }
 
+  hlen(key: string): Promise<number> {
+    return this.run((redis) => redis.hlen(key));
+  }
+
   hgetall(key: string): Promise<Record<string, string>> {
     return this.run((redis) => redis.hgetall(key));
   }
@@ -162,7 +167,8 @@ export class IoRedisClient implements RedisClient {
       for (const command of commands) {
         switch (command[0]) {
           case "set":
-            pipeline.set(command[1], command[2]);
+            if (command[3] === undefined) pipeline.set(command[1], command[2]);
+            else pipeline.set(command[1], command[2], "PX", command[3]);
             break;
           case "del":
             pipeline.del(command[1]);
@@ -179,6 +185,9 @@ export class IoRedisClient implements RedisClient {
           case "zrem":
             pipeline.zrem(command[1], command[2]);
             break;
+          case "pexpire":
+            pipeline.pexpire(command[1], command[2]);
+            break;
         }
       }
       const results = await pipeline.exec();
@@ -186,6 +195,51 @@ export class IoRedisClient implements RedisClient {
       if (failure) throw failure;
       if (results === null) throw new Error("Redis transaction was aborted");
     });
+  }
+
+  async compareAndWrite(
+    conditions: readonly RedisCondition[],
+    commands: readonly RedisWriteCommand[],
+  ): Promise<boolean> {
+    const keys = [
+      ...conditions.map(({ key }) => key),
+      ...commands.map((command) => command[1]),
+    ];
+    const writes = commands.map((command, index) => {
+      const args: (string | number)[] = [
+        command[0],
+        conditions.length + index + 1,
+      ];
+      if (command[0] === "set") {
+        args.push(command[2]);
+        if (command[3] !== undefined) args.push("PX", command[3]);
+      } else args.push(...command.slice(2));
+      return args;
+    });
+    return (
+      Number(
+        await this.run((redis) =>
+          redis.eval(
+            `local expected = cjson.decode(ARGV[1])
+       for i, value in ipairs(expected) do
+         local actual = redis.call('GET', KEYS[i])
+         if value == cjson.null then
+           if actual then return 0 end
+         elseif actual ~= value then return 0 end
+       end
+       for _, command in ipairs(cjson.decode(ARGV[2])) do
+         command[2] = KEYS[command[2]]
+         redis.call(unpack(command))
+       end
+       return 1`,
+            keys.length,
+            ...keys,
+            JSON.stringify(conditions.map(({ value }) => value)),
+            JSON.stringify(writes),
+          ),
+        ),
+      ) === 1
+    );
   }
 
   async deleteIfEquals(key: string, expected: string): Promise<boolean> {

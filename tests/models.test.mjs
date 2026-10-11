@@ -483,6 +483,145 @@ test("model cache key hashing failures propagate", async (t) => {
   );
 });
 
+test("shared model cache reuses results across isolates and honors expiry and client scope", async (t) => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const { env } = healthEnvironment();
+  env.MODELS_CACHE_TTL_SECONDS = "10";
+  const shared = new Map();
+  let fetches = 0;
+  env.MODELS_CACHE = {
+    get: async (key) => shared.get(key) ?? null,
+    put: async (key, value) => {
+      shared.set(key, value);
+    },
+  };
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    return Response.json({ data: [{ id: "model", object: "model" }] });
+  });
+  const first = await handleModels(
+    modelRequest(),
+    env,
+    config,
+    config.api_keys[0],
+  );
+  const payload = await first.json();
+  const initialFetches = fetches;
+  assert.ok(initialFetches > 0);
+  assert.equal(shared.size, 1);
+  clearModelsCacheForTests();
+  assert.deepEqual(
+    await (
+      await handleModels(modelRequest(), env, config, config.api_keys[0])
+    ).json(),
+    payload,
+  );
+  assert.equal(fetches, initialFetches);
+  clearModelsCacheForTests();
+  await handleModels(modelRequest(), env, config, {
+    ...config.api_keys[0],
+    id: "different-client",
+  });
+  assert.ok(fetches > initialFetches);
+  const beforeExpiry = fetches;
+  for (const [key, value] of shared)
+    shared.set(
+      key,
+      JSON.stringify({ ...JSON.parse(value), expires_at: Date.now() - 1 }),
+    );
+  clearModelsCacheForTests();
+  await handleModels(modelRequest(), env, config, config.api_keys[0]);
+  assert.ok(fetches > beforeExpiry);
+  clearModelsCacheForTests();
+});
+
+test("shared catalog cache failures and disabled caching preserve model discovery", async (t) => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const { env } = healthEnvironment();
+  let reads = 0;
+  let writes = 0;
+  env.MODELS_CACHE = {
+    get: async () => {
+      reads++;
+      throw new Error("cache offline");
+    },
+    put: async () => {
+      writes++;
+      throw new Error("cache offline");
+    },
+  };
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ data: [{ id: "model", object: "model" }] }),
+  );
+  assert.equal(
+    (await handleModels(modelRequest(), env, config, config.api_keys[0]))
+      .status,
+    200,
+  );
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+  env.MODELS_CACHE_TTL_SECONDS = "10";
+  assert.equal(
+    (await handleModels(modelRequest(), env, config, config.api_keys[0]))
+      .status,
+    200,
+  );
+  assert.equal(reads, 1);
+  assert.equal(writes, 1);
+  clearModelsCacheForTests();
+});
+
+test("invalid shared model cache payloads and lifetimes are rebuilt", async (t) => {
+  const config = modelConfig();
+  const { env } = healthEnvironment();
+  env.MODELS_CACHE_TTL_SECONDS = "10";
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    return Response.json({ data: [{ id: "model", object: "model" }] });
+  });
+  const invalid = [
+    { expires_at: Date.now() + 10_000, payload: { error: "bad catalog" } },
+    {
+      expires_at: Date.now() + 10_000,
+      payload: { object: "list", data: [null] },
+    },
+    {
+      expires_at: Date.now() + 10_000,
+      payload: { object: "list", data: [{ id: 42 }] },
+    },
+    {
+      expires_at: Number.MAX_SAFE_INTEGER,
+      payload: { object: "list", data: [] },
+    },
+  ];
+  for (const cached of invalid) {
+    clearModelsCacheForTests();
+    const previous = fetches;
+    const writes = [];
+    env.MODELS_CACHE = {
+      get: async () => JSON.stringify(cached),
+      put: async (_key, value) => {
+        writes.push(JSON.parse(value));
+      },
+    };
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      config.api_keys[0],
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.ok(fetches > previous);
+    assert.equal(payload.object, "list");
+    assert.deepEqual(writes[0].payload, payload);
+  }
+  clearModelsCacheForTests();
+});
+
 test("model catalogs reflect each client's per-key model routes", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();

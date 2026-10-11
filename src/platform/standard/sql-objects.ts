@@ -1,6 +1,6 @@
 /**
  * Object storage in SQL for state that must survive restarts and Redis
- * eviction (OAuth accounts, session ownership, publication intents). The
+ * eviction (OAuth accounts, session ownership, cooldowns and usage). The
  * tables are created by the standard-backend migrations, never on D1.
  */
 import type { SqlDatabase, SqlStatement } from "../bindings.ts";
@@ -18,7 +18,20 @@ export class SqlObjectBackend implements ObjectBackend {
     private version?: string,
   ) {}
 
-  async scope(namespace: string, name: string): Promise<ObjectBackend> {
+  get revision(): string {
+    if (this.version === undefined)
+      throw new Error("Object storage is not scoped");
+    return this.version;
+  }
+
+  /** Advance the SQL fence before recovering an evicted or interrupted cache. */
+  async claim(namespace: string, name: string): Promise<SqlObjectBackend> {
+    const scoped = await this.scope(namespace, name);
+    await scoped.commit(namespace, name, { puts: [], deletes: [] });
+    return scoped;
+  }
+
+  async scope(namespace: string, name: string): Promise<SqlObjectBackend> {
     await this.db
       .prepare(
         "INSERT INTO object_versions (namespace, object_name, version) VALUES (?, ?, ?) ON CONFLICT (namespace, object_name) DO NOTHING",

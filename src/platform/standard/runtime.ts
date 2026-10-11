@@ -32,6 +32,8 @@ import {
 } from "./settings.ts";
 import { nodeSocksDial } from "./socket.ts";
 import { SqlObjectBackend } from "./sql-objects.ts";
+import { CachedSqlObjectBackend } from "./cached-objects.ts";
+import { AccountDecodeCache } from "./account-cache.ts";
 import { connectDatabase } from "./sql/connect.ts";
 import { applyMigrations, migrationDirectories } from "./sql/migrate.ts";
 import type { PostgresOptions } from "./sql/postgres.ts";
@@ -105,6 +107,20 @@ export async function createRuntime(
     }
   }
   const { db, redis } = resources;
+  try {
+    const legacyReplay = await db
+      .prepare(
+        "SELECT 1 AS present FROM object_storage WHERE namespace = 'affinity' AND object_name >= 'xai-replay:' AND object_name < 'xai-replay;' LIMIT 1",
+      )
+      .first();
+    if (legacyReplay)
+      throw new Error(
+        "SQL xAI replay requires migration before startup: stop all instances and run scripts/migrate-runtime-redis.mjs --apply --offline",
+      );
+  } catch (error) {
+    await resources.close();
+    throw error;
+  }
   const tasks = new TaskTracker(options.waitUntil);
   const antigravityHttp = createAntigravityHttpConnector(
     options.target === "vercel"
@@ -115,8 +131,9 @@ export async function createRuntime(
     locks: new RedisObjectLocks(redis, settings.REDIS_PREFIX),
     tasks,
   });
-  const backend = new SqlObjectBackend(db);
+  const backend = new CachedSqlObjectBackend(db, redis, settings.REDIS_PREFIX);
   const durable = { backend, alarms: true };
+  const accountCache = new AccountDecodeCache(settings.CONFIG_ENCRYPTION_KEY);
   // The factories run only after all namespaces have been assembled.
   const env: Bindings = {
     UPSTREAM_HTTP: { antigravity: antigravityHttp.send },
@@ -144,6 +161,14 @@ export async function createRuntime(
       : {}),
     ...(settings.ACCESS_AUD ? { ACCESS_AUD: settings.ACCESS_AUD } : {}),
     CODY_DB: db,
+    MODELS_CACHE: {
+      get: (key) => redis.get(`${settings.REDIS_PREFIX}:models:v1:${key}`),
+      put: async (key, value, ttlMs) => {
+        await redis.set(`${settings.REDIS_PREFIX}:models:v1:${key}`, value, {
+          px: ttlMs,
+        });
+      },
+    },
     CODY_CONFIG_KV: {
       get: (key) => redis.get(`${settings.REDIS_PREFIX}:public:${key}`),
       put: async (key, value) => {
@@ -222,7 +247,10 @@ export async function createRuntime(
     ),
     PROVIDER_OAUTH_ACCOUNT: objects.namespace(
       "oauth",
-      (ctx) => new ProviderOAuthAccountCore(ctx, env),
+      (ctx) =>
+        new ProviderOAuthAccountCore(ctx, env, (ciphertext) =>
+          accountCache.load(ciphertext),
+        ),
       (call): OAuthAccountObject => ({
         run: (command) =>
           call((core) => core.run(command), {
@@ -237,7 +265,7 @@ export async function createRuntime(
       (call): UsageOutboxObject => ({
         enqueue: (...args) => call((core) => core.enqueue(...args)),
       }),
-      durable,
+      { backend: new SqlObjectBackend(db), alarms: true },
     ),
     ...(options.target === "node"
       ? {
@@ -299,6 +327,7 @@ export async function createRuntime(
     },
     async close() {
       await tasks.drain();
+      accountCache.clear();
       antigravityHttp.close();
       await resources.close();
     },

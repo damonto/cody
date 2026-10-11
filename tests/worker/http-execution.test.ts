@@ -224,6 +224,74 @@ test("dispatch failure does not replay upstream and preserves Anthropic errors",
   expect(upstream).not.toHaveBeenCalled();
 });
 
+test.each([
+  ["response.completed", "success"],
+  ["response.failed", "failed"],
+  ["response.incomplete", "incomplete"],
+])(
+  "disconnect after %s preserves %s across the DO boundary",
+  async (type, outcome) => {
+    const metering = vi.spyOn(RequestMeter.prototype, "response");
+    let cancelled = false;
+    const frame = `data: ${JSON.stringify({
+      type,
+      response: {
+        id: "resp_review",
+        usage: {
+          input_tokens: 30361,
+          input_tokens_details: { cached_tokens: 27392, cache_write_tokens: 0 },
+          output_tokens: 71,
+          output_tokens_details: { reasoning_tokens: 12 },
+        },
+      },
+    })}\n\n`;
+    const upstream = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(frame));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    vi.stubGlobal("fetch", upstream);
+    const abort = new AbortController();
+    const response = await dispatch(
+      new Request(request(), { signal: abort.signal }),
+    );
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(frame);
+    abort.abort();
+    await reader.cancel();
+    await expect.poll(() => cancelled).toBe(true);
+    const meter = metering.mock.contexts[0];
+    if (!(meter instanceof RequestMeter))
+      throw new Error("Missing request meter");
+    expect(await meter.drain()).toBe(true);
+    expect(meter.checkpoint()).toMatchObject({
+      phase: "finished",
+      outcome,
+      http_status: 200,
+      response_id: "resp_review",
+      observation_issue: null,
+      usage: {
+        status: "reported",
+        tokens: {
+          input_tokens: 30361,
+          output_tokens: 71,
+          cache_read_tokens: 27392,
+        },
+      },
+    });
+    expect(upstream).toHaveBeenCalledTimes(1);
+  },
+);
+
 test("a failed dispatch cancels the active executor through a fresh stub without replay", async () => {
   let cancelled = false;
   const upstream = vi.fn(

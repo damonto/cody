@@ -231,6 +231,11 @@ type WorkerSettings = Pick<
 >;
 
 export interface Bindings extends Partial<WorkerSettings> {
+  /** Optional shared model-result cache; unrelated to authoritative configuration. */
+  readonly MODELS_CACHE?: {
+    get(key: string): Promise<string | null>;
+    put(key: string, value: string, ttlMs: number): Promise<void>;
+  };
   /** Standard-runtime HTTP connectors; omitted by Workers, which use native fetch. */
   readonly UPSTREAM_HTTP?: {
     readonly antigravity: (request: Request) => Promise<Response>;

@@ -104,6 +104,12 @@ export class ProviderOAuthAccountCore {
   constructor(
     protected readonly ctx: ObjectContext,
     protected readonly env: AccountEnv,
+    private readonly loadAccount: (
+      ciphertext: string,
+    ) => Promise<Stored> = async (ciphertext) =>
+      storedSchema.parse(
+        await decryptConfig(ciphertext, env.CONFIG_ENCRYPTION_KEY),
+      ),
   ) {
     this.inventory = new AccountInventory(
       {
@@ -123,10 +129,7 @@ export class ProviderOAuthAccountCore {
     );
     void this.ctx.blockConcurrencyWhile(async () => {
       const encrypted = await this.ctx.storage.get<string>("account");
-      if (encrypted)
-        this.account = storedSchema.parse(
-          await decryptConfig(encrypted, this.env.CONFIG_ENCRYPTION_KEY),
-        );
+      if (encrypted) this.account = await this.loadAccount(encrypted);
     });
   }
   /** Operator-only restore; the deployment must be quiescent during transfer. */

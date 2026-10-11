@@ -1947,8 +1947,11 @@ test("inference retries share one auth snapshot and one proxy switch budget", as
   config.providers[0].retry = { status_codes: [503], delays_ms: [0] };
   const before = tokenRequests().length;
   expect((await infer(config)).status).toBe(200);
-  expect(requests).toHaveLength(3);
-  expect(requests[1]).toBe(requests[2]);
+  expect(requests).toHaveLength(6);
+  expect(requests.slice(0, 4)).toEqual(
+    Array(4).fill(`socks5://${bound}.test:1080`),
+  );
+  expect(requests[4]).toBe(requests[5]);
   const attempts = records.filter((record) =>
     record.url.includes(":generateContent"),
   );
@@ -2707,9 +2710,9 @@ test("Antigravity account switches retain the logical request's proxy switch all
   expect(response.status).toBe(502);
   await response.text();
   expect(sent).toEqual([
-    "Bearer access-pool-a:socks5://a.test:1080",
+    ...Array(4).fill("Bearer access-pool-a:socks5://a.test:1080"),
     "Bearer access-pool-a:socks5://b.test:1080",
-    "Bearer access-pool-b:socks5://a.test:1080",
+    ...Array(4).fill("Bearer access-pool-b:socks5://a.test:1080"),
   ]);
 });
 

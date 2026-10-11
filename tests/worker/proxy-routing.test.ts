@@ -89,8 +89,18 @@ for (const endpoint of ["responses", "messages"] as const) {
       );
       expect(response.status).toBe(502);
       await waitOnExecutionContext(context);
+      const status = await env.PROXY_GROUP.getByName(
+        config.proxy_groups[0].id,
+      ).getStatus(await proxyGroupSnapshot(config, config.proxy_groups[0]));
+      expect(status.proxies.map((proxy) => proxy.failures)).toEqual([
+        index + 1,
+        index + 1,
+      ]);
+      expect(status.proxies.every((proxy) => proxy.status === "cooling")).toBe(
+        index === 2,
+      );
     }
-    expect(socksFetch).toHaveBeenCalledTimes(6);
+    expect(socksFetch).toHaveBeenCalledTimes(24);
     expect(
       (await env.HEALTH.getByName(config.providers[0].id).getStatus()).failures,
     ).toBe(0);
@@ -108,9 +118,65 @@ for (const endpoint of ["responses", "messages"] as const) {
         ? { type: "error", error: { type: "overloaded_error" } }
         : { error: { code: "proxy_group_unavailable" } },
     );
-    expect(socksFetch).toHaveBeenCalledTimes(6);
+    expect(socksFetch).toHaveBeenCalledTimes(24);
   });
 }
+
+test("a successful in-place proxy retry clears prior failures without switching nodes", async () => {
+  const config = fixture();
+  vi.mocked(socksFetch).mockRejectedValue(
+    new SocksProxyError("SOCKS5 connection failed"),
+  );
+  const failedContext = createExecutionContext();
+  expect(
+    (
+      await handleInference(
+        request("responses"),
+        env,
+        config,
+        config.api_keys[0],
+        "responses",
+        "failed",
+        failedContext,
+      )
+    ).status,
+  ).toBe(502);
+  await waitOnExecutionContext(failedContext);
+
+  vi.mocked(socksFetch).mockReset();
+  for (let index = 0; index < 3; index++) {
+    vi.mocked(socksFetch).mockRejectedValueOnce(
+      new SocksProxyError("SOCKS5 connection failed"),
+    );
+  }
+  vi.mocked(socksFetch).mockImplementation(async (_request, _node, options) => {
+    options?.onTunnelEstablished?.();
+    options?.onStage?.("request");
+    return Response.json({ choices: [] });
+  });
+  const context = createExecutionContext();
+  expect(
+    (
+      await handleInference(
+        request("responses"),
+        env,
+        config,
+        config.api_keys[0],
+        "responses",
+        "recovered",
+        context,
+      )
+    ).status,
+  ).toBe(200);
+  await waitOnExecutionContext(context);
+  expect(vi.mocked(socksFetch).mock.calls.map(([, node]) => node.url)).toEqual(
+    Array(4).fill("socks5://a.test:1080"),
+  );
+  const status = await env.PROXY_GROUP.getByName(
+    config.proxy_groups[0].id,
+  ).getStatus(await proxyGroupSnapshot(config, config.proxy_groups[0]));
+  expect(status.proxies.map((proxy) => proxy.failures)).toEqual([0, 1]);
+});
 
 test("catalog transport failures share proxy cooldown with inference while provider health stays separate", async () => {
   const config = fixture();

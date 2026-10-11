@@ -54,6 +54,33 @@ function fixture(protocol = "openai", websocket = false) {
   };
 }
 
+function sseFixture(protocol = "openai", status = 200) {
+  const result = fixture(protocol);
+  let source;
+  const cancellations = [];
+  const upstream = new ReadableStream({
+    start(controller) {
+      source = controller;
+    },
+    cancel(reason) {
+      cancellations.push(reason);
+    },
+  });
+  const response = result.meter.response(
+    new Response(upstream, {
+      status,
+      headers: { "content-type": "text/event-stream" },
+    }),
+  );
+  return {
+    ...result,
+    source,
+    upstream,
+    reader: response.body.getReader(),
+    cancellations,
+  };
+}
+
 test("meters reject non-inference requests before sending any usage", async () => {
   const events = [];
   for (const [endpoint, method, websocket = false] of [
@@ -180,6 +207,238 @@ test("nonstream JSON cannot invent a first-token timestamp", async () => {
   assert.equal(events.at(-1).ttft_ms, null);
   assert.equal(events.at(-1).first_text_ms, null);
   assert.equal(events.at(-1).usage.status, "partial");
+});
+
+for (const ending of ["eof", "cancel", "read_error"]) {
+  for (const [type, protocol, outcome, diagnostic, status = 200] of [
+    ["response.completed", "openai", "success", null],
+    ["response.failed", "openai", "failed", "server_error"],
+    ["response.incomplete", "openai", "incomplete", null],
+    ["error", "openai", "failed", "server_error"],
+    ["message_stop", "anthropic", "success", null],
+    ["[DONE]", "openai", "success", null],
+    ["response.completed", "openai", "failed", null, 503],
+    ["response.incomplete", "openai", "failed", null, 503],
+  ]) {
+    test(`SSE ${type} (${status}) preserves ${outcome} on ${ending} after forwarding`, async () => {
+      const {
+        meter,
+        events,
+        advance,
+        source,
+        upstream,
+        reader,
+        cancellations,
+      } = sseFixture(protocol, status);
+      const usage =
+        protocol === "anthropic"
+          ? {
+              input_tokens: 2969,
+              cache_read_input_tokens: 27392,
+              cache_creation_input_tokens: 0,
+              output_tokens: 71,
+            }
+          : {
+              input_tokens: 30361,
+              input_tokens_details: {
+                cached_tokens: 27392,
+                cache_write_tokens: 0,
+              },
+              output_tokens: 71,
+              output_tokens_details: { reasoning_tokens: 12 },
+            };
+      const payload = {
+        type,
+        response: { id: "resp_review", usage },
+        ...(diagnostic && { error: { code: diagnostic } }),
+      };
+      const payloads =
+        protocol === "anthropic"
+          ? [
+              {
+                type: "message_start",
+                message: {
+                  id: "msg_review",
+                  usage: { ...usage, output_tokens: 0 },
+                },
+              },
+              { type: "message_delta", usage: { output_tokens: 71 } },
+              { type },
+            ]
+          : type === "[DONE]"
+            ? [{ usage }, "[DONE]"]
+            : [payload];
+      const frame = payloads
+        .map(
+          (value) =>
+            `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`,
+        )
+        .join("");
+      advance(3190);
+      source.enqueue(new TextEncoder().encode(frame));
+      assert.equal(
+        new TextDecoder().decode((await reader.read()).value),
+        frame,
+      );
+      const reason = new Error("connection closed after terminal event");
+      if (ending === "eof") {
+        source.close();
+        assert.equal((await reader.read()).done, true);
+      } else if (ending === "cancel") {
+        // Exercise cancellation while the next upstream read is still pending.
+        const pending = reader.read();
+        await reader.cancel(reason);
+        assert.equal((await pending).done, true);
+        assert.deepEqual(cancellations, [reason]);
+      } else {
+        source.error(reason);
+        await assert.rejects(reader.read(), (error) => error === reason);
+      }
+      await meter.drain();
+      assert.equal(upstream.locked, false);
+      const final = events.at(-1);
+      assert.equal(final.outcome, outcome);
+      assert.equal(final.http_status, status);
+      assert.equal(final.duration_ms, 3190);
+      assert.equal(final.diagnostic_code, diagnostic);
+      assert.equal(final.observation_issue, null);
+      assert.equal(final.usage.status, "reported");
+      assert.equal(final.usage.tokens.input_tokens, 30361);
+      assert.equal(final.usage.tokens.output_tokens, 71);
+      assert.equal(final.usage.tokens.cache_read_tokens, 27392);
+      assert.equal(
+        events.filter((event) => event.phase === "finished").length,
+        1,
+      );
+    });
+  }
+}
+
+test("SSE cancellation cannot count unread or unfinished completion as success", async () => {
+  const completed = 'data: {"type":"response.completed"}\n\n';
+  for (const [prefix, suffix] of [
+    [null, completed],
+    ['data: {"type":"response.output_text.delta","delta":"ok"}\n\n', completed],
+    ['data: {"type":"response.completed"}\n', "\n"],
+    [
+      'data: {"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}\n\n',
+      completed,
+    ],
+    [
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[{"index":1,"delta":{"content":"unfinished"}}]}\n\n',
+    ],
+  ]) {
+    const { meter, events, source, reader } = sseFixture();
+    if (prefix) source.enqueue(new TextEncoder().encode(prefix));
+    source.enqueue(new TextEncoder().encode(suffix));
+    if (prefix) await reader.read();
+    // Allow any automatic read-ahead to run before the consumer disconnects.
+    await new Promise(setImmediate);
+    await reader.cancel();
+    await meter.drain();
+    assert.equal(events.at(-1).outcome, "cancelled");
+    assert.equal(events.at(-1).observation_issue, null);
+    if (prefix?.includes('"usage"'))
+      assert.equal(events.at(-1).usage.status, "reported");
+  }
+});
+
+test("SSE read failures before completion remain failures", async () => {
+  const { meter, events, source, reader, upstream } = sseFixture();
+  source.enqueue(
+    new TextEncoder().encode('data: {"type":"response.created"}\n\n'),
+  );
+  await reader.read();
+  source.error(new Error("upstream disconnected"));
+  await assert.rejects(reader.read(), /upstream disconnected/);
+  await meter.drain();
+  assert.equal(upstream.locked, false);
+  assert.equal(events.at(-1).outcome, "failed");
+  assert.equal(events.at(-1).observation_issue, "upstream_stream_read_failed");
+});
+
+test("SSE choice completion cannot hide an unfinished response at EOF", async () => {
+  const { meter, events, source, reader, upstream } = sseFixture();
+  const frame =
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+    'data: {"choices":[{"index":1,"delta":{"content":"unfinished"}}]}\n\n';
+  source.enqueue(new TextEncoder().encode(frame));
+  source.close();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), frame);
+  assert.equal((await reader.read()).done, true);
+  await meter.drain();
+  assert.equal(events.at(-1).outcome, "incomplete");
+  assert.equal(
+    events.at(-1).observation_issue,
+    "stream_ended_without_completion",
+  );
+  assert.equal(upstream.locked, false);
+});
+
+test("SSE failures survive later incomplete and successful terminal markers", async () => {
+  const { meter, events, source, reader } = sseFixture();
+  for (const payload of [
+    { type: "response.failed", error: { code: "server_error" } },
+    { type: "response.incomplete" },
+    { type: "response.completed" },
+  ]) {
+    source.enqueue(
+      new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`),
+    );
+    await reader.read();
+  }
+  await reader.cancel();
+  await meter.drain();
+  assert.equal(events.at(-1).outcome, "failed");
+  assert.equal(events.at(-1).diagnostic_code, "server_error");
+});
+
+test("upstream cancellation failure still releases the reader and records the outcome once", async () => {
+  const { meter, events } = fixture();
+  const failure = new Error("upstream cleanup failed");
+  const upstream = new ReadableStream({
+    cancel() {
+      throw failure;
+    },
+  });
+  const reader = meter.response(new Response(upstream)).body.getReader();
+  const pending = reader.read();
+  await assert.rejects(reader.cancel(), (error) => error === failure);
+  assert.equal((await pending).done, true);
+  await meter.drain();
+  assert.equal(upstream.locked, false);
+  assert.equal(events.at(-1).outcome, "cancelled");
+  assert.equal(events.filter((event) => event.phase === "finished").length, 1);
+});
+
+test("SSE keeps trailing usage after a choice finishes and preserves HTTP failures", async () => {
+  for (const status of [200, 503]) {
+    const { meter, events } = fixture();
+    const frames = [
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[],"usage":{"input_tokens":1000,"output_tokens":50,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    const response = meter.response(
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            const frame = frames.shift();
+            if (frame) controller.enqueue(new TextEncoder().encode(frame));
+            else controller.close();
+          },
+        }),
+        { status, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const expected = frames.join("");
+    assert.equal(await response.text(), expected);
+    await meter.drain();
+    assert.equal(events.at(-1).outcome, status === 200 ? "success" : "failed");
+    assert.equal(events.at(-1).usage.tokens.output_tokens, 50);
+    assert.equal(events.at(-1).usage.status, "reported");
+  }
 });
 
 for (const transport of ["sse", "websocket"]) {

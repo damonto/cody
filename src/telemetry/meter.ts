@@ -35,7 +35,11 @@ import {
   type InferenceMetadata,
   type ReasoningMetadata,
 } from "../shared/upstream-observation.ts";
-import { responseMetadata, isTerminalResponse } from "./inference-metadata.ts";
+import {
+  responseMetadata,
+  isTerminalResponse,
+  isResponseStreamEnd,
+} from "./inference-metadata.ts";
 
 export interface UsageSink {
   send(event: UsageEvent): Promise<unknown>;
@@ -105,7 +109,6 @@ export class RequestMeter {
   private config: GatewayConfig | undefined;
   private finished = false;
   private wrapped = false;
-  private streamCompleted = false;
   private upstreamResponse:
     { response: Response; detectFormat: boolean } | undefined;
   private readonly terminalMetadataFields = new Set<
@@ -364,7 +367,6 @@ export class RequestMeter {
     this.accumulator.add(response?.usage);
     this.accumulator.add(message?.usage);
     const type = name(payload.type) || event;
-    if (terminal) this.streamCompleted = true;
     const responseId =
       response?.id ?? (payload.object === "response" ? payload.id : undefined);
     if (typeof responseId === "string")
@@ -389,9 +391,10 @@ export class RequestMeter {
       this.data.outcome = RequestOutcome.Failed;
       this.data.diagnostic_code = errorCode ?? "upstream_stream_error";
     } else if (
-      type === "response.incomplete" ||
-      response?.status === "incomplete" ||
-      payload.status === "incomplete"
+      this.data.outcome !== RequestOutcome.Failed &&
+      (type === "response.incomplete" ||
+        response?.status === "incomplete" ||
+        payload.status === "incomplete")
     ) {
       this.data.outcome = RequestOutcome.Incomplete;
     }
@@ -533,57 +536,69 @@ export class RequestMeter {
     const source = upstream ? "upstream" : "downstream";
     this.upstreamResponse = undefined;
     this.data.http_status = response.status;
+    const httpOutcome = response.ok
+      ? RequestOutcome.Success
+      : RequestOutcome.Failed;
     if (!response.body) {
-      this.finish(
-        response.ok ? RequestOutcome.Success : RequestOutcome.Failed,
-        response.status,
-      );
+      this.finish(httpOutcome, response.status);
       return response;
     }
     const format =
       responseFormat(response) ?? (upstream?.detectFormat ? "auto" : undefined);
     if (format === "sse") this.data.transport = UsageTransport.Sse;
+    let streamOutcome: TerminalRequestOutcome | undefined;
     const observer = format
       ? new ResponseObserver({
           format,
-          onEvent: (value, event, format) =>
-            format === "sse"
-              ? this.observe(value, event, this.now(), source)
-              : this.observePayload(value, event, null, source),
+          onEvent: (value, event, format) => {
+            if (format === "sse") {
+              this.observe(value, event, this.now(), source);
+              if (
+                this.data.outcome === RequestOutcome.Failed ||
+                this.data.outcome === RequestOutcome.Incomplete
+              )
+                streamOutcome = response.ok ? this.data.outcome : httpOutcome;
+              else if (isResponseStreamEnd(value, event))
+                streamOutcome = httpOutcome;
+            } else this.observePayload(value, event, null, source);
+          },
           onIssue: (issue) => this.issue(issue),
           onDone: () => {
-            this.streamCompleted = true;
+            streamOutcome ??= httpOutcome;
           },
           onFirstData: () => this.observeFirstResponse(this.now()),
           shouldParse: (data, event) => this.needsEvent(data, event),
         })
       : undefined;
     const reader = response.body.getReader();
-    const body = new ReadableStream<Uint8Array>({
-      pull: async (controller) => {
-        try {
-          const item = await reader.read();
-          if (item.done) {
-            try {
-              observer?.end();
-            } catch {
-              this.issue("response_observer_failed");
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull: async (controller) => {
+          try {
+            const item = await reader.read();
+            if (cancelled) return;
+            if (item.done) {
+              reader.releaseLock();
+              try {
+                observer?.end();
+              } catch {
+                this.issue("response_observer_failed");
+              }
+              if (
+                observer?.format === "sse" &&
+                response.ok &&
+                streamOutcome === undefined
+              ) {
+                this.issue("stream_ended_without_completion");
+                this.finish(RequestOutcome.Incomplete, response.status);
+              } else this.finish(streamOutcome ?? httpOutcome, response.status);
+              controller.close();
+              return;
             }
-            if (
-              observer?.format === "sse" &&
-              response.ok &&
-              !this.streamCompleted &&
-              this.data.outcome === RequestOutcome.Pending
-            ) {
-              this.issue("stream_ended_without_completion");
-              this.finish(RequestOutcome.Incomplete, response.status);
-            } else
-              this.finish(
-                response.ok ? RequestOutcome.Success : RequestOutcome.Failed,
-                response.status,
-              );
-            controller.close();
-          } else {
+            // Observe only bytes handed to the consumer. Keep reading normally
+            // after protocol completion so trailing usage is still collected.
+            controller.enqueue(item.value);
             try {
               observer?.push(item.value);
             } catch {
@@ -591,21 +606,36 @@ export class RequestMeter {
             }
             if (observer?.format === "sse")
               this.data.transport = UsageTransport.Sse;
-            controller.enqueue(item.value);
+          } catch (error) {
+            if (cancelled) return;
+            reader.releaseLock();
+            observer?.discard();
+            if (streamOutcome === undefined)
+              this.issue("upstream_stream_read_failed");
+            this.finish(
+              streamOutcome ?? RequestOutcome.Failed,
+              response.status,
+            );
+            controller.error(error);
           }
-        } catch (error) {
+        },
+        cancel: async (reason) => {
+          cancelled = true;
           observer?.discard();
-          this.issue("upstream_stream_read_failed");
-          this.finish(RequestOutcome.Failed, response.status);
-          controller.error(error);
-        }
+          this.finish(
+            streamOutcome ?? RequestOutcome.Cancelled,
+            response.status,
+          );
+          try {
+            await reader.cancel(reason);
+          } finally {
+            reader.releaseLock();
+          }
+        },
       },
-      cancel: async (reason) => {
-        observer?.discard();
-        this.finish(RequestOutcome.Cancelled, response.status);
-        await reader.cancel(reason);
-      },
-    });
+      // Do not observe a queued terminal chunk before the consumer requests it.
+      { highWaterMark: 0 },
+    );
     return new Response(body, response);
   }
 }
