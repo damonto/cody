@@ -49,27 +49,6 @@ export function codexQuotaResetsAt(
 }
 
 /**
- * When a blocked session binding waits on an account cooling for quota, that
- * account's reset. Context history lives on the bound account, so such a
- * session waits instead of moving.
- */
-export function blockedCodexQuotaResetsAt(
-  selection: ProviderSelection,
-): number | undefined {
-  if (selection.affinity?.status !== SessionAffinityStatus.Blocked)
-    return undefined;
-  const bound = selection.credentialChecks.find(
-    (check) =>
-      check.provider_id === selection.affinity?.provider_id &&
-      check.credential_id === selection.affinity.credential_id,
-  );
-  return bound?.cooldown_reason === HealthCooldownReason.Quota &&
-    typeof bound.cooling_until === "number"
-    ? bound.cooling_until
-    : undefined;
-}
-
-/**
  * With `auto_consume_resets`, spends one reset credit once every Codex account
  * is exhausted and readmits the restored account. Returns whether selection
  * should run again.
@@ -89,9 +68,7 @@ export async function restoreCodexAccount(
   if (
     provider?.type !== ProviderType.Codex ||
     !provider.auto_consume_resets ||
-    selection.affinity?.status === SessionAffinityStatus.Blocked ||
     selection.affinity?.status === SessionAffinityStatus.Failed ||
-    selection.affinity?.status === SessionAffinityStatus.Forbidden ||
     [...selection.checks, ...selection.credentialChecks].some(
       (check) =>
         check.provider_id === provider.id &&

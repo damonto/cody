@@ -40,13 +40,7 @@ async function runtime(
   if (!client)
     throw new HTTPException(400, { message: "Select a current client" });
   const url = new URL(`https://cody.internal/v1/${path}`);
-  for (const name of [
-    "scope",
-    "cursor",
-    "limit",
-    "model",
-    "release_context_ownership",
-  ] as const) {
+  for (const name of ["scope", "cursor", "limit", "model"] as const) {
     const value = incoming.searchParams.get(name);
     if (value) url.searchParams.set(name, value);
   }

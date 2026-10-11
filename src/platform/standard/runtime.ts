@@ -196,10 +196,6 @@ export async function createRuntime(
         commitXaiReplay: (...args) =>
           call((core) => core.commitXaiReplay(...args)),
         resolve: (...args) => call((core) => core.resolve(...args)),
-        claimContextSession: (...args) =>
-          call((core) => core.claimContextSession(...args)),
-        releaseContextSession: (...args) =>
-          call((core) => core.releaseContextSession(...args)),
         getStatus: (...args) => call((core) => core.getStatus(...args)),
         clear: () => call((core) => core.clear()),
         clearIfBindingId: (...args) =>

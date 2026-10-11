@@ -414,7 +414,6 @@ for (const [name, open] of Object.entries(databases)) {
           {
             provider_id: "codex",
             priority: 1,
-            supports_context_management: false,
             credentials: [
               { credential_id: "a", priority: 1 },
               { credential_id: "b", priority: 1 },
@@ -658,32 +657,6 @@ for (const [name, open] of Object.entries(databases)) {
           ).data[0].session_id,
           "shared-session",
         );
-        const ownerName = "context-owner:" + registration.session_digest;
-        assert.equal(
-          await env.SESSION_AFFINITY.getByName(ownerName).claimContextSession(
-            "client-a",
-          ),
-          true,
-        );
-        const restarted = await createRuntime({
-          target: "node",
-          root: ROOT,
-          source: settings,
-          resources: { ...resources, redis: new MemoryRedis() },
-        });
-        assert.equal(
-          await restarted.bindings.SESSION_AFFINITY.getByName(
-            ownerName,
-          ).claimContextSession("client-b"),
-          false,
-        );
-        assert.equal(
-          await restarted.bindings.SESSION_AFFINITY.getByName(
-            ownerName,
-          ).releaseContextSession("client-b"),
-          "forbidden",
-        );
-        await restarted.close();
         assert.equal(
           await env.SESSION_AFFINITY.getByName(name).clearIfBindingId(
             "wrong",

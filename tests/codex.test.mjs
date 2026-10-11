@@ -71,7 +71,6 @@ test("Codex defaults to round robin with WebSocket and search, and no automatic 
   assert.equal(provider.auto_consume_resets, false);
   assert.equal(provider.supports_websocket, true);
   assert.equal(provider.supports_web_search, true);
-  assert.equal(provider.supports_context_management, false);
   assert.equal(
     config({ account_selection: "session_affinity" }).providers[0]
       .account_selection,
@@ -218,11 +217,6 @@ test("the adapter serves Codex endpoints and gates optional capabilities", () =>
     codexAdapter.supports(provider, "alpha/history/v2/list_items", "http"),
     false,
   );
-  const managed = config({ supports_context_management: true }).providers[0];
-  assert.equal(
-    codexAdapter.supports(managed, "alpha/history/v2/list_items", "http"),
-    true,
-  );
 });
 
 test("the model list keeps each account ModelInfo and adds a client version", async () => {
@@ -269,7 +263,6 @@ test("the model list keeps each account ModelInfo and adds a client version", as
   );
   const [aggregated] = aggregateCodexModels(
     new Set(["gpt-5.5-codex"]),
-    new Set(),
     [],
     prepared.parseModels({ models: [info] }).data,
   );
@@ -869,4 +862,21 @@ test("authorization rejects incomplete tokens instead of reusing an old refresh 
     () => parseIdToken(token.split(".").slice(0, 2).join(".")),
     /workspace account/,
   );
+});
+
+test("fresh Codex WebSockets discard the previous account's turn routing hint", async () => {
+  const [provider] = config().providers;
+  const prepared = await codexAdapter.prepare(provider, credential, {
+    request: new Request("https://gateway.test/responses", {
+      headers: {
+        "x-codex-turn-state": "old-account-state",
+        "session-id": "same-session",
+      },
+    }),
+    endpoint: "responses",
+    transport: "websocket",
+    protocol: "openai",
+  });
+  assert.equal(prepared.headers.get("x-codex-turn-state"), null);
+  assert.equal(prepared.headers.get("session-id"), "same-session");
 });

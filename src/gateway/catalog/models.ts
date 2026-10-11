@@ -60,7 +60,6 @@ import type { ProxyFailure } from "../proxies/errors.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   allowedProviderCandidates,
-  configuredModelRoute,
   modelRoutesByProvider,
   selectAvailableCatalogTargetsWithDetails,
   type ProviderTarget,
@@ -562,26 +561,8 @@ function codexModelIds(
   return ids;
 }
 
-/** Optional history/notes follow the preferred inference provider for each model. */
-function contextManagementModelIds(
-  config: GatewayConfig,
-  client: ClientApiKeyConfig,
-  modelIds: Set<string>,
-): Set<string> {
-  return new Set(
-    [...modelIds].filter(
-      (id) =>
-        configuredModelRoute(config, client, id, { endpoint: "responses" })
-          .targets[0]?.provider.supports_context_management,
-    ),
-  );
-}
-
-/** Gate a Codex ModelInfo's history/notes extension on the provider capability. */
-function withContextManagement(
-  model: JsonObject,
-  enabled: boolean,
-): JsonObject {
+/** Native history/notes are not served by this gateway. */
+function withoutHistoryNotes(model: JsonObject): JsonObject {
   if (
     !isObject(model.model_messages) ||
     !isObject(model.model_messages.token_budget)
@@ -590,13 +571,13 @@ function withContextManagement(
   }
   return {
     ...model,
-    supports_experimental_context: enabled,
+    supports_experimental_context: false,
     model_messages: {
       ...model.model_messages,
       token_budget: {
         ...model.model_messages.token_budget,
-        enabled,
-        use_history_notes_extension: enabled,
+        enabled: false,
+        use_history_notes_extension: false,
       },
     },
   };
@@ -714,7 +695,6 @@ function antigravityCodexModel(
 
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
-  contextManagementModelIds: Set<string> = new Set(),
   nativeModels: ClientModel[] = [],
   codexAccountModels: JsonObject[] = [],
 ): JsonObject[] {
@@ -740,7 +720,7 @@ export function aggregateCodexModels(
     const info: JsonObject = { ...model, slug: id };
     return info.supports_experimental_context === true ||
       isObject(info.model_messages)
-      ? withContextManagement(info, contextManagementModelIds.has(id))
+      ? withoutHistoryNotes(info)
       : info;
   });
   const standard = codexCatalogModels
@@ -751,14 +731,7 @@ export function aggregateCodexModels(
         !nativeById.has(model.slug) &&
         !accountById.has(model.slug),
     )
-    .map((model) =>
-      model.slug === "gpt-6-astra"
-        ? withContextManagement(
-            model,
-            contextManagementModelIds.has(model.slug),
-          )
-        : model,
-    );
+    .map(withoutHistoryNotes);
   return [
     ...account,
     ...standard,
@@ -1075,8 +1048,6 @@ async function collectModels(
     results,
     routesByProvider,
     format,
-    config,
-    client,
   );
   return {
     payload,
@@ -1089,8 +1060,6 @@ function modelsPayload(
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
   format: ModelsFormat,
-  config: GatewayConfig,
-  client: ClientApiKeyConfig,
 ): JsonObject {
   switch (format) {
     case "codex": {
@@ -1098,7 +1067,6 @@ function modelsPayload(
       return {
         models: aggregateCodexModels(
           modelIds,
-          contextManagementModelIds(config, client, modelIds),
           aggregateClientModels(
             results.filter(
               ({ provider }) => provider.type === ProviderType.Antigravity,

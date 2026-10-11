@@ -238,7 +238,7 @@ function codexConfig(
     ],
   });
 }
-async function infer(config: Config, session?: string) {
+async function infer(config: Config, session?: string, ingest = false) {
   const context = createExecutionContext();
   const response = await handleInference(
     new Request("https://gateway.test/v1/responses", {
@@ -248,7 +248,21 @@ async function infer(config: Config, session?: string) {
         "x-api-key": "client-secret",
         ...(session ? { "session-id": session } : {}),
       },
-      body: JSON.stringify({ model: MODEL, input: "hello", stream: false }),
+      body: JSON.stringify({
+        model: MODEL,
+        input: "hello",
+        stream: false,
+        ...(ingest
+          ? {
+              client_metadata: {
+                "x-codex-turn-metadata": JSON.stringify({
+                  session_id: session,
+                  history_ingest_requested: true,
+                }),
+              },
+            }
+          : {}),
+      }),
     }),
     env,
     config,
@@ -755,4 +769,19 @@ test("concurrent new sessions rotate atomically and duplicate frames retain one 
   expect(next).toBe(
     `acct-${list[(index + 1) % list.length].connection.credential_id}`,
   );
+});
+
+test("ingestion metadata cannot pin an exhausted account across HTTP retries", async () => {
+  const [first, second] = await accounts(2);
+  const config = codexConfig([first, second], {
+    account_selection: "session_affinity",
+  });
+  const session = crypto.randomUUID();
+  const firstAccount = `acct-${first.connection.credential_id}`;
+  const secondAccount = `acct-${second.connection.credential_id}`;
+  expect(await servedBy(config, session)).toBe(firstAccount);
+  exhausted.set(firstAccount, 300);
+  expect((await infer(config, session, true)).status).toBe(200);
+  expect(inferences().at(-1)?.account).toBe(secondAccount);
+  expect(await servedBy(config, session)).toBe(secondAccount);
 });

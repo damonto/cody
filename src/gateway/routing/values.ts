@@ -5,8 +5,6 @@ export const SessionAffinityStatus = {
   Created: "created",
   Rebound: "rebound",
   Failed: "failed",
-  Blocked: "blocked",
-  Forbidden: "forbidden",
 } as const;
 
 export type SessionAffinityStatus =

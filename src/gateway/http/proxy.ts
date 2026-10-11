@@ -48,7 +48,6 @@ import {
   selectAvailableProviderWithDetails,
 } from "../routing/routing.ts";
 
-import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
 import { discardBody } from "./body.ts";
 
 import {
@@ -96,7 +95,6 @@ export async function handleInference(
     rawBody,
     originalText,
     payload,
-    contextManagement,
     sessionId,
     route,
     candidateProviders,
@@ -132,7 +130,6 @@ export async function handleInference(
       env,
       routeForSelection,
       {
-        contextManagement,
         skipXaiQuota: upstreamPath === "messages/count_tokens",
         skipClaudeQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
@@ -203,17 +200,6 @@ export async function handleInference(
       exhausted = undefined;
     }
     const { provider, credential: selectedCredential } = target;
-    if (
-      (contextManagement || selection.affinity?.context_management) &&
-      !contextManagementSessionMatches(payload, sessionId)
-    ) {
-      return apiError(
-        protocol,
-        400,
-        "Context management session ids must match",
-        { code: "invalid_context_management_request", requestId },
-      );
-    }
     const upstreamModel = target.upstreamModel;
     meter?.requestedModel(payload.model);
     requestLog?.set({

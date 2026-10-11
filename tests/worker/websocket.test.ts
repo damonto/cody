@@ -10,7 +10,7 @@ import {
   type D1Migration,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { clearConfigCacheForTests } from "../../src/config/store.ts";
 import { FAILURE_THRESHOLD } from "../../src/gateway/health/health.ts";
@@ -74,7 +74,6 @@ function gatewayConfig(): Omit<GatewayConfig, "providers"> & {
         priority: 100,
         supports_websocket: true,
         supports_web_search: false,
-        supports_context_management: false,
         anthropic_1m_context: false,
         emulate_claude_code: false,
         models: ["upstream-model", "other-model"],
@@ -374,330 +373,6 @@ beforeEach(async () => {
   await clearRoutingState();
 });
 
-test("a native thread hint and subsequent WebSocket windows share the same context binding", async () => {
-  const config = gatewayConfig();
-  config.model_routes["gpt-6-astra"] = { model: "upstream-model" };
-  config.providers.push({
-    ...config.providers[0],
-    id: "context",
-    base_url: "https://context.example/v1",
-    priority: 200,
-    supports_context_management: true,
-  });
-  config.api_keys[0].providers.push("context");
-  await putConfig(config);
-  const upstream = upstreamPair();
-  const captured: Request[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (request: Request) => {
-      captured.push(request);
-      return request.headers.get("upgrade") === "websocket"
-        ? openUpstream(upstream)
-        : Response.json({ text: "checkpoint" });
-    }),
-  );
-  const session = crypto.randomUUID();
-  const hintContext = createExecutionContext();
-  const hint = await worker.fetch(
-    new Request("https://gateway.example/alpha/notes/v2/thread_hint", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer client-secret",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        context: { session_id: session, current_agent_name: "/root" },
-      }),
-    }),
-    env,
-    hintContext,
-  );
-  expect(hint.status).toBe(200);
-  await waitOnExecutionContext(hintContext);
-  config.providers[0].supports_context_management = true;
-  config.providers[0].priority = 300;
-  await putConfig(config);
-  const { socket, proxy } = await openGatewaySocket();
-  const frame = {
-    type: "response.create",
-    model: "client-model",
-    client_metadata: {
-      "x-codex-turn-metadata": JSON.stringify({
-        session_id: session,
-        history_ingest_requested: true,
-        context_window_id: "first",
-      }),
-    },
-  };
-  const first = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify(frame));
-  expect(JSON.parse((await first) as string)).toMatchObject({
-    model: "upstream-model",
-    client_metadata: frame.client_metadata,
-  });
-  expect(captured.map((request) => new URL(request.url).hostname)).toEqual([
-    "context.example",
-    "context.example",
-  ]);
-  await runInDurableObject(proxy, async (_instance, state) => {
-    expect(await state.storage.get("session")).toMatchObject({
-      context_management: true,
-    });
-  });
-  const second = nextUpstreamMessage(upstream);
-  socket.send(
-    JSON.stringify({
-      ...frame,
-      client_metadata: {
-        session_id: session,
-        "x-codex-turn-metadata": JSON.stringify({
-          session_id: session,
-          history_ingest_requested: true,
-          context_window_id: "second",
-        }),
-      },
-    }),
-  );
-  expect(
-    JSON.parse((await second) as string).client_metadata[
-      "x-codex-turn-metadata"
-    ],
-  ).toContain("second");
-  const closed = nextUpstreamClose(upstream);
-  socket.close(1000, "done");
-  await closed;
-});
-
-test("optional context metadata keeps the highest-priority ordinary WebSocket provider", async () => {
-  const config = gatewayConfig();
-  config.providers.push({
-    ...config.providers[0],
-    id: "context",
-    base_url: "https://context.example/v1",
-    priority: 50,
-    supports_context_management: true,
-  });
-  config.api_keys[0].providers.push("context");
-  await putConfig(config);
-  const upstream = upstreamPair();
-  const fetch = vi.fn(async (request: Request) => {
-    expect(new URL(request.url).hostname).toBe("primary.example");
-    return openUpstream(upstream);
-  });
-  vi.stubGlobal("fetch", fetch);
-  const session = crypto.randomUUID();
-  const { socket, proxy } = await openGatewaySocket();
-  const frame = {
-    type: "response.create",
-    model: "client-model",
-    client_metadata: {
-      session_id: session,
-      "x-codex-turn-metadata": JSON.stringify({
-        session_id: session,
-        history_ingest_requested: true,
-      }),
-    },
-  };
-  for (let index = 0; index < 2; index += 1) {
-    const forwarded = nextUpstreamMessage(upstream);
-    socket.send(JSON.stringify(frame));
-    expect(JSON.parse((await forwarded) as string)).toMatchObject({
-      model: "upstream-model",
-      client_metadata: frame.client_metadata,
-    });
-    await runInDurableObject(proxy, async (_instance, state) => {
-      const stored = await state.storage.get<{ context_management?: boolean }>(
-        "session",
-      );
-      expect(stored?.context_management).not.toBe(true);
-    });
-  }
-  expect(fetch).toHaveBeenCalledOnce();
-  const closed = nextUpstreamClose(upstream);
-  socket.close(1000, "done");
-  await closed;
-});
-
-test("an existing WebSocket adopts a context binding created by a native request", async () => {
-  const config = gatewayConfig();
-  config.model_routes["gpt-6-astra"] = { model: "upstream-model" };
-  config.providers[0].supports_context_management = false;
-  await putConfig(config);
-  const upstream = upstreamPair();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (request: Request) =>
-      request.headers.get("upgrade") === "websocket"
-        ? openUpstream(upstream)
-        : Response.json({ text: "checkpoint" }),
-    ),
-  );
-  const session = crypto.randomUUID();
-  const { socket } = await openGatewaySocket();
-  const first = nextUpstreamMessage(upstream);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: { session_id: session },
-    }),
-  );
-  await first;
-
-  config.providers[0].supports_context_management = true;
-  await putConfig(config);
-  const hintContext = createExecutionContext();
-  const hint = await worker.fetch(
-    new Request("https://gateway.example/alpha/notes/v2/thread_hint", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer client-secret",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        context: { session_id: session, current_agent_name: "/root" },
-      }),
-    }),
-    env,
-    hintContext,
-  );
-  expect(hint.status).toBe(200);
-  await waitOnExecutionContext(hintContext);
-
-  const error = nextMessage(socket);
-  const closed = nextClose(socket);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: { session_id: crypto.randomUUID() },
-    }),
-  );
-  expect(JSON.parse((await error) as string)).toMatchObject({
-    error: { code: "invalid_context_management_request" },
-  });
-  await closed;
-  await takeUpstreamMessages(upstream);
-  expect(upstream.pendingMessages).toHaveLength(0);
-});
-
-test("context WebSockets require both capabilities and recheck the bound capability on later frames", async () => {
-  const config = gatewayConfig();
-  config.providers[0].supports_context_management = true;
-  config.providers[0].supports_websocket = false;
-  config.providers.push({
-    ...config.providers[0],
-    id: "context-ws",
-    base_url: "https://context-ws.example/v1",
-    priority: 50,
-    supports_websocket: true,
-  });
-  config.api_keys[0].providers.push("context-ws");
-  await putConfig(config);
-  const upstream = upstreamPair();
-  const fetch = vi.fn(async (request: Request) => {
-    expect(new URL(request.url).hostname).toBe("context-ws.example");
-    return openUpstream(upstream);
-  });
-  vi.stubGlobal("fetch", fetch);
-  const { socket } = await openGatewaySocket();
-  const session = crypto.randomUUID();
-  const first = nextUpstreamMessage(upstream);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: {
-        session_id: session,
-        "x-codex-turn-metadata": JSON.stringify({
-          history_ingest_requested: true,
-        }),
-      },
-    }),
-  );
-  await first;
-  config.providers[1].supports_context_management = false;
-  await putConfig(config);
-  const error = nextMessage(socket);
-  const closed = nextClose(socket);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: { session_id: session },
-    }),
-  );
-  expect(JSON.parse((await error) as string)).toMatchObject({
-    error: { code: "websocket_reconnect_required" },
-  });
-  await closed;
-  expect(fetch).toHaveBeenCalledTimes(1);
-});
-
-test("context WebSockets reject ingestion without a session identity", async () => {
-  const config = gatewayConfig();
-  config.providers[0].supports_context_management = true;
-  await putConfig(config);
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
-  const { socket } = await openGatewaySocket();
-  const error = nextMessage(socket);
-  const closed = nextClose(socket);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: {
-        "x-codex-turn-metadata": JSON.stringify({
-          history_ingest_requested: true,
-        }),
-      },
-    }),
-  );
-  expect(JSON.parse((await error) as string)).toMatchObject({
-    error: { code: "invalid_context_management_request" },
-  });
-  await closed;
-  expect(fetch).not.toHaveBeenCalled();
-});
-
-test("context WebSockets reject a frame session conflicting with the handshake header", async () => {
-  const config = gatewayConfig();
-  config.providers[0].supports_context_management = true;
-  await putConfig(config);
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
-  const { socket } = await openGatewaySocket("/v1/responses", {
-    "session-id": "header-session",
-  });
-  const error = nextMessage(socket);
-  const closed = nextClose(socket);
-  socket.send(
-    JSON.stringify({
-      type: "response.create",
-      model: "client-model",
-      client_metadata: {
-        session_id: "other-session",
-        "x-codex-turn-metadata": JSON.stringify({
-          history_ingest_requested: true,
-        }),
-      },
-    }),
-  );
-  expect(JSON.parse((await error) as string)).toMatchObject({
-    error: { code: "invalid_context_management_request" },
-  });
-  await closed;
-  expect(fetch).not.toHaveBeenCalled();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
-
 test("responses WebSocket rewrites the first model and proxies headers, text, binary, and close", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
@@ -902,7 +577,6 @@ test("responses WebSocket skips higher-priority providers without WebSocket supp
     priority: 50,
     supports_websocket: true,
     supports_web_search: false,
-    supports_context_management: false,
     anthropic_1m_context: false,
     emulate_claude_code: false,
     models: ["upstream-model"],
@@ -1576,7 +1250,6 @@ test("a later response.create that requires another target closes and rebinds on
       priority: 100,
       supports_websocket: true,
       supports_web_search: false,
-      supports_context_management: false,
       anthropic_1m_context: false,
       emulate_claude_code: false,
       models: ["model-a"],
@@ -1597,7 +1270,6 @@ test("a later response.create that requires another target closes and rebinds on
       priority: 100,
       supports_websocket: true,
       supports_web_search: false,
-      supports_context_management: false,
       anthropic_1m_context: false,
       emulate_claude_code: false,
       models: ["model-b"],
@@ -1721,7 +1393,6 @@ test("a recovered higher-priority provider changes affinity and requires WebSock
       priority: 100,
       supports_websocket: true,
       supports_web_search: false,
-      supports_context_management: false,
       anthropic_1m_context: false,
       emulate_claude_code: false,
       models: ["upstream-model"],
@@ -1742,7 +1413,6 @@ test("a recovered higher-priority provider changes affinity and requires WebSock
       priority: 10,
       supports_websocket: true,
       supports_web_search: false,
-      supports_context_management: false,
       anthropic_1m_context: false,
       emulate_claude_code: false,
       models: ["upstream-model"],

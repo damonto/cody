@@ -122,10 +122,6 @@ export interface HealthObject {
 
 export interface SessionAffinityResolveOptions {
   roundRobinProviderIds?: readonly string[];
-  /** Optional history ingestion never overrides provider priority. */
-  contextManagement?: boolean;
-  /** Model eligibility constrains ordinary bindings; established context pins retain their owner. */
-  modelProviderIds?: readonly string[];
 }
 
 export interface ClearedSessionAffinityBinding {
@@ -143,10 +139,6 @@ export interface SessionAffinityObject {
     registration: SessionAffinityRegistration,
     options?: SessionAffinityResolveOptions,
   ): Promise<SessionAffinityResolution | undefined>;
-  claimContextSession(clientId: string): Promise<boolean>;
-  releaseContextSession(
-    clientId: string,
-  ): Promise<"released" | "missing" | "forbidden">;
   getStatus(sessionDigest?: string): Promise<SessionAffinityRecord | null>;
   clear(): Promise<void>;
   clearIfBindingId(

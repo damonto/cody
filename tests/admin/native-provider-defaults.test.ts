@@ -10,10 +10,16 @@ test("D1 native defaults preserve settings and history and allow the first accou
     env.CODY_DB,
     bindings.TEST_MIGRATIONS.filter((migration) => migration.name < name),
   );
-  const migration = bindings.TEST_MIGRATIONS.find(
-    (migration) => migration.name === name,
-  )!;
+  const migrations = bindings.TEST_MIGRATIONS.filter(
+    (migration) =>
+      migration.name === name ||
+      migration.name === "0016_remove_history_notes.sql",
+  );
   await checkNativeDefaults(env.CODY_DB, () =>
-    env.CODY_DB.batch(migration.queries.map((sql) => env.CODY_DB.prepare(sql))),
+    env.CODY_DB.batch(
+      migrations.flatMap((migration) =>
+        migration.queries.map((sql) => env.CODY_DB.prepare(sql)),
+      ),
+    ),
   );
 });

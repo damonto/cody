@@ -7,7 +7,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { parseConfig } from "../../src/config/store.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
 import { handleModels } from "../../src/gateway/catalog/models.ts";
-import { handleContextManagement } from "../../src/gateway/sessions/context-management.ts";
 import { socksFetch } from "../../src/gateway/transport/socks-fetch.ts";
 import { SocksProxyError } from "../../src/gateway/proxies/errors.ts";
 import { proxyGroupSnapshot } from "../../src/gateway/proxies/configuration.ts";
@@ -53,7 +52,6 @@ function fixture() {
         models: ["model"],
         priority: 100,
         disabled: false,
-        supports_context_management: true,
       },
     ],
     api_keys: [{ id, api_key: "client-secret", providers: [id] }],
@@ -252,45 +250,4 @@ test("catalog's total deadline during proxy setup is attributed to the proxy", a
     config.proxy_groups[0].id,
   ).getStatus(await proxyGroupSnapshot(config, config.proxy_groups[0]));
   expect(status.proxies[0].failures).toBe(1);
-});
-
-test("native notes switch only before sending and never reset inference provider health", async () => {
-  const config = fixture();
-  const health = env.HEALTH.getByName(config.providers[0].id);
-  await health.recordFailure();
-  await health.recordFailure();
-  const body = {
-    context: { session_id: crypto.randomUUID(), current_agent_name: "/root" },
-    encrypted: "opaque-ciphertext",
-  };
-  const writes: string[] = [];
-  vi.mocked(socksFetch).mockImplementation(async (request, node, options) => {
-    options?.onStage?.("proxy");
-    if (node.url.includes("a.test"))
-      throw new SocksProxyError("SOCKS5 connection failed");
-    options?.onTunnelEstablished?.();
-    options?.onStage?.("request");
-    expect(request.headers.get("authorization")).toBe("Bearer upstream-secret");
-    writes.push(await request.text());
-    return new Response("encrypted-result", {
-      headers: { "x-context-truncated": "true" },
-    });
-  });
-  const context = createExecutionContext();
-  const response = await handleContextManagement(
-    request("alpha/notes/v2/thread_hint", body),
-    env,
-    config,
-    config.api_keys[0],
-    "alpha/notes/v2/thread_hint",
-    "notes-request",
-    undefined,
-    context,
-  );
-  expect(response.status).toBe(200);
-  expect(await response.text()).toBe("encrypted-result");
-  expect(response.headers.get("x-context-truncated")).toBe("true");
-  expect(writes).toEqual([JSON.stringify(body)]);
-  await waitOnExecutionContext(context);
-  expect((await health.getStatus()).failures).toBe(2);
 });

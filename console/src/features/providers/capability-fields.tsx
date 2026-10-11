@@ -23,14 +23,6 @@ export const CapabilityFields = withForm({
             />
           )}
         </form.AppField>
-        <form.AppField name="supports_context_management">
-          {(field) => (
-            <field.ToggleField
-              label="Native context management"
-              hint="Allow supported history and notes endpoints with pinned sessions."
-            />
-          )}
-        </form.AppField>
         <form.AppField name="supports_web_search">
           {(field) => (
             <field.ToggleField

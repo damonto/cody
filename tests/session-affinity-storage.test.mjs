@@ -17,7 +17,6 @@ const candidates = [
   {
     provider_id: "provider",
     priority: 1,
-    supports_context_management: true,
     credentials: [{ credential_id: "credential", priority: 1 }],
   },
 ];
@@ -138,24 +137,4 @@ test("expiry is evaluated after a queued storage transaction starts", async (t) 
   await ctx.drain();
   assert.equal(replacement?.status, "created");
   assert.notEqual(replacement?.binding_id, original?.binding_id);
-});
-
-test("context promotion removes every model once and later hits renew the pin directly", async (t) => {
-  const start = 1_000_000;
-  t.mock.timers.enable({ apis: ["Date"], now: start });
-  const { core, ctx, backend, a, b, resolve } = await fixture();
-  await resolve(a);
-  await resolve(b);
-  const pinned = await resolve(a, { contextManagement: true });
-  assert.equal(await core.getStatus(a.session_digest), null);
-  assert.equal(await core.getStatus(b.session_digest), null);
-  const scan = t.mock.method(backend, "list");
-  t.mock.timers.setTime(start + 1000);
-  const reused = await resolve(b);
-  assert.equal(reused?.binding_id, pinned?.binding_id);
-  assert.equal(scan.mock.callCount(), 0);
-  assert.equal(
-    await ctx.storage.getAlarm(),
-    start + 1000 + SESSION_AFFINITY_TTL_MS,
-  );
 });

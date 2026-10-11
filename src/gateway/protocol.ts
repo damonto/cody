@@ -2,27 +2,6 @@ import { ApiProtocol } from "./protocol-values.ts";
 
 export type { ApiProtocol } from "./protocol-values.ts";
 
-export const CONTEXT_MANAGEMENT_PATHS = [
-  "alpha/history/v2/list_windows",
-  "alpha/history/v2/list_items",
-  "alpha/history/v2/read_item",
-  "alpha/history/v2/search_contents",
-  "alpha/notes/v2/list_files_by_prefix",
-  "alpha/notes/v2/read_file",
-  "alpha/notes/v2/search_contents",
-  "alpha/notes/v2/append_to_file",
-  "alpha/notes/v2/write_file",
-  "alpha/notes/v2/thread_hint",
-] as const;
-
-export type ContextManagementPath = (typeof CONTEXT_MANAGEMENT_PATHS)[number];
-
-export function isContextManagementPath(
-  path: string,
-): path is ContextManagementPath {
-  return CONTEXT_MANAGEMENT_PATHS.some((endpoint) => endpoint === path);
-}
-
 /** Inference paths the gateway forwards, relative to a provider's base URL. */
 export const INFERENCE_PATHS = [
   "responses",
@@ -59,7 +38,7 @@ export function inferenceAliases(path: InferencePath): string[] {
     : [`/${path}`, `/v1/${path}`];
 }
 
-export type HttpExecutionEndpoint = InferencePath | ContextManagementPath;
+export type HttpExecutionEndpoint = InferencePath;
 
 const HTTP_EXECUTION_ENDPOINTS = new Map<string, HttpExecutionEndpoint>([
   ...INFERENCE_PATHS.flatMap((path) =>
@@ -68,15 +47,9 @@ const HTTP_EXECUTION_ENDPOINTS = new Map<string, HttpExecutionEndpoint>([
       path,
     ]),
   ),
-  ...CONTEXT_MANAGEMENT_PATHS.flatMap(
-    (path): [string, HttpExecutionEndpoint][] => [
-      [`/${path}`, path],
-      [`/v1/${path}`, path],
-    ],
-  ),
 ]);
 
-/** Only registered HTTP inference/context routes cross the execution boundary. */
+/** Only registered HTTP inference routes cross the execution boundary. */
 export function httpExecutionEndpoint(
   request: Request,
 ): HttpExecutionEndpoint | undefined {
@@ -86,8 +59,7 @@ export function httpExecutionEndpoint(
 }
 
 /** Every endpoint the gateway routes, including the non-inference ones. */
-export type GatewayEndpoint =
-  "models" | "health" | "sessions" | InferencePath | ContextManagementPath;
+export type GatewayEndpoint = "models" | "health" | "sessions" | InferencePath;
 
 // The dialect each endpoint is defined in. `undefined` marks the endpoints that
 // belong to neither dialect, where the client's own identity decides.
@@ -97,16 +69,6 @@ const ENDPOINT_PROTOCOLS: Record<GatewayEndpoint, ApiProtocol | undefined> = {
   responses: ApiProtocol.Openai,
   "responses/compact": ApiProtocol.Openai,
   "alpha/search": ApiProtocol.Openai,
-  "alpha/history/v2/list_windows": ApiProtocol.Openai,
-  "alpha/history/v2/list_items": ApiProtocol.Openai,
-  "alpha/history/v2/read_item": ApiProtocol.Openai,
-  "alpha/history/v2/search_contents": ApiProtocol.Openai,
-  "alpha/notes/v2/list_files_by_prefix": ApiProtocol.Openai,
-  "alpha/notes/v2/read_file": ApiProtocol.Openai,
-  "alpha/notes/v2/search_contents": ApiProtocol.Openai,
-  "alpha/notes/v2/append_to_file": ApiProtocol.Openai,
-  "alpha/notes/v2/write_file": ApiProtocol.Openai,
-  "alpha/notes/v2/thread_hint": ApiProtocol.Openai,
   "chat/completions": ApiProtocol.Openai,
   "images/generations": ApiProtocol.Openai,
   "images/edits": ApiProtocol.Openai,

@@ -42,7 +42,6 @@ export interface StoredWebSocketSession {
   selected_credential_id?: string;
   active_response: boolean;
   response_outcome_recorded: boolean;
-  context_management?: boolean;
 }
 
 export interface StateTransition {

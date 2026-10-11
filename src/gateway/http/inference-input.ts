@@ -10,11 +10,7 @@ import { requestProtocol, type InferencePath } from "../protocol.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import { resolveModelRoute } from "../routing/routing.ts";
 
-import {
-  codexTurnMetadata,
-  contextManagementRequested,
-  contextManagementSessionMatches,
-} from "../sessions/context-management-protocol.ts";
+import { codexTurnMetadata } from "../sessions/codex-metadata.ts";
 import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
 import { ContentEncodingError, decodeRequestBody } from "./content-encoding.ts";
 import { rewriteModel } from "./model-rewrite.ts";
@@ -128,7 +124,6 @@ export interface InferenceInput {
   rawBody: Uint8Array<ArrayBuffer>;
   originalText: string;
   payload: InferencePayload;
-  contextManagement: boolean;
   sessionId: string | undefined;
   route: ModelRoute;
   candidateProviders: string[];
@@ -199,26 +194,7 @@ export async function prepareInferenceInput(
     );
   }
 
-  const contextManagement =
-    upstreamPath === "responses" && contextManagementRequested(payload);
   const sessionId = sessionIdForInference(request, payload, upstreamPath);
-  if (contextManagement && !sessionId) {
-    return apiError(protocol, 400, "Context management requires a session id", {
-      code: "invalid_context_management_request",
-      requestId,
-    });
-  }
-  if (
-    contextManagement &&
-    !contextManagementSessionMatches(payload, sessionId)
-  ) {
-    return apiError(
-      protocol,
-      400,
-      "Context management session ids must match",
-      { code: "invalid_context_management_request", requestId },
-    );
-  }
   const route = resolveModelRoute(config, client, payload.model, {
     payload,
     endpoint: upstreamPath,
@@ -255,7 +231,6 @@ export async function prepareInferenceInput(
     rawBody,
     originalText,
     payload,
-    contextManagement,
     sessionId,
     route,
     candidateProviders,

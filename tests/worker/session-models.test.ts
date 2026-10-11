@@ -22,11 +22,10 @@ import { RequestLogContext } from "../../src/shared/log.ts";
 const candidates = ["one", "two"].map((provider_id) => ({
   provider_id,
   priority: 1,
-  supports_context_management: true,
   credentials: [{ credential_id: provider_id, priority: 1 }],
 }));
 
-test("model bindings survive eviction, fence deletion, and promote to a session pin", async () => {
+test("model bindings survive eviction and fence deletion independently", async () => {
   await sessionModelBindings(env, async (objectName) => {
     await evictDurableObject(env.SESSION_AFFINITY.getByName(objectName));
     return env;
@@ -104,42 +103,6 @@ test("each model expires independently and the alarm retains the next expiry", a
   await expect.poll(() => index.get(a.session_digest)).toBeNull();
   expect(await index.get(b.session_digest)).not.toBeNull();
 });
-
-for (const context of [false, true]) {
-  test(`legacy ${context ? "context pins remain authoritative" : "ordinary bindings are re-elected without guessing a model"}`, async () => {
-    const id = crypto.randomUUID();
-    const legacy = await sessionAffinityIdentity(id, id);
-    const model = await sessionAffinityIdentity(id, id, "new-model");
-    const stub = env.SESSION_AFFINITY.getByName(legacy.object_name);
-    const { model: _model, object_name: _object, ...registration } = legacy;
-    const record: SessionAffinityRecord = {
-      ...registration,
-      provider_id: "two",
-      credential_id: "two",
-      binding_id: crypto.randomUUID(),
-      created_at: Date.now(),
-      updated_at: Date.now(),
-      generation: 4,
-      index_registered: true,
-      ...(context ? { context_management: true } : {}),
-    };
-    await runInDurableObject(stub, async (_instance, state) => {
-      await state.storage.put("affinity", record);
-    });
-    const index = env.SESSION_AFFINITY_INDEX.getByName(legacy.registry_name);
-    await index.register(record);
-    const resolved = await stub.resolve(candidates, undefined, model);
-    expect(resolved?.provider_id).toBe(context ? "two" : "one");
-    expect(resolved?.status).toBe(context ? "hit" : "created");
-    if (context) {
-      expect(resolved?.binding_id).toBe(record.binding_id);
-      expect(resolved?.model).toBeNull();
-    } else {
-      expect(await stub.getStatus()).toBeNull();
-      await expect.poll(() => index.get(legacy.session_digest)).toBeNull();
-    }
-  });
-}
 
 test("routing and session APIs isolate requested models, aliases and clients", async () => {
   const id = crypto.randomUUID();
@@ -227,11 +190,7 @@ test("routing and session APIs isolate requested models, aliases and clients", a
     "alias",
     "b",
   ]);
-  for (const query of [
-    "model=",
-    "model=a&model=b",
-    "model=a&release_context_ownership=true",
-  ]) {
+  for (const query of ["model=", "model=a&model=b"]) {
     expect(
       (await call("DELETE", `/${encodeURIComponent(sessionId)}?${query}`))
         .status,

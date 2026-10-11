@@ -101,13 +101,6 @@ test("AI Gateway adapter supports both request dialects and strips client creden
     ),
     true,
   );
-  assert.equal(
-    providerSupportsEndpoint(
-      { ...provider, supports_context_management: true },
-      "alpha/notes/v2/read_file",
-    ),
-    true,
-  );
 });
 
 test("AI Gateway adapter merges the 1M context beta only into Anthropic inference requests", async () => {

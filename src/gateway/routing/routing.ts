@@ -15,7 +15,6 @@ import { type ProviderTransport } from "../../providers/transport-values.ts";
 
 import {
   chooseAffinityCandidate,
-  affinitySessionDigest,
   sessionAffinityIdentity,
   type AffinityProviderCandidate,
   type AffinitySelection,
@@ -80,10 +79,6 @@ interface CredentialSelectionCheck extends ProviderAvailability {
 interface SelectionAffinity {
   status: SessionAffinityStatus;
   error?: string;
-  context_management?: boolean;
-  /** The binding a blocked context session is waiting for. */
-  provider_id?: string;
-  credential_id?: string;
 }
 
 export interface TargetSelection {
@@ -107,12 +102,8 @@ export interface ProviderSelectionOptions {
   scope?: HealthScope;
   skipXaiQuota?: boolean;
   skipClaudeQuota?: boolean;
-  /** Pin history/notes only when the selected provider supports them. */
-  contextManagement?: boolean;
   /** Client-facing model, including aliases; omitted for model-less calls. */
   requestedModel?: string;
-  /** Model eligibility for ordinary bindings; established context pins retain their owner. */
-  modelProviderIds?: readonly string[];
   /** Credentials this logical request already tried, keyed by `credentialKey`. */
   excludedCredentials?: ReadonlySet<string>;
   session?: {
@@ -121,8 +112,7 @@ export interface ProviderSelectionOptions {
   };
 }
 
-type RequiredProviderCapability =
-  "supports_websocket" | "supports_web_search" | "supports_context_management";
+type RequiredProviderCapability = "supports_websocket" | "supports_web_search";
 
 export interface ResolveModelRouteOptions {
   payload?: Record<string, unknown>;
@@ -490,7 +480,6 @@ function affinityCandidates(
   return candidates.map(({ provider, credentials }) => ({
     provider_id: provider.id,
     priority: provider.priority,
-    supports_context_management: provider.supports_context_management,
     retain_available_account:
       provider.type === ProviderType.Codex ||
       provider.type === ProviderType.Antigravity ||
@@ -592,7 +581,6 @@ export async function selectAvailableTargetWithDetails(
   providers: RoutedProvider[],
   options: ProviderSelectionOptions = {},
 ): Promise<TargetSelection> {
-  const contextManagement = options.contextManagement === true;
   const evaluated = await evaluateAvailability(
     env,
     providers,
@@ -614,14 +602,6 @@ export async function selectAvailableTargetWithDetails(
     };
   }
 
-  if (contextManagement && !options.session) {
-    return {
-      target: undefined,
-      checks: availability.checks,
-      credentialChecks: availability.credentialChecks,
-      affinity: { status: SessionAffinityStatus.Blocked },
-    };
-  }
   if (options.session) {
     const candidates = affinityCandidates(availability.candidates);
     try {
@@ -636,39 +616,9 @@ export async function selectAvailableTargetWithDetails(
         roundRobinProviderIds: availability.candidates
           .filter(({ provider }) => usesRoundRobin(provider))
           .map(({ provider }) => provider.id),
-        contextManagement,
-        ...(options.modelProviderIds === undefined
-          ? {}
-          : { modelProviderIds: options.modelProviderIds }),
       });
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
-      }
-      if (resolution.status === SessionAffinityStatus.Blocked) {
-        return {
-          target: undefined,
-          checks: availability.checks,
-          credentialChecks: availability.credentialChecks,
-          affinity: {
-            status: SessionAffinityStatus.Blocked,
-            provider_id: resolution.provider_id,
-            credential_id: resolution.credential_id,
-          },
-        };
-      }
-      if (resolution.context_management) {
-        if (
-          !(await env.SESSION_AFFINITY.getByName(
-            `context-owner:${await affinitySessionDigest(options.session.sessionId)}`,
-          ).claimContextSession(options.session.clientId))
-        ) {
-          return {
-            target: undefined,
-            checks: availability.checks,
-            credentialChecks: availability.credentialChecks,
-            affinity: { status: SessionAffinityStatus.Forbidden },
-          };
-        }
       }
       const target = targetByIds(
         availability.candidates,
@@ -684,9 +634,6 @@ export async function selectAvailableTargetWithDetails(
         credentialChecks: availability.credentialChecks,
         affinity: {
           status: resolution.status,
-          ...(resolution.context_management
-            ? { context_management: true }
-            : {}),
         },
       };
     } catch (error) {

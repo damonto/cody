@@ -137,12 +137,6 @@ export class SessionAffinity extends DurableObject<Env> {
   ) {
     return this.core.resolve(candidates, preferred, registration, options);
   }
-  claimContextSession(clientId: string) {
-    return this.core.claimContextSession(clientId);
-  }
-  releaseContextSession(clientId: string) {
-    return this.core.releaseContextSession(clientId);
-  }
   getStatus(sessionDigest?: string) {
     return this.core.getStatus(sessionDigest);
   }

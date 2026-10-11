@@ -30,7 +30,6 @@ export const runtimeQuerySchema = z.object({
   scope: z.enum(HealthScope).optional(),
   cursor: z.string().min(1).max(2048).optional(),
   limit: z.string().regex(/^\d+$/).optional(),
-  release_context_ownership: z.enum(["true", "false"]).optional(),
 });
 export const healthListSchema = z.object({
   object: z.literal("list"),

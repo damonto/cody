@@ -1,5 +1,5 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
-import { codexTurnMetadata } from "../sessions/context-management-protocol.ts";
+import { codexTurnMetadata } from "../sessions/codex-metadata.ts";
 const MAX_UPSTREAM_ERROR_BYTES = 32 * 1024;
 const UPSTREAM_ERROR_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_REASON_BYTES = 123;

@@ -269,29 +269,13 @@ export async function handleSessionClearOne(
   client: ClientApiKeyConfig,
   sessionId: string,
   requestLog: RequestLogContext,
-  options: { releaseContextOwnership?: boolean; model?: string } = {},
+  options: { model?: string } = {},
 ): Promise<Response> {
   const identity = await sessionAffinityIdentity(
     client.id,
     sessionId,
     options.model ?? null,
   );
-  let ownershipReleased = false;
-  if (options.releaseContextOwnership) {
-    const released = await env.SESSION_AFFINITY.getByName(
-      `context-owner:${identity.session_digest}`,
-    ).releaseContextSession(client.id);
-    if (released === "forbidden") {
-      requestLog.warn({ outcome: "context_session_forbidden" });
-      return openAiError(
-        403,
-        "This context session belongs to another client",
-        "permission_error",
-        "context_session_forbidden",
-      );
-    }
-    ownershipReleased = released === "released";
-  }
   const deleted = await clearManagedByIdentity(
     env,
     identity,
@@ -302,16 +286,10 @@ export async function handleSessionClearOne(
       action: "clear_one",
       session_digest: identity.session_digest,
       deleted,
-      ...(options.releaseContextOwnership
-        ? { ownership_released: ownershipReleased }
-        : {}),
     },
   });
   return sessionJsonResponse({
     session_id: sessionId,
     deleted,
-    ...(options.releaseContextOwnership
-      ? { ownership_released: ownershipReleased }
-      : {}),
   });
 }

@@ -111,27 +111,18 @@ test("warm health and affinity read Redis across instances without SQL reads", a
   assert.equal(f.queries.length, 3);
 });
 
-test("SQL state survives Redis loss including pinned sessions and health", async (t) => {
+test("SQL health state survives Redis loss", async (t) => {
   const f = await fixture(t);
   const first = await f.open();
   await first.bindings.HEALTH.getByName("cooldown").recordCooldownUntil(
     Date.now() + 600_000,
     "quota",
   );
-  await first.bindings.SESSION_AFFINITY.getByName("owner").claimContextSession(
-    "client-a",
-  );
   await first.tasks.drain();
   const recovered = await f.open(new MemoryRedis());
   assert.ok(
     (await recovered.bindings.HEALTH.getByName("cooldown").getStatus())
       .cooling_until > Date.now(),
-  );
-  assert.equal(
-    await recovered.bindings.SESSION_AFFINITY.getByName(
-      "owner",
-    ).claimContextSession("client-b"),
-    false,
   );
 });
 
@@ -422,17 +413,16 @@ for (const [dialect, openDatabase] of Object.entries({
     assert.deepEqual(await f.sql.list("affinity", name, {}), entries);
   });
 
-  test(`${dialect}: Redis eviction preserves durable health and context bindings`, async (t) => {
+  test(`${dialect}: Redis eviction preserves durable health and session bindings`, async (t) => {
     const f = await fixture(t, new MemoryRedis(), openDatabase);
     const first = await f.open();
     const managed = candidates.map((candidate) => ({
       ...candidate,
-      supports_context_management: true,
     }));
     await first.bindings.HEALTH.getByName("portable").recordFailure();
     const binding = await first.bindings.SESSION_AFFINITY.getByName(
       "portable",
-    ).resolve(managed, undefined, registration, { contextManagement: true });
+    ).resolve(managed, undefined, registration);
     await first.tasks.drain();
     const freshRedis = new MemoryRedis();
     const recovered = await f.open(freshRedis);
@@ -445,8 +435,7 @@ for (const [dialect, openDatabase] of Object.entries({
       "portable",
     ).resolve(managed, undefined, registration);
     assert.equal(pin.binding_id, binding.binding_id);
-    assert.equal(pin.context_management, true);
-    assert.equal(pin.model, null);
+    assert.equal(pin.model, registration.model);
     await recovered.tasks.drain();
     const reader = await f.open(freshRedis);
     f.queries.length = 0;
@@ -455,8 +444,11 @@ for (const [dialect, openDatabase] of Object.entries({
       1,
     );
     assert.equal(
-      (await reader.bindings.SESSION_AFFINITY.getByName("portable").getStatus())
-        .binding_id,
+      (
+        await reader.bindings.SESSION_AFFINITY.getByName("portable").getStatus(
+          registration.session_digest,
+        )
+      ).binding_id,
       binding.binding_id,
     );
     await reader.tasks.drain();

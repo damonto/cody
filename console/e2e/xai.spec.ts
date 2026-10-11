@@ -187,7 +187,6 @@ test("SpaceXAI account editor requests device authorization and supports cancell
           credentials: [],
           supports_websocket: false,
           supports_web_search: false,
-          supports_context_management: false,
           anthropic_1m_context: false,
           emulate_claude_code: false,
           account_selection: "round_robin",

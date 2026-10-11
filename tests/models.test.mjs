@@ -1177,3 +1177,33 @@ test("model catalogs skip providers without an enabled key", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("Codex catalogs disable history/notes even when an account advertises them", () => {
+  const info = {
+    slug: "custom-codex",
+    supports_experimental_context: true,
+    model_messages: {
+      instructions_template: "keep instructions",
+      token_budget: {
+        enabled: true,
+        use_history_notes_extension: true,
+        max_tokens: 1000,
+      },
+    },
+  };
+  const [model] = aggregateCodexModels(
+    new Set([info.slug]),
+    [],
+    [{ id: info.slug, codex: info }],
+  );
+  assert.equal(model.supports_experimental_context, false);
+  assert.deepEqual(model.model_messages, {
+    instructions_template: "keep instructions",
+    token_budget: {
+      enabled: false,
+      use_history_notes_extension: false,
+      max_tokens: 1000,
+    },
+  });
+  assert.equal(info.model_messages.token_budget.enabled, true);
+});

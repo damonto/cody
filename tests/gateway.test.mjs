@@ -22,7 +22,6 @@ import {
 } from "../src/gateway/health/health.ts";
 import { gatewayApp as worker } from "../src/gateway/app.ts";
 import { clearModelsCacheForTests } from "../src/gateway/catalog/models.ts";
-import { CONTEXT_MANAGEMENT_PATHS } from "../src/gateway/protocol.ts";
 
 function gatewayConfig() {
   return {
@@ -1424,7 +1423,6 @@ test("metered inference endpoints record rejected requests, including aliases", 
     ["chat/completions", "POST"],
     ["images/generations", "POST"],
     ["images/edits", "POST"],
-    ...CONTEXT_MANAGEMENT_PATHS.map((endpoint) => [endpoint, "POST"]),
   ];
   const cases = [
     ["/v1/messages", "messages", "POST"],
@@ -2436,96 +2434,6 @@ test("authenticated clients can page, inspect, and delete only their session bin
     {},
   );
   assert.deepEqual((await empty.json()).data, []);
-});
-
-test("ordinary and context sessions share a registry across capability changes", async () => {
-  clearConfigCacheForTests();
-  const config = gatewayConfig();
-  config.providers[0].supports_context_management = false;
-  config.model_routes["gpt-6-astra"] = { model: "grok-4.5" };
-  const env = testEnv(config);
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({ ok: true });
-
-  try {
-    const ordinary = await worker.fetch(
-      new Request("https://gateway.example/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: "Bearer client-key",
-          "content-type": "application/json",
-          "session-id": "ordinary-session",
-        },
-        body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
-      }),
-      env,
-      {},
-    );
-    assert.equal(ordinary.status, 200);
-
-    config.providers[0].supports_context_management = true;
-    clearConfigCacheForTests();
-    const native = await worker.fetch(
-      new Request("https://gateway.example/alpha/notes/v2/thread_hint", {
-        method: "POST",
-        headers: {
-          authorization: "Bearer client-key",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          context: {
-            session_id: "native-session",
-            current_agent_name: "/root",
-          },
-        }),
-      }),
-      env,
-      {},
-    );
-    assert.equal(native.status, 200);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  const first = await worker.fetch(
-    new Request("https://gateway.example/sessions?limit=1", {
-      headers: { authorization: "Bearer client-key" },
-    }),
-    env,
-    {},
-  );
-  const firstPayload = await first.json();
-  assert.equal(firstPayload.data.length, 1);
-  assert.equal(typeof firstPayload.next_cursor, "string");
-
-  const second = await worker.fetch(
-    new Request(
-      `https://gateway.example/sessions?limit=1&cursor=${encodeURIComponent(firstPayload.next_cursor)}`,
-      { headers: { authorization: "Bearer client-key" } },
-    ),
-    env,
-    {},
-  );
-  const secondPayload = await second.json();
-  assert.equal(secondPayload.next_cursor, null);
-  assert.deepEqual(
-    new Set(
-      [...firstPayload.data, ...secondPayload.data].map(
-        (entry) => entry.session_id,
-      ),
-    ),
-    new Set(["ordinary-session", "native-session"]),
-  );
-
-  const cleared = await worker.fetch(
-    new Request("https://gateway.example/sessions", {
-      method: "DELETE",
-      headers: { authorization: "Bearer client-key" },
-    }),
-    env,
-    {},
-  );
-  assert.deepEqual(await cleared.json(), { deleted: 2 });
 });
 
 test("a stale indexed delete protects the replacement and remains retryable", async () => {

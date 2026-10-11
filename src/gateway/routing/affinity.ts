@@ -3,7 +3,7 @@ import { SessionAffinityStatus } from "./values.ts";
 /** Storage resolves bindings; routing adds authorization and storage errors. */
 export type ResolvedSessionAffinityStatus = Exclude<
   SessionAffinityStatus,
-  typeof SessionAffinityStatus.Failed | typeof SessionAffinityStatus.Forbidden
+  typeof SessionAffinityStatus.Failed
 >;
 type StoredAffinityStatus = Extract<
   SessionAffinityStatus,
@@ -22,7 +22,6 @@ export interface AffinityProviderCandidate {
   provider_id: string;
   priority: number;
   credentials: AffinityCredentialCandidate[];
-  supports_context_management?: boolean;
   /** Existing native sessions retain usable accounts across priority changes. */
   retain_available_account?: boolean;
 }
@@ -40,7 +39,6 @@ export interface SessionAffinityRecord {
   session_digest: string;
   session_id: string;
   index_registered: boolean;
-  context_management?: boolean;
 }
 
 export interface SessionAffinityResolution extends SessionAffinityRecord {
@@ -53,10 +51,10 @@ export interface AffinitySelection {
 }
 
 export interface SessionAffinityRegistration {
-  /** null denotes session-wide context management. */
+  /** null denotes a binding without a requested model. */
   model: string | null;
   registry_name: string;
-  /** Digest of [session ID, requested model], or just session ID for context. */
+  /** Digest of [session ID, requested model], or just session ID for model-less calls. */
   session_digest: string;
   session_id: string;
 }

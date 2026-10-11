@@ -183,7 +183,6 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   assert.equal(config.providers[0].disabled, false);
   assert.equal(config.providers[0].supports_websocket, false);
   assert.equal(config.providers[0].supports_web_search, false);
-  assert.equal(config.providers[0].supports_context_management, false);
   assert.equal(config.providers[0].anthropic_1m_context, false);
   assert.equal(config.providers[0].emulate_claude_code, false);
   assert.deepEqual(config.providers[0].credentials, [
@@ -292,13 +291,11 @@ test("parseConfig accepts explicit provider capability flags", () => {
   const input = validConfig();
   input.providers[0].supports_websocket = true;
   input.providers[0].supports_web_search = false;
-  input.providers[0].supports_context_management = true;
   input.providers[0].anthropic_1m_context = true;
   input.providers[0].emulate_claude_code = true;
 
   const config = parseConfig(input);
   assert.equal(config.providers[0].supports_websocket, true);
-  assert.equal(config.providers[0].supports_context_management, true);
   assert.equal(config.providers[0].supports_web_search, false);
   assert.equal(config.providers[0].anthropic_1m_context, true);
   assert.equal(config.providers[0].emulate_claude_code, true);
@@ -321,7 +318,6 @@ test("parseConfig rejects non-boolean provider capability flags", () => {
   for (const field of [
     "supports_websocket",
     "supports_web_search",
-    "supports_context_management",
     "anthropic_1m_context",
     "emulate_claude_code",
   ]) {
@@ -992,4 +988,15 @@ test("parseConfig rejects file-only $schema metadata", () => {
       error instanceof ConfigError &&
       error.message === "configuration.$schema is not supported",
   );
+});
+
+test("provider settings reject the removed history/notes capability", () => {
+  for (const value of [false, true]) {
+    const input = validConfig();
+    input.providers[0].supports_context_management = value;
+    assert.throws(
+      () => parseConfig(input),
+      /supports_context_management is not supported/,
+    );
+  }
 });

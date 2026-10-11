@@ -37,7 +37,6 @@ export const settingsEditorSchema = antigravityProviderFormSchema
     credentials: true,
     model_routes: true,
     supports_websocket: true,
-    supports_context_management: true,
     supports_web_search: true,
     anthropic_1m_context: true,
     emulate_claude_code: true,

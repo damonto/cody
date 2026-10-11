@@ -166,14 +166,6 @@ export function CodexSettingsForm({
                 />
               )}
             </form.AppField>
-            <form.AppField name="supports_context_management">
-              {(field) => (
-                <field.ToggleField
-                  label="Context management"
-                  hint="Forward history and notes requests. Their sessions stay on one account."
-                />
-              )}
-            </form.AppField>
           </TabsContent>
           <TabsContent
             value="models"

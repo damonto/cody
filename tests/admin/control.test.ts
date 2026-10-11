@@ -1340,7 +1340,7 @@ test("runtime session proxy preserves model fields and forwards exact deletion s
   expect(
     (
       await call(
-        `/runtime/sessions/${sessionId}?${query}&model=alias&release_context_ownership=true`,
+        `/runtime/sessions/${sessionId}?${query}&model=alias&model=other`,
         "DELETE",
       )
     ).status,

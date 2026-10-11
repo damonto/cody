@@ -25,7 +25,14 @@ for (const dialect of ["sqlite", "postgres"]) {
         .sort())
         await db.exec(await readFile(new URL(migration, directory), "utf8"));
       const sql = await readFile(new URL(name, directory), "utf8");
-      await checkNativeDefaults(db, () => db.exec(sql));
+      const cleanup = await readFile(
+        new URL("0016_remove_history_notes.sql", directory),
+        "utf8",
+      );
+      await checkNativeDefaults(db, async () => {
+        await db.exec(sql);
+        await db.exec(cleanup);
+      });
     } finally {
       await db.close();
     }

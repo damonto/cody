@@ -9,11 +9,8 @@ import { ProviderTransport } from "../../providers/transport-values.ts";
 
 import { WebSocketHealth, shouldRecordUpstreamFailure } from "./health.ts";
 import {
-  contextSessionIdsMatch,
-  frameUsesContextManagement,
-  targetFromRoute,
+  resolveCurrentTarget,
   unavailableTargetError,
-  validateCurrentTarget,
   type CurrentRoutingContext,
 } from "./routing.ts";
 import {
@@ -52,7 +49,6 @@ import {
   type ModelRoute,
   type ProviderSelection,
 } from "../routing/routing.ts";
-import { contextManagementSessionMatches } from "../sessions/context-management-protocol.ts";
 import {
   RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
   RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,
@@ -73,7 +69,6 @@ import {
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
 import {
-  blockedCodexQuotaResetsAt,
   codexQuotaResetsAt,
   restoreCodexAccount,
 } from "../../providers/codex/exhaustion.ts";
@@ -125,6 +120,20 @@ function clientDigestFrom(request: Request): string | undefined {
     : undefined;
 }
 
+function replayableQuotaError(payload: Record<string, unknown>): boolean {
+  // WebSocket error envelopes carry an HTTP status; the shared SSE guard
+  // interprets status as a response lifecycle state instead.
+  const frame =
+    payload.type === "error" &&
+    typeof payload.status === "number" &&
+    Number.isInteger(payload.status) &&
+    payload.status >= 400 &&
+    payload.status <= 599
+      ? { ...payload, status: undefined }
+      : payload;
+  return retryErrorIsReplayable(frame, "", CODEX_QUOTA_CODES);
+}
+
 /**
  * The first response.create of a connection, kept while a Codex account that
  * reports exhausted quota can still hand it to another account.
@@ -135,7 +144,6 @@ interface FirstFrameAttempt {
   readonly frame: ResponseCreateFrame;
   readonly route: ModelRoute;
   readonly sessionId: string | undefined;
-  readonly contextManagement: boolean;
   readonly routingContext: CurrentRoutingContext;
   readonly meter: RequestMeter | undefined;
   readonly excluded: Set<string>;
@@ -168,11 +176,19 @@ function requestOutcomeOnClose(code: number, outcome: string) {
   return code === 1000 ? RequestOutcome.Incomplete : RequestOutcome.Failed;
 }
 
+type ResponseTurn =
+  | { kind: "idle" }
+  | { kind: "active"; sequence: number; replayable: boolean }
+  | { kind: "untracked" };
+
 export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private pendingClientBytes = 0;
   private clientMessages = Promise.resolve();
   /** Client messages received by this instance, including the first frame. */
   private receivedClientMessages = 0;
+  // Overlapping turns or object recovery make response ownership ambiguous.
+  // Once untracked, later completions cannot reopen this connection's replay window.
+  private turn: ResponseTurn = { kind: "untracked" };
   private attempt: FirstFrameAttempt | undefined;
   /** Holds later client frames while the first frame moves to another account. */
   private switching: Promise<void> | undefined;
@@ -418,6 +434,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     message: WebSocketMessage,
     receivedAt = Date.now(),
   ): Promise<void> {
+    const replaySequence =
+      this.turn.kind === "active" && this.turn.replayable
+        ? this.turn.sequence
+        : undefined;
+    if (this.turn.kind === "active") this.turn.replayable = false;
     const state = await this.storage.loadSession();
     if (state?.phase !== SessionPhase.Open) {
       return;
@@ -427,8 +448,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const status = payload ? errorStatus(payload) : undefined;
     const usageLimit =
       payload &&
-      ((payload.type === "error" && status === 429) ||
-        payload.type === "response.failed") &&
+      (payload.type === "error" || payload.type === "response.failed") &&
       state.selected_provider_type === ProviderType.Codex
         ? codexUsageLimitFromError(payload, (name) =>
             eventHeader(payload, name),
@@ -439,8 +459,8 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       usageLimit &&
       typeof message === "string" &&
       attempt &&
-      (payload?.type !== "response.failed" ||
-        retryErrorIsReplayable(payload, "", CODEX_QUOTA_CODES)) &&
+      payload &&
+      replayableQuotaError(payload) &&
       this.receivedClientMessages <= 1
     ) {
       // Nothing but this error has reached the upstream's reply, and the
@@ -454,17 +474,40 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       state.selected_provider_id &&
       state.selected_credential_id
     ) {
-      await recordCredentialQuotaCooldown(
+      const cooled = await recordCredentialQuotaCooldown(
         this.env,
         state.selected_provider_id,
         state.selected_credential_id,
         usageLimit.resets_at,
         state.request_id,
       );
+      if (
+        cooled &&
+        replaySequence !== undefined &&
+        this.isCurrentTurn(replaySequence) &&
+        payload &&
+        replayableQuotaError(payload)
+      ) {
+        // Keep the real upstream failure in metering. Codex treats usage-limit
+        // events as terminal, but a missing continuation as recoverable.
+        const meter = this.usage.observe(payload, receivedAt);
+        if (meter)
+          this.usage.finish(meter, RequestOutcome.Failed, status ?? 429);
+        await this.requireFullReplay("usage_limit_reached");
+        return;
+      }
     }
     const meter = payload ? this.usage.observe(payload, receivedAt) : undefined;
     await this.health.observe(state, status);
 
+    if (
+      this.turn.kind === "active" &&
+      (payload?.type === "response.completed" ||
+        payload?.type === "response.failed" ||
+        payload?.type === "response.incomplete")
+    ) {
+      this.turn = { kind: "idle" };
+    }
     if (!safeSend(this.clientSocket(), message)) {
       await this.closeAll(
         1011,
@@ -534,6 +577,28 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
   }
 
+  private async requireFullReplay(diagnostic: string): Promise<void> {
+    await this.closeAll(
+      1012,
+      "full input required on a new connection",
+      diagnostic,
+      LIVE_PHASES,
+      gatewayErrorEvent(
+        409,
+        "The previous response is unavailable on this connection; resend the full input without previous_response_id",
+        "previous_response_not_found",
+      ),
+    );
+  }
+
+  private isCurrentTurn(sequence: number): boolean {
+    return (
+      this.turn.kind === "active" &&
+      this.turn.sequence === sequence &&
+      this.receivedClientMessages === sequence
+    );
+  }
+
   private async handleUpstreamClose(event: CloseEvent): Promise<void> {
     const state = await this.storage.loadSession();
     const upstreamFailed = shouldRecordUpstreamFailure(state);
@@ -569,7 +634,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private async connectUpstream(
     attempt: FirstFrameAttempt,
     target: ModelProviderTarget,
-    contextManagement: boolean,
   ): Promise<"switch" | undefined> {
     const { frame, sessionId } = attempt;
     const connecting = await this.storage.transition(
@@ -581,7 +645,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         selected_provider_id: target.provider.id,
         selected_provider_type: target.provider.type,
         selected_credential_id: target.credential.id,
-        ...(contextManagement ? { context_management: true } : {}),
       }),
     );
     if (!connecting) {
@@ -810,28 +873,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
     const frame = parsedFrame.frame;
+    this.turn = { kind: "active", sequence: 1, replayable: true };
     await this.usage.select(meter, routingContext);
-    const contextManagement = frameUsesContextManagement(frame, claimed.next);
     const sessionId = claimed.next.header_session_id ?? frame.sessionId;
-    if (
-      contextManagement &&
-      !contextManagementSessionMatches(frame.payload, sessionId)
-    ) {
-      safeSend(
-        this.clientSocket(),
-        gatewayErrorEvent(
-          400,
-          "Context management requires consistent session ids",
-          "invalid_context_management_request",
-        ),
-      );
-      await this.closeAll(
-        1008,
-        "missing context session",
-        "invalid_context_management_request",
-      );
-      return;
-    }
     const route = resolveModelRoute(
       routingContext.config,
       routingContext.client,
@@ -861,7 +905,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       frame,
       route,
       sessionId,
-      contextManagement,
       routingContext,
       meter,
       excluded: new Set(),
@@ -898,7 +941,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           excludedCredentials: attempt.excluded,
           ...(sessionId
             ? {
-                contextManagement: attempt.contextManagement,
                 session: {
                   clientId: routingContext.client.id,
                   sessionId,
@@ -933,34 +975,20 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         await this.rejectUnroutable(attempt, route, selection);
         return;
       }
+      attempt.target = target;
       if (
-        selection.affinity?.context_management &&
-        !contextManagementSessionMatches(frame.payload, sessionId)
+        target.provider.type === ProviderType.Codex &&
+        nonBlankString(frame.payload.previous_response_id)
       ) {
-        safeSend(
-          this.clientSocket(),
-          gatewayErrorEvent(
-            400,
-            "Context management session ids must match",
-            "invalid_context_management_request",
-          ),
-        );
-        await this.closeAll(
-          1008,
-          "inconsistent context session",
-          "invalid_context_management_request",
-        );
+        // A fresh gateway socket has no upstream continuation. Never send an
+        // old account's response ID with only delta input to a new account.
+        await this.requireFullReplay("previous_response_not_found");
         return;
       }
-      attempt.target = target;
       // A Codex frame may still move accounts; it is metered once it settles.
       if (target.provider.type !== ProviderType.Codex)
         await this.usage.select(attempt.meter, routingContext, target);
-      const outcome = await this.connectUpstream(
-        attempt,
-        target,
-        selection.affinity?.context_management === true,
-      );
+      const outcome = await this.connectUpstream(attempt, target);
       if (outcome !== "switch") return;
     }
   }
@@ -972,12 +1000,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   ): Promise<void> {
     const status = selection.affinity?.status;
     const resetsAt =
-      status === SessionAffinityStatus.Blocked
-        ? blockedCodexQuotaResetsAt(selection)
-        : status === SessionAffinityStatus.Forbidden ||
-            status === SessionAffinityStatus.Failed
-          ? undefined
-          : codexQuotaResetsAt(route.targets, selection, attempt.excluded);
+      status === SessionAffinityStatus.Failed
+        ? undefined
+        : codexQuotaResetsAt(route.targets, selection, attempt.excluded);
     const exhausted =
       attempt.exhausted ??
       (resetsAt === undefined ? undefined : codexUsageLimitEvent(resetsAt));
@@ -1082,6 +1107,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     state: StoredWebSocketSession,
     message: WebSocketMessage,
     receivedAt: number,
+    sequence: number,
   ): Promise<void> {
     if (typeof message === "string") {
       const parsedFrame = clientFrame(message);
@@ -1102,6 +1128,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         return;
       }
       if (parsedFrame.kind === "response_create") {
+        this.turn =
+          this.turn.kind === "idle"
+            ? { kind: "active", sequence, replayable: true }
+            : { kind: "untracked" };
         const meter = await this.usage.start(
           state.request_id,
           parsedFrame.frame,
@@ -1117,7 +1147,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         }
         const frame = parsedFrame.frame;
         await this.usage.select(meter, routingContext);
-        const contextManagement = frameUsesContextManagement(frame, current);
         const route = resolveModelRoute(
           routingContext.config,
           routingContext.client,
@@ -1131,83 +1160,64 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         const boundSessionId =
           current.header_session_id ?? current.current_session_id;
         const sessionId = boundSessionId ?? frame.sessionId;
-        const targetValidation = await validateCurrentTarget(
+        const resolution = await resolveCurrentTarget(
           this.env,
           current,
           route,
           sessionId,
           routingContext.client,
-          contextManagement,
         );
-        if (route.targets.length === 0 || !targetValidation.valid) {
-          safeSend(
-            this.clientSocket(),
+        if (resolution.kind === "affinity_unavailable") {
+          await this.closeAll(
+            1012,
+            "session binding store unavailable",
+            "session_affinity_unavailable",
+            LIVE_PHASES,
+            gatewayErrorEvent(
+              503,
+              "The session binding store is unavailable",
+              "session_affinity_unavailable",
+            ),
+          );
+          return;
+        }
+        if (resolution.kind === "changed") {
+          if (
+            current.selected_provider_type === ProviderType.Codex &&
+            this.turn.kind === "active" &&
+            this.turn.replayable &&
+            this.isCurrentTurn(sequence)
+          ) {
+            await this.requireFullReplay("binding_changed");
+            return;
+          }
+          await this.closeAll(
+            1012,
+            "upstream binding changed",
+            "binding_changed",
+            LIVE_PHASES,
             gatewayErrorEvent(
               503,
               "The bound upstream provider or key is no longer available; reconnect the WebSocket",
               "websocket_reconnect_required",
             ),
           );
-          await this.closeAll(
-            1012,
-            "upstream binding changed",
-            "binding_changed",
-          );
           return;
         }
-        const activeContextManagement =
-          current.context_management === true ||
-          targetValidation.contextManagement;
-        if (
-          activeContextManagement &&
-          !contextSessionIdsMatch(frame, current, sessionId)
-        ) {
-          safeSend(
-            this.clientSocket(),
-            gatewayErrorEvent(
-              400,
-              "Context management session ids must match",
-              "invalid_context_management_request",
-            ),
-          );
-          await this.closeAll(
-            1008,
-            "inconsistent context session",
-            "invalid_context_management_request",
-          );
-          return;
-        }
+        const selectedTarget = resolution.target;
+        await this.usage.select(meter, routingContext, selectedTarget);
         const activated = await this.storage.transition(
           [SessionPhase.Open],
           (latest) => ({
             ...latest,
             ...(sessionId ? { current_session_id: sessionId } : {}),
-            ...(activeContextManagement ? { context_management: true } : {}),
             active_response: true,
             response_outcome_recorded: false,
           }),
         );
-        const selectedTarget = targetFromRoute(route, current);
-        if (!selectedTarget) {
-          safeSend(
-            this.clientSocket(),
-            gatewayErrorEvent(
-              503,
-              "The bound upstream provider or key is no longer available; reconnect the WebSocket",
-              "websocket_reconnect_required",
-            ),
-          );
-          await this.closeAll(
-            1012,
-            "upstream binding changed",
-            "binding_changed",
-          );
-          return;
-        }
-        await this.usage.select(meter, routingContext, selectedTarget);
+        if (!activated) return;
         const upstream = this.upstream.socket;
         if (
-          !activated ||
           !safeSend(
             upstream,
             rewriteResponseCreate(message, frame, selectedTarget.upstreamModel),
@@ -1237,6 +1247,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private async processClientMessage(
     message: WebSocketMessage,
     receivedAt: number,
+    sequence: number,
   ): Promise<void> {
     const state = await this.storage.loadSession();
     if (!state || state.phase === SessionPhase.Closed) {
@@ -1247,7 +1258,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
     if (state.phase === SessionPhase.Open) {
-      await this.processOpenMessage(state, message, receivedAt);
+      await this.processOpenMessage(state, message, receivedAt, sequence);
     }
   }
 
@@ -1271,11 +1282,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       );
     }
 
-    this.receivedClientMessages += 1;
+    const sequence = ++this.receivedClientMessages;
     const processing = this.clientMessages.then(async () => {
       this.pendingClientBytes -= bytes;
       while (this.switching) await this.switching;
-      await this.processClientMessage(message, receivedAt);
+      await this.processClientMessage(message, receivedAt, sequence);
     });
     this.clientMessages = processing.catch(async (error) => {
       logError("websocket.client_message.failed", {

@@ -18,7 +18,6 @@ import type { RequestMeter } from "../../telemetry/meter.ts";
 
 import { codexUsageLimitResponse } from "../../providers/codex/limits.ts";
 import {
-  blockedCodexQuotaResetsAt,
   codexQuotaResetsAt,
   restoreCodexAccount,
 } from "../../providers/codex/exhaustion.ts";
@@ -63,15 +62,6 @@ export async function unavailableInference({
   meter,
 }: UnavailableInference): Promise<Response | null> {
   const claude = selection.claudeQuota;
-  if (selection.affinity?.status === SessionAffinityStatus.Forbidden) {
-    if (exhausted) await discardBody(exhausted.body);
-    return apiError(
-      protocol,
-      403,
-      "This context session belongs to another client",
-      { code: "context_session_forbidden", requestId },
-    );
-  }
   if (selection.affinity?.status === SessionAffinityStatus.Failed) {
     if (exhausted) await discardBody(exhausted.body);
     return apiError(protocol, 503, "The session binding store is unavailable", {
@@ -125,23 +115,6 @@ export async function unavailableInference({
     requestLog?.warn({ outcome: "accounts_exhausted" });
     meter?.diagnostic("usage_limit_reached");
     return exhausted;
-  }
-  if (selection.affinity?.status === SessionAffinityStatus.Blocked) {
-    const resetsAt = blockedCodexQuotaResetsAt(selection);
-    if (resetsAt !== undefined) {
-      requestLog?.warn({ outcome: "usage_limit_reached" });
-      return codexUsageLimitResponse(resetsAt, requestId);
-    }
-    return apiError(
-      protocol,
-      503,
-      "The context session binding is unavailable",
-      {
-        type: "server_error",
-        code: "context_session_unavailable",
-        requestId,
-      },
-    );
   }
   if (selection.xaiQuota?.allBlocked)
     return xaiQuotaResponse(protocol, selection.xaiQuota.until, requestId);

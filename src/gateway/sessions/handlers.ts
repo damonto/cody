@@ -24,34 +24,13 @@ export async function handleSessions(
   const model = models[0];
   if (
     models.length > 0 &&
-    (models.length !== 1 ||
-      !model?.trim() ||
-      matchedRoute.action !== "clear" ||
-      incomingUrl.searchParams.get("release_context_ownership") === "true")
+    (models.length !== 1 || !model?.trim() || matchedRoute.action !== "clear")
   ) {
     return openAiError(
       400,
-      "model must occur once, be non-empty, and requires a single session without ownership release",
+      "model must occur once, be non-empty, and requires a single session",
       "invalid_request_error",
       "invalid_session_model_query",
-    );
-  }
-  const releaseValues = incomingUrl.searchParams.getAll(
-    "release_context_ownership",
-  );
-  const releaseOwnership = releaseValues[0];
-  if (
-    releaseValues.length > 0 &&
-    (releaseValues.length !== 1 ||
-      matchedRoute.action !== "clear" ||
-      (releaseOwnership !== "true" && releaseOwnership !== "false"))
-  ) {
-    requestLog.warn({ outcome: "invalid_session_release_query" });
-    return openAiError(
-      400,
-      "release_context_ownership must occur once, be true or false, and requires a single session",
-      "invalid_request_error",
-      "invalid_session_release_query",
     );
   }
   if (matchedRoute.action === "collection") {
@@ -74,6 +53,5 @@ export async function handleSessions(
   }
   return handleSessionClearOne(env, client, sessionId, requestLog, {
     model,
-    releaseContextOwnership: releaseOwnership === "true",
   });
 }

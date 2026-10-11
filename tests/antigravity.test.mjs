@@ -1145,7 +1145,6 @@ test("native models and aliases appear in Codex without advertising Astra capabi
   ];
   const models = aggregateCodexModels(
     new Set(["gemini-real", "gpt-6-astra"]),
-    new Set(),
     metadata,
   );
   assert.equal(models.length, 2);
@@ -1154,10 +1153,7 @@ test("native models and aliases appear in Codex without advertising Astra capabi
   assert.equal(models[1].supports_experimental_context, false);
   assert.equal(models[1].model_messages, undefined);
   assert.equal(models[1].base_instructions, "");
-  assert.equal(
-    aggregateCodexModels(new Set(["other"]), new Set(), metadata).length,
-    0,
-  );
+  assert.equal(aggregateCodexModels(new Set(["other"]), metadata).length, 0);
 });
 
 test("native retry usage is normalized without consuming the final response path", async () => {

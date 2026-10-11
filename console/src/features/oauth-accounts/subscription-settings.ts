@@ -57,7 +57,6 @@ export function settingsFormValues(
     retry: provider.retry,
     supports_websocket: provider.supports_websocket,
     supports_web_search: provider.supports_web_search,
-    supports_context_management: provider.supports_context_management,
     account_selection: provider.account_selection,
     allow_extra_usage: provider.allow_extra_usage,
     routes: Object.entries(provider.model_routes ?? {}).map(

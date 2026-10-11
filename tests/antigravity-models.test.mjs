@@ -222,7 +222,7 @@ test("catalogs group native variants but keep explicit aliases and other provide
   assert.equal(grouped.context_window, 999998);
   assert.deepEqual(grouped.input_modalities, ["text"]);
   assert.deepEqual(grouped.thinking_levels, ["low", "medium", "high"]);
-  const codex = aggregateCodexModels(new Set([family]), new Set(), [
+  const codex = aggregateCodexModels(new Set([family]), [
     { id: family, upstream: { id: family, raw: grouped } },
   ]);
   assert.equal(codex[0].default_reasoning_level, "high");
@@ -243,7 +243,7 @@ test("Codex native families retain static client metadata and account capabiliti
     catalog(config([models[1], models[2]])),
     new Map(),
   );
-  const [model] = aggregateCodexModels(new Set([family]), new Set(), [
+  const [model] = aggregateCodexModels(new Set([family]), [
     { id: family, upstream: { id: family, raw: grouped } },
   ]);
   assert.equal(model.display_name, "Gemini 3.8 Flash");
@@ -277,7 +277,6 @@ test("Codex native aliases match their real model or thinking family", () => {
   ];
   const listed = aggregateCodexModels(
     new Set(native.map(({ id }) => id)),
-    new Set(["gpt-6-astra"]),
     native,
   );
   assert.deepEqual(
@@ -303,7 +302,7 @@ test("native catalog matching does not use client names or unrelated suffixes", 
     `${family}-high-low`,
     "unknown-native-model",
   ]) {
-    const [model] = aggregateCodexModels(new Set([family]), new Set(), [
+    const [model] = aggregateCodexModels(new Set([family]), [
       {
         id: family,
         upstream: { id, raw: { display_name: id, context_window: 200000 } },
@@ -321,7 +320,7 @@ test("native catalog matching does not use client names or unrelated suffixes", 
 test("native templates retain instructions without inheriting endpoint settings", () => {
   const sourceId = "gpt-6-astra";
   const template = modelCatalog.models.find((model) => model.slug === sourceId);
-  const [model] = aggregateCodexModels(new Set(["native"]), new Set(), [
+  const [model] = aggregateCodexModels(new Set(["native"]), [
     { id: "native", upstream: { id: sourceId, raw: {} } },
   ]);
   const { instructions_template, instructions_variables, approvals } =
@@ -488,7 +487,7 @@ test("family catalogs have deterministic levels and conservative incomplete meta
   assert.equal(partial.max_output_tokens, null);
   assert.deepEqual(partial.input_modalities, []);
   assert.equal(partial.supports_thinking, false);
-  const [codex] = aggregateCodexModels(new Set([family]), new Set(), [
+  const [codex] = aggregateCodexModels(new Set([family]), [
     { id: family, upstream: { id: family, raw: partial } },
   ]);
   assert.equal(codex.base_instructions, familyTemplate.base_instructions);

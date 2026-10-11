@@ -20,7 +20,6 @@ import {
   httpExecutionEndpoint,
   INFERENCE_PATHS,
   inferenceAliases,
-  CONTEXT_MANAGEMENT_PATHS,
 } from "../../src/gateway/protocol.ts";
 
 beforeAll(async () => {
@@ -88,10 +87,6 @@ async function dispatch(input: Request) {
 test("dispatch boundary includes registered HTTP routes and excludes other requests", () => {
   for (const path of INFERENCE_PATHS) {
     for (const alias of inferenceAliases(path))
-      expect(httpExecutionEndpoint(request(alias))).toBe(path);
-  }
-  for (const path of CONTEXT_MANAGEMENT_PATHS) {
-    for (const alias of [`/${path}`, `/v1/${path}`])
       expect(httpExecutionEndpoint(request(alias))).toBe(path);
   }
   for (const path of [
@@ -402,16 +397,10 @@ test("disconnect before upstream headers aborts the one attempt", async () => {
   expect(upstream).toHaveBeenCalledTimes(1);
 });
 
-test.each([
-  "/responses",
-  "/v1/messages",
-  "/alpha/search",
-  "/alpha/notes/v2/read_file",
-])(
+test.each(["/responses", "/v1/messages", "/alpha/search"])(
   "disconnect during a stalled upload completes cancellation: %s",
   async (path) => {
     const config = await loadConfig(env);
-    config.providers[0]!.supports_context_management = true;
     if (path === "/alpha/search") {
       config.web_search = {
         mode: "tavily",

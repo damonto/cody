@@ -210,7 +210,6 @@ export async function requireEmptyTarget(
     const type = expected[index];
     const defaults = {
       supports_websocket: type === "codex",
-      supports_context_management: false,
       supports_web_search: type === "codex",
       anthropic_1m_context: false,
       emulate_claude_code: false,

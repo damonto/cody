@@ -2,6 +2,7 @@ import { ProviderType } from "../config/values.ts";
 import { inferenceMetadata } from "../telemetry/inference-metadata.ts";
 import { ProviderTransport } from "./transport-values.ts";
 import { ApiProtocol } from "../gateway/protocol-values.ts";
+import { INFERENCE_PATHS } from "../gateway/protocol.ts";
 
 import type { AiGatewayProviderConfig } from "../config/types.ts";
 import {
@@ -9,7 +10,6 @@ import {
   forwardWebSocketHeaders,
   upstreamUrl,
 } from "../gateway/http/http.ts";
-import { isContextManagementPath } from "../gateway/protocol.ts";
 import {
   emulateClaudeCodeRequest,
   syntheticClaudeCodeIdentity,
@@ -88,13 +88,12 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
     if (transport === ProviderTransport.Websocket) {
       return endpoint === "responses" && provider.supports_websocket;
     }
-    if (isContextManagementPath(endpoint)) {
-      return provider.supports_context_management;
-    }
     if (endpoint === "alpha/search") {
       return provider.supports_web_search;
     }
-    return true;
+    return (
+      endpoint === "models" || INFERENCE_PATHS.some((path) => path === endpoint)
+    );
   },
   prepare(provider, credential, input, context) {
     const { request, endpoint, transport, protocol, payload, model } = input;
@@ -106,13 +105,11 @@ export const aiGatewayAdapter: ProviderAdapter<AiGatewayProviderConfig> = {
       };
     }
     const headers = forwardRequestHeaders(request, credential.token);
-    // Inference only: the model list and context-management calls carry no
-    // Anthropic message body for the beta to apply to.
+    // The model list carries no Anthropic message body for this beta.
     if (
       provider.anthropic_1m_context &&
       protocol === ApiProtocol.Anthropic &&
-      endpoint !== "models" &&
-      !isContextManagementPath(endpoint)
+      endpoint !== "models"
     ) {
       addAnthropic1mBeta(headers);
     }

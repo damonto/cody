@@ -2231,11 +2231,15 @@ test("migrated defaults authorize and save a first account without saving settin
     return;
   };
   const saved = await control().save({ providers: [], api_keys: [] }, 0, actor);
-  const migration = bindings.TEST_MIGRATIONS.find(
-    (item) => item.name === "0015_native_provider_defaults.sql",
-  )!;
+  const migrations = bindings.TEST_MIGRATIONS.filter(
+    (item) =>
+      item.name === "0015_native_provider_defaults.sql" ||
+      item.name === "0016_remove_history_notes.sql",
+  );
   await env.CODY_DB.batch(
-    migration.queries.map((sql) => env.CODY_DB.prepare(sql)),
+    migrations.flatMap((migration) =>
+      migration.queries.map((sql) => env.CODY_DB.prepare(sql)),
+    ),
   );
   const resource = await admin("/native-providers/antigravity");
   const { item: provider } = z

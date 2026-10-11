@@ -57,7 +57,6 @@ export function draftFixture(): Omit<ConfigurationView, "config"> & {
           priority: 100,
           disabled: false,
           supports_websocket: true,
-          supports_context_management: false,
           supports_web_search: false,
           anthropic_1m_context: false,
           emulate_claude_code: false,

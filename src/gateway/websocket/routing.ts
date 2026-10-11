@@ -8,15 +8,8 @@ import {
   type ModelProviderTarget,
   type ModelRoute,
 } from "../routing/routing.ts";
-import {
-  contextManagementRequested,
-  contextManagementSessionMatches,
-} from "../sessions/context-management-protocol.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
-import {
-  gatewayErrorEvent,
-  type ResponseCreateFrame,
-} from "./websocket-protocol.ts";
+import { gatewayErrorEvent } from "./websocket-protocol.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 export interface CurrentRoutingContext {
@@ -24,7 +17,7 @@ export interface CurrentRoutingContext {
   client: ClientApiKeyConfig;
 }
 
-export function targetFromRoute(
+function targetFromRoute(
   route: ModelRoute,
   state: StoredWebSocketSession,
 ): ModelProviderTarget | undefined {
@@ -44,54 +37,28 @@ export function targetFromRoute(
     : undefined;
 }
 
-export function frameUsesContextManagement(
-  frame: ResponseCreateFrame,
-  state: StoredWebSocketSession,
-): boolean {
-  return (
-    state.context_management === true ||
-    contextManagementRequested(frame.payload)
-  );
-}
+export type CurrentTargetResult =
+  | { kind: "ready"; target: ModelProviderTarget }
+  | { kind: "changed" }
+  | { kind: "affinity_unavailable" };
 
-export function contextSessionIdsMatch(
-  frame: ResponseCreateFrame,
-  state: StoredWebSocketSession,
-  sessionId: string | undefined,
-): boolean {
-  if (!contextManagementSessionMatches(frame.payload, sessionId)) {
-    return false;
-  }
-  const boundSessionId = state.header_session_id ?? state.current_session_id;
-  return !(
-    boundSessionId !== undefined &&
-    frame.sessionId !== undefined &&
-    frame.sessionId !== boundSessionId
-  );
-}
-
-export async function validateCurrentTarget(
+export async function resolveCurrentTarget(
   env: Bindings,
   state: StoredWebSocketSession,
   route: ModelRoute,
   sessionId: string | undefined,
   client: ClientApiKeyConfig,
-  contextManagement: boolean,
-): Promise<{ valid: boolean; contextManagement: boolean }> {
+): Promise<CurrentTargetResult> {
   const selectedTarget = targetFromRoute(route, state);
   if (!selectedTarget) {
-    return { valid: false, contextManagement: false };
+    return { kind: "changed" };
   }
   if (!sessionId) {
-    return {
-      valid:
-        !contextManagement &&
-        (await targetIsAvailableForRoute(env, route, selectedTarget)),
-      contextManagement: false,
-    };
+    return (await targetIsAvailableForRoute(env, route, selectedTarget))
+      ? { kind: "ready", target: selectedTarget }
+      : { kind: "changed" };
   }
   const selection = await selectAvailableProviderWithDetails(env, route, {
-    contextManagement,
     session: { clientId: client.id, sessionId },
   });
   if (selection.affinity?.status === SessionAffinityStatus.Failed) {
@@ -99,17 +66,14 @@ export async function validateCurrentTarget(
       request_id: state.request_id,
       error: selection.affinity.error,
     });
-    return {
-      valid: false,
-      contextManagement: false,
-    };
+    return { kind: "affinity_unavailable" };
   }
-  return {
-    valid:
-      selection.target?.provider.id === selectedTarget.provider.id &&
-      selection.target.credential.id === selectedTarget.credential.id,
-    contextManagement: selection.affinity?.context_management === true,
-  };
+  const unchanged =
+    selection.target?.provider.id === selectedTarget.provider.id &&
+    selection.target.credential.id === selectedTarget.credential.id;
+  return unchanged
+    ? { kind: "ready", target: selectedTarget }
+    : { kind: "changed" };
 }
 
 export function unavailableTargetError(
@@ -117,23 +81,11 @@ export function unavailableTargetError(
   model: string,
 ): string {
   switch (selection.affinity?.status) {
-    case SessionAffinityStatus.Forbidden:
-      return gatewayErrorEvent(
-        403,
-        "This context session belongs to another client",
-        "context_session_forbidden",
-      );
     case SessionAffinityStatus.Failed:
       return gatewayErrorEvent(
         503,
         "The session binding store is unavailable",
         "session_affinity_unavailable",
-      );
-    case SessionAffinityStatus.Blocked:
-      return gatewayErrorEvent(
-        503,
-        "The context session binding is unavailable",
-        "context_session_unavailable",
       );
     default:
       return gatewayErrorEvent(

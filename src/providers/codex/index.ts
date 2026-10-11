@@ -6,7 +6,6 @@ import {
   forwardRequestHeaders,
   forwardWebSocketHeaders,
 } from "../../gateway/http/http.ts";
-import { isContextManagementPath } from "../../gateway/protocol.ts";
 import type { ProviderAdapter, ProviderEndpoint } from "../types.ts";
 import { CODEX_BASE, CODEX_CLIENT_VERSION } from "./api.ts";
 
@@ -40,8 +39,6 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
   supports(provider, endpoint, transport) {
     if (transport === ProviderTransport.Websocket)
       return endpoint === "responses" && provider.supports_websocket;
-    if (isContextManagementPath(endpoint))
-      return provider.supports_context_management;
     if (endpoint === "alpha/search") return provider.supports_web_search;
     return HTTP_ENDPOINTS.has(endpoint);
   },
@@ -52,6 +49,10 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
         ? forwardWebSocketHeaders(input.request, credential.token)
         : forwardRequestHeaders(input.request, credential.token);
     headers.set("chatgpt-account-id", credential.account_id);
+    // Each gateway WebSocket creates a fresh upstream connection from full
+    // input. A client routing hint may belong to a previously selected account.
+    if (input.transport === ProviderTransport.Websocket)
+      headers.delete("x-codex-turn-state");
     headers.delete("x-openai-fedramp");
     if (credential.is_fedramp) headers.set("x-openai-fedramp", "true");
     if (input.endpoint !== "models")

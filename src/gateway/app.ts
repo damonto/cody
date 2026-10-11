@@ -9,7 +9,6 @@ import {
 import { handleHealthClear, handleHealthList } from "./health/handlers.ts";
 import { handleInference } from "./http/proxy.ts";
 import {
-  CONTEXT_MANAGEMENT_PATHS,
   INFERENCE_PATHS,
   inferenceAliases,
   type GatewayEndpoint,
@@ -17,7 +16,6 @@ import {
 } from "./protocol.ts";
 import { allowedProviderCandidates } from "./routing/routing.ts";
 import { handleConfiguredWebSearch } from "./search/search.ts";
-import { handleContextManagement } from "./sessions/context-management.ts";
 import { handleSessions } from "./sessions/handlers.ts";
 import { handleResponsesWebSocket } from "./websocket/websocket.ts";
 
@@ -164,21 +162,6 @@ async function inference(
 for (const path of INFERENCE_PATHS) {
   endpoint(inferenceAliases(path), path, ["POST"], (r) => inference(path, r));
 }
-for (const path of CONTEXT_MANAGEMENT_PATHS) {
-  endpoint(aliases(path), path, ["POST"], async (r) =>
-    handleContextManagement(
-      r.request,
-      r.env,
-      r.config,
-      r.client,
-      path,
-      r.requestId,
-      r.requestLog,
-      r.context,
-    ),
-  );
-}
-
 // API namespaces must never fall through to the console's SPA asset fallback.
 gatewayRoutes.on(
   "ALL",

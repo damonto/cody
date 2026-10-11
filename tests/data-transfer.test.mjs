@@ -881,9 +881,11 @@ for (const direction of ["from-d1", "to-d1"]) {
         assert.equal(config.d1_databases[0].database_id, "mock-d1");
         if (args[1] === "export") {
           assert.ok(args.includes("--skip-confirmation"));
+          // Older SQLite CLIs dump an orphaned sqlite_sequence after migrations
+          // drop the last AUTOINCREMENT table. Internal tables are not transferred.
           const { stdout } = await promisify(execFile)(
             "sqlite3",
-            ["-batch", databaseFile, ".dump"],
+            ["-batch", databaseFile, ".dump --nosys"],
             { maxBuffer: 16 * 1024 * 1024 },
           );
           await writeFile(args[args.indexOf("--output") + 1], stdout);
