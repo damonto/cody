@@ -26,3 +26,6 @@ skills-lock.json
 # Browser test artifacts
 console/test-results/
 console/playwright-report/
+
+# Operator transfer progress (never business data)
+.cody-transfer/

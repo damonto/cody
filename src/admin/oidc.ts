@@ -253,7 +253,6 @@ export async function authenticateOidcSession(
 // ---------------------------------------------------------------------------
 
 const httpsUrl = z
-  .string()
   .url()
   .refine((value) => new URL(value).protocol === "https:", {
     message: "OIDC endpoints must use https",

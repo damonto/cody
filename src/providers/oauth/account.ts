@@ -129,6 +129,15 @@ export class ProviderOAuthAccountCore {
         );
     });
   }
+  /** Operator-only restore; the deployment must be quiescent during transfer. */
+  async transferReload(): Promise<void> {
+    const encrypted = await this.ctx.storage.get<string>("account");
+    this.account = encrypted
+      ? storedSchema.parse(
+          await decryptConfig(encrypted, this.env.CONFIG_ENCRYPTION_KEY),
+        )
+      : null;
+  }
   private requireAccount(): Stored {
     if (!this.account) throw new OAuthError("Account does not exist", 404);
     return this.account;

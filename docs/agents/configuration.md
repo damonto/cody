@@ -12,6 +12,7 @@ Start with `src/config/schema.ts`, `src/control/resource-input.ts`, `src/admin/r
 - Generate UUID identities on the server and preserve them across renames. Soft-delete entities and relations; retain historical references without exposing archive browsing or per-entity restoration.
 - Management reads query their resource tables without decrypting unrelated secrets. Query projections may access only selected tables. Document projection is reserved for historical recovery and test seeding.
 - Configuration restoration keeps current secrets and never restores OAuth token/session state. No persisted drafts, manual publish, publisher object, KV config distribution, whole-config mutation or import/export endpoint.
+- The offline [instance transfer CLI](../data-transfer.md) is an operations exception: it copies authoritative tables and encrypted OAuth account state into a fresh instance with the same encryption key. It is not a console configuration workflow and does not create or change schema migrations.
 - Keep resource API schemas, runtime schema, compiler and tests consistent. Validate at API and snapshot boundaries; there is no generated JSON Schema or file-based configuration workflow.
 
 ## Current configuration shape

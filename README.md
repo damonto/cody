@@ -198,9 +198,9 @@ claude --model "your-configured-model"
 
 ## Move between platforms
 
-Use **Settings → Export JSON / Import JSON** in the console to move configuration. OAuth accounts must be authorized again on the new deployment. See [config.example.json](config.example.json) for the configuration format.
+Use `npm run data:transfer -- --help` to copy business database data and encrypted OAuth accounts between Cloudflare D1, SQLite, PostgreSQL and libSQL. D1 uses Wrangler SQL-file export/import; standard databases use bulk reads and inserts. Runtime caches, health/cooldown state and unrecorded queue/outbox usage are excluded. Both deployments must use the same code, applied schema and `CONFIG_ENCRYPTION_KEY`; the target must be fresh.
 
-Use `npm run reporting:transfer -- --help` for request-history transfer options between Cloudflare D1 and Node.js or Vercel databases.
+Stop requests and background jobs on both sides before confirming the CLI prompt. Progress is kept locally for `--resume` or `--abort`; no database migration or runtime maintenance lock is added. D1 transfers also require the `sqlite3` CLI. Start a new task for this workflow; older task files are not supported. See the [transfer guide](docs/data-transfer.md) for setup and cutover.
 
 ## Development
 

@@ -115,7 +115,7 @@ const controls = z.object({
   stream: z.boolean().optional(),
   max_output_tokens: z.number().int().positive().optional(),
   max_tokens: z.number().int().positive().optional(),
-  temperature: z.number().finite().optional(),
+  temperature: z.number().optional(),
   top_p: z.number().min(0).max(1).optional(),
   top_k: z.number().int().nonnegative().optional(),
   parallel_tool_calls: z.boolean().optional(),

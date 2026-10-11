@@ -1,3 +1,13 @@
+import {
+  keyProof,
+  TRANSFER_VERSION,
+  type ObjectRef,
+  type ObjectSnapshot,
+} from "../../transfer/protocol.ts";
+import {
+  readObjectStorage,
+  writeObjectStorage,
+} from "../../transfer/objects.ts";
 import { type HealthCooldownReason } from "../../gateway/health/values.ts";
 
 import type { ResetOperation } from "../../gateway/health/provider-health.ts";
@@ -51,6 +61,12 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
 }
 
 export class ProviderHealth extends DurableObject<Env> {
+  async transferProbe(challenge: string) {
+    return {
+      version: TRANSFER_VERSION,
+      proof: await keyProof(this.env.CONFIG_ENCRYPTION_KEY, challenge),
+    };
+  }
   private readonly core: ProviderHealthCore;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -163,6 +179,18 @@ export class UsageOutbox extends DurableObject<Env> {
 }
 
 export class ProviderOAuthAccount extends DurableObject<Env> {
+  transferRead(ref: ObjectRef) {
+    return readObjectStorage(this.ctx.storage, ref);
+  }
+  async transferWrite(snapshot: ObjectSnapshot, digest: string) {
+    await writeObjectStorage(this.ctx.storage, snapshot, digest);
+    await this.core.transferReload();
+  }
+  async transferSchedule(alarm: number | null) {
+    if (alarm === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, alarm));
+  }
+
   private readonly core: ProviderOAuthAccountCore;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);

@@ -6,7 +6,7 @@ const flag = z.enum(["true", "false"]);
 const schema = z.object({
   DATABASE_URL: text,
   REDIS_URL: text
-    .url()
+    .check(z.url())
     .refine((value) => /^rediss?:/.test(value), "Use redis:// or rediss://"),
   REDIS_PREFIX: text.default("cody"),
   CONFIG_ENCRYPTION_KEY: text.refine((value) => {
@@ -25,7 +25,7 @@ const schema = z.object({
   LOG_LEVEL: z.enum(["info", "warn", "error", "off", "silent"]).default("info"),
   ADMIN_AUTH_MODE: z.enum(["access", "oidc", "token", "local"]).default("oidc"),
   ADMIN_TOKEN: text.min(16).optional(),
-  ADMIN_OIDC_ISSUER: text.url().optional(),
+  ADMIN_OIDC_ISSUER: text.check(z.url()).optional(),
   ADMIN_OIDC_CLIENT_ID: text.optional(),
   ADMIN_OIDC_CLIENT_SECRET: text.optional(),
   ADMIN_OIDC_ALLOWED_EMAILS: text.optional(),
@@ -36,7 +36,7 @@ const schema = z.object({
     .max(2_592_000)
     .default(43_200)
     .transform(String),
-  ACCESS_TEAM_DOMAIN: text.url().optional(),
+  ACCESS_TEAM_DOMAIN: text.check(z.url()).optional(),
   ACCESS_AUD: text.optional(),
   ADMIN_ASSETS_PUBLIC: flag.default("true"),
   HOST: text.default("127.0.0.1"),
