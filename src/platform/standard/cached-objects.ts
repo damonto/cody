@@ -93,24 +93,6 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     return new CachedObjectScope(sql, this.redis, key, namespace, name, lock);
   }
 
-  /** Offline migration only: discard any old cache and seed from fenced SQL. */
-  async warm(
-    namespace: string,
-    name: string,
-    lock: ObjectLock,
-  ): Promise<number> {
-    if (isReplayObject(namespace, name))
-      throw new Error("Replay data must be migrated, not cached");
-    const key = objectCacheKey(this.prefix, namespace, name);
-    if (
-      !lock.condition ||
-      !(await this.redis.compareAndWrite([lock.condition], [["del", key]]))
-    )
-      throw new Error("Object cache warmup lost its lock");
-    const scoped = await this.durableScope(namespace, name, lock);
-    return scoped.warm();
-  }
-
   get(namespace: string, name: string, key: string): Promise<string | null> {
     return this.sql.get(namespace, name, key);
   }
@@ -134,16 +116,16 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     now: number,
     limit: number,
   ): Promise<string[]> {
-    const durable = await this.sql.dueAlarms(namespace, now, limit);
+    const durable = await this.sql.dueAlarms(
+      namespace,
+      now,
+      limit,
+      namespace === "affinity" ? "xai-replay:" : undefined,
+    );
     if (namespace !== "affinity") return durable;
-    // SQL replay rows are moved by the offline migration, never lazily restored.
+    // Replay is disposable Redis state; SQL is never a replay recovery source.
     const replay = await this.replay.dueAlarms(namespace, now, limit);
-    return [
-      ...new Set([
-        ...durable.filter((name) => !isReplayObject(namespace, name)),
-        ...replay,
-      ]),
-    ];
+    return [...new Set([...durable, ...replay])];
   }
 }
 
@@ -190,35 +172,6 @@ class CachedObjectScope implements ObjectBackend {
       ["hset", this.hash, field, value],
       ["pexpire", this.hash, CACHE_TTL_MS],
     ]);
-  }
-
-  async warm(): Promise<number> {
-    let count = 0;
-    let cursor: string | undefined;
-    while (true) {
-      const rows = await this.sql.list(this.namespace, this.name, {
-        limit: 128,
-        ...(cursor === undefined ? {} : { startAfter: cursor }),
-      });
-      if (!rows.length) break;
-      const commands: RedisWriteCommand[] = rows.map(([key, value]) => [
-        "hset",
-        this.hash,
-        `item:${key}`,
-        JSON.stringify(value),
-      ]);
-      // A large warmup can outlive one TTL. Refresh the revision with each
-      // fenced page so later pages cannot outlive their published metadata.
-      commands.push(
-        ["pexpire", this.hash, CACHE_TTL_MS],
-        ["pexpire", this.key, CACHE_TTL_MS],
-      );
-      await this.guarded(this.sql.revision, commands);
-      count += rows.length;
-      cursor = rows.at(-1)?.[0];
-    }
-    await this.getAlarm();
-    return count;
   }
 
   async get(

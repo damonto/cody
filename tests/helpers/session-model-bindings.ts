@@ -108,4 +108,66 @@ export async function sessionModelBindings(
   assert.equal((await stub.clearManaged(b)).length, 0);
   assert.equal((await stub.getStatus())?.context_management, true);
   assert.equal((await stub.clearManaged(b, true)).length, 1);
+
+  const optional = [
+    {
+      ...candidates[0],
+      priority: 100,
+      supports_context_management: false,
+    },
+    {
+      ...candidates[1],
+      priority: 50,
+      retain_available_account: true,
+      credentials: [{ credential_id: "two", priority: 999 }],
+    },
+  ];
+  const requested = {
+    contextManagement: true,
+    roundRobinProviderIds: ["two"],
+  };
+  const ordinary = await stub.resolve(optional, undefined, a, requested);
+  assert.equal(ordinary?.provider_id, "one");
+  assert.equal(ordinary?.model, "model-a");
+  assert.equal(ordinary?.context_management, undefined);
+  assert.equal(await stub.getStatus(), null);
+  await stub.clearManaged(a);
+
+  // A recovered higher-priority provider wins before optional promotion.
+  await stub.resolve([optional[1]], undefined, a);
+  const recovered = await stub.resolve(optional, undefined, a, requested);
+  assert.equal(recovered?.provider_id, "one");
+  assert.equal(recovered?.status, "rebound");
+  assert.equal(recovered?.context_management, undefined);
+  stub = (await reopen(a.object_name)).SESSION_AFFINITY.getByName(
+    a.object_name,
+  );
+  assert.equal(
+    (await stub.resolve(optional, undefined, a, requested))?.binding_id,
+    recovered?.binding_id,
+  );
+  assert.equal(await stub.getStatus(), null);
+
+  // If the preferred provider supports history, promotion remains atomic.
+  const context = await stub.resolve([optional[1]], undefined, a, {
+    contextManagement: true,
+  });
+  assert.equal(context?.provider_id, "two");
+  assert.equal(context?.context_management, true);
+  assert.equal(context?.model, null);
+  assert.equal(await stub.getStatus(a.session_digest), null);
+
+  await stub.clearManaged(a, true);
+  await stub.resolve([optional[0]], undefined, a);
+  const restricted = await stub.resolve(
+    [optional[0], { ...optional[1], priority: 200 }],
+    undefined,
+    a,
+    { ...requested, modelProviderIds: ["one"] },
+  );
+  assert.equal(restricted?.provider_id, "one");
+  assert.equal(restricted?.status, "hit");
+  assert.equal(restricted?.model, "model-a");
+  assert.equal(restricted?.context_management, undefined);
+  assert.equal(await stub.getStatus(), null);
 }

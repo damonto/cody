@@ -381,7 +381,7 @@ test("a native thread hint and subsequent WebSocket windows share the same conte
     ...config.providers[0],
     id: "context",
     base_url: "https://context.example/v1",
-    priority: 50,
+    priority: 200,
     supports_context_management: true,
   });
   config.api_keys[0].providers.push("context");
@@ -416,6 +416,7 @@ test("a native thread hint and subsequent WebSocket windows share the same conte
   expect(hint.status).toBe(200);
   await waitOnExecutionContext(hintContext);
   config.providers[0].supports_context_management = true;
+  config.providers[0].priority = 300;
   await putConfig(config);
   const { socket, proxy } = await openGatewaySocket();
   const frame = {
@@ -463,6 +464,56 @@ test("a native thread hint and subsequent WebSocket windows share the same conte
       "x-codex-turn-metadata"
     ],
   ).toContain("second");
+  const closed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await closed;
+});
+
+test("optional context metadata keeps the highest-priority ordinary WebSocket provider", async () => {
+  const config = gatewayConfig();
+  config.providers.push({
+    ...config.providers[0],
+    id: "context",
+    base_url: "https://context.example/v1",
+    priority: 50,
+    supports_context_management: true,
+  });
+  config.api_keys[0].providers.push("context");
+  await putConfig(config);
+  const upstream = upstreamPair();
+  const fetch = vi.fn(async (request: Request) => {
+    expect(new URL(request.url).hostname).toBe("primary.example");
+    return openUpstream(upstream);
+  });
+  vi.stubGlobal("fetch", fetch);
+  const session = crypto.randomUUID();
+  const { socket, proxy } = await openGatewaySocket();
+  const frame = {
+    type: "response.create",
+    model: "client-model",
+    client_metadata: {
+      session_id: session,
+      "x-codex-turn-metadata": JSON.stringify({
+        session_id: session,
+        history_ingest_requested: true,
+      }),
+    },
+  };
+  for (let index = 0; index < 2; index += 1) {
+    const forwarded = nextUpstreamMessage(upstream);
+    socket.send(JSON.stringify(frame));
+    expect(JSON.parse((await forwarded) as string)).toMatchObject({
+      model: "upstream-model",
+      client_metadata: frame.client_metadata,
+    });
+    await runInDurableObject(proxy, async (_instance, state) => {
+      const stored = await state.storage.get<{ context_management?: boolean }>(
+        "session",
+      );
+      expect(stored?.context_management).not.toBe(true);
+    });
+  }
+  expect(fetch).toHaveBeenCalledOnce();
   const closed = nextUpstreamClose(upstream);
   socket.close(1000, "done");
   await closed;

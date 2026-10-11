@@ -107,20 +107,6 @@ export async function createRuntime(
     }
   }
   const { db, redis } = resources;
-  try {
-    const legacyReplay = await db
-      .prepare(
-        "SELECT 1 AS present FROM object_storage WHERE namespace = 'affinity' AND object_name >= 'xai-replay:' AND object_name < 'xai-replay;' LIMIT 1",
-      )
-      .first();
-    if (legacyReplay)
-      throw new Error(
-        "SQL xAI replay requires migration before startup: stop all instances and run scripts/migrate-runtime-redis.mjs --apply --offline",
-      );
-  } catch (error) {
-    await resources.close();
-    throw error;
-  }
   const tasks = new TaskTracker(options.waitUntil);
   const antigravityHttp = createAntigravityHttpConnector(
     options.target === "vercel"

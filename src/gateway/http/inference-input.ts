@@ -226,7 +226,6 @@ export async function prepareInferenceInput(
       ...(upstreamPath === "alpha/search"
         ? ["supports_web_search" as const]
         : []),
-      ...(contextManagement ? ["supports_context_management" as const] : []),
     ],
   });
   const candidateProviders = route.targets.map((target) => target.provider.id);

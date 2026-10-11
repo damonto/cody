@@ -839,12 +839,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       {
         endpoint: "responses",
         transport: ProviderTransport.Websocket,
-        requiredCapabilities: [
-          "supports_websocket",
-          ...(contextManagement
-            ? ["supports_context_management" as const]
-            : []),
-        ],
+        requiredCapabilities: ["supports_websocket"],
       },
     );
     if (route.targets.length === 0) {
@@ -964,8 +959,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       const outcome = await this.connectUpstream(
         attempt,
         target,
-        attempt.contextManagement ||
-          selection.affinity?.context_management === true,
+        selection.affinity?.context_management === true,
       );
       if (outcome !== "switch") return;
     }
@@ -1131,12 +1125,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           {
             endpoint: "responses",
             transport: ProviderTransport.Websocket,
-            requiredCapabilities: [
-              "supports_websocket",
-              ...(contextManagement
-                ? ["supports_context_management" as const]
-                : []),
-            ],
+            requiredCapabilities: ["supports_websocket"],
           },
         );
         const boundSessionId =
@@ -1167,7 +1156,6 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           return;
         }
         const activeContextManagement =
-          contextManagement ||
           current.context_management === true ||
           targetValidation.contextManagement;
         if (

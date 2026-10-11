@@ -40,10 +40,10 @@ export async function handleContextManagement(
     client.api_key,
     ...upstreamSecretValues(config),
   ]);
-  const candidates = allowedProviderCandidates(config, client).filter(
-    ({ provider }) => providerSupportsEndpoint(provider, path),
-  );
-  if (candidates.length === 0) {
+  const candidates = allowedProviderCandidates(config, client);
+  if (
+    !candidates.some(({ provider }) => providerSupportsEndpoint(provider, path))
+  ) {
     return apiError(
       protocol,
       404,
@@ -87,10 +87,10 @@ export async function handleContextManagement(
   const selection = await selectAvailableTargetWithDetails(env, candidates, {
     contextManagement: true,
     requestedModel: "gpt-6-astra",
-    // The first hint precedes inference and carries no model. Bootstrap using
-    // Astra's effective routes; existing sessions retain their original target.
-    initialProviderIds: resolveModelRoute(config, client, "gpt-6-astra", {
-      requiredCapabilities: ["supports_context_management"],
+    // Hints carry no model. Elect ordinary bindings using Astra's effective
+    // routes; established context pins retain their original target.
+    modelProviderIds: resolveModelRoute(config, client, "gpt-6-astra", {
+      endpoint: "responses",
     }).targets.map(({ provider }) => provider.id),
     session: { clientId: client.id, sessionId },
   });
@@ -123,6 +123,15 @@ export async function handleContextManagement(
           : "context_session_unavailable",
         requestId,
       },
+    );
+  }
+
+  if (!providerSupportsEndpoint(target.provider, path)) {
+    return apiError(
+      protocol,
+      404,
+      "The selected inference provider does not support context management",
+      { code: "context_management_not_enabled", requestId },
     );
   }
 

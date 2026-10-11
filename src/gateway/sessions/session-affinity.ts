@@ -235,22 +235,22 @@ export class SessionAffinityCore {
   ): Promise<SessionAffinityResolution | undefined> {
     if (!options.roundRobinProviderIds?.length)
       return this.resolveBinding(candidates, preferred, registration, options);
-    // Only the new-binding path calls the shared rotation object. Serialize
+    // Only account election calls the shared rotation object. Serialize
     // that short RPC with the binding write so concurrent frames in the same
     // session cannot reserve multiple positions. No upstream I/O runs here.
     return this.ctx.blockConcurrencyWhile(async () => {
       const now = Date.now();
       const current = await currentBinding(this.ctx.storage, registration, now);
       const stored = active(current, now) ? current : undefined;
-      const eligible = options.contextManagement
-        ? candidates.filter(
-            (candidate) => candidate.supports_context_management,
-          )
-        : candidates;
+      const eligible =
+        options.modelProviderIds === undefined
+          ? candidates
+          : candidates.filter((candidate) =>
+              options.modelProviderIds?.includes(candidate.provider_id),
+            );
       if (
         stored &&
         (stored.context_management ||
-          options.contextManagement ||
           resolveStoredAffinity(stored, eligible, preferred).status ===
             SessionAffinityStatus.Hit)
       )
@@ -260,14 +260,8 @@ export class SessionAffinityCore {
           registration,
           options,
         );
-      const initial =
-        stored || options.initialProviderIds === undefined
-          ? eligible
-          : eligible.filter((candidate) =>
-              options.initialProviderIds?.includes(candidate.provider_id),
-            );
-      const selected = chooseAffinityCandidate(initial);
-      const provider = initial.find(
+      const selected = chooseAffinityCandidate(eligible);
+      const provider = eligible.find(
         (candidate) => candidate.provider_id === selected?.provider_id,
       );
       if (
@@ -301,21 +295,30 @@ export class SessionAffinityCore {
     registration: SessionAffinityRegistration,
     options: SessionAffinityResolveOptions,
   ): Promise<SessionAffinityResolution | undefined> {
-    const contextManagement = options.contextManagement === true;
-    const initialProviderIds = options.initialProviderIds;
-    if (contextManagement) {
-      candidates = candidates.filter(
-        (candidate) => candidate.supports_context_management,
-      );
-    }
-    const nextRegistration: SessionAffinityRegistration = {
+    const modelProviderIds = options.modelProviderIds;
+    const modelRegistration: SessionAffinityRegistration = {
       registry_name: registration.registry_name,
       session_id: registration.session_id,
-      model: contextManagement ? null : registration.model,
-      session_digest: contextManagement
-        ? await affinitySessionDigest(registration.session_id)
-        : registration.session_digest,
+      model: registration.model,
+      session_digest: registration.session_digest,
     };
+    const contextRegistration: SessionAffinityRegistration =
+      options.contextManagement === true
+        ? {
+            ...modelRegistration,
+            model: null,
+            session_digest: await affinitySessionDigest(
+              registration.session_id,
+            ),
+          }
+        : modelRegistration;
+    const shouldPinContext = (selection: AffinitySelection): boolean =>
+      options.contextManagement === true &&
+      candidates.some(
+        (candidate) =>
+          candidate.provider_id === selection.provider_id &&
+          candidate.supports_context_management,
+      );
     const result =
       await this.ctx.storage.transaction<AffinityTransactionResult>(
         async (transaction) => {
@@ -361,7 +364,7 @@ export class SessionAffinityCore {
           )
             await remove(legacy);
 
-          if (stored && (stored.context_management || contextManagement)) {
+          if (stored?.context_management) {
             const provider = candidates.find(
               (candidate) => candidate.provider_id === stored.provider_id,
             );
@@ -376,17 +379,8 @@ export class SessionAffinityCore {
                 status: SessionAffinityStatus.Blocked,
               });
             }
-            const promoting = !stored.context_management;
             const next: SessionAffinityRecord = {
               ...stored,
-              ...(promoting
-                ? {
-                    ...nextRegistration,
-                    binding_id: crypto.randomUUID(),
-                    generation: nextBindingGeneration(stored),
-                    index_registered: false,
-                  }
-                : {}),
               model: null,
               context_management: true,
               updated_at: now,
@@ -394,60 +388,50 @@ export class SessionAffinityCore {
             await transaction.put(AFFINITY_STORAGE_KEY, next);
             return finish({ ...next, status: SessionAffinityStatus.Hit });
           }
-          if (stored) {
-            const decision = resolveStoredAffinity(
-              stored,
-              candidates,
-              preferred,
-            );
-            if (!decision.selection) {
-              await remove(stored);
-              return finish(undefined);
-            }
-            const rebound = decision.status === SessionAffinityStatus.Rebound;
-            const next: SessionAffinityRecord = {
-              ...stored,
-              ...decision.selection,
-              updated_at: now,
-              ...(rebound
-                ? {
-                    binding_id: crypto.randomUUID(),
-                    created_at: now,
-                    generation: nextBindingGeneration(stored),
-                    index_registered: false,
-                  }
-                : {}),
-            };
-            if (rebound) obsolete.push(stored);
-            await transaction.put(storageKey(next), next);
-            return finish({ ...next, status: decision.status });
-          }
-          const initialCandidates =
-            initialProviderIds === undefined
+          const modelCandidates =
+            modelProviderIds === undefined
               ? candidates
               : candidates.filter((candidate) =>
-                  initialProviderIds.includes(candidate.provider_id),
+                  modelProviderIds.includes(candidate.provider_id),
                 );
-          const selected = affinitySelectionIsHighestPriority(
-            preferred,
-            initialCandidates,
-          )
-            ? preferred
-            : chooseAffinityCandidate(initialCandidates);
-          if (current) await remove(current);
-          if (!selected) return finish(undefined);
+          const decision = stored
+            ? resolveStoredAffinity(stored, modelCandidates, preferred)
+            : {
+                selection: affinitySelectionIsHighestPriority(
+                  preferred,
+                  modelCandidates,
+                )
+                  ? preferred
+                  : chooseAffinityCandidate(modelCandidates),
+                status: SessionAffinityStatus.Created,
+              };
+          if (!decision.selection) {
+            if (current) await remove(current);
+            return finish(undefined);
+          }
+          const contextManagement = shouldPinContext(decision.selection);
+          const rebound = decision.status === SessionAffinityStatus.Rebound;
+          const changed = !stored || rebound || contextManagement;
           const next: SessionAffinityRecord = {
-            ...selected,
-            ...nextRegistration,
+            ...stored,
+            ...decision.selection,
+            ...(contextManagement ? contextRegistration : modelRegistration),
             updated_at: now,
-            binding_id: crypto.randomUUID(),
-            created_at: now,
-            generation: nextBindingGeneration(current),
-            index_registered: false,
+            binding_id:
+              stored && !changed ? stored.binding_id : crypto.randomUUID(),
+            created_at: stored && !rebound ? stored.created_at : now,
+            generation:
+              stored && !changed
+                ? stored.generation
+                : nextBindingGeneration(current),
+            index_registered:
+              stored !== undefined && !changed && stored.index_registered,
             ...(contextManagement ? { context_management: true } : {}),
           };
+          if (current && !stored) await remove(current);
+          if (stored && rebound && !contextManagement) obsolete.push(stored);
           await transaction.put(storageKey(next), next);
-          return finish({ ...next, status: SessionAffinityStatus.Created });
+          return finish({ ...next, status: decision.status });
         },
       );
     this.scheduleIndexSync(result.obsolete, result.resolution);

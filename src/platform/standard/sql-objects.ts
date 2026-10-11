@@ -187,12 +187,20 @@ export class SqlObjectBackend implements ObjectBackend {
     namespace: string,
     now: number,
     limit: number,
+    excludedNamePrefix?: string,
   ): Promise<string[]> {
+    const conditions = ["namespace = ?", "scheduled_at <= ?"];
+    const values: unknown[] = [namespace, Math.floor(now)];
+    if (excludedNamePrefix !== undefined) {
+      // Filter before LIMIT so retired objects cannot starve active alarms.
+      conditions.push("(object_name < ? OR object_name >= ?)");
+      values.push(excludedNamePrefix, `${excludedNamePrefix}${PREFIX_END}`);
+    }
     const { results } = await this.db
       .prepare(
-        "SELECT object_name FROM object_alarms WHERE namespace = ? AND scheduled_at <= ? ORDER BY scheduled_at LIMIT ?",
+        `SELECT object_name FROM object_alarms WHERE ${conditions.join(" AND ")} ORDER BY scheduled_at LIMIT ?`,
       )
-      .bind(namespace, Math.floor(now), limit)
+      .bind(...values, limit)
       .all<{ object_name: string }>();
     return results.map((row) => row.object_name);
   }

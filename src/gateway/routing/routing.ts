@@ -107,10 +107,12 @@ export interface ProviderSelectionOptions {
   scope?: HealthScope;
   skipXaiQuota?: boolean;
   skipClaudeQuota?: boolean;
+  /** Pin history/notes only when the selected provider supports them. */
   contextManagement?: boolean;
   /** Client-facing model, including aliases; omitted for model-less calls. */
   requestedModel?: string;
-  initialProviderIds?: readonly string[];
+  /** Model eligibility for ordinary bindings; established context pins retain their owner. */
+  modelProviderIds?: readonly string[];
   /** Credentials this logical request already tried, keyed by `credentialKey`. */
   excludedCredentials?: ReadonlySet<string>;
   session?: {
@@ -218,7 +220,8 @@ function sortRoutedProviders<T extends RoutedProvider>(
   );
 }
 
-function configuredModelRoute(
+/** Resolve configured eligibility without choosing request-specific model variants. */
+export function configuredModelRoute(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestedModel: string,
@@ -592,9 +595,7 @@ export async function selectAvailableTargetWithDetails(
   const contextManagement = options.contextManagement === true;
   const evaluated = await evaluateAvailability(
     env,
-    contextManagement
-      ? providers.filter(({ provider }) => provider.supports_context_management)
-      : providers,
+    providers,
     options.scope ?? HealthScope.Inference,
     options.upstreamModels,
   );
@@ -636,9 +637,9 @@ export async function selectAvailableTargetWithDetails(
           .filter(({ provider }) => usesRoundRobin(provider))
           .map(({ provider }) => provider.id),
         contextManagement,
-        ...(options.initialProviderIds === undefined
+        ...(options.modelProviderIds === undefined
           ? {}
-          : { initialProviderIds: options.initialProviderIds }),
+          : { modelProviderIds: options.modelProviderIds }),
       });
       if (!resolution) {
         throw new Error("session affinity returned no candidate");

@@ -122,8 +122,10 @@ export interface HealthObject {
 
 export interface SessionAffinityResolveOptions {
   roundRobinProviderIds?: readonly string[];
+  /** Optional history ingestion never overrides provider priority. */
   contextManagement?: boolean;
-  initialProviderIds?: readonly string[];
+  /** Model eligibility constrains ordinary bindings; established context pins retain their owner. */
+  modelProviderIds?: readonly string[];
 }
 
 export interface ClearedSessionAffinityBinding {

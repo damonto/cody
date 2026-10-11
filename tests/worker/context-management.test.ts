@@ -23,6 +23,7 @@ import { clearModelsCacheForTests } from "../../src/gateway/catalog/models.ts";
 import { CONTEXT_MANAGEMENT_PATHS } from "../../src/gateway/protocol.ts";
 import type { GatewayConfig } from "../../src/config/types.ts";
 import { aiGatewayProviderSchema } from "../../src/config/schema.ts";
+import { newCodexProvider } from "../helpers/native-provider-fixtures.ts";
 
 beforeAll(async () => {
   const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
@@ -120,6 +121,35 @@ function inferencePayload(sessionId: string, ingest = true) {
       }),
     },
   };
+}
+
+function priorityConfig(): GatewayConfig {
+  const settings = config();
+  const gateway = settings.providers[0];
+  gateway.supports_context_management = false;
+  const codex = {
+    ...newCodexProvider(),
+    disabled: false,
+    priority: 50,
+    supports_context_management: true,
+    models: ["upstream-astra"],
+    credentials: [
+      {
+        id: crypto.randomUUID(),
+        auth: { type: "oauth", account_ref: crypto.randomUUID() },
+        priority: 100,
+        disabled: false,
+      },
+    ],
+  };
+  return parseConfig({
+    ...settings,
+    providers: [gateway, codex],
+    api_keys: settings.api_keys.map((client) => ({
+      ...client,
+      providers: [gateway.id, codex.id],
+    })),
+  });
 }
 
 beforeEach(() => {
@@ -270,9 +300,80 @@ test("invalid identities and oversized native bodies are rejected before contact
   expect(fetch).not.toHaveBeenCalled();
 });
 
+test("history ingestion metadata keeps the higher-priority AI Gateway and ordinary affinity", async () => {
+  const settings = priorityConfig();
+  const session = crypto.randomUUID();
+  const captured: Request[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      captured.push(request);
+      return Response.json({ output: [] });
+    }),
+  );
+  const payload = inferencePayload(session);
+  expect((await call(settings, "/responses", payload)).status).toBe(200);
+  expect(new URL(captured[0].url).hostname).toBe("primary.example");
+  expect(await captured[0].json()).toMatchObject({
+    model: "upstream-astra",
+    client_metadata: payload.client_metadata,
+  });
+  const identity = await sessionAffinityIdentity(
+    settings.api_keys[0].id,
+    session,
+    "gpt-6-astra",
+  );
+  const stub = env.SESSION_AFFINITY.getByName(identity.object_name);
+  expect(await stub.getStatus(identity.session_digest)).toMatchObject({
+    provider_id: settings.providers[0].id,
+    model: "gpt-6-astra",
+  });
+  expect(await stub.getStatus()).toBeNull();
+  expect((await call(settings, "/responses", payload)).status).toBe(200);
+  expect(captured).toHaveLength(2);
+  expect(new URL(captured[1].url).hostname).toBe("primary.example");
+});
+
+for (const inferenceFirst of [false, true]) {
+  test(`history/notes ${inferenceFirst ? "after" : "before"} inference cannot pin a lower-priority Codex provider`, async () => {
+    const settings = priorityConfig();
+    const session = crypto.randomUUID();
+    const fetch = vi.fn(async (request: Request) => {
+      expect(new URL(request.url).hostname).toBe("primary.example");
+      return Response.json({ output: [] });
+    });
+    vi.stubGlobal("fetch", fetch);
+    if (inferenceFirst)
+      expect(
+        (await call(settings, "/responses", inferencePayload(session))).status,
+      ).toBe(200);
+    const hint = await call(
+      settings,
+      "/alpha/notes/v2/thread_hint",
+      toolPayload(session),
+    );
+    expect(hint.status).toBe(404);
+    expect(await hint.json()).toMatchObject({
+      error: { code: "context_management_not_enabled" },
+    });
+    expect(fetch).toHaveBeenCalledTimes(inferenceFirst ? 1 : 0);
+    expect(
+      (await call(settings, "/responses", inferencePayload(session))).status,
+    ).toBe(200);
+    const identity = await sessionAffinityIdentity(
+      settings.api_keys[0].id,
+      session,
+    );
+    expect(
+      await env.SESSION_AFFINITY.getByName(identity.object_name).getStatus(),
+    ).toBeNull();
+  });
+}
+
 test("a first thread hint pins subsequent inference and notes across priority changes and eviction", async () => {
   const settings = config();
   settings.providers[0].supports_context_management = false;
+  settings.providers[1].priority = 200;
   const session = crypto.randomUUID();
   const captured: Request[] = [];
   vi.stubGlobal(
@@ -298,6 +399,7 @@ test("a first thread hint pins subsequent inference and notes across priority ch
   });
   await evictDurableObject(stub);
   settings.providers[0].supports_context_management = true;
+  settings.providers[0].priority = 300;
   const credentialProvider = aiGatewayProviderSchema.parse(
     settings.providers[1],
   );
@@ -339,7 +441,7 @@ test("a first thread hint pins subsequent inference and notes across priority ch
   expect((await stub.getStatus())?.binding_id).toBe(original?.binding_id);
 });
 
-test("ordinary sessions retain their binding when enabling context management after credential rotation", async () => {
+test("context promotion applies provider priority after client credential rotation", async () => {
   const settings = config();
   for (const provider of settings.providers) {
     provider.supports_context_management = false;
@@ -384,13 +486,13 @@ test("ordinary sessions retain their binding when enabling context management af
     ).status,
   ).toBe(200);
   expect(await affinity.getStatus()).toMatchObject({
-    provider_id: original?.provider_id,
-    credential_id: original?.credential_id,
+    provider_id: settings.providers[1].id,
+    credential_id: settings.providers[1].credentials[0].id,
     model: null,
     context_management: true,
   });
   expect(await affinity.getStatus(identity.session_digest)).toBeNull();
-  expect(hosts).toEqual(["primary.example", "primary.example"]);
+  expect(hosts).toEqual(["primary.example", "secondary.example"]);
 });
 
 test("disabled bound credentials or capabilities never switch a context session to another target", async () => {
@@ -496,6 +598,48 @@ test("native bootstrap honors Astra route restrictions before selecting a provid
   expect(hosts).toEqual(["secondary.example", "secondary.example"]);
 });
 
+for (const restriction of ["model", "route"] as const) {
+  test(`context promotion keeps ${restriction} eligibility before provider priority`, async () => {
+    const settings = config();
+    settings.providers[0].supports_context_management = false;
+    const session = crypto.randomUUID();
+    const fetch = vi.fn(async () => Response.json({ output: [] }));
+    vi.stubGlobal("fetch", fetch);
+    expect(
+      (await call(settings, "/responses", inferencePayload(session, false)))
+        .status,
+    ).toBe(200);
+    settings.providers[1].priority = 200;
+    if (restriction === "model")
+      settings.providers[1].models = ["another-model"];
+    else
+      settings.model_routes["gpt-6-astra"].providers = [
+        settings.providers[0].id,
+      ];
+    const hint = await call(
+      settings,
+      "/alpha/notes/v2/thread_hint",
+      toolPayload(session),
+    );
+    expect(hint.status).toBe(404);
+    expect(await hint.json()).toMatchObject({
+      error: { code: "context_management_not_enabled" },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    const identity = await sessionAffinityIdentity(
+      settings.api_keys[0].id,
+      session,
+      "gpt-6-astra",
+    );
+    const stub = env.SESSION_AFFINITY.getByName(identity.object_name);
+    expect(await stub.getStatus()).toBeNull();
+    expect(await stub.getStatus(identity.session_digest)).toMatchObject({
+      provider_id: settings.providers[0].id,
+      model: "gpt-6-astra",
+    });
+  });
+}
+
 test("context inference rejects conflicting wire identities and requires a session", async () => {
   const settings = config();
   const fetch = vi.fn();
@@ -599,11 +743,13 @@ test("context bindings use the stable client id across credential rotation", asy
     }),
   );
   settings.providers[0].supports_context_management = false;
+  settings.providers[1].priority = 200;
   expect(
     (await call(settings, "/alpha/notes/v2/thread_hint", toolPayload(session)))
       .status,
   ).toBe(200);
   settings.providers[0].supports_context_management = true;
+  settings.providers[0].priority = 300;
   settings.api_keys[0].api_key = "rotated-client-secret";
   expect(
     (
@@ -842,6 +988,48 @@ test("astra catalog defaults follow accessible capable model routes without chan
   expect(restrictedBody.models[0].model_messages.token_budget.enabled).toBe(
     false,
   );
+});
+
+test("astra catalog context capability follows provider priority and route restrictions", async () => {
+  const settings = config();
+  settings.providers[0].supports_context_management = false;
+  settings.providers[1].credentials[0].priority = 999;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ data: [{ id: "upstream-astra" }] })),
+  );
+  for (const [priority, restricted, enabled] of [
+    [50, false, false],
+    [100, false, false],
+    [200, false, true],
+    [50, true, true],
+  ] as const) {
+    clearModelsCacheForTests();
+    settings.providers[1].priority = priority;
+    settings.model_routes["gpt-6-astra"] = {
+      model: "upstream-astra",
+      ...(restricted ? { providers: [settings.providers[1].id] } : {}),
+    };
+    const response = await call(settings, "/v1/models", undefined, {
+      "user-agent": "codex",
+    });
+    const body = await response.json<{
+      models: {
+        supports_experimental_context: boolean;
+        model_messages: {
+          token_budget: {
+            enabled: boolean;
+            use_history_notes_extension: boolean;
+          };
+        };
+      }[];
+    }>();
+    expect(body.models[0].supports_experimental_context).toBe(enabled);
+    expect(body.models[0].model_messages.token_budget).toMatchObject({
+      enabled,
+      use_history_notes_extension: enabled,
+    });
+  }
 });
 
 test("HTTP model switches and aliases retain independent bindings across client key rotation", async () => {

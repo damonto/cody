@@ -8,12 +8,7 @@ import {
 import { MemoryRedis } from "../src/platform/standard/redis.ts";
 import { createRuntime } from "../src/platform/standard/runtime.ts";
 import { SqlObjectBackend } from "../src/platform/standard/sql-objects.ts";
-import {
-  CachedSqlObjectBackend,
-  objectCacheKey,
-} from "../src/platform/standard/cached-objects.ts";
-import { RedisObjectLocks } from "../src/platform/standard/objects.ts";
-import { migrateRuntimeRedis } from "../scripts/migrate-runtime-redis.mjs";
+import { CachedSqlObjectBackend } from "../src/platform/standard/cached-objects.ts";
 import { AccountDecodeCache } from "../src/platform/standard/account-cache.ts";
 import { encryptConfig } from "../src/control/crypto.ts";
 import { storedSchema, emptyQuota } from "../src/providers/oauth/state.ts";
@@ -351,326 +346,123 @@ test("xAI replay lives entirely in Redis and fences superseded turns", async (t)
   assert.equal(f.queries.length, 0);
 });
 
-async function seedReplay(sql, name, expires = Date.now() + 600_000) {
-  const entries = [
-    [
-      "xai_replay",
-      JSON.stringify({ version: crypto.randomUUID(), expires, chunks: 1 }),
-    ],
-    ["xai_replay:0", JSON.stringify("ciphertext")],
-  ];
-  const scoped = await sql.scope("affinity", name);
-  await scoped.commit("affinity", name, {
-    puts: entries,
-    deletes: [],
-    alarm: expires,
-  });
-  return entries;
-}
-
-test("startup refuses unmigrated replay instead of silently starting an empty Redis session", async (t) => {
+test("Redis replay expires without SQL recovery and rejects expired turns", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
   const f = await fixture(t);
-  await seedReplay(f.sql, "xai-replay:startup");
-  await assert.rejects(f.open(), /requires migration before startup/);
-  await migrateRuntimeRedis({
-    db: f.raw,
-    redis: f.redis,
-    apply: true,
-    offline: true,
-  });
-  const runtime = await f.open();
-  assert.equal(
-    (
-      await runtime.bindings.SESSION_AFFINITY.getByName(
-        "xai-replay:startup",
-      ).beginXaiReplay()
-    ).value,
-    "ciphertext",
-  );
-});
-
-test("migration dry run is read-only; apply verifies replay and preserves durable records", async (t) => {
-  const f = await fixture(t);
-  const runtime = await f.open();
-  await runtime.bindings.HEALTH.getByName("persist").recordFailure();
-  await runtime.tasks.drain();
-  await seedReplay(f.sql, "xai-replay:live");
-  await seedReplay(f.sql, "xai-replay:expired", Date.now() - 1);
-  await f.sql.scope("health", "empty");
-  const before = await f.raw
-    .prepare("SELECT * FROM object_versions ORDER BY namespace, object_name")
-    .all();
-  const args = { db: f.raw, redis: f.redis };
-  const preview = await migrateRuntimeRedis(args);
-  assert.equal(preview.replay_objects, 1);
-  assert.equal(preview.expired_replay_objects, 1);
-  assert.deepEqual(
-    await f.raw
-      .prepare("SELECT * FROM object_versions ORDER BY namespace, object_name")
-      .all(),
-    before,
-  );
-  await assert.rejects(
-    migrateRuntimeRedis({ ...args, apply: true }),
-    /offline/,
-  );
-  await migrateRuntimeRedis({ ...args, apply: true, offline: true });
-  assert.equal((await f.sql.list("affinity", "xai-replay:live", {})).length, 0);
-  assert.equal((await f.sql.list("health", "persist", {})).length, 1);
-  assert.equal(await f.sql.getAlarm("affinity", "xai-replay:expired"), null);
-  assert.equal(
-    (
-      await runtime.bindings.SESSION_AFFINITY.getByName(
-        "xai-replay:live",
-      ).beginXaiReplay()
-    ).value,
-    "ciphertext",
-  );
-  const rerun = await migrateRuntimeRedis({
-    ...args,
-    apply: true,
-    offline: true,
-  });
-  assert.equal(rerun.replay_objects, 0);
-});
-
-test("migration refuses a conflicting Redis replay without deleting SQL", async (t) => {
-  const f = await fixture(t);
-  const entries = await seedReplay(f.sql, "xai-replay:conflict");
-  await f.redis.hset("cody:o:affinity:xai-replay:conflict", {
-    unexpected: "value",
-  });
-  await assert.rejects(
-    migrateRuntimeRedis({
-      db: f.raw,
-      redis: f.redis,
-      apply: true,
-      offline: true,
-    }),
-    /differs/,
-  );
-  assert.deepEqual(
-    await f.sql.list("affinity", "xai-replay:conflict", {}),
-    entries,
-  );
-});
-
-test("migration can resume after a verified copy but failed SQL cleanup", async (t) => {
-  const f = await fixture(t);
-  const entries = await seedReplay(f.sql, "xai-replay:resume");
-  const original = f.raw.batch.bind(f.raw);
-  let fail = true;
-  f.raw.batch = async (statements) => {
-    if (
-      fail &&
-      statements.some((statement) =>
-        statement.sql.startsWith("DELETE FROM object_storage"),
-      )
-    ) {
-      fail = false;
-      throw new Error("SQL unavailable after Redis verification");
-    }
-    return original(statements);
-  };
-  const args = { db: f.raw, redis: f.redis, apply: true, offline: true };
-  await assert.rejects(migrateRuntimeRedis(args), /SQL unavailable/);
-  assert.deepEqual(
-    await f.sql.list("affinity", "xai-replay:resume", {}),
-    entries,
-  );
-  await migrateRuntimeRedis(args);
-  assert.deepEqual(await f.sql.list("affinity", "xai-replay:resume", {}), []);
-});
-
-test("migration cleans expired Redis replay copies and alarm remnants before SQL deletion", async (t) => {
-  const f = await fixture(t);
-  for (const retainedHash of [false, true]) {
-    const name = `xai-replay:expired-${retainedHash}`;
-    const expires = Date.now() - 1;
-    const entries = await seedReplay(f.sql, name, expires);
-    if (retainedHash)
-      await f.redis.hset(
-        `cody:o:affinity:${name}`,
-        Object.fromEntries(entries),
-      );
-    await f.redis.zadd("cody:a:affinity", expires, name);
-  }
-  const result = await migrateRuntimeRedis({
-    db: f.raw,
-    redis: f.redis,
-    apply: true,
-    offline: true,
-  });
-  assert.equal(result.expired_replay_objects, 2);
-  for (const retainedHash of [false, true]) {
-    const name = `xai-replay:expired-${retainedHash}`;
-    assert.deepEqual(await f.sql.list("affinity", name, {}), []);
-    assert.deepEqual(await f.redis.hgetall(`cody:o:affinity:${name}`), {});
-    assert.equal(await f.redis.zscore("cody:a:affinity", name), null);
-  }
-});
-
-test("migration rejects oversized Redis replay before reading its contents", async (t) => {
-  const f = await fixture(t);
-  const name = "xai-replay:oversized";
-  const entries = await seedReplay(f.sql, name);
-  await f.redis.hset(
-    `cody:o:affinity:${name}`,
-    Object.fromEntries(
-      Array.from({ length: 66 }, (_, index) => [
-        `unexpected:${index}`,
-        "value",
-      ]),
-    ),
-  );
-  t.mock.method(f.redis, "hgetall", async () => {
-    assert.fail("Oversized replay must not be loaded into memory");
-  });
-  await assert.rejects(
-    migrateRuntimeRedis({
-      db: f.raw,
-      redis: f.redis,
-      apply: true,
-      offline: true,
-    }),
-    /inventory differs/,
-  );
-  assert.deepEqual(await f.sql.list("affinity", name, {}), entries);
+  const first = await f.open();
+  const second = await f.open();
+  const name = "xai-replay:expiring";
+  const replay = first.bindings.SESSION_AFFINITY.getByName(name);
+  f.queries.length = 0;
+  const turn = await replay.beginXaiReplay();
+  assert.equal(await replay.commitXaiReplay(turn.version, "ciphertext"), true);
+  await first.tasks.drain();
+  assert.ok(await f.redis.hlen(`cody:o:affinity:${name}`));
+  t.mock.timers.setTime(now + 3_600_001);
+  assert.equal(await f.redis.hlen(`cody:o:affinity:${name}`), 0);
+  assert.equal(await replay.commitXaiReplay(turn.version, "obsolete"), false);
+  const fresh =
+    await second.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay();
+  assert.equal(fresh.value, null);
+  assert.notEqual(fresh.version, turn.version);
+  await first.tasks.drain();
+  await second.tasks.drain();
+  assert.equal(f.queries.length, 0);
+  assert.deepEqual(await f.sql.list("affinity", name, {}), []);
 });
 
 for (const [dialect, openDatabase] of Object.entries({
+  sqlite: () => createSqliteDatabase(":memory:"),
   libsql: () => libsqlDatabase(createClient({ url: ":memory:" })),
   postgres: () => {
     const pg = new PGlite();
     return postgresDatabase(pgliteQueryable(pg), () => pg.close());
   },
 })) {
-  test(`${dialect}: Redis migration preserves durable rows and removes only verified replay`, async (t) => {
+  test(`${dialect}: Redis replay never restores SQL-only rows or schedules their alarms`, async (t) => {
     const f = await fixture(t, new MemoryRedis(), openDatabase);
-    await seedReplay(f.sql, "xai-replay:portable");
-    await f.sql.scope("health", "empty-portable");
-    const health = await f.sql.scope("health", "portable");
-    await health.commit("health", "portable", {
-      puts: [
-        [
-          "health",
-          JSON.stringify({
-            failures: 1,
-            failure_window_started_at: Date.now(),
-            cooling_until: null,
-          }),
-        ],
+    const name = "xai-replay:sql-only";
+    const sql = await f.sql.scope("affinity", name);
+    const entries = [
+      [
+        "xai_replay",
+        JSON.stringify({
+          version: crypto.randomUUID(),
+          expires: Date.now() + 600_000,
+          chunks: 1,
+        }),
       ],
+      ["xai_replay:0", JSON.stringify("sql-only-ciphertext")],
+    ];
+    await sql.commit("affinity", name, {
+      puts: entries,
       deletes: [],
+      alarm: Date.now() - 1000,
     });
-    const args = { db: f.raw, redis: f.redis };
-    assert.equal((await migrateRuntimeRedis(args)).replay_objects, 1);
-    const result = await migrateRuntimeRedis({
-      ...args,
-      apply: true,
-      offline: true,
+    const durable = await f.sql.scope("affinity", "durable");
+    await durable.commit("affinity", "durable", {
+      puts: [],
+      deletes: [],
+      alarm: Date.now() - 1,
     });
-    assert.equal(result.replay_objects, 1);
-    assert.equal(result.empty_objects, 1);
-    assert.equal((await f.sql.list("health", "portable", {})).length, 1);
+    const runtime = await f.open();
+    f.queries.length = 0;
     assert.equal(
-      (await f.sql.list("affinity", "xai-replay:portable", {})).length,
-      0,
+      (await runtime.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay())
+        .value,
+      null,
     );
+    await runtime.tasks.drain();
+    assert.equal(f.queries.length, 0);
+    const backend = new CachedSqlObjectBackend(f.raw, f.redis);
+    assert.deepEqual(await backend.dueAlarms("affinity", Date.now(), 1), [
+      "durable",
+    ]);
+    assert.deepEqual(await f.sql.list("affinity", name, {}), entries);
   });
 
-  test(`${dialect}: migration retains a SQL object that changes before cleanup`, async (t) => {
+  test(`${dialect}: Redis eviction preserves durable health and context bindings`, async (t) => {
     const f = await fixture(t, new MemoryRedis(), openDatabase);
-    const name = "xai-replay:changed";
-    await seedReplay(f.sql, name);
-    const batch = f.raw.batch.bind(f.raw);
-    let replacement;
-    f.raw.batch = async (statements) => {
-      if (
-        !replacement &&
-        statements.some((statement) =>
-          statement.sql.startsWith("DELETE FROM object_storage"),
-        )
-      ) {
-        replacement = await seedReplay(f.sql, name);
-      }
-      return batch(statements);
-    };
-    await assert.rejects(
-      migrateRuntimeRedis({
-        db: f.raw,
-        redis: f.redis,
-        apply: true,
-        offline: true,
-      }),
-      /SQL object changed/,
+    const first = await f.open();
+    const managed = candidates.map((candidate) => ({
+      ...candidate,
+      supports_context_management: true,
+    }));
+    await first.bindings.HEALTH.getByName("portable").recordFailure();
+    const binding = await first.bindings.SESSION_AFFINITY.getByName(
+      "portable",
+    ).resolve(managed, undefined, registration, { contextManagement: true });
+    await first.tasks.drain();
+    const freshRedis = new MemoryRedis();
+    const recovered = await f.open(freshRedis);
+    assert.equal(
+      (await recovered.bindings.HEALTH.getByName("portable").getStatus())
+        .failures,
+      1,
     );
-    assert.deepEqual(await f.sql.list("affinity", name, {}), replacement);
-    assert.notEqual(await f.sql.getAlarm("affinity", name), null);
+    const pin = await recovered.bindings.SESSION_AFFINITY.getByName(
+      "portable",
+    ).resolve(managed, undefined, registration);
+    assert.equal(pin.binding_id, binding.binding_id);
+    assert.equal(pin.context_management, true);
+    assert.equal(pin.model, null);
+    await recovered.tasks.drain();
+    const reader = await f.open(freshRedis);
+    f.queries.length = 0;
+    assert.equal(
+      (await reader.bindings.HEALTH.getByName("portable").getStatus()).failures,
+      1,
+    );
+    assert.equal(
+      (await reader.bindings.SESSION_AFFINITY.getByName("portable").getStatus())
+        .binding_id,
+      binding.binding_id,
+    );
+    await reader.tasks.drain();
+    assert.equal(f.queries.length, 0);
   });
 }
-
-test("warming a durable object replaces old cached revisions without changing its state", async (t) => {
-  const f = await fixture(t);
-  const runtime = await f.open();
-  await runtime.bindings.HEALTH.getByName("warm").recordFailure();
-  await runtime.tasks.drain();
-  const locks = new RedisObjectLocks(f.redis);
-  const lock = await locks.acquire("health:warm");
-  const backend = new CachedSqlObjectBackend(f.raw, f.redis);
-  const before = await f.sql.get("health", "warm", "health");
-  try {
-    assert.equal(await backend.warm("health", "warm", lock), 1);
-  } finally {
-    await lock.release();
-  }
-  assert.equal(await f.sql.get("health", "warm", "health"), before);
-  assert.ok(await f.redis.get(objectCacheKey("cody", "health", "warm")));
-  f.queries.length = 0;
-  assert.equal(
-    (await runtime.bindings.HEALTH.getByName("warm").getStatus()).failures,
-    1,
-  );
-  assert.equal(f.queries.length, 0);
-});
-
-test("large durable warmups refresh the cache revision across page boundaries", async (t) => {
-  let now = Date.now();
-  const started = now;
-  const f = await fixture(t, new MemoryRedis(() => now));
-  const name = "large-index";
-  const entries = Array.from({ length: 300 }, (_, index) => [
-    `entry:${String(index).padStart(3, "0")}`,
-    JSON.stringify(index),
-  ]);
-  const sql = await f.sql.scope("session-index", name);
-  await sql.commit("session-index", name, { puts: entries, deletes: [] });
-  // Keep the lease held while simulating slow SQL pages without wall-clock waits.
-  const condition = { key: "test:warmup-lock", value: "owner" };
-  await f.redis.set(condition.key, condition.value);
-  const lock = {
-    condition,
-    assertHeld: async () =>
-      assert.equal(await f.redis.get(condition.key), condition.value),
-    release: async () => {
-      await f.redis.del(condition.key);
-    },
-  };
-  t.after(() => lock.release());
-  const prepare = f.db.prepare.bind(f.db);
-  f.db.prepare = (query) => {
-    if (query.startsWith("SELECT item_key")) now += 120_000;
-    return prepare(query);
-  };
-  const cache = new CachedSqlObjectBackend(f.db, f.redis);
-  assert.equal(await cache.warm("session-index", name, lock), 300);
-  assert.ok(now - started > 5 * 60_000);
-  f.queries.length = 0;
-  const scoped = await cache.scope("session-index", name, lock);
-  for (const [key, value] of [entries[0], entries.at(-1)])
-    assert.equal(await scoped.get("session-index", name, key), value);
-  assert.equal(f.queries.length, 0);
-});
 
 test("account decode cache validates ciphertext and never shares mutable snapshots", async () => {
   const cache = new AccountDecodeCache(KEY);
@@ -705,7 +497,7 @@ test("account decode cache validates ciphertext and never shares mutable snapsho
 });
 
 test(
-  "real Redis executes guarded cache, replay and migration operations",
+  "real Redis executes guarded cache and replay operations",
   { skip: !process.env.CODY_TEST_REDIS_SOCKET },
   async (t) => {
     const redis = await connectRedis(process.env.CODY_TEST_REDIS_SOCKET);
@@ -722,10 +514,13 @@ test(
     await Promise.all(Array.from({ length: 9 }, () => health.recordFailure()));
     assert.ok((await health.getStatus()).cooling_until > Date.now());
     const name = `xai-replay:${id}`;
-    await seedReplay(f.sql, name);
-    await runtime.tasks.drain();
-    await migrateRuntimeRedis({ db: f.raw, redis, apply: true, offline: true });
+    const replay = runtime.bindings.SESSION_AFFINITY.getByName(name);
     f.queries.length = 0;
+    const turn = await replay.beginXaiReplay();
+    assert.equal(
+      await replay.commitXaiReplay(turn.version, "ciphertext"),
+      true,
+    );
     assert.equal(
       (await runtime.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay())
         .value,

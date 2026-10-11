@@ -60,6 +60,7 @@ import type { ProxyFailure } from "../proxies/errors.ts";
 import { upstreamSecretValues } from "../routing/credentials.ts";
 import {
   allowedProviderCandidates,
+  configuredModelRoute,
   modelRoutesByProvider,
   selectAvailableCatalogTargetsWithDetails,
   type ProviderTarget,
@@ -561,6 +562,21 @@ function codexModelIds(
   return ids;
 }
 
+/** Optional history/notes follow the preferred inference provider for each model. */
+function contextManagementModelIds(
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+  modelIds: Set<string>,
+): Set<string> {
+  return new Set(
+    [...modelIds].filter(
+      (id) =>
+        configuredModelRoute(config, client, id, { endpoint: "responses" })
+          .targets[0]?.provider.supports_context_management,
+    ),
+  );
+}
+
 /** Gate a Codex ModelInfo's history/notes extension on the provider capability. */
 function withContextManagement(
   model: JsonObject,
@@ -1059,6 +1075,8 @@ async function collectModels(
     results,
     routesByProvider,
     format,
+    config,
+    client,
   );
   return {
     payload,
@@ -1071,19 +1089,16 @@ function modelsPayload(
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
   format: ModelsFormat,
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
 ): JsonObject {
   switch (format) {
-    case "codex":
+    case "codex": {
+      const modelIds = codexModelIds(standardModels, results, routesByProvider);
       return {
         models: aggregateCodexModels(
-          codexModelIds(standardModels, results, routesByProvider),
-          codexModelIds(
-            [],
-            results.filter(
-              ({ provider }) => provider.supports_context_management,
-            ),
-            routesByProvider,
-          ),
+          modelIds,
+          contextManagementModelIds(config, client, modelIds),
           aggregateClientModels(
             results.filter(
               ({ provider }) => provider.type === ProviderType.Antigravity,
@@ -1098,6 +1113,7 @@ function modelsPayload(
           ),
         ),
       };
+    }
     case "anthropic": {
       const data = standardModels.map(anthropicModelInfo);
       return {
