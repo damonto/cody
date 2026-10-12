@@ -1,4 +1,5 @@
-import { MAX_OBSERVED_JSON_CHARS, SseObserver } from "./stream.ts";
+import { SseObserver } from "./stream.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
 import type {
   ResponseFormat,
   ResponseObservationFormat,
@@ -15,7 +16,7 @@ interface ResponseObserverOptions {
     format: ResponseFormat,
   ) => void;
   readonly onIssue: (issue: string, format: ResponseFormat | undefined) => void;
-  readonly maxPayloadChars?: number;
+  readonly maxPayloadBytes?: number;
   readonly onDone?: () => void;
   readonly onFirstData?: () => void;
   readonly shouldParse?: (data: string, event: string) => boolean;
@@ -31,11 +32,12 @@ type ObserverState =
 export class ResponseObserver {
   private readonly decoder = new TextDecoder();
   private readonly limit: number;
+  private jsonBytes = 0;
   private state: ObserverState;
   private resolvedFormat: ResponseFormat | undefined;
 
   constructor(private readonly options: ResponseObserverOptions) {
-    this.limit = options.maxPayloadChars ?? MAX_OBSERVED_JSON_CHARS;
+    this.limit = options.maxPayloadBytes ?? MAX_BUFFERED_PAYLOAD_BYTES;
     if (!Number.isSafeInteger(this.limit) || this.limit <= 0)
       throw new RangeError(
         "Response observation limit must be a positive integer",
@@ -68,7 +70,7 @@ export class ResponseObserver {
       kind: "sse",
       observer: new SseObserver({
         ...this.options,
-        maxEventChars: this.limit,
+        maxEventBytes: this.limit,
         onEvent: (value, event) => this.options.onEvent(value, event, "sse"),
         onIssue: (issue) => this.options.onIssue(issue, "sse"),
       }),
@@ -104,15 +106,23 @@ export class ResponseObserver {
     }
     if (state.kind === "sse") state.observer.push(text);
     else if (state.kind === "json") {
-      if (state.body.length + text.length > this.limit)
-        this.fail("json_body_too_large");
+      if (this.jsonBytes > this.limit) this.fail("json_body_too_large");
       else state.body += text;
     }
   }
 
   push(bytes: Uint8Array): void {
-    if (this.state.kind !== "closed")
-      this.text(this.decoder.decode(bytes, { stream: true }));
+    if (this.state.kind === "closed") return;
+    if (this.state.kind !== "sse") {
+      this.jsonBytes += bytes.byteLength;
+      // Known JSON can be rejected before decoding. Auto detection checks the
+      // same byte count after resolving the format, including its prefix.
+      if (this.state.kind === "json" && this.jsonBytes > this.limit) {
+        this.fail("json_body_too_large");
+        return;
+      }
+    }
+    this.text(this.decoder.decode(bytes, { stream: true }));
   }
 
   end(): void {

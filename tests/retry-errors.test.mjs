@@ -5,7 +5,7 @@ import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.t
 import { inspectRetryError } from "../src/gateway/http/retry-errors.ts";
 import { retryResponseUsage } from "../src/telemetry/retry.ts";
 import { RequestMeter } from "../src/telemetry/meter.ts";
-import { MAX_RETRY_RESPONSE_BYTES } from "../src/shared/response-limits.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../src/shared/payload-limits.ts";
 
 const policy = {
   status_codes: [429],
@@ -133,7 +133,11 @@ test("large Responses metadata allows error-code retries and retains discarded u
   const metadata = {
     instructions: "private instructions ".repeat(5000),
     tools: [
-      { type: "function", name: "example", description: "x".repeat(80 * 1024) },
+      {
+        type: "function",
+        name: "example",
+        description: "x".repeat(3 * 1024 * 1024),
+      },
     ],
   };
   const failure = {
@@ -695,7 +699,10 @@ test("WebSocket handshakes and unknown content types bypass body inspection", as
 
 test("size boundary replays every byte and never classifies later errors", async () => {
   const body =
-    ":" + "x".repeat(MAX_RETRY_RESPONSE_BYTES + 1024) + "\n\n" + event(failed);
+    ":" +
+    "x".repeat(MAX_BUFFERED_PAYLOAD_BYTES + 1024) +
+    "\n\n" +
+    event(failed);
   const inspected = await inspectRetryError(
     sse(body),
     new AbortController().signal,
@@ -709,7 +716,10 @@ test("size boundary replays every byte and never classifies later errors", async
 
 test("discarded usage remains bounded when a response exceeds the retry prefix limit", async () => {
   const body =
-    ":" + "x".repeat(MAX_RETRY_RESPONSE_BYTES + 1024) + "\n\n" + event(failed);
+    ":" +
+    "x".repeat(MAX_BUFFERED_PAYLOAD_BYTES + 1024) +
+    "\n\n" +
+    event(failed);
   assert.equal(await retryResponseUsage(sse(body), "openai"), null);
 });
 

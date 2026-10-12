@@ -482,6 +482,25 @@ test("Claude model discovery accepts nullable metadata and preserves explicit ca
   );
 });
 
+test("Claude account JSON accepts 16 MiB and rejects larger bodies", async () => {
+  for (const extra of [0, 1]) {
+    const payload = JSON.stringify({ data: [], has_more: false });
+    const client = new ClaudeClient(
+      async () =>
+        new Response(
+          payload + " ".repeat(16 * 1024 * 1024 - payload.length + extra),
+        ),
+      new AbortController().signal,
+    );
+    if (extra)
+      await assert.rejects(
+        client.models("access"),
+        /body exceeds the 16777216-byte limit/,
+      );
+    else assert.deepEqual(parseModels(await client.models("access")), []);
+  }
+});
+
 test("Partial Claude refresh grants accept absent, null and empty optional fields", async () => {
   for (const refresh_token of [undefined, null, "", "rotated-refresh"]) {
     const client = new ClaudeClient(async () => {

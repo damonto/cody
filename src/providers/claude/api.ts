@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
 import {
   OAuthError,
   type AccountModel,
@@ -274,7 +275,7 @@ export class ClaudeClient {
       );
       const bytes = await readBodyWithinLimit(
         response.body,
-        2 * 1024 * 1024,
+        MAX_BUFFERED_PAYLOAD_BYTES,
         response.headers.get("content-length"),
         undefined,
         AbortSignal.any([this.signal, abort.signal]),

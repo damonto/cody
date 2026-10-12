@@ -28,7 +28,7 @@ export async function inspectAntigravityResponse(
   let streamLimit: AccountLimit | undefined;
   let json = "";
   const observer = new SseObserver({
-    maxEventChars: MAX_PREFLIGHT_BYTES,
+    maxEventBytes: MAX_PREFLIGHT_BYTES,
     onIssue: () => {
       firstEventSeen = true;
     },

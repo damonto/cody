@@ -5,7 +5,7 @@ import type { NormalizedUsage } from "../billing/types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
 import { ResponseObserver } from "./response-observer.ts";
 import { responseFormat } from "../gateway/http/response-format.ts";
-import { MAX_RETRY_RESPONSE_BYTES } from "../shared/response-limits.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
 
 /** Inspect only a discarded retry response, with bounded size and wait time. */
 export async function retryResponseUsage(
@@ -53,7 +53,6 @@ export async function retryResponseUsage(
     onDone: () => {
       complete = true;
     },
-    maxPayloadChars: MAX_RETRY_RESPONSE_BYTES,
   });
   const timeout = setTimeout(() => {
     interrupted = true;
@@ -64,7 +63,7 @@ export async function retryResponseUsage(
       const item = await reader.read();
       if (item.done) break;
       bytes += item.value.byteLength;
-      if (bytes > MAX_RETRY_RESPONSE_BYTES) {
+      if (bytes > MAX_BUFFERED_PAYLOAD_BYTES) {
         interrupted = true;
         void reader.cancel().catch(() => {});
         break;

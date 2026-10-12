@@ -10,7 +10,7 @@ import {
   RETRY_EVENT_TYPE_PATTERN,
   type RetryDiagnostic,
 } from "../../shared/retry-diagnostic.ts";
-import { MAX_RETRY_RESPONSE_BYTES } from "../../shared/response-limits.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
 
 const RETRY_ERROR_INSPECTION_MS = 10_000;
 
@@ -218,7 +218,7 @@ export async function inspectRetryError(
   options: RetryErrorInspectionOptions = {},
 ): Promise<RetryErrorInspection> {
   const format = options.format ?? responseFormat(response);
-  const maxBytes = options.maxBytes ?? MAX_RETRY_RESPONSE_BYTES;
+  const maxBytes = options.maxBytes ?? MAX_BUFFERED_PAYLOAD_BYTES;
   if (
     !response.body ||
     !format ||
@@ -261,7 +261,7 @@ export async function inspectRetryError(
             : "invalid_envelope",
       ),
     onDone: () => stop("stream_ended"),
-    maxPayloadChars: maxBytes,
+    maxPayloadBytes: maxBytes,
   });
   const prefix = await inspectResponsePrefix(response, signal, {
     maxBytes,

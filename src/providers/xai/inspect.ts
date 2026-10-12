@@ -28,7 +28,7 @@ export async function inspectXaiResponse(
   let late: XaiLimit | undefined;
   let json = "";
   const observer = new SseObserver({
-    maxEventChars: 65536,
+    maxEventBytes: 65536,
     onIssue: () => {
       ready = true;
     },

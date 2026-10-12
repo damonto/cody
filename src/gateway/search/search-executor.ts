@@ -1,5 +1,6 @@
 import type { WebSearchProviderConfig } from "../../config/types.ts";
 import { errorMessage } from "../../shared/log.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
 import {
   BodyTooLargeError,
   discardBody,
@@ -13,8 +14,6 @@ import {
 import type { SearchFilters, SearchQuery } from "./search-request.ts";
 import { intersectDomains } from "./search-request.ts";
 
-export const MAX_SEARCH_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
-export const MAX_SEARCH_BATCH_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const SEARCH_PROVIDER_CONCURRENCY = 2;
 const SEARCH_PROVIDER_TIMEOUT_MS = 15_000;
 
@@ -131,15 +130,13 @@ async function fetchProvider(
     try {
       bytes = await readBodyWithinLimit(
         response.body,
-        MAX_SEARCH_PROVIDER_RESPONSE_BYTES,
+        MAX_BUFFERED_PAYLOAD_BYTES,
         response.headers.get("content-length"),
         (byteLength) => budget.consume(byteLength),
       );
     } catch (error) {
       if (error instanceof BodyTooLargeError) {
-        throw new ProviderResponseTooLargeError(
-          MAX_SEARCH_PROVIDER_RESPONSE_BYTES,
-        );
+        throw new ProviderResponseTooLargeError(MAX_BUFFERED_PAYLOAD_BYTES);
       }
       throw error;
     }
@@ -181,7 +178,7 @@ export async function executeSearchBatch(
 ): Promise<NormalizedSearchResult[]> {
   const batchController = new AbortController();
   const signal = AbortSignal.any([requestSignal, batchController.signal]);
-  const budget = new SearchBatchBudget(MAX_SEARCH_BATCH_RESPONSE_BYTES);
+  const budget = new SearchBatchBudget(MAX_BUFFERED_PAYLOAD_BYTES);
   const responses: NormalizedSearchResult[][] = [];
   let nextIndex = 0;
   let firstError: unknown;

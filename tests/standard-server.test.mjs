@@ -198,12 +198,16 @@ test(
           controller.close();
         },
       });
+    const revealBody = new TextEncoder().encode('{"version":1}');
     const revealed = await fetch(
       `${url}/console/api/clients/${saved.config.api_keys[0].id}/reveal`,
       {
         method: "POST",
         headers: { ...admin, "content-type": "application/json" },
-        body: chunked([new TextEncoder().encode('{"version":1}')]),
+        body: chunked([
+          revealBody,
+          new Uint8Array(16 * 1024 * 1024 - revealBody.byteLength).fill(0x20),
+        ]),
         duplex: "half",
       },
     );
@@ -212,12 +216,12 @@ test(
     const oversized = await fetch(`${url}/console/api/config`, {
       method: "PUT",
       headers: { ...admin, "content-type": "application/json" },
-      body: chunked([new Uint8Array(2 * 1024 * 1024), new Uint8Array(1)]),
+      body: chunked([new Uint8Array(16 * 1024 * 1024), new Uint8Array(1)]),
       duplex: "half",
     });
     assert.equal(oversized.status, 413);
     assert.deepEqual(await oversized.json(), {
-      error: "Request exceeds 2 MiB",
+      error: "Request exceeds 16 MiB",
     });
     assert.equal(
       (await fetch(`${url}/v1/responses`, { method: "POST", body: "{}" }))

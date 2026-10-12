@@ -452,6 +452,27 @@ test("xAI OAuth endpoint validation and device slow_down", async () => {
   assert.equal(result.tokens, null);
 });
 
+test("xAI account JSON accepts 16 MiB and rejects larger bodies", async () => {
+  for (const extra of [0, 1]) {
+    const payload = JSON.stringify({ error: "slow_down" });
+    const client = new XaiClient(
+      async () =>
+        new Response(
+          payload + " ".repeat(16 * 1024 * 1024 - payload.length + extra),
+          { status: 400 },
+        ),
+      new AbortController().signal,
+    );
+    const result = client.pollDevice({
+      token_endpoint: "https://auth.x.ai/token",
+      device_code: "d",
+    });
+    if (extra)
+      await assert.rejects(result, /body exceeds the 16777216-byte limit/);
+    else assert.deepEqual(await result, { tokens: null, slow: true });
+  }
+});
+
 test("xAI partial refresh preserves omitted fields and rejects identity changes", async () => {
   const jwt = (sub) =>
     `${btoa(JSON.stringify({ alg: "none" }))}.${btoa(JSON.stringify({ sub, iss: "https://auth.x.ai" }))}.signature`;

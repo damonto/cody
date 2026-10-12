@@ -14,6 +14,7 @@ Start with `src/config/schema.ts`, `src/control/resource-input.ts`, `src/admin/r
 - Configuration restoration keeps current secrets and never restores OAuth token/session state. No persisted drafts, manual publish, publisher object, KV config distribution, whole-config mutation or import/export endpoint.
 - The offline [instance transfer CLI](../data-transfer.md) is an operations exception: it copies authoritative tables and encrypted OAuth account state into a fresh instance with the same encryption key. It is not a console configuration workflow and does not create or change schema migrations.
 - Keep resource API schemas, runtime schema, compiler and tests consistent. Validate at API and snapshot boundaries; there is no generated JSON Schema or file-based configuration workflow.
+- Management request bodies use the shared 16 MiB buffered-payload budget in `src/shared/payload-limits.ts`; oversized bodies return 413. Keep the error message aligned with that limit. The compiled configuration's separate 1 MiB limit still applies.
 
 ## Current configuration shape
 

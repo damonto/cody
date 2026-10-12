@@ -3,11 +3,8 @@ import test from "node:test";
 
 import { handleConfiguredWebSearch } from "../src/gateway/search/search.ts";
 import { webSearchProviderFor } from "../src/gateway/search/providers/index.ts";
-import {
-  MAX_SEARCH_BATCH_RESPONSE_BYTES,
-  MAX_SEARCH_PROVIDER_RESPONSE_BYTES,
-  SEARCH_PROVIDER_CONCURRENCY,
-} from "../src/gateway/search/search-executor.ts";
+import { SEARCH_PROVIDER_CONCURRENCY } from "../src/gateway/search/search-executor.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../src/shared/payload-limits.ts";
 
 function fixture(mode) {
   return {
@@ -607,6 +604,27 @@ test("adapter limits provider query concurrency", async () => {
   assert.equal(maxActive, SEARCH_PROVIDER_CONCURRENCY);
 });
 
+test("adapter accepts a provider response at the shared 16 MiB limit", async () => {
+  const { config, client } = fixture("exa");
+  const originalFetch = globalThis.fetch;
+  const payload = '{"results":[]}';
+  globalThis.fetch = async () =>
+    new Response(payload + " ".repeat(16 * 1024 * 1024 - payload.length), {
+      headers: { "content-type": "application/json" },
+    });
+  try {
+    const response = await handleConfiguredWebSearch(
+      request({ search_query: [{ q: "docs" }] }),
+      config,
+      client,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).results, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("adapter rejects and cancels a response over the per-query budget", async () => {
   const { config, client } = fixture("tavily");
   const originalFetch = globalThis.fetch;
@@ -615,9 +633,7 @@ test("adapter rejects and cancels a response over the per-query budget", async (
     new Response(
       new ReadableStream({
         start(controller) {
-          controller.enqueue(
-            new Uint8Array(MAX_SEARCH_PROVIDER_RESPONSE_BYTES + 1),
-          );
+          controller.enqueue(new Uint8Array(MAX_BUFFERED_PAYLOAD_BYTES + 1));
         },
         cancel() {
           cancelled = true;
@@ -645,7 +661,7 @@ test("adapter enforces a total response budget across the query batch", async ()
   const { config, client } = fixture("exa");
   const originalFetch = globalThis.fetch;
   const content = "x".repeat(
-    Math.floor(MAX_SEARCH_BATCH_RESPONSE_BYTES / 4) + 64 * 1024,
+    Math.floor(MAX_BUFFERED_PAYLOAD_BYTES / 4) + 64 * 1024,
   );
   globalThis.fetch = async (input, init) => {
     const upstream =

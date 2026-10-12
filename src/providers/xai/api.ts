@@ -1,6 +1,7 @@
 import { decodeJwt } from "jose";
 import { z } from "zod";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import {
   OAuthError,
@@ -96,7 +97,7 @@ export class XaiClient {
       );
       const bytes = await readBodyWithinLimit(
         response.body,
-        2 * 1024 * 1024,
+        MAX_BUFFERED_PAYLOAD_BYTES,
         response.headers.get("content-length"),
         undefined,
         signal,

@@ -3,6 +3,7 @@ import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { readBodyWithinLimit } from "../gateway/http/body.ts";
 import { configureLogging } from "../shared/log.ts";
+import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
 import type { AdminContext } from "./context.ts";
 import { serveConsoleAsset } from "./assets.ts";
 import { adminError, adminSecurity, CONSOLE_CSP } from "./middleware.ts";
@@ -24,8 +25,6 @@ function isApiPath(path: string): boolean {
   return /\/api(?:\/|$)/.test(path);
 }
 
-const MAX_ADMIN_BODY_BYTES = 2 * 1024 * 1024;
-
 // Hono's bodyLimit rebuilds unsized bodies with `new Request(c.req.raw)`, which
 // undici rejects for @hono/node-server's lightweight requests (bodyless DELETEs
 // included), so buffer the body and rebuild the request from its parts.
@@ -34,7 +33,7 @@ const adminBodyLimit = createMiddleware<AdminContext>(async (c, next) => {
   if (!request.body) return next();
   const body = await readBodyWithinLimit(
     request.body,
-    MAX_ADMIN_BODY_BYTES,
+    MAX_BUFFERED_PAYLOAD_BYTES,
     request.headers.get("content-length"),
     undefined,
     request.signal,

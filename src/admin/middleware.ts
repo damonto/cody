@@ -55,7 +55,12 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
   if (error instanceof HTTPException)
     return context.json({ error: error.message }, error.status);
   if (error instanceof BodyTooLargeError)
-    return context.json({ error: "Request exceeds 2 MiB" }, 413);
+    return context.json(
+      {
+        error: `Request exceeds ${error.maxBytes / 1024 / 1024} MiB`,
+      },
+      413,
+    );
   if (error instanceof ZodError) {
     // Request validation is translated to HTTPException at the input boundary.
     // Remaining schema errors describe internal data; never log their input values.

@@ -413,6 +413,38 @@ test("malformed unrelated details do not hide a valid quota reason, and structur
   assert.equal(antigravityAccountLimit(capacity, headers, now), undefined);
 });
 
+test("Antigravity replay accepts envelopes above 2 MiB and retains the 16 MiB bound", async () => {
+  const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  const scope = {
+    client_id: "client",
+    provider_id: "antigravity",
+    account_ref: "a",
+    model: "gemini",
+  };
+  const part = {
+    text: "thought",
+    thought: true,
+    thoughtSignature: "a".repeat(2 * 1024 * 1024),
+  };
+  const envelope = await sealPart(part, "self", scope, key);
+  assert.ok(envelope.length > 2 * 1024 * 1024);
+  assert.ok(envelope.length < 16 * 1024 * 1024);
+  assert.deepEqual((await openPart(envelope, scope, key)).part, part);
+  await assert.rejects(
+    sealPart(
+      { ...part, thoughtSignature: "a".repeat(10 * 1024 * 1024) },
+      "self",
+      scope,
+      key,
+    ),
+    /exceeds the replay limit/,
+  );
+  await assert.rejects(
+    openPart(envelope.padEnd(16 * 1024 * 1024 + 1, "a"), scope, key),
+    /does not belong/,
+  );
+});
+
 test("trusted replay can move inside an account pool while client, model and provenance stay checked", async () => {
   const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   const source = {

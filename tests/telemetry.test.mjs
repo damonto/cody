@@ -753,7 +753,7 @@ test("SSE observation is bounded and recovers at the next event", () => {
   const observer = new SseObserver({
     onEvent: (value) => events.push(value),
     onIssue: (issue) => issues.push(issue),
-    maxEventChars: 40,
+    maxEventBytes: 40,
   });
   observer.push('data: "' + "x".repeat(100));
   observer.push('"\n\ndata: {"usage":1}\n\n');
@@ -772,7 +772,7 @@ test("SSE arrival is recorded once even when observation drops an oversized even
     const observer = new SseObserver({
       onEvent: () => {},
       onIssue: (issue) => issues.push(issue),
-      maxEventChars: 40,
+      maxEventBytes: 40,
       onFirstData: () => arrivals++,
     });
     for (const chunk of chunks) observer.push(chunk);
@@ -794,7 +794,7 @@ test("oversized first data is timed at the line boundary regardless of chunk spl
     const observer = new SseObserver({
       onEvent: () => {},
       onIssue: () => {},
-      maxEventChars: 40,
+      maxEventBytes: 40,
       onFirstData: () => arrivals.push(clock),
     });
     observer.push(prefix);
@@ -817,7 +817,7 @@ test("discarded data lines still distinguish DONE from response data at EOF", ()
     const observer = new SseObserver({
       onEvent: () => {},
       onIssue: () => {},
-      maxEventChars: 40,
+      maxEventBytes: 40,
       onFirstData: () => arrivals++,
     });
     for (const chunk of chunks) observer.push(chunk);
@@ -1243,6 +1243,60 @@ for (const transport of ["json", "sse", "websocket"]) {
     assert.equal(finished.usage.tokens.image_cache_write_tokens, 6);
     assert.equal(finished.billing.image_cache_write_nano, 60_000);
     assert.equal(finished.billing.status, "complete");
+  });
+}
+
+for (const endpoint of ["images/generations", "images/edits"]) {
+  test(`${endpoint} meters inline images beyond the former 2 MiB limit without changing the response`, async () => {
+    const events = [];
+    const meter = new RequestMeter({
+      requestId: "large-image",
+      endpoint,
+      method: "POST",
+      protocol: "openai",
+      sink: { send: async (event) => events.push(event) },
+    });
+    const usage = {
+      input_tokens: 10,
+      output_tokens: 20,
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+    };
+    const body = JSON.stringify({
+      data: [{ b64_json: "a".repeat(3 * 1024 * 1024) }],
+      usage,
+    });
+    const bytes = new TextEncoder().encode(body);
+    let offset = 0;
+    const response = meter.response(
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            if (offset === bytes.length) return controller.close();
+            const end = Math.min(bytes.length, offset + 64 * 1024);
+            controller.enqueue(bytes.subarray(offset, end));
+            offset = end;
+          },
+        }),
+        {
+          headers: {
+            "content-type": "application/json",
+            "x-upstream": "preserved",
+          },
+        },
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-upstream"), "preserved");
+    assert.equal(await response.text(), body);
+    await meter.drain();
+    const finished = events.at(-1);
+    assert.equal(finished.outcome, "success");
+    assert.equal(finished.observation_issue, null);
+    assert.equal(finished.usage.status, "reported");
+    assert.equal(finished.usage.tokens.input_tokens, 10);
+    assert.equal(finished.usage.tokens.output_tokens, 20);
+    assert.equal(finished.usage.tokens.image_output_tokens, 20);
+    assert.deepEqual(finished.usage.raw, usage);
   });
 }
 
