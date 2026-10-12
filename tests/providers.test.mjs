@@ -32,6 +32,46 @@ function configuration() {
   });
 }
 
+test("AI Gateway uses its runtime connector for HTTP and WebSocket requests", async (t) => {
+  t.mock.method(globalThis, "fetch", () =>
+    assert.fail("a runtime connector must not fall back to global fetch"),
+  );
+  const config = configuration();
+  const provider = { ...config.providers[0], supports_websocket: true };
+  const credential = provider.credentials[0];
+  const first = {
+    UPSTREAM_HTTP: { direct: async () => new Response("first") },
+  };
+  const second = {
+    UPSTREAM_HTTP: { direct: async () => new Response("second") },
+  };
+  for (const transport of ["http", "websocket"]) {
+    const input = {
+      request: new Request("https://gateway.example/responses"),
+      endpoint: "responses",
+      protocol: "openai",
+      transport,
+    };
+    const a = await prepareProviderRequest(provider, credential, input, {
+      env: first,
+      config,
+    });
+    const b = await prepareProviderRequest(provider, credential, input, {
+      env: second,
+      config,
+    });
+    for (const [prepared, expected] of [
+      [a, "first"],
+      [b, "second"],
+      [a, "first"],
+    ]) {
+      assert.equal(prepared.kind, "upstream");
+      const request = new Request(prepared.url, { headers: prepared.headers });
+      assert.equal(await (await prepared.send(request)).text(), expected);
+    }
+  }
+});
+
 test("only implemented provider and credential types are accepted", () => {
   assert.throws(() => parseConfig({ services: [], api_keys: [] }));
   for (const mutate of [

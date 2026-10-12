@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,11 +48,26 @@ test(
       writeFile(path.join(consoleRoot, "assets", "fixture.js"), consoleScript),
     ]);
     const captured = [];
+    const imagePayload = {
+      data: [{ b64_json: "abcd".repeat(20_000) }],
+      usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    };
     const upstream = createServer(async (request, response) => {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       captured.push({ url: request.url, headers: request.headers, body });
+      if (request.url === "/v1/images/generations") {
+        const compressed = gzipSync(JSON.stringify(imagePayload));
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+          "content-length": compressed.byteLength,
+          "x-upstream": "preserved",
+        });
+        response.end(compressed);
+        return;
+      }
       if (body.stream) {
         response.writeHead(200, {
           "content-type": "text/event-stream",
@@ -233,6 +249,16 @@ test(
       /response\.output_text\.delta[\s\S]*response\.completed/,
     );
 
+    const image = await fetch(`${url}/images/generations`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "alias", prompt: "A test image" }),
+    });
+    assert.equal(image.status, 200);
+    assert.deepEqual(await image.json(), imagePayload);
+    assert.equal(image.headers.get("content-encoding"), null);
+    assert.equal(image.headers.get("x-upstream"), "preserved");
+
     const client = new WebSocket(
       `${url.replace("http:", "ws:")}/v1/responses?ws=1`,
       {
@@ -263,7 +289,7 @@ test(
     client.close(1000, "done");
     assert.equal((await closed)[0], 1000);
     await runtime.tasks.drain();
-    assert.equal(captured.length, 3);
+    assert.equal(captured.length, 4);
     assert.equal(captured[0].url, "/v1/responses?trace=a&trace=b");
     for (const request of captured) {
       assert.equal(request.body.model, "real-model");
@@ -281,6 +307,14 @@ test(
     assert.ok(
       rows.results.filter((row) => row.finished_at !== null).length >= 3,
     );
+    const imageUsage = await db
+      .prepare(
+        "SELECT outcome, input_tokens, output_tokens FROM requests WHERE endpoint = 'images/generations'",
+      )
+      .first();
+    assert.equal(imageUsage.outcome, "success");
+    assert.equal(imageUsage.input_tokens, 1);
+    assert.equal(imageUsage.output_tokens, 2);
   },
 );
 

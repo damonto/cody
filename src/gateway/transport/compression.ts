@@ -133,6 +133,19 @@ function brotliStream(): ReadableWritablePair<Uint8Array, Uint8Array> {
   return { readable, writable };
 }
 
+/** Encoded-body metadata is invalid once a transport has decoded the bytes. */
+export function removeEncodedBodyHeaders(headers: Headers): void {
+  for (const name of [
+    "content-encoding",
+    "content-length",
+    "content-md5",
+    "digest",
+    "content-digest",
+    "repr-digest",
+  ])
+    headers.delete(name);
+}
+
 export function decodeResponseBody(
   body: ReadableStream<Uint8Array>,
   headers: Headers,
@@ -156,17 +169,6 @@ export function decodeResponseBody(
       body = body.pipeThrough(brotliStream());
     }
   }
-  if (encodings.length) {
-    for (const name of [
-      "content-encoding",
-      "content-length",
-      "content-md5",
-      "digest",
-      "content-digest",
-      "repr-digest",
-    ]) {
-      headers.delete(name);
-    }
-  }
+  if (encodings.length) removeEncodedBodyHeaders(headers);
   return body;
 }

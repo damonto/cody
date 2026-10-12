@@ -230,8 +230,10 @@ export interface Bindings extends Partial<WorkerSettings> {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, ttlMs: number): Promise<void>;
   };
-  /** Standard-runtime HTTP connectors; omitted by Workers, which use native fetch. */
+  /** Runtime-scoped upstream connectors; omitted by Workers, which use native fetch. */
   readonly UPSTREAM_HTTP?: {
+    /** Handles ordinary HTTP and WebSocket upgrades without global registration. */
+    readonly direct?: (request: Request) => Promise<Response>;
     readonly antigravity: (request: Request) => Promise<Response>;
   };
   readonly CODY_CONFIG_KV: KeyValueStore;

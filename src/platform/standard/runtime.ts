@@ -2,8 +2,8 @@ import path from "node:path";
 import { app } from "../../app.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import { SessionAffinityCore } from "../../gateway/sessions/session-affinity.ts";
-import { setDirectWebSocketConnector } from "../../gateway/transport/index.ts";
 import { createAntigravityHttpConnector } from "./antigravity-http.ts";
+import { fetchUpstream } from "./http.ts";
 import { setDefaultSocksDial } from "../../gateway/transport/socks.ts";
 import { runMaintenance } from "../../maintenance.ts";
 import { ProviderOAuthAccountCore } from "../../providers/oauth/account.ts";
@@ -122,7 +122,13 @@ export async function createRuntime(
   const accountCache = new AccountDecodeCache(settings.CONFIG_ENCRYPTION_KEY);
   // The factories run only after all namespaces have been assembled.
   const env: Bindings = {
-    UPSTREAM_HTTP: { antigravity: antigravityHttp.send },
+    UPSTREAM_HTTP: {
+      direct: (request) =>
+        request.headers.get("upgrade")?.toLowerCase() === "websocket"
+          ? connectUpstreamWebSocket(request)
+          : fetchUpstream(request),
+      antigravity: antigravityHttp.send,
+    },
     CONFIG_ENCRYPTION_KEY: settings.CONFIG_ENCRYPTION_KEY,
     MODELS_CACHE_TTL_SECONDS: settings.MODELS_CACHE_TTL_SECONDS,
     LOG_LEVEL: settings.LOG_LEVEL,
@@ -260,7 +266,6 @@ export async function createRuntime(
   };
   installWebSocketPair();
   setDefaultSocksDial(nodeSocksDial);
-  setDirectWebSocketConnector(connectUpstreamWebSocket);
   let ticking: Promise<void> | undefined;
   let nextTick = 0;
   const tick = (): Promise<void> => {

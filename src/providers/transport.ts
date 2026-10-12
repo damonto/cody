@@ -10,5 +10,5 @@ export function providerTransportPolicy(
   // Antigravity uses HTTP/1.1 without ALPN; Worker direct requests retain native fetch.
   return type === ProviderType.Antigravity
     ? { direct: env?.UPSTREAM_HTTP?.antigravity, socks: { omitAlpn: true } }
-    : {};
+    : { direct: env?.UPSTREAM_HTTP?.direct };
 }
