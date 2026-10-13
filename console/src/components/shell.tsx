@@ -230,9 +230,6 @@ export function Shell() {
                           <NavLink to={item.path}>
                             <item.icon className="size-4" />
                             <span>{item.title}</span>
-                            {pathname === item.path && (
-                              <ChevronRight className="ml-auto size-3 text-muted-foreground" />
-                            )}
                           </NavLink>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
