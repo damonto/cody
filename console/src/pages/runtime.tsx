@@ -185,7 +185,7 @@ export default function Runtime() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="health" className="mt-4">
-              <Card className="overflow-hidden py-0 shadow-none">
+              <Card className="overflow-hidden py-0 shadow-none [&_td:last-child]:w-px [&_td:last-child]:text-right [&_th:last-child]:w-px">
                 {health.error ? (
                   <div className="p-4">
                     <ErrorNotice error={health.error} />
