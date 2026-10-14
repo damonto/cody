@@ -3,6 +3,7 @@ import type { ProxyNodeConfig } from "../../../../src/config/types";
 import type { ProxyGroupStatus } from "../../../../src/gateway/proxies/schema";
 import { date } from "@/lib/format";
 import { Status } from "@/components/common";
+import { TableActionsCell } from "@/components/table-actions";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { useProxyTest, type ProxyTestState } from "./use-proxy-test";
@@ -93,7 +94,7 @@ export function ProxyNodeRow({
           <NodeExitIp state={state} />
         </div>
       </TableCell>
-      <TableCell>
+      <TableActionsCell>
         <div className="flex items-center justify-end gap-1">
           <Button
             variant="ghost"
@@ -136,7 +137,7 @@ export function ProxyNodeRow({
             <Trash2 />
           </Button>
         </div>
-      </TableCell>
+      </TableActionsCell>
     </TableRow>
   );
 }

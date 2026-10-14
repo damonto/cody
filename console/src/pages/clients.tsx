@@ -154,7 +154,8 @@ export default function Clients() {
               },
               {
                 id: "action",
-                header: "",
+                header: "Actions",
+                meta: { variant: "actions" },
                 cell: ({ row }) => (
                   <div className="flex justify-end gap-2">
                     <Button

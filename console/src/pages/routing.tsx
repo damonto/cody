@@ -177,7 +177,8 @@ export default function Routing() {
               },
               {
                 id: "actions",
-                header: "",
+                header: "Actions",
+                meta: { variant: "actions" },
                 cell: ({ row }) => (
                   <div className="flex justify-end gap-2">
                     <Button

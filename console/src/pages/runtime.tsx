@@ -185,7 +185,7 @@ export default function Runtime() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="health" className="mt-4">
-              <Card className="overflow-hidden py-0 shadow-none [&_td:last-child]:w-px [&_td:last-child]:text-right [&_th:last-child]:w-px">
+              <Card className="overflow-hidden py-0 shadow-none">
                 {health.error ? (
                   <div className="p-4">
                     <ErrorNotice error={health.error} />
@@ -224,7 +224,8 @@ export default function Runtime() {
                       },
                       {
                         id: "clear",
-                        header: "",
+                        header: "Actions",
+                        meta: { variant: "actions" },
                         cell: ({ row }) => (
                           <Button
                             variant="outline"
@@ -318,7 +319,8 @@ export default function Runtime() {
                       },
                       {
                         id: "clear",
-                        header: "",
+                        header: "Actions",
+                        meta: { variant: "actions" },
                         cell: ({ row }) => (
                           <Button
                             variant="outline"

@@ -176,7 +176,8 @@ export default function Providers() {
               },
               {
                 id: "edit",
-                header: "",
+                header: "Actions",
+                meta: { variant: "actions" },
                 cell: ({ row }) => (
                   <div className="flex justify-end gap-1">
                     <Button

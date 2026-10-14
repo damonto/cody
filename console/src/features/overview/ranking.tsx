@@ -2,6 +2,7 @@ import { useEntityNames } from "@/lib/api";
 import { ArrowUpRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Choice, Empty } from "@/components/common";
+import { TableActionsCell, TableActionsHead } from "@/components/table-actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -108,9 +109,7 @@ export function SourceRanking({
                 <TableHead className="text-right text-xs">
                   {metric === "cost" ? "Requests" : currency || "Cost"}
                 </TableHead>
-                <TableHead>
-                  <span className="sr-only">Request log</span>
-                </TableHead>
+                <TableActionsHead>Request log</TableActionsHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -172,7 +171,7 @@ export function SourceRanking({
                         ? number(row.totals.requests_count)
                         : money(knownCost(row, currency), currency)}
                     </TableCell>
-                    <TableCell className="px-1">
+                    <TableActionsCell className="px-1">
                       {!row.other && row.value && (
                         <Button variant="ghost" size="icon-sm" asChild>
                           <Link
@@ -187,7 +186,7 @@ export function SourceRanking({
                           </Link>
                         </Button>
                       )}
-                    </TableCell>
+                    </TableActionsCell>
                   </TableRow>
                 );
               })}

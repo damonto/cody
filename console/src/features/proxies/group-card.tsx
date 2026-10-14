@@ -6,6 +6,7 @@ import type {
 import type { ProxyGroupStatus } from "../../../../src/gateway/proxies/schema";
 import { date } from "@/lib/format";
 import { DataTable } from "@/components/common";
+import { TableActionsHead } from "@/components/table-actions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -109,9 +110,7 @@ export function ProxyGroupCard({
                     </TableHead>
                   ),
                 )}
-                <TableHead scope="col">
-                  <span className="sr-only">Actions</span>
-                </TableHead>
+                <TableActionsHead scope="col">Actions</TableActionsHead>
               </TableRow>
             </TableHeader>
             <TableBody>

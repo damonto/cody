@@ -27,6 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { TableActionsCell, TableActionsHead } from "@/components/table-actions";
 import { label } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -189,7 +190,8 @@ export function Choice({
   );
 }
 export { fieldErrors } from "@/lib/form-errors";
-const features = tableFeatures({});
+const columnMeta: { variant?: "actions" } = {};
+const features = tableFeatures({ columnMeta });
 export type DataColumn<T extends object> = ColumnDef<typeof features, T>;
 export function DataTable<T extends object>({
   data,
@@ -206,15 +208,21 @@ export function DataTable<T extends object>({
       <TableHeader>
         {table.getHeaderGroups().map((group) => (
           <TableRow key={group.id}>
-            {group.headers.map((header) => (
-              <TableHead
-                key={header.id}
-                colSpan={header.colSpan}
-                className="h-11 bg-muted/30 text-xs"
-              >
-                <table.FlexRender header={header} />
-              </TableHead>
-            ))}
+            {group.headers.map((header) => {
+              const Head =
+                header.column.columnDef.meta?.variant === "actions"
+                  ? TableActionsHead
+                  : TableHead;
+              return (
+                <Head
+                  key={header.id}
+                  colSpan={header.colSpan}
+                  className="h-11 bg-muted/30 text-xs"
+                >
+                  <table.FlexRender header={header} />
+                </Head>
+              );
+            })}
           </TableRow>
         ))}
       </TableHeader>
@@ -222,11 +230,17 @@ export function DataTable<T extends object>({
         {table.getRowModel().rows.length ? (
           table.getRowModel().rows.map((row) => (
             <TableRow key={row.id}>
-              {row.getAllCells().map((cell) => (
-                <TableCell key={cell.id} className="h-14">
-                  <table.FlexRender cell={cell} />
-                </TableCell>
-              ))}
+              {row.getAllCells().map((cell) => {
+                const Cell =
+                  cell.column.columnDef.meta?.variant === "actions"
+                    ? TableActionsCell
+                    : TableCell;
+                return (
+                  <Cell key={cell.id} className="h-14">
+                    <table.FlexRender cell={cell} />
+                  </Cell>
+                );
+              })}
             </TableRow>
           ))
         ) : (

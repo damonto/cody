@@ -374,7 +374,8 @@ export function Shell() {
                 },
                 {
                   id: "action",
-                  header: "",
+                  header: "Actions",
+                  meta: { variant: "actions" },
                   cell: ({ row }) => (
                     <Button
                       variant="outline"
