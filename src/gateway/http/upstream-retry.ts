@@ -1,6 +1,7 @@
 import type { NormalizedUsage } from "../../billing/types.ts";
 import type { ProviderRetryConfig } from "../../config/types.ts";
-import { abortableDelay } from "../../shared/abort.ts";
+import type { PreparedUpstreamRequest } from "../../providers/types.ts";
+import { abortable, abortableDelay } from "../../shared/abort.ts";
 import { elapsedMs, errorMessage } from "../../shared/log.ts";
 import { SocksProxyError } from "../proxies/errors.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
@@ -20,6 +21,8 @@ export interface UpstreamResponseInspection {
 }
 
 export interface UpstreamRetryOptions {
+  recoverUnauthorized?: PreparedUpstreamRequest["recoverUnauthorized"];
+  observeResponse?: ((response: Response) => void) | undefined;
   send?: UpstreamFetch;
   wait?: (delayMs: number) => Promise<void>;
   onResponse?: (response: Response, attempt: number) => Promise<void> | void;
@@ -113,20 +116,29 @@ export async function fetchWithConfiguredRetries(
   options: UpstreamRetryOptions,
 ): Promise<FetchWithRetriesResult> {
   const attempts: UpstreamAttemptLog[] = [];
-  for (let attemptIndex = 0; ; attemptIndex += 1) {
+  let recoveryAttempted = false;
+  let recoveredHeaders: Headers | undefined;
+  let recoveryDeadline: number | undefined;
+  for (let retryIndex = 0; ;) {
     const startedAt = performance.now();
     const attempt: UpstreamAttemptLog = {
-      attempt: attemptIndex + 1,
+      attempt: attempts.length + 1,
       duration_ms: 0,
     };
-    const delayMs = retry?.delays_ms[attemptIndex];
+    const delayMs = retry?.delays_ms[retryIndex];
+    const attemptOptions =
+      recoveryDeadline === undefined
+        ? options
+        : { ...options, deadline: recoveryDeadline };
     attempts.push(attempt);
     let response: Response | undefined;
     let request: Request;
     let shouldRetry = false;
     try {
       request = makeRequest();
-      const remaining = remainingAttemptMs(options, startedAt);
+      if (recoveredHeaders)
+        request = new Request(request, { headers: recoveredHeaders });
+      const remaining = remainingAttemptMs(attemptOptions, startedAt);
       if (remaining !== undefined && remaining <= 0)
         throw new UpstreamAttemptTimeoutError(options.attemptTimeoutMs ?? 0);
       response = await fetchAttempt(
@@ -136,7 +148,47 @@ export async function fetchWithConfiguredRetries(
       );
       attempt.status = response.status;
       attempt.duration_ms = elapsedMs(startedAt);
+      options.observeResponse?.(response);
+      if (
+        response.status === 401 &&
+        options.recoverUnauthorized &&
+        !recoveryAttempted
+      ) {
+        recoveryAttempted = true;
+        // Authentication recovery shares this attempt's original time budget.
+        const remaining = remainingAttemptMs(attemptOptions, startedAt);
+        recoveryDeadline =
+          options.deadline ??
+          (remaining === undefined ? undefined : Date.now() + remaining);
+        if (remaining !== undefined && remaining <= 0)
+          throw new UpstreamAttemptTimeoutError(options.attemptTimeoutMs ?? 0);
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () =>
+            controller.abort(
+              new UpstreamAttemptTimeoutError(remaining ?? 15_000),
+            ),
+          remaining ?? 15_000,
+        );
+        try {
+          const signal = AbortSignal.any([request.signal, controller.signal]);
+          const recovered = await abortable(
+            options.recoverUnauthorized(signal),
+            signal,
+          );
+          if (recovered) {
+            recoveredHeaders = new Headers(recovered.headers);
+            await discardBody(response.body);
+            attempt.duration_ms = elapsedMs(startedAt);
+            attempt.retry_diagnostic = { reason: "oauth_refresh" };
+            continue;
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
     } catch (error) {
+      await discardBody(response?.body ?? null);
       attempt.duration_ms = elapsedMs(startedAt);
       attempt.error = errorMessage(error);
       return { attempts, error };
@@ -154,10 +206,12 @@ export async function fetchWithConfiguredRetries(
       const inspection = await options.inspectResponse?.(
         response,
         request.signal,
-        remainingAttemptMs(options, startedAt),
+        remainingAttemptMs(attemptOptions, startedAt),
       );
       if (inspection) response = inspection.response;
-      const terminal = inspection?.terminal === true;
+      const terminal =
+        inspection?.terminal === true ||
+        (response.status === 401 && options.recoverUnauthorized !== undefined);
       attempt.duration_ms = elapsedMs(startedAt);
       if (terminal || !retry || delayMs === undefined) {
         attempt.retry_diagnostic = {
@@ -190,7 +244,7 @@ export async function fetchWithConfiguredRetries(
             response,
             request.signal,
             retry.error_codes,
-            remainingAttemptMs(options, startedAt),
+            remainingAttemptMs(attemptOptions, startedAt),
           );
           response = inspected.response;
           retryInspection = inspected;
@@ -208,6 +262,8 @@ export async function fetchWithConfiguredRetries(
       return { attempts, error };
     }
     if (!shouldRetry) return { response, attempts };
+    retryIndex += 1;
+    recoveryDeadline = undefined;
 
     if (options.observeDiscardedResponse) {
       try {

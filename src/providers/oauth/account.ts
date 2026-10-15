@@ -10,6 +10,7 @@ import {
   type Session,
 } from "./state.ts";
 import { AccountInventory } from "./inventory.ts";
+import { mergeCodexQuotaObservation } from "../codex/quota.ts";
 import {
   initializeCodexAccount,
   initializeClaudeAccount,
@@ -118,7 +119,7 @@ export class ProviderOAuthAccountCore {
           this.updateGeneration(generation, update),
         refresh: (kind, generation, run) =>
           this.shareRefresh(kind, generation, run),
-        resolve: () => this.resolve(),
+        resolve: (rejected) => this.resolve(undefined, undefined, rejected),
       },
       {
         antigravity: () => this.antigravity(),
@@ -981,7 +982,7 @@ export class ProviderOAuthAccountCore {
         "oauth_account_unavailable",
       );
     let credential:
-      | { account_id: string; is_fedramp?: boolean }
+      | { account_id: string; is_fedramp?: boolean; generation: number }
       | { project_id: string }
       | { xai_subject: string; generation: number }
       | { claude_organization_id: string; generation: number };
@@ -993,6 +994,7 @@ export class ProviderOAuthAccountCore {
     } else if (account.provider_type === ProviderType.Codex && account.codex) {
       credential = {
         account_id: account.codex.account_id,
+        generation: account.generation,
         ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
       };
     } else if (
@@ -1024,15 +1026,48 @@ export class ProviderOAuthAccountCore {
   private async resolve(
     connection?: ProviderConnection,
     config?: ProxyConfiguration,
+    rejected?: { generation: number; token: string },
   ) {
     const snapshot = this.active();
+    if (
+      rejected &&
+      (this.requireAccount().provider_type !== ProviderType.Codex ||
+        snapshot.generation !== rejected.generation)
+    )
+      throw new OAuthError(
+        "Account changed during authentication recovery",
+        409,
+        "account_changed",
+      );
     if (
       connection &&
       connection.provider_id !== this.requireAccount().provider_id
     )
       throw new OAuthError("Account belongs to another provider", 403);
-    if (snapshot.tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
+    const force =
+      rejected &&
+      (await equalSecret(snapshot.tokens.access_token, rejected.token));
+    // Another request may already have replaced the rejected token. Reuse it.
+    if (
+      force ||
+      (!rejected &&
+        snapshot.tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS)
+    ) {
       await this.shareRefresh("token", snapshot.generation, async () => {
+        const current = this.active();
+        if (current.generation !== snapshot.generation)
+          throw new OAuthError(
+            "Account changed during token refresh",
+            409,
+            "account_changed",
+          );
+        if (
+          !(await equalSecret(
+            current.tokens.access_token,
+            snapshot.tokens.access_token,
+          ))
+        )
+          return;
         try {
           const refreshToken = snapshot.tokens.refresh_token;
           if (!refreshToken)
@@ -1108,6 +1143,12 @@ export class ProviderOAuthAccountCore {
       });
     }
     const current = this.active();
+    if (current.generation !== snapshot.generation)
+      throw new OAuthError(
+        "Account changed during token resolution",
+        409,
+        "account_changed",
+      );
     return { token: current.tokens.access_token, ...current.credential };
   }
   private async retry(id: string, actor: string): Promise<void> {
@@ -1138,6 +1179,25 @@ export class ProviderOAuthAccountCore {
   }
   private async dispatch(command: z.output<typeof accountCommandSchema>) {
     switch (command.action) {
+      case "codex_usage":
+        if (this.requireAccount().provider_type !== ProviderType.Codex)
+          throw new OAuthError("Only available for Codex", 400);
+        await this.updateGeneration(command.generation, (account) => {
+          if (
+            account.provider_type !== ProviderType.Codex ||
+            account.status !== OAuthAccountStatus.Ready
+          )
+            return;
+          Object.assign(
+            account,
+            mergeCodexQuotaObservation(
+              account,
+              command.observation,
+              Math.min(Date.now(), command.observed_at),
+            ),
+          );
+        });
+        return { observed: true };
       case "xai_auth_invalid":
         if (this.requireAccount().provider_type !== ProviderType.Xai)
           throw new OAuthError("Only available for xAI", 400);
@@ -1253,6 +1313,12 @@ export class ProviderOAuthAccountCore {
         return this.sessionView(command.session_id, command.actor);
       case "session":
         return this.sessionView(command.session_id, command.actor);
+      case "codex_refresh":
+        return this.resolve(
+          command.connection,
+          command.proxy_configuration,
+          command,
+        );
       case "resolve":
         return this.resolve(command.connection, command.proxy_configuration);
       case "models":

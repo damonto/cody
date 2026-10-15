@@ -54,7 +54,19 @@ export interface InspectedResponse {
   readonly accountLimit?: AccountLimit;
 }
 
+/** Replacement headers for subsequent attempts on the same account. */
+export interface RecoveredUpstreamAuth {
+  readonly headers: Headers;
+}
+
 export interface PreparedUpstreamRequest {
+  /** Codex-only recovery of the same OAuth account after an HTTP 401, before output. */
+  readonly recoverUnauthorized?: (
+    signal: AbortSignal,
+  ) => Promise<RecoveredUpstreamAuth | undefined>;
+  /** Passive observations must not block forwarding or change retry decisions. */
+  readonly observeResponse?: (response: Response) => void;
+  readonly observeWebSocketEvent?: (value: unknown, receivedAt: number) => void;
   /** Inspect before returning any bytes; observe later stream limits without replay. */
   readonly inspectResponse?: (
     response: Response,

@@ -59,6 +59,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
       return {
         url,
         headers,
+        oauthGeneration: credential.generation,
         ...(input.endpoint === "responses" &&
         input.transport === ProviderTransport.Http
           ? { detectResponseFormat: true }
@@ -67,6 +68,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     return {
       url,
       headers,
+      oauthGeneration: credential.generation,
       // Keep each raw ModelInfo so Codex clients receive the account catalog.
       parseModels: (value) => ({
         data: (isRecord(value) && Array.isArray(value.models)

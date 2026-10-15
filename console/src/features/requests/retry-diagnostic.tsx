@@ -2,6 +2,7 @@ import type { RetryDiagnostic } from "../../../../src/shared/retry-diagnostic.ts
 
 const reasons: Record<RetryDiagnostic["reason"], string> = {
   status_match: "HTTP status matched retry policy",
+  oauth_refresh: "Refreshed authentication for the same account",
   error_code_match: "Error code matched retry policy",
   policy_disabled: "Retry policy not configured",
   attempts_exhausted: "No retries remaining",

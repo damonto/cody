@@ -1,13 +1,11 @@
+import { oauthAccountAvailability } from "../../providers/oauth/availability.ts";
 import { supportsProviderModel } from "../../shared/antigravity-models.ts";
 import { resolveAntigravityModel } from "../../providers/antigravity/reasoning.ts";
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
-import {
-  antigravityAccountAvailability,
-  antigravityModelAvailability,
-} from "../../providers/antigravity/availability.ts";
+import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
 
 import { HealthScope, ProviderAvailabilityReason } from "../health/values.ts";
@@ -371,12 +369,14 @@ async function evaluateAvailability<T extends RoutedProvider>(
         await getCredentialAvailability(env, provider.id, key.id, scope),
       );
       const model = upstreamModels?.get(provider.id);
+      if (
+        health.available &&
+        key.auth.type === "oauth" &&
+        (provider.type === ProviderType.Antigravity ||
+          provider.type === ProviderType.Codex)
+      )
+        health = await oauthAccountAvailability(env, key.auth.account_ref);
       if (provider.type === ProviderType.Antigravity) {
-        if (health.available && key.auth.type === "oauth")
-          health = await antigravityAccountAvailability(
-            env,
-            key.auth.account_ref,
-          );
         if (
           health.available &&
           scope === HealthScope.Inference &&

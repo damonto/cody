@@ -445,6 +445,8 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
     const payload =
       typeof message === "string" ? parseObject(message) : undefined;
+    if (payload && typeof message === "string" && message.length <= 64 * 1024)
+      this.upstream.observeEvent(payload, receivedAt);
     const status = payload ? errorStatus(payload) : undefined;
     const usageLimit =
       payload &&

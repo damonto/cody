@@ -1,4 +1,5 @@
 import { xaiDeviceSchema } from "../xai/api.ts";
+import { codexQuotaSyncSchema } from "../codex/quota.ts";
 
 import {
   OAuthAccountViewStatus,
@@ -77,6 +78,7 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
   }),
   storedBase.extend({
     provider_type: z.literal(ProviderType.Codex),
+    codex_quota_sync: codexQuotaSyncSchema.prefault({}),
     project_id: z.null(),
     antigravity_initialization: z.null().optional(),
     claude: z.null().optional(),

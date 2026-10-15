@@ -33,7 +33,20 @@ test("persisted OAuth states keep their provider, identity and default fields ac
   for (const provider of ["antigravity", "codex", "claude", "xai"]) {
     const input = stored(provider);
     const parsed = storedSchema.parse(input);
-    assert.deepEqual(parsed, { ...input, claude_quota_revision: 0 });
+    assert.deepEqual(parsed, {
+      ...input,
+      claude_quota_revision: 0,
+      ...(provider === "codex"
+        ? {
+            codex_quota_sync: {
+              full_observed_at: 0,
+              windows: [],
+              plan_observed_at: 0,
+              credits_observed_at: 0,
+            },
+          }
+        : {}),
+    });
     assert.deepEqual(
       storedSchema.parse(JSON.parse(JSON.stringify(parsed))),
       parsed,

@@ -15,8 +15,8 @@ import {
   parseIdToken,
   parseModels,
   parseResetCredits,
-  parseUsage,
 } from "../src/providers/codex/api.ts";
+import { parseUsage } from "../src/providers/codex/quota.ts";
 import {
   codexUsageLimitEvent,
   codexUsageLimitFromError,

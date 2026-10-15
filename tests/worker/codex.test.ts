@@ -17,6 +17,7 @@ import { app } from "../../src/worker.ts";
 import { parseConfig } from "../../src/config/store.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
 import { getCredentialAvailability } from "../../src/gateway/health/health.ts";
+import { codexQuotaEvent } from "../../src/providers/codex/observations.ts";
 import {
   accountReply,
   accountViewSchema,
@@ -308,7 +309,11 @@ test("PKCE authorization turns the ID token into a ChatGPT workspace credential"
       }),
       resolvedOAuthSchema,
     ),
-  ).toEqual({ token: "access-pkce", account_id: "acct-pkce" });
+  ).toEqual({
+    token: "access-pkce",
+    account_id: "acct-pkce",
+    generation: expect.any(Number),
+  });
 });
 
 test("device-code authorization polls until approval and exchanges the returned verifier", async () => {
@@ -677,6 +682,7 @@ test("partial refresh survives eviction and rejects a changed workspace before s
     await accountReply(account.stub.run(command), resolvedOAuthSchema),
   ).toEqual({
     token: "access-refresh-partial",
+    generation: expect.any(Number),
     account_id: "acct-refresh-partial",
   });
   await evictDurableObject(account.stub);
@@ -784,4 +790,370 @@ test("ingestion metadata cannot pin an exhausted account across HTTP retries", a
   expect((await infer(config, session, true)).status).toBe(200);
   expect(inferences().at(-1)?.account).toBe(secondAccount);
   expect(await servedBy(config, session)).toBe(secondAccount);
+});
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function recoveryCommand(account: Awaited<ReturnType<typeof ready>>) {
+  const resolved = await accountReply(
+    account.stub.run({
+      action: "resolve",
+      connection: account.connection,
+      proxy_configuration: { proxy_groups: [] },
+    }),
+    resolvedOAuthSchema,
+  );
+  if (!("account_id" in resolved)) throw new Error("Expected Codex");
+  return {
+    action: "codex_refresh" as const,
+    generation: resolved.generation,
+    token: resolved.token,
+    connection: account.connection,
+    proxy_configuration: { proxy_groups: [] },
+  };
+}
+
+test("concurrent 401 recoveries share one refresh and persist the rotated credential", async () => {
+  const account = await ready("401-concurrent");
+  const command = await recoveryCommand(account);
+  let started = false;
+  const release = deferred();
+  let refreshes = 0;
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (!request.url.endsWith("/oauth/token")) return send(request);
+    refreshes++;
+    expect(await request.json()).toMatchObject({
+      grant_type: "refresh_token",
+      refresh_token: "refresh-401-concurrent",
+    });
+    started = true;
+    await release.promise;
+    return Response.json({
+      access_token: "fresh-401",
+      refresh_token: "rotated-401",
+      expires_in: 3600,
+    });
+  });
+  const first = account.stub.run(command);
+  await vi.waitFor(() => expect(started).toBe(true));
+  const rest = Array.from({ length: 7 }, () => account.stub.run(command));
+  release.resolve();
+  const replies = await Promise.all([first, ...rest]);
+  expect(replies.every((reply) => reply.ok)).toBe(true);
+  for (const reply of replies)
+    expect(
+      await accountReply(Promise.resolve(reply), resolvedOAuthSchema),
+    ).toMatchObject({
+      token: "fresh-401",
+      generation: command.generation,
+      account_id: "acct-401-concurrent",
+    });
+  expect(refreshes).toBe(1);
+  await evictDurableObject(account.stub);
+  const persisted = await accountReply(
+    account.stub.run(command),
+    resolvedOAuthSchema,
+  );
+  expect(persisted.token).toBe("fresh-401");
+  expect(refreshes).toBe(1);
+  await runInDurableObject(account.stub, async (_instance, state) => {
+    const stored = z
+      .object({ tokens: z.object({ refresh_token: z.string() }) })
+      .parse(
+        await decryptConfig(
+          (await state.storage.get<string>("account"))!,
+          env.CONFIG_ENCRYPTION_KEY,
+        ),
+      );
+    expect(stored.tokens.refresh_token).toBe("rotated-401");
+  });
+});
+
+test("disconnect fences an in-flight 401 recovery and late observations", async () => {
+  const account = await ready("401-fenced");
+  const command = await recoveryCommand(account);
+  let started = false;
+  const release = deferred();
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (!request.url.endsWith("/oauth/token")) return send(request);
+    started = true;
+    await release.promise;
+    return Response.json({
+      access_token: "must-not-commit",
+      refresh_token: "must-not-commit",
+      expires_in: 3600,
+    });
+  });
+  const pending = account.stub.run(command);
+  await vi.waitFor(() => expect(started).toBe(true));
+  await account.stub.run({ action: "disconnect" });
+  release.resolve();
+  expect(await pending).toMatchObject({ ok: false, code: "account_changed" });
+  expect(
+    await account.stub.run({
+      action: "codex_usage",
+      generation: command.generation,
+      observed_at: Date.now(),
+      observation: { groups: [], plan_type: "pro" },
+    }),
+  ).toMatchObject({ ok: false, code: "account_changed" });
+  await evictDurableObject(account.stub);
+  expect(
+    await accountReply(account.stub.run({ action: "view" }), accountViewSchema),
+  ).toMatchObject({
+    status: "disconnected",
+    expires_at: null,
+    codex: { plan_type: "plus" },
+  });
+});
+
+test("only permanent recovery failures require reauthorization", async () => {
+  for (const status of [400, 503]) {
+    const account = await ready(`401-failure-${status}`);
+    const command = await recoveryCommand(account);
+    vi.stubGlobal("fetch", async (request: Request) =>
+      request.url.endsWith("/oauth/token")
+        ? Response.json({ error: "invalid_grant" }, { status })
+        : send(request),
+    );
+    expect(await account.stub.run(command)).toMatchObject({ ok: false });
+    expect(
+      (
+        await accountReply(
+          account.stub.run({ action: "view" }),
+          accountViewSchema,
+        )
+      ).status,
+    ).toBe(status === 400 ? "needs_reauthorization" : "ready");
+    // Restore authorization exchange for the next fixture.
+    vi.stubGlobal("fetch", send);
+  }
+});
+
+test("read-only account inventory recovers 401 and reuses the new token for reset-credit lookup", async () => {
+  const account = await ready("inventory-401");
+  const calls: string[] = [];
+  let refreshes = 0;
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (request.url.endsWith("/oauth/token")) {
+      refreshes++;
+      return Response.json({
+        access_token: "fresh-inventory",
+        expires_in: 3600,
+      });
+    }
+    if (request.url.includes("/wham/")) {
+      const token = request.headers.get("authorization")!;
+      calls.push(token);
+      if (token !== "Bearer fresh-inventory")
+        return new Response("expired", { status: 401 });
+    }
+    return send(request);
+  });
+  const view = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(view.quota.groups[0].buckets[0].used_percent).toBe(40);
+  expect(view.quota.last_error).toBeNull();
+  expect(refreshes).toBe(1);
+  expect(calls).toEqual([
+    "Bearer access-inventory-401",
+    "Bearer fresh-inventory",
+    "Bearer fresh-inventory",
+  ]);
+});
+
+test("a slow full refresh updates untouched quota and clears exhaustion while retaining newer passive windows", async () => {
+  const account = await ready("quota-observation");
+  const { generation } = await recoveryCommand(account);
+  resetCredits = [{ id: "retained-credit", status: "available" }];
+  vi.stubGlobal("fetch", async (request: Request) =>
+    request.url.endsWith("/wham/usage")
+      ? Response.json({
+          rate_limit: {
+            limit_reached: true,
+            primary_window: { used_percent: 100, limit_window_seconds: 18000 },
+            secondary_window: {
+              used_percent: 80,
+              limit_window_seconds: 604800,
+            },
+          },
+        })
+      : send(request),
+  );
+  await account.stub.run({ action: "quota", force: true });
+  let started = false;
+  const release = deferred();
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (request.url.endsWith("/wham/usage")) {
+      started = true;
+      await release.promise;
+      return Response.json({
+        plan_type: "plus",
+        rate_limit: {
+          limit_reached: false,
+          primary_window: { used_percent: 10, limit_window_seconds: 18000 },
+          secondary_window: { used_percent: 20, limit_window_seconds: 604800 },
+        },
+        code_review_rate_limit: { primary_window: { used_percent: 30 } },
+      });
+    }
+    return send(request);
+  });
+  const pending = account.stub.run({ action: "quota", force: true });
+  await vi.waitFor(() => expect(started).toBe(true));
+  const observedAt = Date.now();
+  const observation = codexQuotaEvent({
+    type: "codex.rate_limits",
+    rate_limits: { primary: { used_percent: 5 } },
+    plan_type: "pro",
+    credits: { has_credits: true, unlimited: false, balance: "7.5" },
+  })!;
+  expect(
+    await account.stub.run({
+      action: "codex_usage",
+      generation,
+      observed_at: observedAt,
+      observation,
+    }),
+  ).toMatchObject({ ok: true });
+  release.resolve();
+  await pending;
+  // A delayed older event cannot overwrite the newer values.
+  await account.stub.run({
+    action: "codex_usage",
+    generation,
+    observed_at: observedAt - 1000,
+    observation: { groups: [], plan_type: "free" },
+  });
+  await evictDurableObject(account.stub);
+  const view = await accountReply(
+    account.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(view.codex?.plan_type).toBe("pro");
+  expect(
+    view.quota.groups[0].buckets.map((bucket) => bucket.used_percent),
+  ).toEqual([5, 20]);
+  expect(view.quota.groups[1].buckets[0].used_percent).toBe(30);
+  expect(view.quota.limit_reached).toBe(false);
+  expect(view.quota.last_error).toBeNull();
+  expect(view.quota.credits_balance?.balance).toBe("7.5");
+  expect(view.quota.reset_credits?.credits[0].id).toBe("retained-credit");
+  expect(view.quota.stale).toBe(false);
+  expect(
+    await getCredentialAvailability(
+      env,
+      "codex",
+      account.connection.credential_id,
+    ),
+  ).toMatchObject({ available: true });
+});
+
+test("independent passive windows survive eviction without suppressing an ordinary full refresh", async () => {
+  const account = await ready("quota-independent");
+  const { generation } = await recoveryCommand(account);
+  const observedAt = Date.now() - 1000;
+  expect(
+    await account.stub.run({
+      action: "codex_usage",
+      generation,
+      observed_at: observedAt,
+      observation: codexQuotaEvent({
+        type: "codex.rate_limits",
+        rate_limits: { primary: { used_percent: 5 } },
+      })!,
+    }),
+  ).toMatchObject({ ok: true });
+  await evictDurableObject(account.stub);
+  expect(
+    await account.stub.run({
+      action: "codex_usage",
+      generation,
+      observed_at: observedAt - 1000,
+      observation: codexQuotaEvent({
+        type: "codex.rate_limits",
+        rate_limits: {
+          secondary: { used_percent: 20 },
+          primary: { used_percent: 99 },
+        },
+      })!,
+    }),
+  ).toMatchObject({ ok: true });
+  const partial = await accountReply(
+    account.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(
+    partial.quota.groups[0].buckets.map((bucket) => bucket.used_percent),
+  ).toEqual([5, 20]);
+  expect(partial.quota.updated_at).toBeNull();
+  expect(partial.quota.stale).toBe(true);
+  const full = await accountReply(
+    account.stub.run({ action: "quota", force: false }),
+    accountViewSchema,
+  );
+  expect(full.quota.groups[0].buckets[0].used_percent).toBe(40);
+  expect(full.quota.updated_at).not.toBeNull();
+  expect(full.quota.stale).toBe(false);
+});
+
+test("passive quota cannot clear a full-read failure or renew its freshness", async () => {
+  const account = await ready("quota-failed-read");
+  const { generation } = await recoveryCommand(account);
+  const initial = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  vi.stubGlobal("fetch", async (request: Request) =>
+    request.url.endsWith("/wham/usage")
+      ? new Response("unavailable", { status: 503 })
+      : send(request),
+  );
+  const failed = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(failed.quota.last_error).not.toBeNull();
+  expect(
+    await account.stub.run({
+      action: "codex_usage",
+      generation,
+      observed_at: Date.now(),
+      observation: codexQuotaEvent({
+        type: "codex.rate_limits",
+        rate_limits: { primary: { used_percent: 50 } },
+      })!,
+    }),
+  ).toMatchObject({ ok: true });
+  const partial = await accountReply(
+    account.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(partial.quota.groups[0].buckets[0].used_percent).toBe(50);
+  expect(partial.quota.last_error).toBe(failed.quota.last_error);
+  expect(partial.quota.updated_at).toBe(initial.quota.updated_at);
+  expect(partial.quota.stale).toBe(true);
+});
+
+test("a disconnected account is skipped before resolution and a healthy affinity remains bound", async () => {
+  const [first, second] = await accounts(2);
+  const config = codexConfig([first, second], {
+    account_selection: "session_affinity",
+  });
+  await first.stub.run({ action: "disconnect" });
+  expect(await servedBy(config, "ready-session")).toBe(
+    `acct-${second.connection.credential_id}`,
+  );
+  expect(inferences()).toHaveLength(1);
+  expect(await servedBy(config, "ready-session")).toBe(
+    `acct-${second.connection.credential_id}`,
+  );
 });

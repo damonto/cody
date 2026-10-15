@@ -548,3 +548,98 @@ test(
     assert.equal((await failed.getStatus()).failures, 1);
   },
 );
+
+test("Codex 401 recovery is shared across runtimes and quota observations survive Redis loss", async (t) => {
+  const f = await fixture(t);
+  const ref = crypto.randomUUID();
+  const connection = { provider_id: "codex", credential_id: "credential" };
+  const stored = storedSchema.parse({
+    account_ref: ref,
+    provider_id: "codex",
+    provider_type: "codex",
+    generation: 1,
+    status: "ready",
+    connection,
+    tokens: {
+      access_token: "rejected",
+      refresh_token: "refresh",
+      expires_at: Date.now() + 3600000,
+    },
+    identity: null,
+    codex: {
+      account_id: "workspace",
+      user_id: null,
+      plan_type: "plus",
+      subscription_active_until: null,
+    },
+    project_id: null,
+    error: null,
+    session: null,
+    models: [],
+    models_updated_at: null,
+    models_error: null,
+    quota: emptyQuota(),
+  });
+  await (
+    await f.sql.scope("oauth", ref)
+  ).commit("oauth", ref, {
+    puts: [["account", JSON.stringify(await encryptConfig(stored, KEY))]],
+    deletes: [],
+  });
+  const first = await f.open();
+  const second = await f.open();
+  let refreshes = 0;
+  const send = async (request) => {
+    assert.equal(request.url, "https://auth.openai.com/oauth/token");
+    refreshes++;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return Response.json({
+      access_token: "fresh",
+      refresh_token: "rotated",
+      expires_in: 3600,
+    });
+  };
+  t.mock.method(first.bindings.UPSTREAM_HTTP, "direct", send);
+  t.mock.method(second.bindings.UPSTREAM_HTTP, "direct", send);
+  const command = {
+    action: "codex_refresh",
+    generation: 1,
+    token: "rejected",
+    connection,
+    proxy_configuration: { proxy_groups: [] },
+  };
+  const replies = await Promise.all(
+    [first, second].map((runtime) =>
+      runtime.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(ref).run(command),
+    ),
+  );
+  for (const reply of replies) {
+    assert.equal(reply.ok, true);
+    assert.equal(reply.data.token, "fresh");
+  }
+  assert.equal(refreshes, 1);
+  assert.equal(
+    (
+      await second.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(ref).run({
+        action: "codex_usage",
+        generation: 1,
+        observed_at: Date.now(),
+        observation: { groups: [], plan_type: "pro" },
+      })
+    ).ok,
+    true,
+  );
+  await first.tasks.drain();
+  await second.tasks.drain();
+  const restarted = await f.open(new MemoryRedis());
+  const account = restarted.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
+  const view = await account.run({ action: "view" });
+  assert.equal(view.data.codex.plan_type, "pro");
+  const token = await account.run({
+    action: "resolve",
+    connection,
+    proxy_configuration: { proxy_groups: [] },
+  });
+  assert.equal(token.data.token, "fresh");
+  assert.equal(token.data.generation, 1);
+});

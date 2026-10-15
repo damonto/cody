@@ -105,10 +105,14 @@ function fixture({
       getByName: () => ({
         run: async (command) => ({
           ok: true,
-          data: {
-            token: "mock-access",
-            account_id: command.connection.credential_id,
-          },
+          data:
+            command.action === "readiness"
+              ? { ready: true }
+              : {
+                  token: "mock-access",
+                  account_id: command.connection?.credential_id,
+                  generation: 1,
+                },
         }),
       }),
     },
@@ -474,7 +478,7 @@ test("a rejected catalog account cools so the next request can use another accou
       ).status,
     );
   assert.deepEqual(statuses, [502, 200]);
-  assert.deepEqual(calls, ["account-1", "account-2"]);
+  assert.deepEqual(calls, ["account-1", "account-1", "account-2"]);
   assert.ok(
     f.states.get("key:codex:account-1:catalog").getStatus().cooling_until >
       Date.now(),
@@ -852,4 +856,183 @@ test("WebSocket rejection bodies time out, cancel upstream reads and retain stat
   assert.equal(wrapped.error.code, "websocket_upgrade_failed");
   assert.equal(cancelled, true);
   assert.equal(response.body.locked, false);
+});
+
+test("Codex selection skips accounts that are not ready and fails closed on readiness errors", async () => {
+  for (const first of [false, "unavailable"]) {
+    const f = fixture();
+    const base = f.env.PROVIDER_OAUTH_ACCOUNT.getByName;
+    const resolved = [];
+    f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+      async run(command) {
+        if (command.action === "readiness") {
+          if (ref.endsWith("1") && first === "unavailable")
+            throw new Error("storage down");
+          return { ok: true, data: { ready: !ref.endsWith("1") } };
+        }
+        resolved.push(ref);
+        return base(ref).run(command);
+      },
+    });
+    const response = await infer(f, async (req) =>
+      Response.json({ account: req.headers.get("chatgpt-account-id") }),
+    );
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).account, "account-2");
+    assert.equal(resolved.length, 1);
+    assert.ok(resolved[0].endsWith("2"));
+  }
+});
+
+test("Codex recovers one 401 on the same account without spending configured retries", async () => {
+  const f = fixture({
+    backup: true,
+    retry: { status_codes: [503], delays_ms: [0] },
+  });
+  const base = f.env.PROVIDER_OAUTH_ACCOUNT.getByName;
+  let refreshes = 0;
+  f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+    async run(command) {
+      if (command.action === "codex_refresh") {
+        refreshes++;
+        assert.equal(command.generation, 1);
+        assert.equal(command.token, "mock-access");
+        return {
+          ok: true,
+          data: {
+            token: "fresh",
+            generation: 1,
+            account_id: "account-1",
+            is_fedramp: true,
+          },
+        };
+      }
+      return base(ref).run(command);
+    },
+  });
+  const calls = [];
+  const body = JSON.stringify({
+    model: MODEL,
+    input: "preserve exact bytes",
+    stream: false,
+  });
+  const response = await infer(
+    f,
+    async (req) => {
+      calls.push({
+        auth: req.headers.get("authorization"),
+        fedramp: req.headers.get("x-openai-fedramp"),
+        account: req.headers.get("chatgpt-account-id"),
+        body: await req.text(),
+      });
+      return calls.length === 1
+        ? new Response("unauthorized", { status: 401 })
+        : calls.length === 2
+          ? new Response("busy", { status: 503 })
+          : Response.json({ ok: true });
+    },
+    request(body),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(
+    calls.map((call) => call.auth),
+    ["Bearer mock-access", "Bearer fresh", "Bearer fresh"],
+  );
+  assert.deepEqual(
+    calls.map((call) => call.fedramp),
+    [null, "true", "true"],
+  );
+  assert.ok(
+    calls.every((call) => call.account === "account-1" && call.body === body),
+  );
+});
+
+test("a second 401 or failed refresh returns the actual rejection without account switching", async () => {
+  for (const refreshOk of [true, false]) {
+    const f = fixture({
+      backup: true,
+      retry: { status_codes: [401], delays_ms: [0, 0] },
+    });
+    const base = f.env.PROVIDER_OAUTH_ACCOUNT.getByName;
+    let refreshes = 0;
+    f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+      async run(command) {
+        if (command.action === "codex_refresh") {
+          refreshes++;
+          return refreshOk
+            ? {
+                ok: true,
+                data: {
+                  token: "fresh",
+                  generation: 1,
+                  account_id: "account-1",
+                },
+              }
+            : {
+                ok: false,
+                error: "reconnect",
+                status: 401,
+                code: "invalid_grant",
+              };
+        }
+        return base(ref).run(command);
+      },
+    });
+    const accounts = [];
+    const response = await infer(f, async (req) => {
+      accounts.push(req.headers.get("chatgpt-account-id"));
+      return new Response("original rejection", { status: 401 });
+    });
+    assert.equal(response.status, 401);
+    assert.equal(await response.text(), "original rejection");
+    assert.equal(refreshes, 1);
+    assert.deepEqual(
+      accounts,
+      refreshOk ? ["account-1", "account-1"] : ["account-1"],
+    );
+  }
+});
+
+test("HTTP quota observations retain bytes and never wait for account storage", async () => {
+  const f = fixture();
+  const base = f.env.PROVIDER_OAUTH_ACCOUNT.getByName;
+  const observed = [];
+  const pending = Promise.withResolvers();
+  f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+    async run(command) {
+      if (command.action === "codex_usage") {
+        observed.push({ ref, ...command });
+        return pending.promise;
+      }
+      return base(ref).run(command);
+    },
+  });
+  try {
+    const response = await infer(
+      f,
+      async () =>
+        new Response("unchanged", {
+          headers: {
+            "x-codex-primary-used-percent": "25",
+            "x-codex-primary-window-minutes": "300",
+          },
+        }),
+    );
+    assert.equal(await response.text(), "unchanged");
+    assert.equal(response.headers.get("x-codex-primary-used-percent"), "25");
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].generation, 1);
+    assert.equal(
+      observed[0].observation.groups[0].buckets[0].remaining_fraction,
+      0.75,
+    );
+  } finally {
+    pending.resolve({
+      ok: false,
+      error: "failed",
+      code: "storage_failure",
+      status: 503,
+    });
+  }
 });

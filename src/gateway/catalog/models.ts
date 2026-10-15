@@ -1,3 +1,7 @@
+import {
+  fetchWithConfiguredRetries,
+  type UpstreamRetryOptions,
+} from "../http/upstream-retry.ts";
 import { antigravityCatalogModels } from "../../providers/antigravity/catalog.ts";
 import {
   antigravityThinkingLevels,
@@ -233,6 +237,10 @@ async function fetchCatalogResponse(
   init: RequestInit,
   send: UpstreamFetch,
   timeoutMs = MODEL_CATALOG_TIMEOUT_MS,
+  hooks: Pick<
+    UpstreamRetryOptions,
+    "recoverUnauthorized" | "observeResponse"
+  > = {},
 ): Promise<{ response: Response; body?: unknown }> {
   const controller = new AbortController();
   const signal = init.signal
@@ -240,12 +248,13 @@ async function fetchCatalogResponse(
     : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const operation = (async () => {
-    const response = await send(
-      new Request(url, {
-        ...init,
-        signal,
-      }),
+    const result = await fetchWithConfiguredRetries(
+      () => new Request(url, { ...init, signal }),
+      undefined,
+      { send, ...hooks, deadline: Date.now() + timeoutMs },
     );
+    if (!result.response) throw result.error;
+    const response = result.response;
     if (!response.ok) {
       return { response };
     }
@@ -348,6 +357,10 @@ async function fetchProviderModels(
       },
       prepared.send,
       Math.max(1, MODEL_CATALOG_TIMEOUT_MS - (performance.now() - startedAt)),
+      {
+        recoverUnauthorized: prepared.recoverUnauthorized,
+        observeResponse: prepared.observeResponse,
+      },
     );
     const durationMs = elapsedMs(startedAt);
     if (!result.response.ok) {

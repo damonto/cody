@@ -123,7 +123,16 @@ beforeEach(() => {
     ),
   );
 });
-afterEach(() => {
+afterEach(async () => {
+  // The fixture accepts half-open sockets; close its side before workerd teardown.
+  for (const handshake of handshakes.values()) {
+    if ("connection" in handshake)
+      await testUpstream().fetch(
+        new Request(control(handshake.connection, "/__test/close"), {
+          method: "POST",
+        }),
+      );
+  }
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -755,3 +764,114 @@ test.each(["cooldown", "storage-failure"])(
     expect(upgrades).toEqual([first.account]);
   },
 );
+
+test("a handshake 401 refreshes the same account once before sending the first frame", async () => {
+  const [first] = await pool();
+  const connection = crypto.randomUUID();
+  handshakes.set(first.account, { connection });
+  let refreshes = 0;
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (request.url.endsWith("/oauth/token")) {
+      refreshes++;
+      return Response.json({
+        access_token: "fresh-websocket",
+        expires_in: 3600,
+      });
+    }
+    if (
+      request.url.endsWith("/codex/responses") &&
+      request.headers.get("authorization") !== "Bearer fresh-websocket"
+    ) {
+      upgrades.push(request.headers.get("chatgpt-account-id")!);
+      return new Response("expired", { status: 401 });
+    }
+    return send(request);
+  });
+  const socket = await openGatewaySocket();
+  const messages = received(socket);
+  socket.send(FIRST_FRAME);
+  expect(await nextUpstreamMessage(connection)).toBe(FIRST_FRAME);
+  expect(upgrades).toEqual([first.account, first.account]);
+  expect(refreshes).toBe(1);
+  expect(messages).toEqual([]);
+  const account = await accountReply(
+    env.PROVIDER_OAUTH_ACCOUNT.getByName(first.ref).run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(account.status).toBe("ready");
+  expect(await getCredentialAvailability(env, "codex", first.id)).toMatchObject(
+    { available: true },
+  );
+  socket.close(1000, "done");
+});
+
+test("WebSocket routing excludes disconnected OAuth accounts before opening upstream", async () => {
+  const [first, second] = await pool();
+  await env.PROVIDER_OAUTH_ACCOUNT.getByName(first.ref).run({
+    action: "disconnect",
+  });
+  const connection = crypto.randomUUID();
+  handshakes.set(second.account, { connection });
+  const socket = await openGatewaySocket();
+  socket.send(FIRST_FRAME);
+  expect(await nextUpstreamMessage(connection)).toBe(FIRST_FRAME);
+  expect(upgrades).toEqual([second.account]);
+  socket.close(1000, "done");
+});
+
+test("codex.rate_limits frames pass through unchanged and remain fenced to the connected account generation", async () => {
+  const [first, second] = await pool();
+  const connection = crypto.randomUUID();
+  handshakes.set(first.account, { connection });
+  const socket = await openGatewaySocket();
+  const messages = received(socket);
+  socket.send(FIRST_FRAME);
+  expect(await nextUpstreamMessage(connection)).toBe(FIRST_FRAME);
+  const quota = {
+    type: "codex.rate_limits",
+    plan_type: "pro",
+    rate_limits: {
+      primary: { used_percent: 20, window_minutes: 300 },
+      secondary: { used_percent: 60, window_minutes: 10080 },
+    },
+  };
+  await sendUpstream(connection, quota);
+  await until(() => messages.length === 1, "quota frame");
+  expect(messages).toEqual([JSON.stringify(quota)]);
+  const firstStub = env.PROVIDER_OAUTH_ACCOUNT.getByName(first.ref);
+  await vi.waitFor(async () => {
+    const account = await accountReply(
+      firstStub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    expect(account.codex?.plan_type).toBe("pro");
+    expect(
+      account.quota.groups[0].buckets.map((bucket) => bucket.used_percent),
+    ).toEqual([20, 60]);
+  });
+  expect(
+    (
+      await accountReply(
+        env.PROVIDER_OAUTH_ACCOUNT.getByName(second.ref).run({
+          action: "view",
+        }),
+        accountViewSchema,
+      )
+    ).quota.groups,
+  ).toEqual([]);
+  await firstStub.run({ action: "disconnect" });
+  const late = {
+    type: "codex.rate_limits",
+    plan_type: "free",
+    rate_limits: { primary: { used_percent: 99 } },
+  };
+  await sendUpstream(connection, late);
+  await until(() => messages.length === 2, "late quota frame");
+  expect(messages[1]).toBe(JSON.stringify(late));
+  expect(
+    (await accountReply(firstStub.run({ action: "view" }), accountViewSchema))
+      .codex?.plan_type,
+  ).toBe("pro");
+  expect(upgrades).toEqual([first.account]);
+  socket.close(1000, "done");
+});

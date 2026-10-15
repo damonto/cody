@@ -2,6 +2,7 @@
 export const RETRY_EVENT_TYPE_PATTERN = /^[\w.:-]{1,160}$/;
 
 export const RETRY_REASONS = [
+  "oauth_refresh",
   "status_match",
   "error_code_match",
   "policy_disabled",

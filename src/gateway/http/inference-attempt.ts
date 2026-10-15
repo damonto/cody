@@ -89,6 +89,8 @@ export async function executeInferenceAttempt({
     provider.retry,
     {
       ...retryOptions,
+      recoverUnauthorized: prepared.recoverUnauthorized,
+      observeResponse: prepared.observeResponse,
       ...((provider.type === ProviderType.Antigravity ||
         provider.type === ProviderType.Xai) &&
       accountDeadline !== undefined

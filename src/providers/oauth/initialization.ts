@@ -5,6 +5,7 @@ import { OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
 import { ProviderType } from "../../config/values.ts";
 
 import type { parseIdToken } from "../codex/api.ts";
+import { codexQuotaSyncSchema } from "../codex/quota.ts";
 
 import { OAuthError } from "./schema.ts";
 
@@ -43,6 +44,7 @@ export function initializeCodexAccount(
     subscription_active_until: claims.subscription_active_until,
   };
   completeAuthorization(account, pending);
+  account.codex_quota_sync = codexQuotaSyncSchema.parse({});
   account.models = [];
   account.models_updated_at = null;
 }

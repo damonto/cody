@@ -27,6 +27,7 @@ export interface ResolvedAntigravityOAuth {
   readonly account_ref: string;
 }
 export interface ResolvedCodexOAuth {
+  readonly generation: number;
   readonly type: typeof CredentialAuthType.OAuth;
   readonly provider: typeof ProviderType.Codex;
   readonly token: string;
@@ -87,6 +88,7 @@ const apiKeyResolver: CredentialResolver<
   sensitiveValues: (auth) => [auth.api_key],
 };
 const codexResolution = z.object({
+  generation: z.number().int().nonnegative(),
   account_id: z.string().min(1),
   is_fedramp: z.boolean().optional(),
 });
@@ -138,12 +140,14 @@ const oauthResolver: CredentialResolver<
           .generation,
       };
     if (provider === ProviderType.Codex) {
-      const { account_id, is_fedramp } = codexResolution.parse(token);
+      const { account_id, is_fedramp, generation } =
+        codexResolution.parse(token);
       return {
         type: CredentialAuthType.OAuth,
         provider,
         token: token.token,
         account_id,
+        generation,
         ...(is_fedramp ? { is_fedramp: true } : {}),
         account_ref,
       };

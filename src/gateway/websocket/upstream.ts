@@ -63,6 +63,8 @@ export class UpstreamWebSocket {
   private controller: AbortController | undefined;
   private connection: WebSocket | undefined;
   private events = Promise.resolve();
+  private observeMessage:
+    ((value: unknown, receivedAt: number) => void) | undefined;
 
   constructor(
     private readonly env: Bindings,
@@ -115,6 +117,8 @@ export class UpstreamWebSocket {
         target.provider.retry,
         {
           send: prepared.send,
+          recoverUnauthorized: prepared.recoverUnauthorized,
+          observeResponse: prepared.observeResponse,
           wait: (delayMs) => abortableDelay(delayMs, controller.signal),
           attemptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
           ...(target.provider.type === ProviderType.Codex
@@ -159,6 +163,8 @@ export class UpstreamWebSocket {
           },
         },
       );
+      if (result.response?.status === 101)
+        this.observeMessage = prepared.observeWebSocketEvent;
       return {
         ...result,
         proxyError: result.response
@@ -171,11 +177,16 @@ export class UpstreamWebSocket {
     }
   }
 
+  observeEvent(value: unknown, receivedAt: number): void {
+    this.observeMessage?.(value, receivedAt);
+  }
+
   close(code: number, reason: string): void {
     this.controller?.abort();
     this.controller = undefined;
     closeSocket(this.connection, code, reason);
     this.connection = undefined;
+    this.observeMessage = undefined;
   }
 
   discard(socket: WebSocket): void {

@@ -1,3 +1,4 @@
+import { codexQuotaObservationSchema } from "../codex/quota.ts";
 import { ProviderType } from "../../config/values.ts";
 import { OAuthFlow } from "./values.ts";
 
@@ -18,6 +19,19 @@ const sessionOwner = {
 
 /** Required fields are checked both at RPC call sites and at the runtime boundary. */
 export const accountCommandSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("codex_usage"),
+    generation: z.number().int().nonnegative(),
+    observed_at: z.number().int().nonnegative(),
+    observation: codexQuotaObservationSchema,
+  }),
+  z.strictObject({
+    action: z.literal("codex_refresh"),
+    generation: z.number().int().nonnegative(),
+    token: z.string().min(1),
+    connection: connectionSchema,
+    proxy_configuration: proxyConfigurationSchema,
+  }),
   xaiLimitSchema.extend({
     action: z.literal("xai_limit"),
     generation: z.number(),

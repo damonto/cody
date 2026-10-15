@@ -7,7 +7,6 @@ import {
   consumeResetResultSchema,
   type AccountModel,
   type ConsumeResetResult,
-  type QuotaSnapshot,
   type ResetCredits,
 } from "../oauth/schema.ts";
 
@@ -150,122 +149,6 @@ export interface DeviceGrant {
 export interface DeviceAuthorization {
   readonly code: string;
   readonly verifier: string;
-}
-
-function windowName(seconds: number | null): string | null {
-  if (seconds === null) return null;
-  if (seconds === 18_000) return "5h";
-  if (seconds === 604_800) return "weekly";
-  const days = seconds / 86_400;
-  if (days >= 28 && days <= 31) return "monthly";
-  if (seconds % 86_400 === 0) return `${days}d`;
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-  return `${Math.round(seconds / 60)}m`;
-}
-const WINDOW_LABELS: Record<string, string> = {
-  "5h": "5-hour limit",
-  weekly: "Weekly limit",
-  monthly: "Monthly limit",
-};
-function parseLimit(
-  id: string,
-  label: string,
-  value: unknown,
-  model: string | null = null,
-): QuotaSnapshot["groups"][number] | null {
-  const limit = object(value);
-  if (!Object.keys(limit).length) return null;
-  const buckets = (["primary_window", "secondary_window"] as const).flatMap(
-    (key) => {
-      const window = object(limit[key]);
-      const used = finite(window.used_percent);
-      if (used === null) return [];
-      const seconds = finite(window.limit_window_seconds);
-      const name = windowName(seconds);
-      const resetAt = finite(window.reset_at);
-      const resetAfter = finite(window.reset_after_seconds);
-      let resetAtIso: string | null = null;
-      if (resetAt !== null) {
-        resetAtIso = new Date(resetAt * 1000).toISOString();
-      } else if (resetAfter !== null) {
-        resetAtIso = new Date(Date.now() + resetAfter * 1000).toISOString();
-      }
-      return [
-        {
-          id: key === "primary_window" ? "primary" : "secondary",
-          label:
-            (name && WINDOW_LABELS[name]) ??
-            (name ? `${name} limit` : "Usage limit"),
-          window: name,
-          window_seconds: seconds,
-          used_percent: used,
-          remaining_fraction: Math.min(1, Math.max(0, 1 - used / 100)),
-          reset_at: resetAtIso,
-        },
-      ];
-    },
-  );
-  return {
-    id,
-    label,
-    buckets,
-    limit_reached: limit.limit_reached === true || limit.allowed === false,
-    model,
-  };
-}
-
-export interface CodexUsage {
-  readonly groups: QuotaSnapshot["groups"];
-  readonly plan_type: string | null;
-  readonly limit_reached: boolean;
-  readonly credits_balance: QuotaSnapshot["credits_balance"];
-  readonly available_resets: number | null;
-}
-/** Map `GET /wham/usage` to the shared account quota snapshot. */
-export function parseUsage(value: unknown): CodexUsage {
-  const data = object(value);
-  if (!("rate_limit" in data) && !("plan_type" in data))
-    throw new OAuthError("Usage response has no rate-limit status", 502);
-  const groups = [
-    parseLimit("codex", "Codex", data.rate_limit),
-    parseLimit("code_review", "Code review", data.code_review_rate_limit),
-    ...(Array.isArray(data.additional_rate_limits)
-      ? data.additional_rate_limits
-      : []
-    ).map((value, index) => {
-      const extra = object(value);
-      const name =
-        str(extra.limit_name) ?? str(extra.metered_feature) ?? `limit-${index}`;
-      return parseLimit(
-        str(extra.metered_feature) ?? name,
-        name,
-        extra.rate_limit,
-        str(extra.normal_model_slug),
-      );
-    }),
-  ].filter((group) => group !== null);
-  const credits = object(data.credits);
-  const main = object(data.rate_limit);
-  return {
-    groups,
-    plan_type: str(data.plan_type),
-    limit_reached: main.limit_reached === true || main.allowed === false,
-    credits_balance: Object.keys(credits).length
-      ? {
-          has_credits: credits.has_credits === true,
-          unlimited: credits.unlimited === true,
-          // The backend reports the balance as a decimal string or number.
-          balance:
-            str(credits.balance) ??
-            (typeof credits.balance === "number"
-              ? String(credits.balance)
-              : null),
-        }
-      : null,
-    available_resets: finite(
-      object(data.rate_limit_reset_credits).available_count,
-    ),
-  };
 }
 
 /** Credits are `available`, `redeeming` or `redeemed`; only the first can be spent. */

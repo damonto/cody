@@ -27,8 +27,8 @@ import {
   type CodexClient,
   parseModels as parseCodexModels,
   parseResetCredits,
-  parseUsage,
 } from "../codex/api.ts";
+import { mergeCodexQuotaRefresh, parseUsage } from "../codex/quota.ts";
 
 import {
   OAuthError,
@@ -52,7 +52,18 @@ interface InventoryState {
     generation: number,
     run: () => Promise<void>,
   ): Promise<void>;
-  resolve(): Promise<z.output<typeof resolvedOAuthSchema>>;
+  resolve(rejected?: {
+    generation: number;
+    token: string;
+  }): Promise<z.output<typeof resolvedOAuthSchema>>;
+}
+type CodexAccess = Extract<
+  z.output<typeof resolvedOAuthSchema>,
+  { account_id: string }
+>;
+interface CodexReadResult<T> {
+  readonly value: T;
+  readonly credential: CodexAccess;
 }
 interface InventoryClients {
   antigravity(): Promise<Pick<AntigravityClient, "models" | "quota" | "load">>;
@@ -68,6 +79,32 @@ export class AccountInventory {
     private readonly state: InventoryState,
     private readonly clients: InventoryClients,
   ) {}
+  /** Retry read-only metadata once with a fenced credential refresh. */
+  private async codexRead<T>(
+    token: CodexAccess,
+    read: (accessToken: string) => Promise<T>,
+  ): Promise<CodexReadResult<T>> {
+    try {
+      return { value: await read(token.token), credential: token };
+    } catch (error) {
+      if (!(error instanceof OAuthError) || error.status !== 401) throw error;
+      const refreshed = await this.state.resolve({
+        generation: token.generation,
+        token: token.token,
+      });
+      if (
+        !("account_id" in refreshed) ||
+        refreshed.account_id !== token.account_id ||
+        refreshed.generation !== token.generation
+      )
+        throw new OAuthError(
+          "Account changed during authentication recovery",
+          409,
+          "account_changed",
+        );
+      return { value: await read(refreshed.token), credential: refreshed };
+    }
+  }
   refreshModels(): Promise<void> {
     const generation = this.state.current().generation;
     return this.state.refresh("models", generation, async () => {
@@ -90,9 +127,14 @@ export class AccountInventory {
               )
             : "account_id" in token
               ? parseCodexModels(
-                  await (
-                    await this.clients.codex()
-                  ).models(token.token, token.account_id),
+                  (
+                    await this.codexRead(token, async (access) =>
+                      (await this.clients.codex()).models(
+                        access,
+                        token.account_id,
+                      ),
+                    )
+                  ).value,
                 )
               : parseAntigravityModels(
                   await (
@@ -155,11 +197,7 @@ export class AccountInventory {
           return;
         }
         if ("account_id" in token)
-          return await this.refreshCodexQuota(
-            generation,
-            token.token,
-            token.account_id,
-          );
+          return await this.refreshCodexQuota(generation, token);
         let groups: QuotaSnapshot["groups"] | undefined;
         let subscription: QuotaSnapshot["subscription"] | undefined;
         const errors = new Set<string>();
@@ -209,49 +247,51 @@ export class AccountInventory {
   }
   private async refreshCodexQuota(
     generation: number,
-    token: string,
-    accountId: string,
+    token: CodexAccess,
   ): Promise<void> {
+    const startedAt = Date.now();
+    let completedAt = startedAt;
     let usage: ReturnType<typeof parseUsage> | undefined;
     let lastError: string | null = null;
     try {
-      usage = parseUsage(
-        await (await this.clients.codex()).usage(token, accountId),
+      const result = await this.codexRead(token, async (access) =>
+        (await this.clients.codex()).usage(access, token.account_id),
       );
+      token = result.credential;
+      completedAt = Date.now();
+      usage = parseUsage(result.value, completedAt);
     } catch (error) {
       lastError = safeError(error);
     }
     // A reset-credit lookup failure never hides the usage windows.
-    const resets = await this.fetchResetCredits(token, accountId);
+    const resets = await this.fetchResetCredits(token);
     await this.state.update(generation, (account) => {
-      const now = Date.now();
-      if (usage) {
-        account.quota.groups = usage.groups;
-        account.quota.updated_at = now;
-        account.quota.limit_reached = usage.limit_reached;
-        account.quota.credits_balance = usage.credits_balance;
-        if (account.codex && usage.plan_type)
-          account.codex = { ...account.codex, plan_type: usage.plan_type };
-        account.quota.subscription = {
-          tier_id: usage.plan_type ?? account.codex?.plan_type ?? null,
-          tier_name: null,
-          credits: [],
-          active_until: account.codex?.subscription_active_until ?? null,
-        };
-      }
+      if (account.provider_type !== ProviderType.Codex)
+        throw new OAuthError("Account provider changed", 409);
+      if (usage)
+        Object.assign(
+          account,
+          mergeCodexQuotaRefresh(account, usage, startedAt, completedAt),
+        );
       account.quota.reset_credits = resets;
       account.quota.last_error = lastError;
     });
   }
   private async fetchResetCredits(
-    token: string,
-    accountId: string,
+    token: CodexAccess,
   ): Promise<NonNullable<QuotaSnapshot["reset_credits"]>> {
     const previous = this.state.current().quota.reset_credits;
     try {
       return {
         ...parseResetCredits(
-          await (await this.clients.codex()).resetCredits(token, accountId),
+          (
+            await this.codexRead(token, async (access) =>
+              (await this.clients.codex()).resetCredits(
+                access,
+                token.account_id,
+              ),
+            )
+          ).value,
         ),
         updated_at: Date.now(),
         error: null,
@@ -270,7 +310,7 @@ export class AccountInventory {
     const token = await this.state.resolve();
     if (!("account_id" in token))
       throw new OAuthError("This operation is only available for Codex", 400);
-    const resets = await this.fetchResetCredits(token.token, token.account_id);
+    const resets = await this.fetchResetCredits(token);
     await this.state.update(generation, (account) => {
       account.quota.reset_credits = resets;
     });

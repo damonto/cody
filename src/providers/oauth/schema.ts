@@ -98,6 +98,11 @@ export const xaiLimitSchema = z.object({
   until: z.number(),
   kind: z.enum(["subscription", "spending"]),
 });
+export const quotaCreditsBalanceSchema = z.object({
+  has_credits: z.boolean(),
+  unlimited: z.boolean(),
+  balance: z.string().nullable(),
+});
 export const quotaSnapshotSchema = z.object({
   groups: z.array(quotaGroupSchema),
   subscription: subscriptionSchema.nullable(),
@@ -106,14 +111,7 @@ export const quotaSnapshotSchema = z.object({
   verification: z.array(antigravityVerificationSchema).optional(),
   stale: z.boolean(),
   limit_reached: z.boolean().optional(),
-  credits_balance: z
-    .object({
-      has_credits: z.boolean(),
-      unlimited: z.boolean(),
-      balance: z.string().nullable(),
-    })
-    .nullable()
-    .optional(),
+  credits_balance: quotaCreditsBalanceSchema.nullable().optional(),
   xai_limits: z.array(xaiLimitSchema).optional(),
   xai_billing: z
     .object({
@@ -230,6 +228,7 @@ export const resolvedOAuthSchema = z.union([
     token: z.string().min(1),
     account_id: z.string().min(1),
     is_fedramp: z.boolean().optional(),
+    generation: z.number().int().nonnegative(),
   }),
 ]);
 export const consumeResetResultSchema = z.object({

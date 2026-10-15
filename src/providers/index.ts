@@ -1,3 +1,5 @@
+import { codexAccountHooks } from "./codex/account-hooks.ts";
+import { providerConnection } from "./outbound.ts";
 import { xaiAdapter } from "./xai/index.ts";
 import { ProviderType, CredentialAuthType } from "../config/values.ts";
 import { ProviderTransport } from "./transport-values.ts";
@@ -98,6 +100,16 @@ export async function prepareProviderRequest(
   return {
     kind: "upstream",
     ...prepared,
+    ...(context &&
+    resolved.type === CredentialAuthType.OAuth &&
+    resolved.provider === ProviderType.Codex
+      ? codexAccountHooks(
+          resolved,
+          providerConnection(provider, credential),
+          context,
+          prepared.headers,
+        )
+      : {}),
     ...createUpstreamTransport(
       provider,
       credential,
