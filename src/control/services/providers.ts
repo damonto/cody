@@ -73,39 +73,71 @@ function editable(work: ConfigurationUnitOfWork, id: string) {
   return provider;
 }
 
-function detachProviderRoutes(
-  rows: Pick<
-    EntityRows,
-    "providers" | "provider_models" | "model_routes" | "model_route_providers"
-  >,
-  providerId: string,
-): void {
+function supportedModelNames(
+  type: EntityRows["providers"][number]["type"],
+  models: readonly string[],
+) {
+  return new Set(providerModelNames({ type, models }));
+}
+
+function providerModelSupport(
+  rows: Pick<EntityRows, "providers" | "provider_models">,
+): Map<string, Set<string>> {
   const modelsByProvider = new Map<string, string[]>();
   for (const row of live(rows.provider_models)) {
     const models = modelsByProvider.get(row.provider_id) ?? [];
     models.push(row.model);
     modelsByProvider.set(row.provider_id, models);
   }
-  const supportedModels = new Set(
-    live(rows.providers)
-      .filter((provider) => provider.id !== providerId)
-      .flatMap((provider) =>
-        providerModelNames({
-          type: provider.type,
-          models: modelsByProvider.get(provider.id) ?? [],
-        }),
+  const support = new Map<string, Set<string>>();
+  for (const provider of live(rows.providers)) {
+    support.set(
+      provider.id,
+      supportedModelNames(
+        provider.type,
+        modelsByProvider.get(provider.id) ?? [],
       ),
+    );
+  }
+  return support;
+}
+
+function detachProviderRoutes(
+  rows: Pick<
+    EntityRows,
+    "providers" | "provider_models" | "model_routes" | "model_route_providers"
+  >,
+  providerId: string,
+  { providerRemoved }: { providerRemoved: boolean },
+): void {
+  const support = providerModelSupport(rows);
+  if (providerRemoved) support.delete(providerId);
+  const supportedModels = new Set(
+    [...support.values()].flatMap((models) => [...models]),
   );
+  const routeById = new Map(
+    live(rows.model_routes).map((row) => [row.id, row]),
+  );
+  const detachedRelation = (
+    row: EntityRows["model_route_providers"][number],
+  ) => {
+    const model = routeById.get(row.route_id)?.model;
+    return (
+      (providerRemoved && row.provider_id === providerId) ||
+      !model ||
+      !support.get(row.provider_id)?.has(model)
+    );
+  };
   const routesWithProviders = new Set(
     live(rows.model_route_providers)
-      .filter((row) => row.provider_id !== providerId)
+      .filter((row) => !detachedRelation(row))
       .map((row) => row.route_id),
   );
   const removedRoutes = new Set(
     live(rows.model_routes)
       .filter((row) =>
         row.scope === "provider"
-          ? row.provider_id === providerId
+          ? providerRemoved && row.provider_id === providerId
           : !supportedModels.has(row.model) ||
             (row.restrict_providers === 1 && !routesWithProviders.has(row.id)),
       )
@@ -116,7 +148,7 @@ function detachProviderRoutes(
     (row) => !removedRoutes.has(row.id),
   );
   rows.model_route_providers = rows.model_route_providers.filter(
-    (row) => row.provider_id !== providerId && !removedRoutes.has(row.route_id),
+    (row) => !removedRoutes.has(row.route_id) && !detachedRelation(row),
   );
 }
 
@@ -251,7 +283,21 @@ function writeSettings(
   rows.model_prices = rows.model_prices.filter(
     (row) => row.deleted_at !== null || modelIds.has(row.provider_model_id),
   );
-  replaceRoutes(work, "provider", id, model_routes ?? {});
+  // The provider input still carries previously configured routes. Dropping a
+  // model must retire that association instead of replaying a stale route.
+  const previousSupport = supportedModelNames(
+    type,
+    live(before).map((row) => row.model),
+  );
+  const currentSupport = supportedModelNames(type, models);
+  const retainedRoutes = Object.fromEntries(
+    Object.entries(model_routes ?? {}).filter(
+      ([, route]) =>
+        currentSupport.has(route.model) || !previousSupport.has(route.model),
+    ),
+  );
+  replaceRoutes(work, "provider", id, retainedRoutes);
+  detachProviderRoutes(rows, id, { providerRemoved: false });
   return id;
 }
 
@@ -353,7 +399,7 @@ export class ProviderService {
             .filter((row) => row.provider_id === id)
             .map((row) => row.id),
         );
-        detachProviderRoutes(rows, id);
+        detachProviderRoutes(rows, id, { providerRemoved: true });
         rows.providers = rows.providers.filter((row) => row.id !== id);
         rows.provider_credentials = rows.provider_credentials.filter(
           (row) => row.provider_id !== id,

@@ -989,6 +989,87 @@ test("provider deletion keeps native family routes and ignores archived model su
   );
 });
 
+test("removing a model retires route associations that depended on it", async () => {
+  const view = await save();
+  const provider = view.config.providers[0];
+  const path = `/providers/${provider.id}`;
+  const route = await call(`${path}/model-routes`, "PUT", {
+    version: view.version,
+    routes: { stale: { model: "real-model" } },
+  });
+  expect(route.status).toBe(200);
+  const { version } = (await route.json()) as { version: number };
+  const saved = (await (await call(path)).json()) as {
+    version: number;
+    item: typeof provider;
+  };
+  const update = await call(path, "PUT", {
+    version,
+    provider: { ...withoutId(saved.item), models: ["replacement-model"] },
+  });
+  expect(update.status).toBe(200);
+  const current = await loadConfig(env);
+  expect(current.providers[0].model_routes).toBeUndefined();
+  expect(current.model_routes).toEqual({});
+  expect(current.model_prices).toEqual([]);
+});
+
+test("removing one model keeps provider routes for retained models", async () => {
+  const view = await save();
+  const provider = view.config.providers[0];
+  const path = `/providers/${provider.id}`;
+  const added = await call(path, "PUT", {
+    version: view.version,
+    provider: { ...withoutId(provider), models: ["real-model", "removed"] },
+  });
+  expect(added.status).toBe(200);
+  const { version: routeVersion } = (await added.json()) as {
+    version: number;
+  };
+  const routes = await call(`${path}/model-routes`, "PUT", {
+    version: routeVersion,
+    routes: {
+      kept: { model: "real-model" },
+      stale: { model: "removed" },
+    },
+  });
+  expect(routes.status).toBe(200);
+  const { version: updateVersion } = (await routes.json()) as {
+    version: number;
+  };
+  const saved = (await (await call(path)).json()) as {
+    item: typeof provider;
+  };
+  const updated = await call(path, "PUT", {
+    version: updateVersion,
+    provider: {
+      ...withoutId(saved.item),
+      models: ["real-model", "replacement"],
+    },
+  });
+  expect(updated.status).toBe(200);
+  const current = await loadConfig(env);
+  expect(current.providers[0].models).toEqual(["real-model", "replacement"]);
+  expect(current.providers[0].model_routes).toEqual({
+    kept: { id: expect.any(String), model: "real-model" },
+  });
+});
+
+test("provider updates still reject unrelated unsupported model routes", async () => {
+  const view = await save();
+  const provider = view.config.providers[0];
+  const before = await readEntities(env.CODY_DB);
+  const response = await call(`/providers/${provider.id}`, "PUT", {
+    version: view.version,
+    provider: {
+      ...withoutId(provider),
+      model_routes: { invalid: { model: "not-a-model" } },
+    },
+  });
+  expect(response.status).toBe(400);
+  expect(await readEntities(env.CODY_DB)).toEqual(before);
+});
+
 test("resource reads mask secrets without decrypting them, and ordinary CRUD bypasses document replacement", async () => {
   const view = await save();
   const current = vi
