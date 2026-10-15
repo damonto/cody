@@ -207,6 +207,29 @@ async function infer(
   await waitOnExecutionContext(context);
   return response;
 }
+test("xAI device failures retain their issuer error and never show a ChatGPT URL", async () => {
+  vi.stubGlobal(
+    "fetch",
+    async () => new Response("unavailable", { status: 404 }),
+  );
+  const ref = crypto.randomUUID();
+  const stub = env.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
+  const session = await accountReply(
+    stub.run({
+      action: "start",
+      account_ref: ref,
+      actor: "admin",
+      provider_type: "xai",
+      flow: "device",
+      connection: { provider_id: "xai", credential_id: "account" },
+    }),
+    sessionViewSchema,
+  );
+  expect(session.status).toBe("error");
+  expect(session.error).toContain("xAI account request failed (HTTP 404");
+  expect(session.verification_uri).toBeNull();
+});
+
 test("xAI device accounts and quota survive object eviction", async () => {
   const account = await ready();
   const quota = await accountReply(

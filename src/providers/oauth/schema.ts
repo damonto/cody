@@ -1,3 +1,24 @@
+import {
+  antigravityCredentialSchema,
+  projectInitializationViewSchema,
+} from "../antigravity/account-schema.ts";
+import {
+  codexAccountSchema,
+  codexCredentialSchema,
+  resetCreditsSchema,
+} from "../codex/account-schema.ts";
+import {
+  claudeAccountSchema,
+  claudeCredentialSchema,
+  claudeExtraUsageSchema,
+  claudeLimitsSchema,
+} from "../claude/account-schema.ts";
+import {
+  xaiAccountSchema,
+  xaiCredentialSchema,
+  xaiLimitSchema,
+  xaiBillingSchema,
+} from "../xai/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import {
   OAuthFlow,
@@ -76,28 +97,13 @@ export const subscriptionSchema = z.object({
   ),
   active_until: z.string().nullable().optional(),
 });
-export const resetCreditSchema = z.object({
-  id: z.string(),
-  reset_type: z.string().nullable(),
-  status: z.string().nullable(),
-  granted_at: z.string().nullable(),
-  expires_at: z.string().nullable(),
-  title: z.string().nullable(),
-  description: z.string().nullable(),
-});
-export type ResetCredit = z.output<typeof resetCreditSchema>;
-export const resetCreditsSchema = z.object({
-  available_count: z.number().int().nonnegative(),
-  credits: z.array(resetCreditSchema),
-  updated_at: z.number().nullable(),
-  error: z.string().nullable(),
-});
-export type ResetCredits = z.output<typeof resetCreditsSchema>;
-export const xaiLimitSchema = z.object({
-  model: z.string().nullable(),
-  until: z.number(),
-  kind: z.enum(["subscription", "spending"]),
-});
+export {
+  resetCreditSchema,
+  resetCreditsSchema,
+  type ResetCredit,
+  type ResetCredits,
+} from "../codex/account-schema.ts";
+export { xaiLimitSchema } from "../xai/account-schema.ts";
 export const quotaCreditsBalanceSchema = z.object({
   has_credits: z.boolean(),
   unlimited: z.boolean(),
@@ -113,48 +119,13 @@ export const quotaSnapshotSchema = z.object({
   limit_reached: z.boolean().optional(),
   credits_balance: quotaCreditsBalanceSchema.nullable().optional(),
   xai_limits: z.array(xaiLimitSchema).optional(),
-  xai_billing: z
-    .object({
-      monthly_limit: z.number().nullable(),
-      included_used: z.number().nullable(),
-      billing_period_end: z.string().nullable(),
-      subscription_error: z.string().nullable().optional(),
-      monthly_error: z.string().nullable().optional(),
-      settings_error: z.string().nullable().optional(),
-      allow_access: z.boolean().nullable().optional(),
-      prepaid_balance: z.number().nonnegative().nullable().optional(),
-      products: z.array(
-        z.object({ product: z.string(), used_percent: z.number().nullable() }),
-      ),
-    })
-    .optional(),
-  claude_limits: z
-    .array(z.object({ model: z.string().nullable(), until: z.number() }))
-    .optional(),
-  extra_usage: z
-    .object({
-      is_enabled: z.boolean(),
-      monthly_limit: z.number().nonnegative().nullable(),
-      disabled_reason: z.string().nullable().optional(),
-      currency: z
-        .string()
-        .regex(/^[A-Z]{3}$/)
-        .optional(),
-      used_credits: z.number().nullable(),
-      utilization: z.number().nullable(),
-    })
-    .nullable()
-    .optional(),
+  xai_billing: xaiBillingSchema,
+  claude_limits: claudeLimitsSchema,
+  extra_usage: claudeExtraUsageSchema,
   reset_credits: resetCreditsSchema.nullable().optional(),
 });
 export type QuotaSnapshot = z.output<typeof quotaSnapshotSchema>;
-export const claudeAccountSchema = z.object({
-  account_id: z.string(),
-  organization_id: z.string(),
-  organization_name: z.string().nullable(),
-  subscription_type: z.string().nullable(),
-  rate_limit_tier: z.string().nullable(),
-});
+export { claudeAccountSchema } from "../claude/account-schema.ts";
 export const accountViewSchema = z.object({
   generation: z.number().optional(),
   account_ref: z.uuid(),
@@ -162,30 +133,10 @@ export const accountViewSchema = z.object({
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
   project_id: z.string().nullable(),
-  project_initialization: z
-    .object({
-      status: z.enum(["pending", "error"]),
-      next_retry_at: z.number().nullable(),
-      error: z.string().nullable(),
-      verification: z.array(antigravityVerificationSchema).optional(),
-    })
-    .nullable()
-    .optional(),
-  xai: z
-    .object({ subject: z.string().min(1) })
-    .nullable()
-    .optional(),
+  project_initialization: projectInitializationViewSchema,
+  xai: xaiAccountSchema,
   claude: claudeAccountSchema.nullable().optional(),
-  codex: z
-    .object({
-      account_id: z.string(),
-      is_fedramp: z.boolean().optional(),
-      user_id: z.string().nullable(),
-      plan_type: z.string().nullable(),
-      subscription_active_until: z.string().nullable(),
-    })
-    .nullable()
-    .default(null),
+  codex: codexAccountSchema,
   expires_at: z.number().nullable(),
   error: z.string().nullable(),
   models: z.array(modelSchema),
@@ -213,23 +164,10 @@ export const sessionViewSchema = z.object({
 });
 export type SessionView = z.output<typeof sessionViewSchema>;
 export const resolvedOAuthSchema = z.union([
-  z.object({
-    token: z.string().min(1),
-    xai_subject: z.string().min(1),
-    generation: z.number(),
-  }),
-  z.object({
-    token: z.string().min(1),
-    claude_organization_id: z.string().min(1),
-    generation: z.number(),
-  }),
-  z.object({ token: z.string().min(1), project_id: z.string().min(1) }),
-  z.object({
-    token: z.string().min(1),
-    account_id: z.string().min(1),
-    is_fedramp: z.boolean().optional(),
-    generation: z.number().int().nonnegative(),
-  }),
+  xaiCredentialSchema,
+  claudeCredentialSchema,
+  antigravityCredentialSchema,
+  codexCredentialSchema,
 ]);
 export const consumeResetResultSchema = z.object({
   code: z.enum(ConsumeResetCode),

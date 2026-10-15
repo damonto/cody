@@ -1,3 +1,7 @@
+import { codexAccountSchema } from "../codex/account-schema.ts";
+import { claudeAccountSchema } from "../claude/account-schema.ts";
+import { xaiAccountSchema } from "../xai/account-schema.ts";
+import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { xaiDeviceSchema } from "../xai/api.ts";
 import { codexQuotaSyncSchema } from "../codex/quota.ts";
 
@@ -15,7 +19,7 @@ import { projectInitializationSchema } from "../antigravity/initialization.ts";
 
 import {
   OAuthError,
-  accountViewSchema,
+  modelSchema,
   connectionSchema,
   identitySchema,
   oauthProviderTypeSchema,
@@ -55,16 +59,16 @@ const storedBase = z.object({
   identity: identitySchema.nullable(),
   project_id: z.string().nullable(),
   antigravity_initialization: projectInitializationSchema.nullable().optional(),
-  codex: accountViewSchema.shape.codex,
-  claude: accountViewSchema.shape.claude,
-  xai: accountViewSchema.shape.xai,
+  codex: codexAccountSchema,
+  claude: claudeAccountSchema.nullable().optional(),
+  xai: xaiAccountSchema,
   claude_quota_revision: z.number().default(0),
   error: z.string().nullable(),
   session: sessionSchema.nullable(),
-  models: accountViewSchema.shape.models,
+  models: z.array(modelSchema),
   models_updated_at: z.number().nullable(),
   models_error: z.string().nullable(),
-  models_verification: accountViewSchema.shape.models_verification,
+  models_verification: z.array(antigravityVerificationSchema).optional(),
   quota: quotaSnapshotSchema,
 });
 export const storedSchema = z.discriminatedUnion("provider_type", [
@@ -101,6 +105,35 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
 ]);
 export type Stored = z.output<typeof storedSchema>;
 export type Session = z.output<typeof sessionSchema>;
+
+type ReadonlyData<Value> = Value extends object
+  ? { readonly [Key in keyof Value]: ReadonlyData<Value[Key]> }
+  : Value;
+export type AccountSnapshot = ReadonlyData<Stored>;
+
+/** Committed account data is immutable; transactions edit a detached copy. */
+export function freezeAccount(account: Stored): Stored {
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(account);
+  return account;
+}
+
+export function quotaIsStale(
+  account: Pick<AccountSnapshot, "status" | "quota">,
+  now = Date.now(),
+): boolean {
+  return (
+    account.status !== OAuthAccountStatus.Ready ||
+    account.quota.last_error !== null ||
+    account.quota.updated_at === null ||
+    now - account.quota.updated_at >= 60_000
+  );
+}
+
 export const terminalSessionStatuses: ReadonlySet<OAuthSessionStatus> = new Set(
   [
     OAuthSessionStatus.Complete,

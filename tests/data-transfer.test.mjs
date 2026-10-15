@@ -204,16 +204,35 @@ for (const [from, to] of [
         });
         await Promise.all(initializing);
         let refreshes = 0;
-        core[fixture.account.provider_type] = async () => ({
-          refresh: async () => {
+        core.outbound = async () => [
+          async (request) => {
+            if (request.url.endsWith("/.well-known/openid-configuration"))
+              return Response.json({
+                device_authorization_endpoint: "https://auth.x.ai/device",
+                token_endpoint: "https://auth.x.ai/token",
+              });
+            assert.equal(request.method, "POST");
+            const grant = request.headers
+              .get("content-type")
+              .includes("application/json")
+              ? await request.json()
+              : Object.fromEntries(new URLSearchParams(await request.text()));
+            assert.equal(grant.grant_type, "refresh_token");
+            assert.equal(grant.refresh_token, "mock-refresh");
             refreshes++;
-            return {
+            return Response.json({
               access_token: "mock-rotated",
               refresh_token: "mock-rotated-refresh",
-              expires_at: Date.now() + 3600000,
-            };
+              expires_in: 3600,
+              ...(fixture.account.provider_type === "xai"
+                ? {
+                    id_token: `e30.${Buffer.from(JSON.stringify({ sub: "mock-subject" })).toString("base64url")}.mock`,
+                  }
+                : {}),
+            });
           },
-        });
+          new AbortController().signal,
+        ];
         assert.equal((await core.resolve()).token, "mock-rotated");
         assert.equal(refreshes, 1);
         await Promise.all(background);

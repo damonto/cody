@@ -13,7 +13,7 @@ import type { ProviderAdapter } from "../types.ts";
 import { ANTIGRAVITY_BASE, parseModels } from "./api.ts";
 import { translateRequest } from "./request.ts";
 import { convertResponse, translatedUsage } from "./response.ts";
-import { inspectAntigravityResponse } from "./inspect.ts";
+import { antigravityResponsePolicy } from "./response-policy.ts";
 import { antigravityUserAgent, antigravityVersion } from "./version.ts";
 
 export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
@@ -25,6 +25,14 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
         endpoint,
       )
     );
+  },
+  validate(input) {
+    if (input.bodyBytes !== undefined && input.bodyBytes > 16 * 1024 * 1024)
+      throw new ProviderRequestError(
+        "Native provider requests must not exceed 16 MiB",
+        413,
+        "request_too_large",
+      );
   },
   async prepare(provider, credential, input, context) {
     // Match the native header set rather than forwarding client SDK fingerprints.
@@ -111,9 +119,15 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
           },
     );
     return {
+      accountSwitching: { timeoutScope: "request" },
       url: `${ANTIGRAVITY_BASE}/v1internal:${method}`,
       ...(["responses", "messages"].includes(endpoint)
-        ? { inspectResponse: inspectAntigravityResponse }
+        ? antigravityResponsePolicy(
+            credential.account_ref,
+            input.model,
+            protocol,
+            context,
+          )
         : {}),
       headers,
       method: "POST",

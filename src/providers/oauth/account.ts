@@ -1,5 +1,8 @@
+import { accountProvider } from "./registry.ts";
+import { TOKEN_REFRESH_MARGIN_MS, type AccountProvider } from "./provider.ts";
 import {
   storedSchema,
+  freezeAccount,
   terminalSessionStatuses,
   emptyQuota,
   devicePending,
@@ -10,53 +13,15 @@ import {
   type Session,
 } from "./state.ts";
 import { AccountInventory } from "./inventory.ts";
-import { mergeCodexQuotaObservation } from "../codex/quota.ts";
-import {
-  initializeCodexAccount,
-  initializeClaudeAccount,
-  initializeXaiAccount,
-} from "./initialization.ts";
 import { accountView } from "./presentation.ts";
 import { ControlStore } from "../../control/store.ts";
-import { XaiClient, xaiIdentity } from "../xai/api.ts";
-
-import {
-  ClaudeClient,
-  CLAUDE_REDIRECT_URI,
-  authorizationUrl as claudeAuthorizationUrl,
-  parseProfile as parseClaudeProfile,
-} from "../claude/api.ts";
 import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
-import { ProviderType, CredentialAuthType } from "../../config/values.ts";
+import { CredentialAuthType } from "../../config/values.ts";
 
 import { z } from "zod";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 import { configureLogging, logWarn } from "../../shared/log.ts";
-import { antigravityVersion } from "../antigravity/version.ts";
-import { AntigravityVerificationError } from "../antigravity/verification.ts";
-import {
-  PROJECT_INITIALIZATION_TTL_MS,
-  pollProject,
-  scheduleProjectRetry,
-  retryableProjectError,
-  projectTimeout,
-  type ProjectStep,
-} from "../antigravity/initialization.ts";
-import {
-  ANTIGRAVITY_REDIRECT_URI,
-  AntigravityClient,
-  authorizationUrl as antigravityAuthorizationUrl,
-} from "../antigravity/api.ts";
-import {
-  CODEX_DEVICE_REDIRECT_URI,
-  CODEX_DEVICE_TTL_MS,
-  CODEX_REDIRECT_URI,
-  CODEX_VERIFICATION_URI,
-  CodexClient,
-  authorizationUrl as codexAuthorizationUrl,
-  parseIdToken,
-} from "../codex/api.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import {
   providerConnection,
@@ -66,7 +31,6 @@ import {
 import { accountCommandSchema, type AccountCommand } from "./commands.ts";
 import {
   OAuthError,
-  tokenSchema,
   type AccountReply,
   type AccountView,
   type OAuthProviderType,
@@ -80,7 +44,7 @@ import { insertIgnore } from "../../platform/sql-dialect.ts";
 import type { ObjectContext } from "../../platform/object-context.ts";
 
 const SESSION_TTL_MS = 10 * 60_000;
-const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
+
 type AccountEnv = Pick<
   Bindings,
   | "CODY_DB"
@@ -119,26 +83,23 @@ export class ProviderOAuthAccountCore {
           this.updateGeneration(generation, update),
         refresh: (kind, generation, run) =>
           this.shareRefresh(kind, generation, run),
-        resolve: (rejected) => this.resolve(undefined, undefined, rejected),
       },
-      {
-        antigravity: () => this.antigravity(),
-        codex: () => this.codex(),
-        claude: () => this.claude(),
-        xai: () => this.xai(),
-      },
+      () => this.provider().inventory,
     );
     void this.ctx.blockConcurrencyWhile(async () => {
       const encrypted = await this.ctx.storage.get<string>("account");
-      if (encrypted) this.account = await this.loadAccount(encrypted);
+      if (encrypted)
+        this.account = freezeAccount(await this.loadAccount(encrypted));
     });
   }
   /** Operator-only restore; the deployment must be quiescent during transfer. */
   async transferReload(): Promise<void> {
     const encrypted = await this.ctx.storage.get<string>("account");
     this.account = encrypted
-      ? storedSchema.parse(
-          await decryptConfig(encrypted, this.env.CONFIG_ENCRYPTION_KEY),
+      ? freezeAccount(
+          storedSchema.parse(
+            await decryptConfig(encrypted, this.env.CONFIG_ENCRYPTION_KEY),
+          ),
         )
       : null;
   }
@@ -164,7 +125,7 @@ export class ProviderOAuthAccountCore {
         if (alarm !== null) await tx.setAlarm(Math.max(Date.now() + 1, alarm));
         else await tx.deleteAlarm();
       });
-      this.account = next;
+      this.account = freezeAccount(next);
     });
     this.mutations = operation.catch(() => {});
     return operation;
@@ -252,6 +213,7 @@ export class ProviderOAuthAccountCore {
     const session = this.session(id, actor);
     const account = this.requireAccount();
     const device = session.flow === OAuthFlow.Device;
+    const authorization = this.provider().authorization;
     return {
       id: `${account.account_ref}.${session.id}`,
       account_ref: account.account_ref,
@@ -261,23 +223,15 @@ export class ProviderOAuthAccountCore {
         session.status !== OAuthSessionStatus.Pending
           ? null
           : device
-            ? (session.xai_device?.verification_uri_complete ??
-              session.xai_device?.verification_uri ??
-              CODEX_VERIFICATION_URI)
-            : account.provider_type === ProviderType.Codex
-              ? codexAuthorizationUrl(session.state, session.challenge)
-              : account.provider_type === ProviderType.Claude
-                ? claudeAuthorizationUrl(session.state, session.challenge)
-                : antigravityAuthorizationUrl(session.state, session.challenge),
+            ? (authorization.device?.url(session) ?? null)
+            : (authorization.browser?.url(session) ?? null),
       flow: session.flow,
       user_code:
         device && session.status === OAuthSessionStatus.Pending
           ? session.user_code
           : null,
       verification_uri: device
-        ? (session.xai_device?.verification_uri_complete ??
-          session.xai_device?.verification_uri ??
-          CODEX_VERIFICATION_URI)
+        ? (authorization.device?.url(session) ?? null)
         : null,
       error: session.error,
       can_retry:
@@ -287,42 +241,23 @@ export class ProviderOAuthAccountCore {
       account: this.view(),
     };
   }
-  private async antigravity(
-    connection?: ProviderConnection,
-    config?: ProxyConfiguration,
-  ): Promise<AntigravityClient> {
-    const [send, signal] = await this.outbound(connection, config);
-    return new AntigravityClient(
-      send,
-      signal,
-      await antigravityVersion(this.env.CODY_CONFIG_KV, this.ctx),
-    );
-  }
-  private async xai(
-    connection?: ProviderConnection,
-    config?: ProxyConfiguration,
-  ): Promise<XaiClient> {
-    const [send, signal] = await this.outbound(connection, config);
-    return new XaiClient(send, signal);
-  }
-  private async claude(
-    connection?: ProviderConnection,
-    config?: ProxyConfiguration,
-  ): Promise<ClaudeClient> {
-    const [send, signal] = await this.outbound(connection, config);
-    return new ClaudeClient(send, signal);
-  }
-  private async codex(
-    connection?: ProviderConnection,
-    config?: ProxyConfiguration,
-  ): Promise<CodexClient> {
-    if (this.requireAccount().provider_type !== ProviderType.Codex)
-      throw new OAuthError("This operation is only available for Codex", 400);
-    const [send, signal] = await this.outbound(connection, config);
-    return new CodexClient(
-      send,
-      signal,
-      this.account?.codex?.is_fedramp ?? false,
+  private provider(
+    type = this.requireAccount().provider_type,
+  ): AccountProvider {
+    return accountProvider(
+      type,
+      {
+        current: () => this.requireAccount(),
+        update: (generation, update) =>
+          this.updateGeneration(generation, update),
+        resolve: (rejected) => this.resolve(undefined, undefined, rejected),
+      },
+      {
+        outbound: (connection, config) => this.outbound(connection, config),
+        configuredConnection: (fallback) => this.configuredConnection(fallback),
+        metadata: this.env,
+        context: this.ctx,
+      },
     );
   }
   private async configuredConnection(fallback: ProviderConnection): Promise<{
@@ -410,14 +345,14 @@ export class ProviderOAuthAccountCore {
     providerType: OAuthProviderType,
     flow: OAuthFlow,
   ): Promise<SessionView> {
+    const authorization = this.provider(providerType).authorization;
     if (
-      flow === OAuthFlow.Device &&
-      providerType !== ProviderType.Codex &&
-      providerType !== ProviderType.Xai
+      flow === OAuthFlow.Device ? !authorization.device : !authorization.browser
     )
-      throw new OAuthError("Device authorization is only available for Codex");
-    if (providerType === ProviderType.Xai && flow !== OAuthFlow.Device)
-      throw new OAuthError("xAI requires device authorization", 400);
+      throw new OAuthError(
+        "This provider does not support the selected authorization flow",
+        400,
+      );
     const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const challenge = base64url(
       new Uint8Array(
@@ -436,7 +371,9 @@ export class ProviderOAuthAccountCore {
       challenge,
       expires_at:
         Date.now() +
-        (flow === OAuthFlow.Device ? CODEX_DEVICE_TTL_MS : SESSION_TTL_MS),
+        (flow === OAuthFlow.Device
+          ? authorization.device!.ttlMs
+          : SESSION_TTL_MS),
       connection,
       error: null,
       tokens: null,
@@ -494,116 +431,17 @@ export class ProviderOAuthAccountCore {
   }
   private async requestDeviceCode(id: string, actor: string): Promise<void> {
     const generation = this.requireAccount().generation;
+    const device = this.provider().authorization.device;
+    if (!device)
+      throw new OAuthError("Device authorization is unavailable", 400);
     try {
-      if (this.requireAccount().provider_type === ProviderType.Xai) {
-        const grant = await (
-          await this.xai(this.session(id, actor).connection)
-        ).startDevice();
-        await this.updateGeneration(generation, (account) => {
-          const pending = this.ownedSession(account, id, actor);
-          pending.xai_device = grant;
-          pending.user_code = grant.user_code;
-          pending.expires_at =
-            Date.now() + Math.min(grant.expires_in, 1800) * 1000;
-          pending.poll_interval_ms = Math.max(5, grant.interval) * 1000;
-          pending.next_at = Date.now() + pending.poll_interval_ms;
-        });
-        return;
-      }
-      const grant = await (
-        await this.codex(this.session(id, actor).connection)
-      ).startDevice();
-      await this.updateGeneration(generation, (account) => {
-        const pending = this.ownedSession(account, id, actor);
-        pending.device_auth_id = grant.device_auth_id;
-        pending.user_code = grant.user_code;
-        pending.poll_interval_ms = grant.interval_ms;
-        pending.next_at = Date.now() + grant.interval_ms;
-      });
+      await device.request(this.session(id, actor));
     } catch (error) {
       await this.failSession(
         generation,
-        error instanceof OAuthError && error.status === 404
-          ? new OAuthError(
-              "Device code sign-in is not enabled for this ChatGPT workspace; use the browser callback instead",
-            )
-          : error,
+        device.error ? device.error(error) : error,
       );
     }
-  }
-  /** One alarm-driven poll; approval continues into token exchange and initialization. */
-  private async pollDevice(): Promise<void> {
-    const snapshot = structuredClone(this.requireAccount());
-    const session = snapshot.session;
-    if (!session || !devicePending(session)) return;
-    if (snapshot.provider_type === ProviderType.Xai) {
-      if (!session.xai_device) return;
-      const result = await (
-        await this.xai(session.connection)
-      ).pollDevice(session.xai_device);
-      await this.updateGeneration(snapshot.generation, (account) => {
-        const pending = account.session;
-        if (
-          !pending ||
-          pending.id !== session.id ||
-          !devicePending(pending) ||
-          Date.now() >= pending.expires_at
-        )
-          throw new OAuthError(
-            "Authorization session is no longer active",
-            410,
-          );
-        if (result.tokens) {
-          pending.tokens = result.tokens;
-          pending.status = OAuthSessionStatus.Initializing;
-          pending.xai_device = undefined;
-          pending.user_code = null;
-          pending.next_at = Date.now();
-        } else {
-          if (result.slow) pending.poll_interval_ms += 5000;
-          pending.next_at = Date.now() + pending.poll_interval_ms;
-        }
-      });
-      return;
-    }
-    if (!session.device_auth_id || !session.user_code) return;
-    const client = await this.codex(session.connection);
-    const approved = await client.pollDevice({
-      device_auth_id: session.device_auth_id,
-      user_code: session.user_code,
-    });
-    if (!approved) {
-      await this.updateGeneration(snapshot.generation, (account) => {
-        const pending = account.session;
-        if (pending?.id === session.id && devicePending(pending))
-          pending.next_at = Date.now() + pending.poll_interval_ms;
-      });
-      return;
-    }
-    await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (pending?.id !== session.id || !devicePending(pending))
-        throw new OAuthError("Authorization is no longer pending", 409);
-      pending.status = OAuthSessionStatus.Exchanging;
-      pending.user_code = null;
-    });
-    const tokens = await client.exchange(
-      approved.code,
-      approved.verifier,
-      CODEX_DEVICE_REDIRECT_URI,
-    );
-    await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (
-        pending?.id !== session.id ||
-        pending.status !== OAuthSessionStatus.Exchanging
-      )
-        throw new OAuthError("Authorization session is no longer active", 410);
-      pending.tokens = tokens;
-      pending.device_auth_id = null;
-      pending.status = OAuthSessionStatus.Initializing;
-      pending.next_at = Date.now();
-    });
   }
   private async complete(
     id: string,
@@ -631,31 +469,13 @@ export class ProviderOAuthAccountCore {
         "Authorization callback was already submitted; check the session status",
         409,
       );
-    const codex = this.requireAccount().provider_type === ProviderType.Codex;
-    const claude = this.requireAccount().provider_type === ProviderType.Claude;
-    if (claude && !URL.canParse(redirect)) {
-      const [code, state, extra] = redirect.trim().split("#");
-      if (!code || !state || extra)
-        throw new OAuthError(
-          "Paste the Claude authorization code including its state",
-        );
-      redirect = `${CLAUDE_REDIRECT_URI}?${new URLSearchParams({ code, state }).toString()}`;
-    }
-    const url = URL.parse(redirect);
-    const callbackState = url?.searchParams.get("state") ?? "";
-    const onboardingSuffix = ".onboarding_entrypoint=life_sciences";
-    const normalizedState =
-      codex && callbackState.endsWith(onboardingSuffix)
-        ? callbackState.slice(0, -onboardingSuffix.length)
-        : callbackState;
+    const browser = this.provider().authorization.browser;
+    if (!browser)
+      throw new OAuthError("Browser authorization is unavailable", 400);
+    const { url, state: normalizedState } = browser.normalizeCallback(redirect);
     if (
       !url ||
-      `${url.origin}${url.pathname}` !==
-        (codex
-          ? CODEX_REDIRECT_URI
-          : claude
-            ? CLAUDE_REDIRECT_URI
-            : ANTIGRAVITY_REDIRECT_URI) ||
+      `${url.origin}${url.pathname}` !== browser.redirectUri ||
       url.username ||
       url.password ||
       url.hash ||
@@ -682,17 +502,7 @@ export class ProviderOAuthAccountCore {
     });
     const operation = (async () => {
       try {
-        const tokens = codex
-          ? await (
-              await this.codex(session.connection)
-            ).exchange(code, session.verifier, CODEX_REDIRECT_URI)
-          : claude
-            ? await (
-                await this.claude(session.connection)
-              ).exchange(code, session.verifier, session.state)
-            : await (
-                await this.antigravity(session.connection)
-              ).exchange(code, session.verifier);
+        const tokens = await browser.exchange(code, session);
         await this.updateGeneration(generation, (account) => {
           const pending = this.ownedSession(account, id, actor);
           if (
@@ -749,230 +559,6 @@ export class ProviderOAuthAccountCore {
       return account;
     });
   }
-  private async initialize(): Promise<void> {
-    const snapshot = structuredClone(this.requireAccount());
-    const session = snapshot.session;
-    if (!session?.tokens || session.status !== OAuthSessionStatus.Initializing)
-      return;
-    if (snapshot.provider_type === ProviderType.Xai)
-      return this.initializeXai(snapshot, session, session.tokens);
-    if (snapshot.provider_type === ProviderType.Codex)
-      return this.initializeCodex(snapshot, session, session.tokens);
-    if (snapshot.provider_type === ProviderType.Claude)
-      return this.initializeClaude(snapshot, session, session.tokens);
-    const identity =
-      session.identity ??
-      (await (
-        await this.antigravity(session.connection)
-      ).userInfo(session.tokens.access_token));
-    if (snapshot.identity && snapshot.identity.id !== identity.id)
-      throw new OAuthError(
-        "This is a different Google account; add it as a new account instead",
-      );
-    await this.updateGeneration(snapshot.generation, (account) => {
-      const pending = account.session;
-      if (
-        !pending ||
-        pending.id !== session.id ||
-        pending.status !== OAuthSessionStatus.Initializing ||
-        !pending.tokens
-      )
-        throw new OAuthError("Authorization was cancelled", 409);
-      if (Date.now() >= pending.expires_at)
-        throw new OAuthError("Authorization session expired; start again", 410);
-      const refreshToken =
-        pending.tokens.refresh_token ?? account.tokens?.refresh_token;
-      if (!refreshToken)
-        throw new OAuthError(
-          "Google did not return a refresh token; start authorization again",
-        );
-      // The OAuth session can finish while project provisioning continues durably.
-      // Keep a working account's credentials until the replacement is ready.
-      account.antigravity_initialization = {
-        tokens: { ...pending.tokens, refresh_token: refreshToken },
-        identity,
-        connection: pending.connection,
-        stage: "project",
-        tier: "free-tier",
-        attempts: 0,
-        next_at: Date.now(),
-        deadline: Date.now() + PROJECT_INITIALIZATION_TTL_MS,
-        error: null,
-        last_result: null,
-      };
-      account.generation++;
-      pending.identity = identity;
-      pending.status = OAuthSessionStatus.Complete;
-      pending.tokens = null;
-      pending.state = "";
-      pending.verifier = "";
-    });
-  }
-  private async projectFailure(
-    generation: number,
-    error: unknown,
-  ): Promise<void> {
-    if (this.account?.generation !== generation) return;
-    // Storage/programming faults must reach the alarm runtime; only known
-    // upstream failures may change the persisted project's retry state.
-    if (!(error instanceof OAuthError)) throw error;
-    await this.updateGeneration(generation, (account) => {
-      const project = account.antigravity_initialization;
-      if (!project) return;
-      const now = Date.now();
-      if (error.code !== "project_initialization_timeout")
-        project.last_result = safeError(error);
-      if (error instanceof AntigravityVerificationError) {
-        project.error = error.message;
-        project.verification = error.verification;
-      } else if (now >= project.deadline)
-        project.error = projectTimeout(project).message;
-      else if (retryableProjectError(error))
-        account.antigravity_initialization = scheduleProjectRetry(project, now);
-      else project.error = safeError(error);
-    });
-  }
-  private async initializeAntigravityProject(): Promise<void> {
-    const snapshot = structuredClone(this.requireAccount());
-    const project = snapshot.antigravity_initialization;
-    if (!project || project.error) return;
-    if (Date.now() >= project.deadline)
-      return this.projectFailure(snapshot.generation, projectTimeout(project));
-
-    let client: AntigravityClient;
-    let tokens = project.tokens;
-    try {
-      const selected = await this.configuredConnection(project.connection);
-      project.connection = selected.connection;
-      client = await this.antigravity(selected.connection, selected.config);
-      if (tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
-        if (!tokens.refresh_token)
-          throw new OAuthError(
-            "Reconnect this account to obtain a refresh token",
-            401,
-            "invalid_grant",
-          );
-        tokens = { ...tokens, ...(await client.refresh(tokens.refresh_token)) };
-      }
-    } catch (error) {
-      return this.projectFailure(snapshot.generation, error);
-    }
-    if (tokens !== project.tokens) {
-      // Rotated tokens must be durable before any later request can fail.
-      await this.updateGeneration(snapshot.generation, (account) => {
-        if (account.antigravity_initialization)
-          account.antigravity_initialization.tokens = tokens;
-      });
-      project.tokens = tokens;
-    }
-
-    let result: ProjectStep;
-    try {
-      result = await pollProject(client, project);
-    } catch (error) {
-      return this.projectFailure(snapshot.generation, error);
-    }
-    // Keep persistence outside the upstream error handler. A rejected commit
-    // is retried by the object runtime, never classified as a Google failure.
-    await this.updateGeneration(snapshot.generation, (account) => {
-      if (result.kind === "pending") {
-        account.antigravity_initialization = scheduleProjectRetry(
-          { ...project, ...result.progress },
-          Date.now(),
-        );
-        return;
-      }
-      account.tokens = project.tokens;
-      account.identity = project.identity;
-      account.project_id = result.project_id;
-      account.connection = project.connection;
-      account.status = OAuthAccountStatus.Ready;
-      account.error = null;
-      account.generation++;
-      account.quota = emptyQuota();
-      account.models = [];
-      account.models_updated_at = null;
-      account.models_error = null;
-      account.antigravity_initialization = null;
-      delete account.models_verification;
-    });
-  }
-  private async retryProject(): Promise<void> {
-    await this.updateGeneration(this.requireAccount().generation, (account) => {
-      const project = account.antigravity_initialization;
-      if (account.provider_type !== ProviderType.Antigravity || !project)
-        throw new OAuthError(
-          "There is no pending Antigravity project initialization",
-          409,
-        );
-      if (!project.error) return;
-      account.generation++;
-      project.error = null;
-      delete project.verification;
-      project.last_result = null;
-      project.stage = "project";
-      project.attempts = 0;
-      project.next_at = Date.now();
-      project.deadline = Date.now() + PROJECT_INITIALIZATION_TTL_MS;
-    });
-  }
-  /** Codex identity comes from the exchanged id_token; there is no project setup. */
-  private async initializeCodex(
-    snapshot: Stored,
-    session: Session,
-    tokens: NonNullable<Session["tokens"]>,
-  ): Promise<void> {
-    if (!tokens.id_token)
-      throw new OAuthError(
-        "ChatGPT did not return an identity token; start authorization again",
-        502,
-      );
-    const claims = parseIdToken(tokens.id_token);
-    const identity = {
-      id: `${claims.account_id}:${claims.user_id ?? claims.email ?? claims.account_id}`,
-      email: claims.email,
-    };
-    if (snapshot.identity && snapshot.identity.id !== identity.id)
-      throw new OAuthError(
-        "This is a different ChatGPT account; add it as a new account instead",
-      );
-    await this.updateGeneration(snapshot.generation, (account) => {
-      initializeCodexAccount(account, session, claims, identity);
-    });
-  }
-  private async initializeClaude(
-    snapshot: Stored,
-    session: Session,
-    tokens: NonNullable<Session["tokens"]>,
-  ): Promise<void> {
-    const profile = parseClaudeProfile(
-      await (
-        await this.claude(session.connection)
-      ).profile(tokens.access_token),
-    );
-    if (snapshot.identity && snapshot.identity.id !== profile.identity.id)
-      throw new OAuthError(
-        "This is a different Claude account or organization; add it as a new account",
-      );
-    await this.updateGeneration(snapshot.generation, (account) => {
-      initializeClaudeAccount(account, session, profile);
-    });
-  }
-  private async initializeXai(
-    snapshot: Stored,
-    session: Session,
-    tokens: NonNullable<Session["tokens"]>,
-  ): Promise<void> {
-    const claims = xaiIdentity(tokens);
-    if (snapshot.identity && snapshot.identity.id !== claims.sub)
-      throw new OAuthError(
-        "This is a different xAI account; add a new account",
-        400,
-      );
-    await this.updateGeneration(snapshot.generation, (account) => {
-      initializeXaiAccount(account, session, claims, tokens);
-    });
-  }
   private active() {
     const account = this.requireAccount();
     if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
@@ -981,42 +567,7 @@ export class ProviderOAuthAccountCore {
         503,
         "oauth_account_unavailable",
       );
-    let credential:
-      | { account_id: string; is_fedramp?: boolean; generation: number }
-      | { project_id: string }
-      | { xai_subject: string; generation: number }
-      | { claude_organization_id: string; generation: number };
-    if (account.provider_type === ProviderType.Xai && account.xai) {
-      credential = {
-        xai_subject: account.xai.subject,
-        generation: account.generation,
-      };
-    } else if (account.provider_type === ProviderType.Codex && account.codex) {
-      credential = {
-        account_id: account.codex.account_id,
-        generation: account.generation,
-        ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
-      };
-    } else if (
-      account.provider_type === ProviderType.Claude &&
-      account.claude
-    ) {
-      credential = {
-        claude_organization_id: account.claude.organization_id,
-        generation: account.generation,
-      };
-    } else if (
-      account.provider_type === ProviderType.Antigravity &&
-      account.project_id
-    ) {
-      credential = { project_id: account.project_id };
-    } else {
-      throw new OAuthError(
-        "Account identity is unavailable; reconnect this account",
-        503,
-        "oauth_account_unavailable",
-      );
-    }
+    const credential = this.provider().credential();
     return {
       generation: account.generation,
       tokens: account.tokens,
@@ -1031,7 +582,7 @@ export class ProviderOAuthAccountCore {
     const snapshot = this.active();
     if (
       rejected &&
-      (this.requireAccount().provider_type !== ProviderType.Codex ||
+      (!this.provider().recoverUnauthorized ||
         snapshot.generation !== rejected.generation)
     )
       throw new OAuthError(
@@ -1076,61 +627,12 @@ export class ProviderOAuthAccountCore {
               503,
               "invalid_grant",
             );
-          let result: z.output<typeof tokenSchema>;
-          let claims: ReturnType<typeof parseIdToken> | null = null;
-          if ("xai_subject" in snapshot.credential) {
-            result = await (
-              await this.xai(connection, config)
-            ).refresh(snapshot.tokens, snapshot.credential.xai_subject);
-          } else if (
-            this.requireAccount().provider_type === ProviderType.Codex
-          ) {
-            result = await (
-              await this.codex(connection, config)
-            ).refresh(refreshToken, snapshot.tokens);
-            // A refreshed id_token may carry a new plan or renewal date.
-            if (result.id_token) claims = parseIdToken(result.id_token);
-          } else if (
-            this.requireAccount().provider_type === ProviderType.Claude
-          ) {
-            // The refresh grant is already bound to this identity. Do not lose
-            // a rotated refresh token to a subsequent profile lookup failure.
-            result = await (
-              await this.claude(connection, config)
-            ).refresh(refreshToken, this.requireAccount().claude ?? undefined);
-          } else
-            result = await (
-              await this.antigravity(connection, config)
-            ).refresh(refreshToken);
-          if (
-            claims &&
-            claims.account_id !== this.requireAccount().codex?.account_id
-          )
-            throw new OAuthError(
-              "Token refresh returned a different workspace; reconnect this account",
-              401,
-              "invalid_grant",
-            );
-          await this.updateGeneration(snapshot.generation, (account) => {
-            account.tokens = {
-              ...result,
-              refresh_token: result.refresh_token ?? refreshToken,
-            };
-            if (
-              claims &&
-              account.codex &&
-              claims.account_id === account.codex.account_id
-            )
-              account.codex = {
-                ...account.codex,
-                is_fedramp: claims.is_fedramp ?? false,
-                plan_type: claims.plan_type ?? account.codex.plan_type,
-                subscription_active_until:
-                  claims.subscription_active_until ??
-                  account.codex.subscription_active_until,
-              };
-            account.error = null;
-          });
+          await this.provider().refresh(
+            snapshot.generation,
+            { ...snapshot.tokens, refresh_token: refreshToken },
+            connection,
+            config,
+          );
         } catch (error) {
           if (this.account?.generation === snapshot.generation)
             await this.updateGeneration(snapshot.generation, (account) => {
@@ -1149,7 +651,7 @@ export class ProviderOAuthAccountCore {
         409,
         "account_changed",
       );
-    return { token: current.tokens.access_token, ...current.credential };
+    return current.credential;
   }
   private async retry(id: string, actor: string): Promise<void> {
     await this.updateGeneration(this.requireAccount().generation, (account) => {
@@ -1180,117 +682,18 @@ export class ProviderOAuthAccountCore {
   private async dispatch(command: z.output<typeof accountCommandSchema>) {
     switch (command.action) {
       case "codex_usage":
-        if (this.requireAccount().provider_type !== ProviderType.Codex)
-          throw new OAuthError("Only available for Codex", 400);
-        await this.updateGeneration(command.generation, (account) => {
-          if (
-            account.provider_type !== ProviderType.Codex ||
-            account.status !== OAuthAccountStatus.Ready
-          )
-            return;
-          Object.assign(
-            account,
-            mergeCodexQuotaObservation(
-              account,
-              command.observation,
-              Math.min(Date.now(), command.observed_at),
-            ),
-          );
-        });
-        return { observed: true };
       case "xai_auth_invalid":
-        if (this.requireAccount().provider_type !== ProviderType.Xai)
-          throw new OAuthError("Only available for xAI", 400);
-        await this.updateGeneration(command.generation, async (account) => {
-          if (
-            !account.tokens ||
-            !(await equalSecret(account.tokens.access_token, command.token))
-          )
-            return;
-          account.status = OAuthAccountStatus.NeedsReauthorization;
-          account.error = "Reconnect this xAI account";
-        });
-        return this.view();
       case "xai_limit":
-        if (this.requireAccount().provider_type !== ProviderType.Xai)
-          throw new OAuthError("Only available for xAI", 400);
-        await this.updateGeneration(command.generation, (account) => {
-          const limits = (account.quota.xai_limits ?? []).filter(
-            (limit) => limit.until > Date.now(),
-          );
-          const previous = limits.find(
-            (limit) =>
-              limit.model === command.model && limit.kind === command.kind,
-          );
-          if (previous)
-            previous.until = Math.max(previous.until, command.until);
-          else
-            limits.push({
-              model: command.model,
-              until: command.until,
-              kind: command.kind,
-            });
-          account.quota.xai_limits = limits;
-        });
-        return this.view();
       case "claude_limit":
-      case "claude_usage":
-        if (this.requireAccount().provider_type !== ProviderType.Claude)
-          throw new OAuthError("Only available for Claude", 400);
-        await this.updateGeneration(command.generation, (account) => {
-          account.claude_quota_revision++;
-          const observations =
-            command.action === "claude_limit"
-              ? [command, ...(command.additional_limits ?? [])]
-              : (command.limits ?? []);
-          if (observations.length) {
-            const limits = (account.quota.claude_limits ?? []).filter(
-              (limit) => limit.until > Date.now(),
-            );
-            for (const observation of observations) {
-              const existing = limits.find(
-                (limit) => limit.model === observation.model,
-              );
-              if (existing)
-                existing.until = Math.max(existing.until, observation.until);
-              else
-                limits.push({
-                  model: observation.model,
-                  until: observation.until,
-                });
-            }
-            account.quota.claude_limits = limits;
-          }
-          if (command.action === "claude_limit") return;
-          if (
-            command.extra_usage_disabled_reason !== undefined &&
-            account.quota.extra_usage
-          )
-            account.quota.extra_usage.disabled_reason =
-              command.extra_usage_disabled_reason;
-          for (const group of command.groups) {
-            const index = account.quota.groups.findIndex(
-              (previous) => previous.id === group.id,
-            );
-            if (index === -1) account.quota.groups.push(group);
-            else {
-              const previous = account.quota.groups[index];
-              const previousReset = Date.parse(
-                previous.buckets[0]?.reset_at ?? "",
-              );
-              const nextReset = Date.parse(group.buckets[0]?.reset_at ?? "");
-              if (
-                !Number.isFinite(previousReset) ||
-                nextReset > previousReset ||
-                (nextReset === previousReset &&
-                  (group.buckets[0]?.used_percent ?? 0) >=
-                    (previous.buckets[0]?.used_percent ?? 0))
-              )
-                account.quota.groups[index] = group;
-            }
-          }
-        });
-        return this.view();
+      case "claude_usage": {
+        const provider = this.provider();
+        if (!provider.observe)
+          throw new OAuthError("Unsupported account observation", 400);
+        await provider.observe(command);
+        return command.action === "codex_usage"
+          ? { observed: true }
+          : this.view();
+      }
       case "start":
         return this.start(
           command.account_ref,
@@ -1330,14 +733,24 @@ export class ProviderOAuthAccountCore {
       case "disconnect":
         await this.disconnect();
         return this.view();
-      case "reset_credits":
-        await this.inventory.refreshResetCredits();
+      case "reset_credits": {
+        const resets = this.provider().resets;
+        if (!resets)
+          throw new OAuthError("Account resets are unavailable", 400);
+        await resets.refresh();
         return this.view();
-      case "consume_reset":
-        return this.inventory.consumeReset(
+      }
+      case "consume_reset": {
+        const resets = this.provider().resets;
+        if (!resets)
+          throw new OAuthError("Account resets are unavailable", 400);
+        const result = await resets.consume(
           command.redeem_request_id,
           command.credit_id,
         );
+        await this.inventory.refreshQuota(true);
+        return { result, account: this.view() };
+      }
       case "view":
         return this.view();
       case "readiness":
@@ -1352,9 +765,13 @@ export class ProviderOAuthAccountCore {
             return { ready: false };
           throw error;
         }
-      case "retry_project":
-        await this.retryProject();
+      case "retry_project": {
+        const background = this.provider().background;
+        if (!background)
+          throw new OAuthError("Account initialization cannot be retried", 409);
+        await background.retry();
         return this.view();
+      }
     }
   }
   async run(input: AccountCommand): Promise<AccountReply> {
@@ -1383,12 +800,10 @@ export class ProviderOAuthAccountCore {
   async alarm(): Promise<void> {
     await this.expireSession();
     const account = this.requireAccount();
-    if (
-      account.antigravity_initialization &&
-      !account.antigravity_initialization.error
-    ) {
+    const provider = this.provider();
+    if (provider.background?.pending()) {
       try {
-        await this.initializeAntigravityProject();
+        await provider.background.run();
       } catch (error) {
         // Cancellation or reauthorization can supersede an in-flight alarm.
         if (!(error instanceof OAuthError && error.code === "account_changed"))
@@ -1400,7 +815,7 @@ export class ProviderOAuthAccountCore {
     if (!session) return;
     if (devicePending(session)) {
       try {
-        await this.pollDevice();
+        await provider.authorization.device?.poll();
       } catch (error) {
         const pending = this.account?.session;
         // Transport faults keep polling until the device code expires.
@@ -1420,7 +835,7 @@ export class ProviderOAuthAccountCore {
     }
     if (session.status === OAuthSessionStatus.Initializing) {
       try {
-        await this.initialize();
+        await provider.authorization.initialize();
       } catch (error) {
         await this.failSession(account.generation, error);
       }

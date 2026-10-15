@@ -2,21 +2,12 @@ import { executeInferenceAttempt } from "./inference-attempt.ts";
 import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
 import { unavailableInference } from "./inference-unavailable.ts";
 import {
-  recordXaiLimit,
-  xaiQuotaResponse,
-} from "../../providers/xai/availability.ts";
-import { CredentialAuthType } from "../../config/values.ts";
-import { antigravityQuotaResponse } from "../../providers/antigravity/exhaustion.ts";
-import { recordAntigravityLimit } from "../../providers/antigravity/availability.ts";
-import { responseQuotaObservation } from "../../providers/claude/limits.ts";
-import {
   ProviderAvailabilityReason,
   HealthFailureScope,
 } from "../health/values.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
 import { RequestOutcome } from "../../telemetry/values.ts";
-import { ProviderType } from "../../config/values.ts";
 import { ProviderTransport } from "../../providers/transport-values.ts";
 
 import type { Bindings } from "../../platform/bindings.ts";
@@ -35,7 +26,6 @@ import type { RequestMeter } from "../../telemetry/meter.ts";
 
 import {
   healthFailureScope,
-  recordCredentialQuotaCooldown,
   recordProviderFailure,
   recordProviderSuccess,
   scheduleHealthUpdate,
@@ -212,16 +202,6 @@ export async function handleInference(
 
     let preparation: PreparedProviderResult;
     try {
-      if (
-        (provider.type === ProviderType.Antigravity ||
-          provider.type === ProviderType.Xai) &&
-        rawBody.byteLength > 16 * 1024 * 1024
-      )
-        throw new ProviderRequestError(
-          "Native provider requests must not exceed 16 MiB",
-          413,
-          "request_too_large",
-        );
       preparation = await prepareProviderRequest(
         provider,
         selectedCredential,
@@ -231,6 +211,7 @@ export async function handleInference(
           transport: ProviderTransport.Http,
           protocol,
           payload,
+          bodyBytes: rawBody.byteLength,
           model: upstreamModel,
           clientId: client.id,
           sessionId,
@@ -276,15 +257,8 @@ export async function handleInference(
       prepared.inferenceMetadata ??
         inferenceMetadata({ ...payload, model: upstreamModel }, protocol),
     );
-    // The meter freezes its first selection, so Codex waits until no account
-    // switch can follow.
-    if (
-      provider.type !== ProviderType.Codex &&
-      provider.type !== ProviderType.Antigravity &&
-      provider.type !== ProviderType.Claude &&
-      provider.type !== ProviderType.Xai
-    )
-      meter?.select(meterTarget);
+    // Freeze the selection only after provider-owned quota handling permits output.
+    if (!prepared.accountSwitching) meter?.select(meterTarget);
     headers.delete("content-length");
     const modelRewritten = payload.model !== upstreamModel;
     if (modelRewritten || prepared.body !== undefined) {
@@ -305,21 +279,19 @@ export async function handleInference(
         modelRewritten,
         originalText,
       );
-    const { result, startedAt, usageLimit, nativeLimit, claudeLimit } =
-      await executeInferenceAttempt({
-        request,
-        env,
-        target,
-        prepared,
-        body,
-        protocol,
-        upstreamPath,
-        requestId,
-        context,
-        retryOptions,
-        accountDeadline,
-        meter,
-      });
+    const { result, startedAt, accountSwitch } = await executeInferenceAttempt({
+      request,
+      env,
+      target,
+      prepared,
+      body,
+      protocol,
+      requestId,
+      context,
+      retryOptions,
+      accountDeadline,
+      meter,
+    });
     for (const attempt of result.attempts) {
       logicalAttempts.push({ ...attempt, attempt: ++attemptCount });
     }
@@ -327,27 +299,9 @@ export async function handleInference(
     if (logicalAttempts.length > 20)
       logicalAttempts.splice(0, logicalAttempts.length - 20);
     meter?.recordAttempts(logicalAttempts);
-    if (
-      result.response &&
-      nativeLimit &&
-      selectedCredential.auth.type === CredentialAuthType.OAuth
-    ) {
-      try {
-        if (provider.type === ProviderType.Xai)
-          await recordXaiLimit(
-            env,
-            selectedCredential.auth.account_ref,
-            prepared.oauthGeneration,
-            nativeLimit,
-          );
-        else
-          await recordAntigravityLimit(
-            env,
-            selectedCredential.auth.account_ref,
-            upstreamModel,
-            nativeLimit,
-          );
-      } catch {
+    if (result.response && accountSwitch) {
+      const persisted = await accountSwitch.persist();
+      if (persisted === "unavailable") {
         await discardBody(result.response.body);
         return apiError(
           protocol,
@@ -356,119 +310,20 @@ export async function handleInference(
           { code: "quota_state_unavailable", requestId },
         );
       }
-      lockedProvider = provider.id;
-      excludedCredentials.add(
-        credentialKey(provider.id, selectedCredential.id),
-      );
-      accountSwitches.push({
-        credential_id: selectedCredential.id,
-        ...nativeLimit,
-      });
-      // Keep raw upstream statuses for attempt logs, including HTTP 200 SSE errors.
-      if (provider.type === ProviderType.Xai) {
-        if (!prepared.transformResponse) {
-          await discardBody(result.response.body);
-          return apiError(protocol, 500, "xAI response adapter is missing", {
-            requestId,
-          });
-        }
-        exhausted = result.response.ok
-          ? xaiQuotaResponse(protocol, nativeLimit.resets_at, requestId)
-          : await prepared.transformResponse(result.response);
-        if (result.response.ok) await discardBody(result.response.body);
-        continue;
-      }
-      await discardBody(result.response.body);
-      exhausted = antigravityQuotaResponse(
-        protocol,
-        nativeLimit.resets_at,
-        requestId,
-      );
-      continue;
-    }
-    if (
-      result.response &&
-      provider.type === ProviderType.Claude &&
-      upstreamPath === "messages" &&
-      selectedCredential.auth.type === CredentialAuthType.OAuth &&
-      prepared.oauthGeneration !== undefined
-    ) {
-      const observation = responseQuotaObservation(
-        result.response.headers,
-        upstreamModel,
-      );
-      if (observation)
-        await env.PROVIDER_OAUTH_ACCOUNT.getByName(
-          selectedCredential.auth.account_ref,
-        )
-          .run({
-            action: "claude_usage",
-            ...observation,
-            generation: prepared.oauthGeneration,
-          })
-          .catch(() => undefined);
-    }
-    if (
-      result.response &&
-      claudeLimit &&
-      selectedCredential.auth.type === CredentialAuthType.OAuth &&
-      prepared.oauthGeneration !== undefined
-    ) {
-      const saved = await env.PROVIDER_OAUTH_ACCOUNT.getByName(
-        selectedCredential.auth.account_ref,
-      )
-        .run({
-          action: "claude_limit",
-          generation: prepared.oauthGeneration,
-          ...claudeLimit,
-        })
-        .catch(() => undefined);
-      if (saved?.ok) {
+      if (persisted === "recorded") {
         lockedProvider = provider.id;
         excludedCredentials.add(
           credentialKey(provider.id, selectedCredential.id),
         );
         accountSwitches.push({
           credential_id: selectedCredential.id,
-          code: "usage_limit_reached",
-          resets_at: claudeLimit.until,
+          ...accountSwitch.limit,
         });
-        exhausted = result.response;
+        exhausted = await accountSwitch.exhausted(result.response);
         continue;
       }
-      requestLog?.warn({ outcome: "claude_quota_write_failed" });
     }
-    if (result.response && usageLimit) {
-      // Awaited: the next selection must already see this account cooling.
-      const persisted = await recordCredentialQuotaCooldown(
-        env,
-        provider.id,
-        selectedCredential.id,
-        usageLimit.resets_at,
-        requestId,
-      );
-      if (persisted) {
-        lockedProvider = provider.id;
-        excludedCredentials.add(
-          credentialKey(provider.id, selectedCredential.id),
-        );
-        accountSwitches.push({
-          credential_id: selectedCredential.id,
-          code: usageLimit.code,
-          resets_at: usageLimit.resets_at,
-        });
-        exhausted = result.response;
-        continue;
-      }
-      requestLog?.warn({ outcome: "codex_quota_write_failed" });
-    }
-    if (
-      provider.type === ProviderType.Codex ||
-      provider.type === ProviderType.Antigravity ||
-      provider.type === ProviderType.Claude ||
-      provider.type === ProviderType.Xai
-    )
-      meter?.select(meterTarget);
+    if (prepared.accountSwitching) meter?.select(meterTarget);
     const upstreamDurationMs = elapsedMs(startedAt);
     if (!result.response) {
       const cancelled = request.signal.aborted;
@@ -593,7 +448,7 @@ export async function handleInference(
         502,
         error instanceof ProviderRequestError
           ? error.message
-          : "Antigravity returned an invalid response",
+          : "The selected provider returned an invalid response",
         { code: "invalid_upstream_response", requestId },
       );
     }

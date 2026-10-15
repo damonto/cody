@@ -1,3 +1,4 @@
+import { claudeResponsePolicy } from "./response-policy.ts";
 import type { ClaudeProviderConfig } from "../../config/types.ts";
 import { ProviderType } from "../../config/values.ts";
 import { forwardRequestHeaders } from "../../gateway/http/http.ts";
@@ -14,9 +15,12 @@ export const claudeAdapter: ProviderAdapter<ClaudeProviderConfig> = {
       ["messages", "messages/count_tokens", "models"].includes(endpoint)
     );
   },
-  prepare(_provider, credential, input) {
+  prepare(_provider, credential, input, context) {
     return {
-      oauthGeneration: credential.generation,
+      accountSwitching: { timeoutScope: "attempt" as const },
+      ...(context && input.endpoint === "messages" && input.model
+        ? claudeResponsePolicy(credential, input.model, context)
+        : {}),
       url: `${CLAUDE_BASE}/v1/${input.endpoint}${new URL(input.request.url).search}`,
       headers: forwardRequestHeaders(input.request, credential.token),
     };

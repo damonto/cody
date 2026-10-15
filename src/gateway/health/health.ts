@@ -272,7 +272,7 @@ function credentialHealthObjectName(
 }
 
 function credentialHealthStub(
-  env: Bindings,
+  env: Pick<Bindings, "HEALTH">,
   providerId: string,
   credentialId: string,
   scope: HealthScope,
@@ -453,7 +453,7 @@ export async function recordCredentialFailure(
  * scheduled: the account switch that follows must already see the cooldown.
  */
 export async function recordCredentialQuotaCooldown(
-  env: Bindings,
+  env: Pick<Bindings, "HEALTH">,
   providerId: string,
   credentialId: string,
   until: number,

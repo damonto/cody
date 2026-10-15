@@ -10,6 +10,7 @@ import {
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from "vitest";
 import { parseConfig } from "../../src/config/store.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
+import type { OAuthAccountObject } from "../../src/platform/bindings.ts";
 import {
   accountReply,
   accountViewSchema,
@@ -304,6 +305,51 @@ test("Claude session affinity switches only on explicit quota rejection, with mo
   expect(sent).toHaveLength(2);
   reject.clear();
   expect(await (await infer(c)).json()).toEqual({ token: a.id });
+});
+test("Claude preserves the upstream rejection when its limit commit fails", async () => {
+  const [a, b] = await Promise.all([ready(), ready()]);
+  const c = config([a, b], { account_selection: "session_affinity" });
+  reject.add(a.id);
+  let writes = 0;
+  const response = await handleInference(
+    new Request("https://gateway.test/v1/messages", {
+      method: "POST",
+      headers: { "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-opus-4-6", messages: [] }),
+    }),
+    {
+      ...env,
+      PROVIDER_OAUTH_ACCOUNT: {
+        getByName(ref: string): OAuthAccountObject {
+          const stub = env.PROVIDER_OAUTH_ACCOUNT.getByName(ref);
+          return {
+            async run(command) {
+              if (command.action === "claude_limit") {
+                writes++;
+                return {
+                  ok: false,
+                  status: 503,
+                  code: "storage_unavailable",
+                  error: "unavailable",
+                };
+              }
+              return stub.run(command);
+            },
+          };
+        },
+      },
+    },
+    c,
+    c.api_keys[0],
+    "messages",
+  );
+  expect(writes).toBe(1);
+  expect(response.status).toBe(429);
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: { type: "rate_limit_error", message: "quota exhausted" },
+  });
+  expect(sent.map((request) => request.token)).toEqual([a.id]);
 });
 test("subscription-first routing and explicit Extra Usage fallback", async () => {
   const [a, b] = await Promise.all([ready(), ready()]);

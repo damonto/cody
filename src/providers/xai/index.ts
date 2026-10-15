@@ -1,15 +1,14 @@
 import { estimateInputTokens } from "./tokens.ts";
 import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
-import { accountReply, accountViewSchema } from "../oauth/schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import type { XaiProviderConfig } from "../../config/types.ts";
 import { ProviderTransport } from "../transport-values.ts";
-import type { ProviderAdapter } from "../types.ts";
+import type { ProviderAdapter, PreparedUpstreamRequest } from "../types.ts";
 import { ProviderRequestError } from "../errors.ts";
 import { XAI_BASE, xaiHeaders } from "./api.ts";
 import { translateRequest } from "./request.ts";
 import { convertResponse } from "./response.ts";
-import { inspectXaiResponse } from "./inspect.ts";
+import { xaiResponsePolicy } from "./response-policy.ts";
 import { xaiModels } from "./models.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
 import { historySession, prepareHistory } from "./history.ts";
@@ -24,6 +23,14 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
         endpoint,
       )
     );
+  },
+  validate(input) {
+    if (input.bodyBytes !== undefined && input.bodyBytes > 16 * 1024 * 1024)
+      throw new ProviderRequestError(
+        "Native provider requests must not exceed 16 MiB",
+        413,
+        "request_too_large",
+      );
   },
   async local(provider, input) {
     if (input.endpoint === "models") {
@@ -98,44 +105,38 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
         413,
         "request_too_large",
       );
+    const transformResponse: NonNullable<
+      PreparedUpstreamRequest["transformResponse"]
+    > = (response, observe) =>
+      convertResponse(response, {
+        anthropic,
+        stream: payload.stream === true,
+        model: String(payload.model),
+        scope,
+        key: context.env.CONFIG_ENCRYPTION_KEY,
+        tools: translated.tools,
+        search: records(translated.body.tools).some(
+          (tool) => tool.type === "x_search" || tool.type === "web_search",
+        ),
+        ...(onCompleted ? { onCompleted } : {}),
+        signal: input.request.signal,
+        ...(observe ? { observe } : {}),
+      });
     return {
+      accountSwitching: { timeoutScope: "request" },
       url: `${XAI_BASE}/responses`,
       headers,
       method: "POST",
       body,
       inferenceMetadata: inferenceMetadata(translated.body, ApiProtocol.Openai),
-      oauthGeneration: credential.generation,
-      inspectResponse: async (response, onLate, signal) => {
-        const invalidate = async () => {
-          await accountReply(
-            context.env.PROVIDER_OAUTH_ACCOUNT.getByName(
-              credential.account_ref,
-            ).run({
-              action: "xai_auth_invalid",
-              generation: credential.generation,
-              token: credential.token,
-            }),
-            accountViewSchema,
-          );
-        };
-        if (response.status === 401) await invalidate();
-        return inspectXaiResponse(response, model, onLate, signal, invalidate);
-      },
-      transformResponse: (response, observe) =>
-        convertResponse(response, {
-          anthropic,
-          stream: payload.stream === true,
-          model: String(payload.model),
-          scope,
-          key: context.env.CONFIG_ENCRYPTION_KEY,
-          tools: translated.tools,
-          search: records(translated.body.tools).some(
-            (tool) => tool.type === "x_search" || tool.type === "web_search",
-          ),
-          ...(onCompleted ? { onCompleted } : {}),
-          signal: input.request.signal,
-          ...(observe ? { observe } : {}),
-        }),
+      ...xaiResponsePolicy(
+        credential,
+        model,
+        input.protocol,
+        context,
+        transformResponse,
+      ),
+      transformResponse,
     };
   },
 };

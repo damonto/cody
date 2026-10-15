@@ -1,10 +1,8 @@
-import { OAuthAccountStatus } from "./values.ts";
 import { ProviderType } from "../../config/values.ts";
 
 import { type AccountView } from "./schema.ts";
 
-import { accountViewStatus, type Stored } from "./state.ts";
-const QUOTA_CACHE_TTL_MS = 60_000;
+import { accountViewStatus, quotaIsStale, type Stored } from "./state.ts";
 export function accountView(account: Stored): AccountView {
   const project = account.antigravity_initialization;
   const projectView: AccountView["project_initialization"] = project
@@ -36,11 +34,7 @@ export function accountView(account: Stored): AccountView {
     models_verification: account.models_verification,
     quota: {
       ...account.quota,
-      stale:
-        account.status !== OAuthAccountStatus.Ready ||
-        account.quota.last_error !== null ||
-        account.quota.updated_at === null ||
-        Date.now() - account.quota.updated_at >= QUOTA_CACHE_TTL_MS,
+      stale: quotaIsStale(account),
     },
   };
 }

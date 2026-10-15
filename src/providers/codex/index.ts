@@ -1,3 +1,5 @@
+import { codexAccountHooks } from "./account-hooks.ts";
+import { codexResponsePolicy } from "./response-policy.ts";
 import { ProviderType } from "../../config/values.ts";
 import { ProviderTransport } from "../transport-values.ts";
 
@@ -42,7 +44,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     if (endpoint === "alpha/search") return provider.supports_web_search;
     return HTTP_ENDPOINTS.has(endpoint);
   },
-  prepare(_provider, credential, input) {
+  prepare(provider, credential, input, context) {
     const url = upstreamUrl(input.endpoint, new URL(input.request.url).search);
     const headers =
       input.transport === ProviderTransport.Websocket
@@ -55,11 +57,31 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
       headers.delete("x-codex-turn-state");
     headers.delete("x-openai-fedramp");
     if (credential.is_fedramp) headers.set("x-openai-fedramp", "true");
+    const account = {
+      accountSwitching: { timeoutScope: "attempt" as const },
+      ...(context?.connection
+        ? {
+            ...codexAccountHooks(
+              credential,
+              context.connection,
+              context,
+              headers,
+            ),
+            ...codexResponsePolicy(
+              provider,
+              context.connection.credential_id,
+              context,
+              input.endpoint === "responses" &&
+                input.transport === ProviderTransport.Http,
+            ),
+          }
+        : {}),
+    };
     if (input.endpoint !== "models")
       return {
         url,
         headers,
-        oauthGeneration: credential.generation,
+        ...account,
         ...(input.endpoint === "responses" &&
         input.transport === ProviderTransport.Http
           ? { detectResponseFormat: true }
@@ -68,7 +90,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     return {
       url,
       headers,
-      oauthGeneration: credential.generation,
+      ...account,
       // Keep each raw ModelInfo so Codex clients receive the account catalog.
       parseModels: (value) => ({
         data: (isRecord(value) && Array.isArray(value.models)

@@ -5,6 +5,7 @@ import {
   prepareProviderRequest,
   providerSupportsEndpoint,
 } from "../src/providers/index.ts";
+import { newClaudeProvider } from "./helpers/native-provider-fixtures.ts";
 
 function configuration() {
   return parseConfig({
@@ -31,6 +32,67 @@ function configuration() {
     ],
   });
 }
+
+test("provider preparation rejects credentials for a different authentication type", async () => {
+  const provider = newClaudeProvider();
+  await assert.rejects(
+    prepareProviderRequest(
+      provider,
+      configuration().providers[0].credentials[0],
+      {
+        request: new Request("https://gateway.example/v1/messages"),
+        endpoint: "messages",
+        transport: "http",
+        protocol: "anthropic",
+      },
+    ),
+    /Provider and credential authentication do not match/,
+  );
+});
+
+test("Claude requires its own OAuth identity even when another provider returns a valid token and generation", async () => {
+  const credential = {
+    id: "claude-account",
+    auth: { type: "oauth", account_ref: crypto.randomUUID() },
+    priority: 100,
+    disabled: false,
+  };
+  const provider = { ...newClaudeProvider(), credentials: [credential] };
+  let token = {
+    token: "mock-token",
+    generation: 1,
+    account_id: "codex-account",
+  };
+  const prepare = () =>
+    prepareProviderRequest(
+      provider,
+      credential,
+      {
+        request: new Request("https://gateway.example/v1/messages"),
+        endpoint: "messages",
+        transport: "http",
+        protocol: "anthropic",
+      },
+      {
+        config: { proxy_groups: [] },
+        env: {
+          PROVIDER_OAUTH_ACCOUNT: {
+            getByName: () => ({ run: async () => ({ ok: true, data: token }) }),
+          },
+        },
+      },
+    );
+  await assert.rejects(prepare, { name: "ZodError" });
+  token = {
+    token: "mock-token",
+    generation: 1,
+    claude_organization_id: "organization",
+  };
+  assert.equal(
+    (await prepare()).headers.get("authorization"),
+    "Bearer mock-token",
+  );
+});
 
 test("AI Gateway uses its runtime connector for HTTP and WebSocket requests", async (t) => {
   t.mock.method(globalThis, "fetch", () =>

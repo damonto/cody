@@ -151,6 +151,21 @@ test("xAI local models and estimated counts do not resolve OAuth", async () => {
     }
   }
 });
+test("xAI local count-tokens enforces the native upload limit before resolving OAuth", async () => {
+  const c = config();
+  await assert.rejects(
+    prepareProviderRequest(c.providers[0], c.providers[0].credentials[0], {
+      request: new Request("https://gateway.test/v1/messages/count_tokens"),
+      endpoint: "messages/count_tokens",
+      transport: "http",
+      protocol: "anthropic",
+      bodyBytes: 16 * 1024 * 1024 + 1,
+      payload: { messages: [] },
+    }),
+    { status: 413, code: "request_too_large" },
+  );
+});
+
 test("xAI request maps Messages images and tools without injecting instructions", async () => {
   const result = await translateRequest(
     {

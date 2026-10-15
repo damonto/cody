@@ -7,6 +7,7 @@ import {
   maskedConfigurationSchema,
 } from "../src/config/schema.ts";
 import { antigravityAdapter } from "../src/providers/antigravity/index.ts";
+import { prepareProviderRequest } from "../src/providers/index.ts";
 import { configureLogging } from "../src/shared/log.ts";
 import {
   AntigravityClient,
@@ -38,6 +39,20 @@ const scope = {
   client_id: "client",
   model: "native-model",
 };
+
+test("Antigravity enforces the native upload limit before resolving OAuth", async () => {
+  const provider = config().providers[0];
+  await assert.rejects(
+    prepareProviderRequest(provider, provider.credentials[0], {
+      request: new Request("https://gateway.test/v1/responses"),
+      endpoint: "responses",
+      transport: "http",
+      protocol: "openai",
+      bodyBytes: 16 * 1024 * 1024 + 1,
+    }),
+    { status: 413, code: "request_too_large" },
+  );
+});
 
 test("native request discriminants reject objects instead of coercing them to strings", async () => {
   for (const [payload, message] of [

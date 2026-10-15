@@ -5,13 +5,16 @@ import type {
   ProviderConfig,
   ProviderCredentialConfig,
 } from "../config/types.ts";
+import { antigravityCredentialSchema } from "./antigravity/account-schema.ts";
+import { codexCredentialSchema } from "./codex/account-schema.ts";
+import { claudeCredentialSchema } from "./claude/account-schema.ts";
+import { xaiCredentialSchema } from "./xai/account-schema.ts";
 import {
   accountReply,
   OAuthError,
   proxyConfigurationSchema,
   resolvedOAuthSchema,
 } from "./oauth/schema.ts";
-import { z } from "zod";
 import { providerConnection } from "./outbound.ts";
 import type { ProviderRuntimeContext } from "./types.ts";
 
@@ -65,6 +68,17 @@ export type ResolvedCredentialForProvider<Type extends ProviderType> =
   Type extends typeof ProviderType.AiGateway
     ? ResolvedApiKey
     : Extract<ResolvedOAuth, { provider: Type }>;
+
+export function credentialMatchesProvider<Type extends ProviderType>(
+  credential: ResolvedCredential,
+  type: Type,
+): credential is ResolvedCredentialForProvider<Type> {
+  return type === ProviderType.AiGateway
+    ? credential.type === CredentialAuthType.ApiKey
+    : credential.type === CredentialAuthType.OAuth &&
+        credential.provider === type;
+}
+
 export interface CredentialContext extends ProviderRuntimeContext {
   readonly provider: ProviderConfig;
   readonly credential: ProviderCredentialConfig;
@@ -87,12 +101,6 @@ const apiKeyResolver: CredentialResolver<
   },
   sensitiveValues: (auth) => [auth.api_key],
 };
-const codexResolution = z.object({
-  generation: z.number().int().nonnegative(),
-  account_id: z.string().min(1),
-  is_fedramp: z.boolean().optional(),
-});
-const antigravityResolution = z.object({ project_id: z.string().min(1) });
 const oauthResolver: CredentialResolver<
   Extract<CredentialAuth, { type: typeof CredentialAuthType.OAuth }>
 > = {
@@ -118,9 +126,7 @@ const oauthResolver: CredentialResolver<
     context.requestLog?.registerSensitiveValues([token.token]);
     const account_ref = auth.account_ref;
     if (provider === ProviderType.Xai) {
-      const value = z
-        .object({ xai_subject: z.string(), generation: z.number() })
-        .parse(token);
+      const value = xaiCredentialSchema.parse(token);
       return {
         type: CredentialAuthType.OAuth,
         provider,
@@ -130,18 +136,19 @@ const oauthResolver: CredentialResolver<
         generation: value.generation,
       };
     }
-    if (provider === ProviderType.Claude)
+    if (provider === ProviderType.Claude) {
+      const value = claudeCredentialSchema.parse(token);
       return {
         type: CredentialAuthType.OAuth,
         provider,
         token: token.token,
         account_ref,
-        generation: z.object({ generation: z.number() }).parse(token)
-          .generation,
+        generation: value.generation,
       };
+    }
     if (provider === ProviderType.Codex) {
       const { account_id, is_fedramp, generation } =
-        codexResolution.parse(token);
+        codexCredentialSchema.parse(token);
       return {
         type: CredentialAuthType.OAuth,
         provider,
@@ -152,7 +159,7 @@ const oauthResolver: CredentialResolver<
         account_ref,
       };
     }
-    const { project_id } = antigravityResolution.parse(token);
+    const { project_id } = antigravityCredentialSchema.parse(token);
     return {
       type: CredentialAuthType.OAuth,
       provider,
