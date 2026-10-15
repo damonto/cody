@@ -9,7 +9,9 @@ import { ProviderHealthState } from "../src/gateway/health/health.ts";
 import {
   anthropicErrorType,
   apiError,
+  clientApiKeyDigest,
   findClientApiKey,
+  findClientApiKeyByDigest,
   forwardRequestHeaders,
   forwardWebSocketHeaders,
   requestCredentialTokens,
@@ -700,6 +702,109 @@ test("client API credentials are selected from x-api-key as well as bearer token
       }),
     ),
     ["bearer-token", "api-key-token"],
+  );
+});
+
+test("HTTP and WebSocket authentication reuse configured digests across concurrent requests", async (t) => {
+  const entries = Array.from({ length: 100 }, (_, index) => ({
+    id: `client-${index}`,
+    api_key: `configured-key-${index}`,
+    providers: [],
+  }));
+  const digest = await clientApiKeyDigest(entries[0].api_key);
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  let hashes = 0;
+  t.mock.method(crypto.subtle, "digest", (...args) => {
+    hashes++;
+    return original(...args);
+  });
+  const request = new Request("https://gateway.example", {
+    headers: { authorization: `Bearer ${entries[0].api_key}` },
+  });
+  const matches = await Promise.all([
+    findClientApiKey(request, entries),
+    findClientApiKey(request, entries),
+    findClientApiKeyByDigest(digest, entries),
+  ]);
+  assert.deepEqual(matches, [entries[0], entries[0], entries[0]]);
+  assert.equal(hashes, entries.length + 2);
+  hashes = 0;
+  assert.equal(await findClientApiKey(request, entries), entries[0]);
+  assert.equal(await findClientApiKeyByDigest(digest, entries), entries[0]);
+  assert.equal(hashes, 1);
+});
+
+test("cached authentication respects key rotation, removal, ordering and snapshot replacement", async () => {
+  const first = { id: "first", api_key: "old-key", providers: ["a"] };
+  const second = { id: "second", api_key: "second-key", providers: ["b"] };
+  const entries = [first, second];
+  const request = (token) =>
+    new Request("https://gateway.example", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  const oldDigest = await clientApiKeyDigest(first.api_key);
+  assert.equal(await findClientApiKey(request("old-key"), entries), first);
+  first.api_key = "new-key";
+  assert.equal(await findClientApiKeyByDigest(oldDigest, entries), undefined);
+  assert.equal(await findClientApiKey(request("old-key"), entries), undefined);
+  assert.equal(await findClientApiKey(request("new-key"), entries), first);
+  entries.reverse();
+  assert.equal(await findClientApiKey(request("new-key"), entries), first);
+  entries.pop();
+  assert.equal(await findClientApiKey(request("new-key"), entries), undefined);
+  const replacement = [{ ...second, providers: ["new-provider"] }];
+  assert.equal(
+    await findClientApiKey(request("second-key"), replacement),
+    replacement[0],
+  );
+  const both = new Request("https://gateway.example", {
+    headers: { authorization: "Bearer old-key", "x-api-key": "second-key" },
+  });
+  assert.equal(
+    await findClientApiKey(both, [second, { ...first, api_key: "old-key" }]),
+    second,
+  );
+});
+
+test("digest preparation failures fail closed and do not poison later authentication", async (t) => {
+  const entries = [{ id: "client", api_key: "key", providers: [] }];
+  const digest = await clientApiKeyDigest("key");
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  let fail = true;
+  t.mock.method(crypto.subtle, "digest", (...args) => {
+    if (fail) return Promise.reject(new Error("digest unavailable"));
+    return original(...args);
+  });
+  await assert.rejects(
+    findClientApiKeyByDigest(digest, entries),
+    /digest unavailable/,
+  );
+  fail = false;
+  assert.equal(await findClientApiKeyByDigest(digest, entries), entries[0]);
+});
+
+test("rotation during digest preparation cannot authenticate the revoked key", async (t) => {
+  const entries = [{ id: "client", api_key: "old-key", providers: [] }];
+  const digest = await clientApiKeyDigest("old-key");
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.mock.method(crypto.subtle, "digest", async (...args) => {
+    started.resolve();
+    await release.promise;
+    return original(...args);
+  });
+  const pending = findClientApiKeyByDigest(digest, entries);
+  await started.promise;
+  entries[0].api_key = "new-key";
+  release.resolve();
+  assert.equal(await pending, undefined);
+  assert.equal(
+    await findClientApiKeyByDigest(
+      await clientApiKeyDigest("new-key"),
+      entries,
+    ),
+    entries[0],
   );
 });
 

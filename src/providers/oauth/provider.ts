@@ -15,6 +15,7 @@ import {
   type tokenSchema,
 } from "./schema.ts";
 import type { Stored, Session, AccountSnapshot } from "./state.ts";
+import { equalSecret } from "../../shared/equal-secret.ts";
 
 export type AccountTokens = z.output<typeof tokenSchema>;
 export type RefreshTokens = AccountTokens & { refresh_token: string };
@@ -22,6 +23,10 @@ export const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 export type AccountCredential = z.output<typeof resolvedOAuthSchema>;
 export type StoredFor<Type extends OAuthProviderType> = Extract<
   Stored,
+  { provider_type: Type }
+>;
+export type AccountSnapshotFor<Type extends OAuthProviderType> = Extract<
+  AccountSnapshot,
   { provider_type: Type }
 >;
 export type AccountObservation = Extract<
@@ -41,9 +46,19 @@ export interface AccountState<
   Type extends OAuthProviderType = OAuthProviderType,
 > {
   /** Read the immutable committed snapshot without copying large model inventories. */
-  current(): Extract<AccountSnapshot, { provider_type: Type }>;
+  current(): AccountSnapshotFor<Type>;
   update(
     generation: number,
+    update: (account: StoredFor<Type>) => void | Promise<void>,
+  ): Promise<void>;
+  updateAuthorization(
+    generation: number,
+    update: (account: StoredFor<Type>) => void | Promise<void>,
+  ): Promise<void>;
+  /** Replacements borrowing the active refresh token share its rotation queue. */
+  replaceCredentials(
+    authorizationGeneration: number,
+    inheritRefreshToken: boolean,
     update: (account: StoredFor<Type>) => void | Promise<void>,
   ): Promise<void>;
   resolve(rejected?: {
@@ -90,7 +105,6 @@ export interface AccountMetadata {
 
 export interface AccountProvider {
   authorization: AccountAuthorization;
-  credential(): AccountCredential;
   refresh(
     generation: number,
     tokens: RefreshTokens,
@@ -139,6 +153,14 @@ export function providerState<Type extends OAuthProviderType>(
     current: () => checked(state.current()),
     update: (generation, update) =>
       state.update(generation, (account) => update(checked(account))),
+    updateAuthorization: (generation, update) =>
+      state.updateAuthorization(generation, (account) =>
+        update(checked(account)),
+      ),
+    replaceCredentials: (generation, inheritRefreshToken, update) =>
+      state.replaceCredentials(generation, inheritRefreshToken, (account) =>
+        update(checked(account)),
+      ),
     resolve: (rejected) => state.resolve(rejected),
   };
 }
@@ -157,4 +179,19 @@ export function unavailableIdentity(): never {
     503,
     "oauth_account_unavailable",
   );
+}
+
+/** A grant repeating an active refresh token inherits that token's lifecycle. */
+export async function authorizationTokens(
+  tokens: AccountTokens,
+  ...active: (Pick<AccountTokens, "refresh_token"> | null | undefined)[]
+): Promise<AccountTokens> {
+  if (!tokens.refresh_token) return tokens;
+  for (const previous of active)
+    if (
+      previous?.refresh_token &&
+      (await equalSecret(tokens.refresh_token, previous.refresh_token))
+    )
+      return { ...tokens, refresh_token: undefined };
+  return tokens;
 }

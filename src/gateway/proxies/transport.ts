@@ -154,9 +154,10 @@ export function createProxyTransport(
           tried.add(node.id);
           const eventId = crypto.randomUUID();
           let success: Promise<boolean> | undefined;
+          let successPending = false;
           phase = "proxy";
           try {
-            return await fetchWithProxyRetries(outgoing, node, {
+            const response = await fetchWithProxyRetries(outgoing, node, {
               ...socksOptions,
               clientSignal: runtime.clientSignal,
               deadline,
@@ -168,9 +169,35 @@ export function createProxyTransport(
               },
               onTunnelEstablished() {
                 log("connected", node.id);
-                success = state.observe(lease, "success", eventId);
+                successPending = true;
+                success = state
+                  .observe(lease, "success", eventId)
+                  .finally(() => {
+                    successPending = false;
+                  });
               },
             });
+            if (awaitHealth && success && successPending) {
+              // Callers without waitUntil retain synchronous observations, bounded
+              // by the original setup deadline and the request's cancellation.
+              phase = "recording_health";
+              const remaining = deadline - Date.now();
+              const healthTimer = setTimeout(
+                () => setup.abort(setupTimeout(phase)),
+                Math.max(0, remaining),
+              );
+              try {
+                if (remaining <= 0) setup.abort(setupTimeout(phase));
+                await abortable(success, signal);
+              } catch (error) {
+                await response.body?.cancel().catch(() => {});
+                throw error;
+              } finally {
+                clearTimeout(healthTimer);
+              }
+              phase = "request";
+            }
+            return response;
           } catch (error) {
             if (
               phase !== "proxy" ||
@@ -193,7 +220,11 @@ export function createProxyTransport(
               Date.now() >= deadline
             ) {
               if (awaitHealth) {
-                await failure;
+                // A terminal transport error must not wait beyond cancellation
+                // or its setup deadline merely to finish its health observation.
+                if (!signal.aborted && Date.now() < deadline)
+                  await abortable(failure, signal).catch(() => {});
+                runtime.clientSignal.throwIfAborted();
               }
               throw error;
             }
@@ -215,10 +246,6 @@ export function createProxyTransport(
                 throw error;
               }
               throw selectionError;
-            }
-          } finally {
-            if (awaitHealth) {
-              await success;
             }
           }
         }

@@ -73,6 +73,9 @@ type FinalRetryDecision =
   | { kind: "forward"; diagnostic: RetryDiagnostic }
   | { kind: "retry"; code: string; diagnostic: RetryDiagnostic };
 type RetryDecision = { kind: "inspect" } | FinalRetryDecision;
+type ReplayGuard =
+  | { kind: "inspect" | "eligible" }
+  | { kind: "forward"; reason: RetryDiagnostic["reason"] };
 
 export interface RetryErrorInspection {
   response: Response;
@@ -140,29 +143,11 @@ function hasContent(payload: z.infer<typeof responseSchema>): boolean {
   );
 }
 
-/** Recognize errors separately from the decision to commit upstream output. */
-function classifyPayload(
-  value: unknown,
-  event: string,
-  codes: readonly string[],
-): RetryDecision {
-  const parsed = envelopeSchema.safeParse(value);
-  const code = upstreamErrorCode(value, event);
-  const eventType = parsed.success ? (parsed.data.type ?? event) : event;
-  const diagnostic = (reason: RetryDiagnostic["reason"]): RetryDiagnostic => ({
-    reason,
-    // Keep protocol identifiers, never arbitrary event text or payloads.
-    ...(RETRY_EVENT_TYPE_PATTERN.test(eventType)
-      ? { event_type: eventType }
-      : {}),
-    ...(code ? { error_code: code } : {}),
-  });
-  const forward = (reason: RetryDiagnostic["reason"]): FinalRetryDecision => ({
+function replayGuard(payload: RetryEnvelope, event: string): ReplayGuard {
+  const forward = (reason: RetryDiagnostic["reason"]): ReplayGuard => ({
     kind: "forward",
-    diagnostic: diagnostic(reason),
+    reason,
   });
-  if (!parsed.success) return forward("invalid_envelope");
-  const payload = parsed.data;
   const type = payload.type ?? event;
   const response = payload.response;
   // Check content before accepting a lifecycle preamble. Otherwise an added
@@ -195,6 +180,43 @@ function classifyPayload(
     )
   )
     return forward("non_failure_status");
+  return { kind: "eligible" };
+}
+
+/** Eligible events still require a provider-recognized error before replay. */
+export function responseReplaySafety(
+  value: unknown,
+  event: string,
+): ReplayGuard["kind"] {
+  const parsed = envelopeSchema.safeParse(value);
+  return parsed.success ? replayGuard(parsed.data, event).kind : "forward";
+}
+
+/** Recognize errors separately from the decision to commit upstream output. */
+function classifyPayload(
+  value: unknown,
+  event: string,
+  codes: readonly string[],
+): RetryDecision {
+  const parsed = envelopeSchema.safeParse(value);
+  const code = upstreamErrorCode(value, event);
+  const eventType = parsed.success ? (parsed.data.type ?? event) : event;
+  const diagnostic = (reason: RetryDiagnostic["reason"]): RetryDiagnostic => ({
+    reason,
+    // Keep protocol identifiers, never arbitrary event text or payloads.
+    ...(RETRY_EVENT_TYPE_PATTERN.test(eventType)
+      ? { event_type: eventType }
+      : {}),
+    ...(code ? { error_code: code } : {}),
+  });
+  const forward = (reason: RetryDiagnostic["reason"]): FinalRetryDecision => ({
+    kind: "forward",
+    diagnostic: diagnostic(reason),
+  });
+  if (!parsed.success) return forward("invalid_envelope");
+  const guard = replayGuard(parsed.data, event);
+  if (guard.kind === "inspect") return { kind: "inspect" };
+  if (guard.kind === "forward") return forward(guard.reason);
   return code && codes.includes(code)
     ? { kind: "retry", code, diagnostic: diagnostic("error_code_match") }
     : forward(code ? "error_code_not_matched" : "unrecognized_event");

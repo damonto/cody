@@ -10,7 +10,7 @@ import type {
   AccountState,
   AccountServices,
 } from "../oauth/provider.ts";
-import { browserCallback, unavailableIdentity } from "../oauth/provider.ts";
+import { authorizationTokens, browserCallback } from "../oauth/provider.ts";
 import {
   ClaudeClient,
   CLAUDE_REDIRECT_URI,
@@ -19,6 +19,7 @@ import {
 } from "./api.ts";
 import { initializeClaudeAccount } from "./initialization.ts";
 import { ClaudeInventory } from "./inventory.ts";
+import { mergeClaudeQuotaGroups } from "./limits.ts";
 
 export function claudeAccount(
   state: AccountState<typeof ProviderType.Claude>,
@@ -59,7 +60,10 @@ export function claudeAccount(
           session.status !== OAuthSessionStatus.Initializing
         )
           return;
-        const tokens = session.tokens;
+        const tokens = await authorizationTokens(
+          session.tokens,
+          snapshot.tokens,
+        );
         const profile = parseClaudeProfile(
           await (await client(session.connection)).profile(tokens.access_token),
         );
@@ -67,19 +71,14 @@ export function claudeAccount(
           throw new OAuthError(
             "This is a different Claude account or organization; add it as a new account",
           );
-        await state.update(snapshot.generation, (account) => {
-          initializeClaudeAccount(account, session, profile);
-        });
+        await state.replaceCredentials(
+          snapshot.authorization_generation,
+          !tokens.refresh_token,
+          (account) => {
+            initializeClaudeAccount(account, session, profile, tokens);
+          },
+        );
       },
-    },
-    credential() {
-      const account = state.current();
-      if (!account.claude || !account.tokens) return unavailableIdentity();
-      return {
-        token: account.tokens.access_token,
-        claude_organization_id: account.claude.organization_id,
-        generation: account.generation,
-      };
     },
     async refresh(generation, tokens, connection, config) {
       const snapshot = state.current();
@@ -103,7 +102,7 @@ export function claudeAccount(
       )
         throw new OAuthError("Unsupported account observation", 400);
       await state.update(command.generation, (account) => {
-        account.claude_quota_revision++;
+        const revision = ++account.claude_quota_revision;
         const observations =
           command.action === "claude_limit"
             ? [command, ...(command.additional_limits ?? [])]
@@ -127,33 +126,34 @@ export function claudeAccount(
           account.quota.claude_limits = limits;
         }
         if (command.action === "claude_limit") return;
-        if (
-          command.extra_usage_disabled_reason !== undefined &&
-          account.quota.extra_usage
-        )
-          account.quota.extra_usage.disabled_reason =
-            command.extra_usage_disabled_reason;
-        for (const group of command.groups) {
-          const index = account.quota.groups.findIndex(
-            (previous) => previous.id === group.id,
-          );
-          if (index === -1) account.quota.groups.push(group);
-          else {
-            const previous = account.quota.groups[index];
-            const previousReset = Date.parse(
-              previous.buckets[0]?.reset_at ?? "",
-            );
-            const nextReset = Date.parse(group.buckets[0]?.reset_at ?? "");
-            if (
-              !Number.isFinite(previousReset) ||
-              nextReset > previousReset ||
-              (nextReset === previousReset &&
-                (group.buckets[0]?.used_percent ?? 0) >=
-                  (previous.buckets[0]?.used_percent ?? 0))
-            )
-              account.quota.groups[index] = group;
-          }
+        if (command.extra_usage_disabled_reason !== undefined) {
+          account.claude_quota_sync.extra_usage = {
+            revision,
+            disabled_reason: command.extra_usage_disabled_reason,
+          };
+          if (account.quota.extra_usage)
+            account.quota.extra_usage.disabled_reason =
+              command.extra_usage_disabled_reason;
         }
+        const merged = mergeClaudeQuotaGroups(
+          account.quota.groups,
+          command.groups,
+        );
+        account.quota.groups = merged.groups;
+        const revisions = new Map(
+          account.claude_quota_sync.windows.map((window) => [
+            window.group_id,
+            window.revision,
+          ]),
+        );
+        for (const id of merged.observedIds) revisions.set(id, revision);
+        // One clock per present window; ignored older headers do not renew it.
+        account.claude_quota_sync.windows = merged.groups.flatMap((group) => {
+          const observed = revisions.get(group.id);
+          return observed === undefined
+            ? []
+            : [{ group_id: group.id, revision: observed }];
+        });
       });
     },
   };

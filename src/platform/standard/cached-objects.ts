@@ -59,6 +59,37 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     return this.durableScope(namespace, name, lock);
   }
 
+  /**
+   * Read a clean, immutable cache revision without taking its writer's lease.
+   * The callback must be read-only. Validate again after decoding so
+   * dirty or replaced revisions never escape through a delayed local cache hit.
+   * Project time-sensitive results after this check without another I/O boundary.
+   * Missing data uses the normal locked SQL recovery path; Redis faults propagate.
+   */
+  async readCached<T>(
+    namespace: string,
+    name: string,
+    item: string,
+    decode: (value: string) => Promise<T>,
+  ): Promise<{ value: T } | undefined> {
+    const key = objectCacheKey(this.prefix, namespace, name);
+    const revision = revisionSchema.safeParse(await this.redis.get(key));
+    if (!revision.success) return;
+    const cached = await this.redis.hget(
+      `${key}:${revision.data}`,
+      `item:${item}`,
+    );
+    if (cached === null) return;
+    const value = z.string().nullable().parse(JSON.parse(cached));
+    if (value === null) return;
+    const result = await decode(value);
+    if (
+      !(await this.redis.compareAndWrite([{ key, value: revision.data }], []))
+    )
+      return;
+    return { value: result };
+  }
+
   private async durableScope(
     namespace: string,
     name: string,

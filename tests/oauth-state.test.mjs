@@ -35,6 +35,7 @@ test("persisted OAuth states keep their provider, identity and default fields ac
     const parsed = storedSchema.parse(input);
     assert.deepEqual(parsed, {
       ...input,
+      authorization_generation: 0,
       claude_quota_revision: 0,
       ...(provider === "codex"
         ? {
@@ -45,7 +46,9 @@ test("persisted OAuth states keep their provider, identity and default fields ac
               credits_observed_at: 0,
             },
           }
-        : {}),
+        : provider === "claude"
+          ? { claude_quota_sync: { windows: [], extra_usage: null } }
+          : {}),
     });
     assert.deepEqual(
       storedSchema.parse(JSON.parse(JSON.stringify(parsed))),
@@ -54,6 +57,23 @@ test("persisted OAuth states keep their provider, identity and default fields ac
   }
   const { provider_type, ...legacy } = stored("antigravity");
   assert.equal(storedSchema.parse(legacy).provider_type, provider_type);
+});
+
+test("persisted Claude state retains per-field quota observation revisions", () => {
+  const input = {
+    ...stored("claude"),
+    claude_quota_revision: 3,
+    claude_quota_sync: {
+      windows: [{ group_id: "five_hour", revision: 2 }],
+      extra_usage: { revision: 3, disabled_reason: "usage_limit_reached" },
+    },
+  };
+  const parsed = storedSchema.parse(input);
+  assert.deepEqual(parsed.claude_quota_sync, input.claude_quota_sync);
+  assert.deepEqual(
+    storedSchema.parse(JSON.parse(JSON.stringify(parsed))),
+    parsed,
+  );
 });
 
 test("persisted OAuth state rejects identity metadata from a different provider", () => {

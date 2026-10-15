@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { codexTurnMetadata } from "../sessions/codex-metadata.ts";
 const MAX_UPSTREAM_ERROR_BYTES = 32 * 1024;
@@ -78,7 +79,7 @@ export function rewriteResponseCreate(
 
 export function messageBytes(value: unknown): number {
   if (typeof value === "string") {
-    return new TextEncoder().encode(value).byteLength;
+    return Buffer.byteLength(value, "utf8");
   }
   if (value instanceof ArrayBuffer) {
     return value.byteLength;

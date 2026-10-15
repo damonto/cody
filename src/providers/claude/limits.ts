@@ -1,5 +1,41 @@
 import type { QuotaSnapshot } from "../oauth/schema.ts";
 
+interface ClaudeQuotaMerge {
+  groups: QuotaSnapshot["groups"];
+  observedIds: string[];
+}
+
+/** Header windows can advance a reset or utilization, never rewind either. */
+export function mergeClaudeQuotaGroups(
+  previous: QuotaSnapshot["groups"],
+  observations: QuotaSnapshot["groups"],
+): ClaudeQuotaMerge {
+  const groups = [...previous];
+  const observedIds = new Set<string>();
+  for (const group of observations) {
+    const index = groups.findIndex((entry) => entry.id === group.id);
+    if (index === -1) {
+      groups.push(group);
+      observedIds.add(group.id);
+    } else {
+      const current = groups[index];
+      const currentReset = Date.parse(current.buckets[0]?.reset_at ?? "");
+      const nextReset = Date.parse(group.buckets[0]?.reset_at ?? "");
+      if (
+        !Number.isFinite(currentReset) ||
+        nextReset > currentReset ||
+        (nextReset === currentReset &&
+          (group.buckets[0]?.used_percent ?? 0) >=
+            (current.buckets[0]?.used_percent ?? 0))
+      ) {
+        groups[index] = group;
+        observedIds.add(group.id);
+      }
+    }
+  }
+  return { groups, observedIds: [...observedIds] };
+}
+
 export function modelFamily(model: string): string {
   return /(?:^|[-_.])opus(?:[-_.]|$)/i.test(model)
     ? "opus"

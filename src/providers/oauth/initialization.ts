@@ -7,6 +7,7 @@ export function completeAuthorization(account: Stored, pending: Session): void {
   account.status = OAuthAccountStatus.Ready;
   account.error = null;
   account.generation++;
+  account.authorization_generation++;
   account.quota = emptyQuota();
   account.models_error = null;
   pending.status = OAuthSessionStatus.Complete;

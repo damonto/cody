@@ -7,6 +7,8 @@ import { fetchUpstream } from "./http.ts";
 import { setDefaultSocksDial } from "../../gateway/transport/socks.ts";
 import { runMaintenance } from "../../maintenance.ts";
 import { ProviderOAuthAccountCore } from "../../providers/oauth/account.ts";
+import { accountCommandSchema } from "../../providers/oauth/commands.ts";
+import { readAccountSnapshot } from "../../providers/oauth/reads.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 import { UsageOutboxCore } from "../../telemetry/outbox.ts";
 import type {
@@ -239,11 +241,40 @@ export async function createRuntime(
         new ProviderOAuthAccountCore(ctx, env, (ciphertext) =>
           accountCache.load(ciphertext),
         ),
-      (call): OAuthAccountObject => ({
-        run: (command) =>
-          call((core) => core.run(command), {
+      (call, name): OAuthAccountObject => ({
+        async run(command) {
+          if (
+            command.action === "readiness" ||
+            command.action === "view" ||
+            command.action === "resolve" ||
+            (command.action === "quota" && !command.force)
+          ) {
+            const parsed = accountCommandSchema.safeParse(command);
+            if (parsed.success) {
+              const cached = await backend.readCached(
+                "oauth",
+                name,
+                "account",
+                async (value) => {
+                  const ciphertext: unknown = JSON.parse(value);
+                  if (typeof ciphertext !== "string")
+                    throw new Error("Invalid encrypted account cache");
+                  const snapshot = await accountCache.snapshot(ciphertext);
+                  if (snapshot.account_ref !== name)
+                    throw new Error("Account cache identity does not match");
+                  return snapshot;
+                },
+              );
+              if (cached) {
+                const reply = readAccountSnapshot(cached.value, parsed.data);
+                if (reply) return reply;
+              }
+            }
+          }
+          return call((core) => core.run(command), {
             catchUpAlarms: command.action !== "readiness",
-          }),
+          });
+        },
       }),
       durable,
     ),

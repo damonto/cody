@@ -13,6 +13,25 @@ export const claudeCredentialSchema = z.object({
   generation: z.number(),
 });
 
+/** Field clocks distinguish repeated observations from untouched snapshot data. */
+export const claudeQuotaSyncSchema = z.object({
+  windows: z
+    .array(
+      z.object({
+        group_id: z.string(),
+        revision: z.number().int().nonnegative(),
+      }),
+    )
+    .default([]),
+  extra_usage: z
+    .object({
+      revision: z.number().int().nonnegative(),
+      disabled_reason: z.string().nullable(),
+    })
+    .nullable()
+    .default(null),
+});
+
 export const claudeLimitsSchema = z
   .array(z.object({ model: z.string().nullable(), until: z.number() }))
   .optional();

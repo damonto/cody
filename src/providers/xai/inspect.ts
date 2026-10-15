@@ -1,6 +1,6 @@
-import { object } from "./json.ts";
 import { xaiBadCredentials } from "./errors.ts";
 import { inspectResponsePrefix } from "../../gateway/http/response-prefix.ts";
+import { responseReplaySafety } from "../../gateway/http/retry-errors.ts";
 import { SseObserver } from "../../telemetry/stream.ts";
 import type { InspectedResponse } from "../types.ts";
 import { xaiLimit, type XaiLimit } from "./limits.ts";
@@ -27,6 +27,15 @@ export async function inspectXaiResponse(
   let found: XaiLimit | undefined;
   let late: XaiLimit | undefined;
   let json = "";
+  const inspectEvent = (value: unknown, event: string) => {
+    const limit = xaiLimit(value, response.headers, model);
+    const replay = responseReplaySafety(value, event);
+    if (limit) {
+      if (inspecting && !ready && replay === "eligible") found = limit;
+      else late = limit;
+      ready = true;
+    } else if (replay !== "inspect") ready = true;
+  };
   const observer = new SseObserver({
     maxEventBytes: 65536,
     onIssue: () => {
@@ -35,23 +44,7 @@ export async function inspectXaiResponse(
     onDone: () => {
       ready = true;
     },
-    onEvent(value) {
-      const limit = xaiLimit(value, response.headers, model);
-      if (limit) {
-        if (inspecting && !ready) found = limit;
-        else late = limit;
-        ready = true;
-      } else if (
-        ![
-          "response.created",
-          "response.in_progress",
-          "response.output_item.added",
-          "response.content_part.added",
-          "response.reasoning_summary_part.added",
-        ].includes(String(object(value).type))
-      )
-        ready = true;
-    },
+    onEvent: inspectEvent,
   });
   const { response: forwarded } = await inspectResponsePrefix(
     response,
@@ -71,11 +64,12 @@ export async function inspectXaiResponse(
           }
           if (response.status === 403 && xaiBadCredentials(value))
             await onCredentialRejected?.();
-          found = xaiLimit(value, response.headers, model);
-          return true;
+          inspectEvent(value, "");
+          ready = true;
+        } else {
+          observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
+          if (chunk === undefined) observer.end();
         }
-        observer.push(decoder.decode(chunk, { stream: chunk !== undefined }));
-        if (chunk === undefined) observer.end();
         if (late) {
           const limit = late;
           late = undefined;

@@ -20,7 +20,7 @@ async function tick(t, milliseconds) {
   await setImmediate();
 }
 
-function transportFixture(request, socks, nodes) {
+function transportFixture(request, socks, nodes, { background = true } = {}) {
   const group = {
     id: "US",
     strategy: "priority",
@@ -59,7 +59,9 @@ function transportFixture(request, socks, nodes) {
     env: { PROXY_GROUP: { getByName: () => stub } },
     clientSignal: request.signal,
     socks,
-    context: { waitUntil: (promise) => pending.push(promise) },
+    context: background
+      ? { waitUntil: (promise) => pending.push(promise) }
+      : undefined,
   };
   return {
     transport: createUpstreamTransport(
@@ -626,3 +628,118 @@ test(
     }
   },
 );
+
+for (const reason of ["cancel", "deadline"]) {
+  test(`synchronous proxy success observation respects ${reason} and releases its response`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100_000 });
+    const controller = new AbortController();
+    const request = new Request("http://upstream.test/", {
+      signal: controller.signal,
+    });
+    const socket = memoryProxy(ok);
+    const f = transportFixture(
+      request,
+      { ...socket, connectTimeoutMs: 1000 },
+      undefined,
+      { background: false },
+    );
+    const observing = Promise.withResolvers();
+    const observed = Promise.withResolvers();
+    f.stub.observe = () => {
+      observing.resolve();
+      return observed.promise;
+    };
+    const operation = f.transport.send(request);
+    const rejected = assert.rejects(
+      operation,
+      reason === "cancel"
+        ? { name: "AbortError" }
+        : (error) =>
+            error instanceof ProxyUnavailableError &&
+            error.code === "proxy_state_unavailable",
+    );
+    await observing.promise;
+    await setImmediate();
+    if (reason === "cancel") controller.abort();
+    else await tick(t, 1000);
+    await rejected;
+    assert.equal(socket.closes, 1);
+    assert.equal(f.selections.length, 1);
+    observed.resolve();
+    await setImmediate();
+  });
+}
+
+test("background proxy observations keep their lifecycle without blocking the response", async () => {
+  const request = new Request("http://upstream.test/");
+  const f = transportFixture(request, memoryProxy(ok));
+  const observed = Promise.withResolvers();
+  f.stub.observe = () => observed.promise;
+  const response = await f.transport.send(request);
+  assert.equal(await response.text(), "ok");
+  assert.equal(f.pending.length, 1);
+  let settled = false;
+  void Promise.all(f.pending).then(() => {
+    settled = true;
+  });
+  await setImmediate();
+  assert.equal(settled, false);
+  observed.resolve();
+  await Promise.all(f.pending);
+});
+
+for (const reason of ["cancel", "deadline"]) {
+  test(`terminal proxy failure observation respects ${reason}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100_000 });
+    const controller = new AbortController();
+    const request = new Request("http://upstream.test/", {
+      signal: controller.signal,
+    });
+    const f = transportFixture(
+      request,
+      {
+        connectTimeoutMs: 1000,
+        dial: async () => bad().socket,
+      },
+      undefined,
+      { background: false },
+    );
+    f.runtime.proxySwitches = new Set(["US"]);
+    const observing = Promise.withResolvers();
+    const observed = Promise.withResolvers();
+    f.stub.observe = () => {
+      observing.resolve();
+      return observed.promise;
+    };
+    const rejected = assert.rejects(
+      f.transport.send(request),
+      reason === "cancel" ? { name: "AbortError" } : SocksProxyError,
+    );
+    await setImmediate();
+    for (const delay of [100, 300, 500]) await tick(t, delay);
+    await observing.promise;
+    if (reason === "cancel") controller.abort();
+    else await tick(t, 100);
+    await rejected;
+    assert.equal(f.selections.length, 1);
+    observed.resolve();
+    await setImmediate();
+  });
+}
+
+test("a settled success observation does not reapply the setup deadline to HTTP headers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100_000 });
+  const request = new Request("http://upstream.test/");
+  const socket = memoryProxy(ok);
+  const f = transportFixture(
+    request,
+    { ...socket, connectTimeoutMs: 1000 },
+    undefined,
+    { background: false },
+  );
+  f.stub.observe = async () => {
+    // The setup budget is no longer an HTTP response deadline after CONNECT.
+    t.mock.timers.setTime(102_000);
+  };
+  assert.equal(await (await f.transport.send(request)).text(), "ok");
+});

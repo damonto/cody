@@ -1308,6 +1308,233 @@ test("project setup preserves a working account during reauthorization", async (
   });
 });
 
+async function pendingInheritedProject(refreshToken?: string) {
+  const account = await ready();
+  override = (request, body) => {
+    if (
+      request.url.includes("/token") &&
+      new URLSearchParams(body).get("grant_type") === "authorization_code"
+    )
+      return Response.json({
+        access_token: "replacement-access",
+        ...(refreshToken ? { refresh_token: refreshToken } : {}),
+        expires_in: 3600,
+      });
+    if (request.url.includes(":loadCodeAssist"))
+      return new Response("temporary", { status: 503 });
+    return;
+  };
+  const replacement = await start(account.connection, account.ref);
+  await complete(account.stub, replacement.session, "replacement");
+  await settleSession(account.stub, replacement.session);
+  await retryingProject(account.stub);
+  return account;
+}
+
+async function finishPendingProject(stub: Account) {
+  await vi.waitFor(async () => {
+    await runDurableObjectAlarm(stub);
+    expect((await storage(stub)).antigravity_initialization).toBeNull();
+  });
+}
+
+test.each([undefined, "refresh-token"])(
+  "project completion preserves an active rotation when replacement returns %s",
+  async (refreshToken) => {
+    const { stub, connection } = await pendingInheritedProject(refreshToken);
+    const before = await storage(stub);
+    expect(before.antigravity_initialization).toMatchObject({
+      inherit_refresh_token: true,
+      tokens: { access_token: "replacement-access" },
+    });
+    expect(
+      tokenSchema.parse(
+        storedObject.parse(before.antigravity_initialization).tokens,
+      ).refresh_token,
+    ).toBeUndefined();
+    await expireToken(stub);
+    override = (request) =>
+      request.url.includes("/token")
+        ? Response.json({
+            access_token: "rotated-access",
+            refresh_token: "rotated-refresh",
+            expires_in: 3600,
+          })
+        : request.url.includes(":loadCodeAssist")
+          ? new Response("temporary", { status: 503 })
+          : undefined;
+    expect(await resolve(stub, connection)).toMatchObject({
+      token: "rotated-access",
+    });
+    expect(tokenSchema.parse((await storage(stub)).tokens).refresh_token).toBe(
+      "rotated-refresh",
+    );
+    await evictDurableObject(stub);
+    override = undefined;
+    await finishPendingProject(stub);
+    expect(await storage(stub)).toMatchObject({
+      generation: z.number().parse(before.generation) + 1,
+      tokens: {
+        access_token: "replacement-access",
+        refresh_token: "rotated-refresh",
+      },
+    });
+    await evictDurableObject(stub);
+    expect(await resolve(stub, connection)).toMatchObject({
+      token: "replacement-access",
+    });
+    expect(tokenRequests()).toHaveLength(3);
+  },
+);
+
+test("an expired inherited project token shares the active account refresh", async () => {
+  const { stub, connection } = await pendingInheritedProject();
+  await rewrite(stub, (value) => {
+    value.tokens = {
+      ...tokenSchema.parse(value.tokens),
+      expires_at: Date.now() - 1,
+    };
+    const project = storedObject.parse(value.antigravity_initialization);
+    project.tokens = {
+      ...tokenSchema.parse(project.tokens),
+      expires_at: Date.now() - 1,
+    };
+    value.antigravity_initialization = project;
+  });
+  const gate = deferred<void>();
+  override = async (request, body) => {
+    if (!request.url.includes("/token")) return;
+    expect(new URLSearchParams(body).get("refresh_token")).toBe(
+      "refresh-token",
+    );
+    await gate.promise;
+    return Response.json({
+      access_token: "shared-rotation-access",
+      refresh_token: "shared-rotation-refresh",
+      expires_in: 3600,
+    });
+  };
+  const polling = runDurableObjectAlarm(stub);
+  await vi.waitFor(() => expect(tokenRequests()).toHaveLength(3));
+  const resolving = resolve(stub, connection);
+  try {
+    expect(await stub.run({ action: "readiness" })).toMatchObject({
+      ok: true,
+      data: { ready: true },
+    });
+    expect(tokenRequests()).toHaveLength(3);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([polling, resolving]);
+  }
+  expect(await resolving).toMatchObject({ token: "shared-rotation-access" });
+  await finishPendingProject(stub);
+  expect(tokenRequests()).toHaveLength(3);
+  expect(await storage(stub)).toMatchObject({
+    tokens: {
+      access_token: "shared-rotation-access",
+      refresh_token: "shared-rotation-refresh",
+    },
+  });
+  await evictDurableObject(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "shared-rotation-access",
+  });
+});
+
+test("an ambiguous legacy project preserves working credentials and requires new authorization", async () => {
+  const { stub, connection } = await pendingInheritedProject();
+  await rewrite(stub, (value) => {
+    const project = storedObject.parse(value.antigravity_initialization);
+    delete project.inherit_refresh_token;
+    project.tokens = {
+      ...tokenSchema.parse(project.tokens),
+      refresh_token: "legacy-unknown-refresh",
+    };
+    value.antigravity_initialization = project;
+  });
+  const before = await storage(stub);
+  const requests = records.length;
+  override = undefined;
+  const failed = await failedProject(stub);
+  expect(failed.project_initialization?.error).toBe(
+    "Start authorization again to finish connecting this account",
+  );
+  expect(await storage(stub)).toMatchObject({
+    generation: before.generation,
+    tokens: before.tokens,
+    status: "ready",
+  });
+  expect(records).toHaveLength(requests);
+  await evictDurableObject(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "access-initial",
+  });
+  expect(await runDurableObjectAlarm(stub)).toBe(false);
+  await stub.run({ action: "retry_project" });
+  expect((await failedProject(stub)).project_initialization?.error).toBe(
+    failed.project_initialization?.error,
+  );
+  expect((await storage(stub)).tokens).toEqual(before.tokens);
+});
+
+test("a legacy project sharing the active refresh token adopts its lifecycle", async () => {
+  const { stub, connection } = await pendingInheritedProject();
+  await rewrite(stub, (value) => {
+    const project = storedObject.parse(value.antigravity_initialization);
+    delete project.inherit_refresh_token;
+    project.tokens = {
+      ...tokenSchema.parse(project.tokens),
+      refresh_token: tokenSchema.parse(value.tokens).refresh_token,
+    };
+    value.antigravity_initialization = project;
+  });
+  // A failed lookup leaves the normalized provenance durable before completion.
+  await retryingProject(stub);
+  const project = storedObject.parse(
+    (await storage(stub)).antigravity_initialization,
+  );
+  expect(project.inherit_refresh_token).toBe(true);
+  expect(tokenSchema.parse(project.tokens).refresh_token).toBeUndefined();
+  await evictDurableObject(stub);
+  override = undefined;
+  await finishPendingProject(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "replacement-access",
+  });
+  expect(tokenSchema.parse((await storage(stub)).tokens).refresh_token).toBe(
+    "refresh-token",
+  );
+  expect(tokenRequests()).toHaveLength(2);
+});
+
+test("a legacy project without active credentials keeps its independent grant", async () => {
+  override = (request) =>
+    request.url.includes(":loadCodeAssist")
+      ? new Response("temporary", { status: 503 })
+      : undefined;
+  const { stub, session, connection } = await start();
+  await complete(stub, session);
+  await settleSession(stub, session);
+  await retryingProject(stub);
+  await rewrite(stub, (value) => {
+    expect(value.tokens).toBeNull();
+    const project = storedObject.parse(value.antigravity_initialization);
+    delete project.inherit_refresh_token;
+    value.antigravity_initialization = project;
+  });
+  override = undefined;
+  await finishPendingProject(stub);
+  expect(tokenSchema.parse((await storage(stub)).tokens).refresh_token).toBe(
+    "refresh-token",
+  );
+  await evictDurableObject(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "access-initial",
+  });
+  expect(tokenRequests()).toHaveLength(1);
+});
+
 test("concurrent refreshes are merged and refresh-token rotation or omission is persisted", async () => {
   const { stub, connection } = await ready();
   await expireToken(stub);
@@ -1351,6 +1578,53 @@ test("concurrent refreshes are merged and refresh-token rotation or omission is 
   );
 });
 
+test("cancelling a pending reauthorization preserves an in-flight refresh rotation", async () => {
+  const { stub, connection, ref } = await ready();
+  await expireToken(stub);
+  const initial = await storage(stub);
+  const gate = deferred<void>();
+  override = async (request, body) => {
+    if (
+      !request.url.includes("/token") ||
+      new URLSearchParams(body).get("grant_type") !== "refresh_token"
+    )
+      return;
+    await gate.promise;
+    return Response.json({
+      access_token: "rotated-access",
+      refresh_token: "rotated-refresh",
+      expires_in: 3600,
+    });
+  };
+  const refreshing = resolve(stub, connection);
+  await vi.waitFor(() => expect(tokenRequests()).toHaveLength(2));
+  try {
+    const replacement = await start(connection, ref);
+    expect(
+      await stub.run({
+        action: "cancel",
+        actor,
+        session_id: sessionId(replacement.session),
+      }),
+    ).toMatchObject({ ok: true });
+  } finally {
+    gate.resolve();
+  }
+  expect(await refreshing).toMatchObject({ token: "rotated-access" });
+  expect(await storage(stub)).toMatchObject({
+    generation: initial.generation,
+    tokens: {
+      access_token: "rotated-access",
+      refresh_token: "rotated-refresh",
+    },
+    session: { status: "cancelled" },
+  });
+  await evictDurableObject(stub);
+  expect(await resolve(stub, connection)).toMatchObject({
+    token: "rotated-access",
+  });
+});
+
 test("invalid_grant requires reauthorization without changing inference health", async () => {
   const { stub, connection } = await ready();
   await expireToken(stub);
@@ -1375,11 +1649,13 @@ test("a late refresh cannot overwrite reauthorization of the same account", asyn
   await expireToken(stub);
   const gate = deferred<void>();
   override = async (request, body) => {
-    if (
-      !request.url.includes("/token") ||
-      new URLSearchParams(body).get("grant_type") !== "refresh_token"
-    )
-      return;
+    if (!request.url.includes("/token")) return;
+    if (new URLSearchParams(body).get("grant_type") === "authorization_code")
+      return Response.json({
+        access_token: "access-reauthorized",
+        refresh_token: "reauthorized-refresh",
+        expires_in: 3600,
+      });
     await gate.promise;
     return Response.json({ access_token: "stale-refresh", expires_in: 3600 });
   };

@@ -676,7 +676,7 @@ export class ObjectRuntime {
   namespace<T extends object, S extends object>(
     namespace: string,
     factory: ObjectFactory<T>,
-    bind: (invoke: ObjectInvoker<T>) => S,
+    bind: (invoke: ObjectInvoker<T>, name: string) => S,
     options: ObjectNamespaceOptions,
   ): ObjectNamespace<S> {
     if (this.namespaces.has(namespace))
@@ -709,19 +709,21 @@ export class ObjectRuntime {
     });
     return {
       getByName: (name) =>
-        bind((operation, invocation) =>
-          this.invoke(
-            namespace,
-            name,
-            factory,
-            options.backend,
-            async (instance, storage) => {
-              // Catch up overdue alarms on access on deployments with infrequent cron.
-              if (options.alarms && invocation?.catchUpAlarms !== false)
-                await this.catchUpAlarm(instance, storage);
-              return operation(instance);
-            },
-          ),
+        bind(
+          (operation, invocation) =>
+            this.invoke(
+              namespace,
+              name,
+              factory,
+              options.backend,
+              async (instance, storage) => {
+                // Catch up overdue alarms on access on deployments with infrequent cron.
+                if (options.alarms && invocation?.catchUpAlarms !== false)
+                  await this.catchUpAlarm(instance, storage);
+                return operation(instance);
+              },
+            ),
+          name,
         ),
     };
   }

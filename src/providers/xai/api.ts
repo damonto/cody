@@ -172,17 +172,20 @@ export class XaiClient {
         }).toString(),
       }),
     );
-    let expires_at = !result.expires_in
-      ? previous?.expires_at
-      : Date.now() + result.expires_in * 1000;
+    let expires_at =
+      result.expires_in === undefined
+        ? undefined
+        : Date.now() + result.expires_in * 1000;
     if (expires_at === undefined) {
       try {
         const claim = decodeJwt(result.access_token).exp;
-        if (claim !== undefined) expires_at = claim * 1000;
+        if (typeof claim === "number" && Number.isFinite(claim))
+          expires_at = claim * 1000;
       } catch {
         /* Opaque access tokens need an explicit expiry on initial authorization. */
       }
     }
+    expires_at ??= previous?.expires_at;
     if (expires_at === undefined)
       throw new OAuthError("xAI did not return a token expiry", 502);
     return tokenSchema.parse({

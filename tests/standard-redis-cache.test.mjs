@@ -8,10 +8,14 @@ import {
 import { MemoryRedis } from "../src/platform/standard/redis.ts";
 import { createRuntime } from "../src/platform/standard/runtime.ts";
 import { SqlObjectBackend } from "../src/platform/standard/sql-objects.ts";
-import { CachedSqlObjectBackend } from "../src/platform/standard/cached-objects.ts";
+import {
+  CachedSqlObjectBackend,
+  objectCacheKey,
+} from "../src/platform/standard/cached-objects.ts";
 import { AccountDecodeCache } from "../src/platform/standard/account-cache.ts";
 import { encryptConfig } from "../src/control/crypto.ts";
 import { storedSchema, emptyQuota } from "../src/providers/oauth/state.ts";
+import { CODEX_REDIRECT_URI } from "../src/providers/codex/api.ts";
 import { connectRedis } from "../src/platform/standard/ioredis.ts";
 import { PGlite } from "@electric-sql/pglite";
 import { createClient } from "@libsql/client";
@@ -77,6 +81,392 @@ const candidates = [
     credentials: [{ credential_id: "credential-a", priority: 1 }],
   },
 ];
+
+async function seedCodexAccount(
+  f,
+  { expiresAt = Date.now() + 3_600_000, quotaUpdatedAt = Date.now() } = {},
+) {
+  const ref = crypto.randomUUID();
+  const connection = { provider_id: "codex", credential_id: "credential" };
+  const account = storedSchema.parse({
+    account_ref: ref,
+    provider_id: "codex",
+    provider_type: "codex",
+    generation: 1,
+    status: "ready",
+    connection,
+    tokens: {
+      access_token: "existing-token",
+      refresh_token: "existing-refresh",
+      expires_at: expiresAt,
+    },
+    identity: null,
+    codex: {
+      account_id: "workspace",
+      user_id: null,
+      plan_type: "plus",
+      subscription_active_until: null,
+    },
+    project_id: null,
+    error: null,
+    session: null,
+    models: [],
+    models_updated_at: null,
+    models_error: null,
+    quota: { ...emptyQuota(), updated_at: quotaUpdatedAt, stale: false },
+  });
+  await (
+    await f.sql.scope("oauth", ref)
+  ).commit("oauth", ref, {
+    puts: [["account", JSON.stringify(await encryptConfig(account, KEY))]],
+    deletes: [],
+  });
+  return {
+    ref,
+    connection,
+    resolve: {
+      action: "resolve",
+      connection,
+      proxy_configuration: { proxy_groups: [] },
+    },
+  };
+}
+
+async function promptly(operation) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Read waited for the writer")),
+          1000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("OAuth reads bypass a model lookup's lease across runtime instances", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f);
+  const first = await f.open();
+  const second = await f.open();
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.mock.method(first.bindings.UPSTREAM_HTTP, "direct", async (request) => {
+    assert.ok(request.url.includes("/models"));
+    started.resolve();
+    await release.promise;
+    return Response.json({ models: [] });
+  });
+  const writer = first.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  const lookup = writer.run({ action: "models" });
+  try {
+    await started.promise;
+    const reader = second.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+    const replies = await promptly(
+      Promise.all([
+        writer.run(seeded.resolve),
+        reader.run(seeded.resolve),
+        reader.run({ action: "readiness" }),
+        reader.run({ action: "view" }),
+        reader.run({ action: "quota", force: false }),
+      ]),
+    );
+    assert.ok(replies.every((reply) => reply.ok));
+    assert.equal(replies[0].data.token, "existing-token");
+    assert.equal(replies[1].data.token, "existing-token");
+    assert.equal(replies[2].data.ready, true);
+    assert.equal(replies[4].data.quota.stale, false);
+  } finally {
+    release.resolve();
+    assert.equal((await lookup).ok, true);
+  }
+  assert.equal(
+    (
+      await writer.run({
+        ...seeded.resolve,
+        connection: { ...seeded.connection, provider_id: "another-provider" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await writer.run({ ...seeded.resolve, unexpected: true })).status,
+    400,
+  );
+});
+
+test("OAuth cache readers reject revisions replaced during a delayed read", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f);
+  const first = await f.open();
+  const second = await f.open();
+  const reader = first.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  const writer = second.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  assert.equal((await reader.run(seeded.resolve)).data.token, "existing-token");
+  await first.tasks.drain();
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const hget = f.redis.hget.bind(f.redis);
+  let hold = true;
+  t.mock.method(f.redis, "hget", async (key, field) => {
+    const value = await hget(key, field);
+    if (hold && key.includes(seeded.ref) && field === "item:account") {
+      hold = false;
+      started.resolve();
+      await release.promise;
+    }
+    return value;
+  });
+  const resolving = reader.run(seeded.resolve);
+  await started.promise;
+  try {
+    assert.equal((await writer.run({ action: "disconnect" })).ok, true);
+  } finally {
+    release.resolve();
+  }
+  const reply = await resolving;
+  assert.equal(reply.ok, false);
+  assert.equal(reply.code, "oauth_account_unavailable");
+  assert.deepEqual((await reader.run({ action: "readiness" })).data, {
+    ready: false,
+  });
+});
+
+test("OAuth dirty and missing caches recover from SQL and Redis outages fail closed", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f);
+  const runtime = await f.open();
+  const account = runtime.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  assert.equal((await account.run(seeded.resolve)).ok, true);
+  await runtime.tasks.drain();
+  const key = objectCacheKey(
+    runtime.settings.REDIS_PREFIX,
+    "oauth",
+    seeded.ref,
+  );
+  const backend = new CachedSqlObjectBackend(
+    f.db,
+    f.redis,
+    runtime.settings.REDIS_PREFIX,
+  );
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const reading = backend.readCached(
+    "oauth",
+    seeded.ref,
+    "account",
+    async () => {
+      started.resolve();
+      await release.promise;
+      return "stale-result";
+    },
+  );
+  await started.promise;
+  await f.redis.set(key, `writing:${crypto.randomUUID()}`);
+  release.resolve();
+  assert.equal(await reading, undefined);
+  f.queries.length = 0;
+  assert.equal(
+    (await account.run(seeded.resolve)).data.token,
+    "existing-token",
+  );
+  assert.ok(
+    f.queries.some((query) => query.startsWith("UPDATE object_versions")),
+  );
+  await runtime.tasks.drain();
+  await f.redis.del(key);
+  f.queries.length = 0;
+  assert.equal((await account.run(seeded.resolve)).ok, true);
+  assert.ok(
+    f.queries.some((query) => query.startsWith("UPDATE object_versions")),
+  );
+  await runtime.tasks.drain();
+  const get = f.redis.get.bind(f.redis);
+  t.mock.method(f.redis, "get", async (name) => {
+    if (name === key) throw new Error("Redis unavailable");
+    return get(name);
+  });
+  await assert.rejects(account.run(seeded.resolve), /Redis unavailable/);
+});
+
+test("expired OAuth snapshots still serialize refresh across runtimes", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f, { expiresAt: Date.now() - 1000 });
+  const first = await f.open();
+  const second = await f.open();
+  let refreshes = 0;
+  const send = async (request) => {
+    assert.equal(request.url, "https://auth.openai.com/oauth/token");
+    refreshes++;
+    return Response.json({
+      access_token: "rotated-token",
+      refresh_token: "rotated-refresh",
+      expires_in: 3600,
+    });
+  };
+  t.mock.method(first.bindings.UPSTREAM_HTTP, "direct", send);
+  t.mock.method(second.bindings.UPSTREAM_HTTP, "direct", send);
+  const replies = await Promise.all(
+    [first, second].map((runtime) =>
+      runtime.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref).run(
+        seeded.resolve,
+      ),
+    ),
+  );
+  assert.ok(
+    replies.every((reply) => reply.ok && reply.data.token === "rotated-token"),
+  );
+  assert.equal(refreshes, 1);
+});
+
+test("OAuth resolve rechecks token freshness after cache revision validation", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f, {
+    expiresAt: now + 5 * 60_000 + 1,
+  });
+  const runtime = await f.open();
+  const account = runtime.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  assert.equal((await account.run({ action: "readiness" })).data.ready, true);
+  await runtime.tasks.drain();
+
+  const key = objectCacheKey(
+    runtime.settings.REDIS_PREFIX,
+    "oauth",
+    seeded.ref,
+  );
+  const compareAndWrite = f.redis.compareAndWrite.bind(f.redis);
+  let validated = false;
+  t.mock.method(f.redis, "compareAndWrite", async (conditions, commands) => {
+    if (
+      !commands.length &&
+      conditions.some((condition) => condition.key === key)
+    ) {
+      validated = true;
+      t.mock.timers.setTime(now + 2);
+    }
+    return compareAndWrite(conditions, commands);
+  });
+  let refreshes = 0;
+  t.mock.method(runtime.bindings.UPSTREAM_HTTP, "direct", async (request) => {
+    assert.equal(request.url, "https://auth.openai.com/oauth/token");
+    refreshes++;
+    return Response.json({
+      access_token: "rotated-token",
+      refresh_token: "rotated-refresh",
+      expires_in: 3600,
+    });
+  });
+
+  const reply = await account.run(seeded.resolve);
+  assert.equal(validated, true);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.data.token, "rotated-token");
+  assert.equal(refreshes, 1);
+});
+
+test("OAuth quota rechecks freshness after cache revision validation", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f, {
+    quotaUpdatedAt: now - 59_999,
+  });
+  const runtime = await f.open();
+  const account = runtime.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  assert.equal((await account.run({ action: "readiness" })).data.ready, true);
+  await runtime.tasks.drain();
+
+  const key = objectCacheKey(
+    runtime.settings.REDIS_PREFIX,
+    "oauth",
+    seeded.ref,
+  );
+  const compareAndWrite = f.redis.compareAndWrite.bind(f.redis);
+  let validated = false;
+  t.mock.method(f.redis, "compareAndWrite", async (conditions, commands) => {
+    if (
+      !commands.length &&
+      conditions.some((condition) => condition.key === key)
+    ) {
+      validated = true;
+      t.mock.timers.setTime(now + 2);
+    }
+    return compareAndWrite(conditions, commands);
+  });
+  let usageReads = 0;
+  t.mock.method(runtime.bindings.UPSTREAM_HTTP, "direct", async (request) => {
+    if (request.url.endsWith("/wham/usage")) {
+      usageReads++;
+      return Response.json({ plan_type: "pro" });
+    }
+    assert.ok(request.url.endsWith("/wham/rate-limit-reset-credits"));
+    return Response.json({ credits: [] });
+  });
+
+  const reply = await account.run({ action: "quota", force: false });
+  assert.equal(validated, true);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.data.quota.updated_at, now + 2);
+  assert.equal(reply.data.quota.stale, false);
+  assert.equal(reply.data.codex.plan_type, "pro");
+  assert.equal(usageReads, 1);
+});
+
+test("OAuth cached reads observe a completed replacement authorization", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seedCodexAccount(f);
+  const first = await f.open();
+  const second = await f.open();
+  const reader = second.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  const writer = first.bindings.PROVIDER_OAUTH_ACCOUNT.getByName(seeded.ref);
+  assert.equal((await reader.run(seeded.resolve)).data.token, "existing-token");
+  const jwt = `${btoa("{}").replaceAll("=", "")}.${btoa(
+    JSON.stringify({
+      "https://api.openai.com/auth": { chatgpt_account_id: "workspace" },
+    }),
+  ).replaceAll("=", "")}.signature`;
+  t.mock.method(first.bindings.UPSTREAM_HTTP, "direct", async (request) => {
+    assert.equal(request.url, "https://auth.openai.com/oauth/token");
+    return Response.json({
+      access_token: "replacement-token",
+      refresh_token: "replacement-refresh",
+      id_token: jwt,
+      expires_in: 3600,
+    });
+  });
+  const started = await writer.run({
+    action: "start",
+    account_ref: seeded.ref,
+    actor: "admin",
+    connection: seeded.connection,
+    provider_type: "codex",
+    flow: "pkce",
+  });
+  assert.equal(started.ok, true);
+  const state = new URL(started.data.url).searchParams.get("state");
+  assert.equal(
+    (
+      await writer.run({
+        action: "complete",
+        session_id: started.data.id.split(".")[1],
+        actor: "admin",
+        redirect_url: `${CODEX_REDIRECT_URI}?${new URLSearchParams({ code: "code", state })}`,
+      })
+    ).ok,
+    true,
+  );
+  await first.tick();
+  const resolved = await reader.run(seeded.resolve);
+  assert.equal(resolved.data.token, "replacement-token");
+  assert.equal(resolved.data.generation, 2);
+});
 
 test("warm health and affinity read Redis across instances without SQL reads", async (t) => {
   const f = await fixture(t);
@@ -476,16 +866,35 @@ test("account decode cache validates ciphertext and never shares mutable snapsho
     quota: emptyQuota(),
   });
   const encrypted = await encryptConfig(account, KEY);
+  const snapshot = await cache.snapshot(encrypted);
+  assert.equal(await cache.snapshot(encrypted), snapshot);
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.quota), true);
+  assert.equal(Object.isFrozen(snapshot.quota.groups), true);
+  assert.throws(() => {
+    snapshot.generation = 999;
+  }, TypeError);
+  assert.throws(() => {
+    snapshot.quota.groups.push({ id: "injected" });
+  }, TypeError);
   const first = await cache.load(encrypted);
   first.generation = 999;
+  first.quota.groups.push({ id: "local-only" });
   assert.equal((await cache.load(encrypted)).generation, 1);
+  assert.deepEqual((await cache.load(encrypted)).quota.groups, []);
+  assert.equal(await cache.snapshot(encrypted), snapshot);
+  assert.deepEqual(snapshot.quota.groups, []);
   const replacement = await encryptConfig({ ...account, generation: 2 }, KEY);
   assert.equal((await cache.load(replacement)).generation, 2);
+  assert.notEqual(await cache.snapshot(replacement), snapshot);
   // Invalid decrypted accounts must never enter the cache, including on retry.
   const invalid = await encryptConfig({ provider_type: "unknown" }, KEY);
   await assert.rejects(cache.load(invalid));
   await assert.rejects(cache.load(invalid));
   cache.clear();
+  const reloaded = await cache.snapshot(encrypted);
+  assert.notEqual(reloaded, snapshot);
+  assert.deepEqual(reloaded, snapshot);
 });
 
 test(

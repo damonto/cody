@@ -1,5 +1,10 @@
 import { decryptConfig } from "../../control/crypto.ts";
-import { storedSchema, type Stored } from "../../providers/oauth/state.ts";
+import {
+  freezeAccount,
+  storedSchema,
+  type AccountSnapshot,
+  type Stored,
+} from "../../providers/oauth/state.ts";
 
 /** Bounded immutable decode cache. Every call still obtains current ciphertext
  * from coordinated storage; this can never supply an account during an outage.
@@ -12,7 +17,17 @@ export class AccountDecodeCache {
   private size = 0;
   constructor(private readonly key: string) {}
 
+  /** Detached state for an account lifecycle that owns its copy. */
   async load(ciphertext: string): Promise<Stored> {
+    return structuredClone(await this.decode(ciphertext));
+  }
+
+  /** Shared, deeply frozen state for read-only projection after revision checks. */
+  snapshot(ciphertext: string): Promise<AccountSnapshot> {
+    return this.decode(ciphertext);
+  }
+
+  private async decode(ciphertext: string): Promise<Stored> {
     const now = Date.now();
     for (const [key, entry] of this.entries) {
       if (entry.expires <= now) {
@@ -23,7 +38,7 @@ export class AccountDecodeCache {
     let entry = this.entries.get(ciphertext);
     if (!entry) {
       const value = decryptConfig(ciphertext, this.key).then((raw) =>
-        storedSchema.parse(raw),
+        freezeAccount(storedSchema.parse(raw)),
       );
       entry = { value, expires: now + 60_000 };
       if (ciphertext.length <= 256 * 1024) {
@@ -46,7 +61,7 @@ export class AccountDecodeCache {
         });
       }
     }
-    return structuredClone(await entry.value);
+    return entry.value;
   }
 
   clear(): void {

@@ -265,6 +265,60 @@ function equalDigests(left: ArrayBuffer, right: ArrayBuffer): boolean {
   return difference === 0;
 }
 
+interface ClientKeyDigests {
+  readonly keys: readonly string[];
+  readonly digests: Promise<readonly ArrayBuffer[]>;
+}
+
+// Configuration snapshots own the cache lifetime. Only configured credentials
+// are cached; arbitrary tokens supplied by clients never grow this cache.
+const clientKeyDigests = new WeakMap<
+  readonly ClientApiKeyConfig[],
+  ClientKeyDigests
+>();
+
+function configuredKeyDigests(
+  entries: readonly ClientApiKeyConfig[],
+): ClientKeyDigests {
+  const cached = clientKeyDigests.get(entries);
+  if (
+    cached?.keys.length === entries.length &&
+    entries.every((entry, index) => entry.api_key === cached.keys[index])
+  )
+    return cached;
+
+  // Snapshot the keys before yielding, including for mutable test/caller input.
+  // Rotation, removal and reordering must invalidate both HTTP and WS lookups.
+  const keys = entries.map((entry) => entry.api_key);
+  const next: ClientKeyDigests = {
+    keys,
+    digests: Promise.all(keys.map(digestSecret)),
+  };
+  clientKeyDigests.set(entries, next);
+  void next.digests.catch(() => {
+    if (clientKeyDigests.get(entries) === next)
+      clientKeyDigests.delete(entries);
+  });
+  return next;
+}
+
+async function matchClientKeyDigests(
+  provided: readonly ArrayBuffer[],
+  entries: readonly ClientApiKeyConfig[],
+): Promise<ClientApiKeyConfig | undefined> {
+  const configured = configuredKeyDigests(entries);
+  const digests = await configured.digests;
+  let matched: ClientApiKeyConfig | undefined;
+  for (const [index, entry] of entries.entries()) {
+    const expected = digests[index];
+    // Never authenticate a key replaced while its digest was being computed.
+    if (!expected || configured.keys[index] !== entry.api_key) continue;
+    const matches = provided.some((digest) => equalDigests(digest, expected));
+    if (matches && matched === undefined) matched = entry;
+  }
+  return matched;
+}
+
 async function findClientApiKeyByToken(
   tokens: string[],
   entries: ClientApiKeyConfig[],
@@ -273,17 +327,7 @@ async function findClientApiKeyByToken(
     return undefined;
   }
   const providedDigests = await Promise.all(tokens.map(digestSecret));
-  let matched: ClientApiKeyConfig | undefined;
-  for (const entry of entries) {
-    const expectedDigest = await digestSecret(entry.api_key);
-    const digestMatches = providedDigests.some((providedDigest) =>
-      equalDigests(providedDigest, expectedDigest),
-    );
-    if (digestMatches && matched === undefined) {
-      matched = entry;
-    }
-  }
-  return matched;
+  return matchClientKeyDigests(providedDigests, entries);
 }
 
 export async function findClientApiKeyByDigest(
@@ -294,14 +338,7 @@ export async function findClientApiKeyByDigest(
   if (!providedDigest) {
     return undefined;
   }
-  let matched: ClientApiKeyConfig | undefined;
-  for (const entry of entries) {
-    const expectedDigest = await digestSecret(entry.api_key);
-    if (equalDigests(providedDigest, expectedDigest) && matched === undefined) {
-      matched = entry;
-    }
-  }
-  return matched;
+  return matchClientKeyDigests([providedDigest], entries);
 }
 
 export function upstreamUrl(

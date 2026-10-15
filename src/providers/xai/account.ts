@@ -10,7 +10,7 @@ import type {
   AccountState,
   AccountServices,
 } from "../oauth/provider.ts";
-import { unavailableIdentity } from "../oauth/provider.ts";
+import { authorizationTokens, unavailableIdentity } from "../oauth/provider.ts";
 import { devicePending } from "../oauth/state.ts";
 import { XaiClient, xaiIdentity } from "./api.ts";
 import { xaiModels } from "./models.ts";
@@ -35,9 +35,9 @@ export function xaiAccount(
           session.xai_device?.verification_uri ??
           null,
         async request(session) {
-          const generation = state.current().generation;
+          const generation = state.current().authorization_generation;
           const grant = await (await client(session.connection)).startDevice();
-          await state.update(generation, (account) => {
+          await state.updateAuthorization(generation, (account) => {
             const pending = account.session;
             if (pending?.id !== session.id)
               throw new OAuthError(
@@ -60,29 +60,36 @@ export function xaiAccount(
           const result = await (
             await client(session.connection)
           ).pollDevice(session.xai_device);
-          await state.update(snapshot.generation, (account) => {
-            const pending = account.session;
-            if (
-              !pending ||
-              pending.id !== session.id ||
-              !devicePending(pending) ||
-              Date.now() >= pending.expires_at
-            )
-              throw new OAuthError(
-                "Authorization session is no longer active",
-                410,
-              );
-            if (result.tokens) {
-              pending.tokens = result.tokens;
-              pending.status = OAuthSessionStatus.Initializing;
-              pending.xai_device = undefined;
-              pending.user_code = null;
-              pending.next_at = Date.now();
-            } else {
-              if (result.slow) pending.poll_interval_ms += 5000;
-              pending.next_at = Date.now() + pending.poll_interval_ms;
-            }
-          });
+          await state.updateAuthorization(
+            snapshot.authorization_generation,
+            async (account) => {
+              const pending = account.session;
+              if (
+                !pending ||
+                pending.id !== session.id ||
+                !devicePending(pending) ||
+                Date.now() >= pending.expires_at
+              )
+                throw new OAuthError(
+                  "Authorization session is no longer active",
+                  410,
+                );
+              if (result.tokens) {
+                pending.tokens = await authorizationTokens(
+                  result.tokens,
+                  snapshot.tokens,
+                  account.tokens,
+                );
+                pending.status = OAuthSessionStatus.Initializing;
+                pending.xai_device = undefined;
+                pending.user_code = null;
+                pending.next_at = Date.now();
+              } else {
+                if (result.slow) pending.poll_interval_ms += 5000;
+                pending.next_at = Date.now() + pending.poll_interval_ms;
+              }
+            },
+          );
         },
       },
       async initialize() {
@@ -93,26 +100,24 @@ export function xaiAccount(
           session.status !== OAuthSessionStatus.Initializing
         )
           return;
-        const tokens = session.tokens;
+        const tokens = await authorizationTokens(
+          session.tokens,
+          snapshot.tokens,
+        );
         const claims = xaiIdentity(tokens);
         if (snapshot.identity && snapshot.identity.id !== claims.sub)
           throw new OAuthError(
             "This is a different xAI account; add a new account",
             400,
           );
-        await state.update(snapshot.generation, (account) => {
-          initializeXaiAccount(account, session, claims, tokens);
-        });
+        await state.replaceCredentials(
+          snapshot.authorization_generation,
+          !tokens.refresh_token,
+          (account) => {
+            initializeXaiAccount(account, session, claims, tokens);
+          },
+        );
       },
-    },
-    credential() {
-      const account = state.current();
-      if (!account.xai || !account.tokens) return unavailableIdentity();
-      return {
-        token: account.tokens.access_token,
-        xai_subject: account.xai.subject,
-        generation: account.generation,
-      };
     },
     async refresh(generation, tokens, connection, config) {
       const snapshot = state.current();

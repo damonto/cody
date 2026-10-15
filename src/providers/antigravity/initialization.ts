@@ -11,6 +11,7 @@ import { onboardingTier, projectId, type AntigravityClient } from "./api.ts";
 export const PROJECT_INITIALIZATION_TTL_MS = 10 * 60_000;
 export const projectInitializationSchema = z.object({
   tokens: tokenSchema,
+  inherit_refresh_token: z.boolean().optional(),
   identity: identitySchema,
   connection: connectionSchema,
   stage: z.enum(["project", "onboard"]),

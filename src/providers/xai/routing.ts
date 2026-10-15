@@ -34,14 +34,15 @@ export async function xaiQuotaRoute(
   const provider = target.provider;
   const providerHealth = await getProviderAvailability(env, provider.id);
   const checks = await mapWithConcurrency(
-    target.credentials,
+    target.credentials.filter(
+      (credential) => !excluded.has(`${provider.id}\u0000${credential.id}`),
+    ),
     PROVIDER_FAN_OUT_CONCURRENCY,
     async (credential) => {
       if (
         !providerHealth.available ||
         providerHealth.reason === ProviderAvailabilityReason.HealthReadFailed ||
-        credential.auth.type !== CredentialAuthType.OAuth ||
-        excluded.has(`${provider.id}\u0000${credential.id}`)
+        credential.auth.type !== CredentialAuthType.OAuth
       )
         return { credential };
       try {

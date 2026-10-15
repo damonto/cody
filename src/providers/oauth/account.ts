@@ -1,5 +1,9 @@
 import { accountProvider } from "./registry.ts";
-import { TOKEN_REFRESH_MARGIN_MS, type AccountProvider } from "./provider.ts";
+import {
+  authorizationTokens,
+  TOKEN_REFRESH_MARGIN_MS,
+  type AccountProvider,
+} from "./provider.ts";
 import {
   storedSchema,
   freezeAccount,
@@ -11,9 +15,11 @@ import {
   base64url,
   type Stored,
   type Session,
+  type ReadonlyData,
 } from "./state.ts";
 import { AccountInventory } from "./inventory.ts";
 import { accountView } from "./presentation.ts";
+import { activeAccount } from "./reads.ts";
 import { ControlStore } from "../../control/store.ts";
 import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
 import { CredentialAuthType } from "../../config/values.ts";
@@ -66,6 +72,7 @@ export class ProviderOAuthAccountCore {
   private readonly inventory: AccountInventory;
   private mutations: Promise<unknown> = Promise.resolve();
   private readonly refreshes = new Map<RefreshKind, PendingRefresh>();
+  private readonly tokenOperations = new Map<number, Promise<void>>();
   constructor(
     protected readonly ctx: ObjectContext,
     protected readonly env: AccountEnv,
@@ -130,12 +137,25 @@ export class ProviderOAuthAccountCore {
     this.mutations = operation.catch(() => {});
     return operation;
   }
-  private async updateGeneration(
+  private updateGeneration(
+    generation: number,
+    update: (account: Stored) => void | Promise<void>,
+  ): Promise<void> {
+    return this.updateVersion("generation", generation, update);
+  }
+  private updateAuthorization(
+    generation: number,
+    update: (account: Stored) => void | Promise<void>,
+  ): Promise<void> {
+    return this.updateVersion("authorization_generation", generation, update);
+  }
+  private async updateVersion(
+    field: "generation" | "authorization_generation",
     generation: number,
     update: (account: Stored) => void | Promise<void>,
   ): Promise<void> {
     await this.change(async (account) => {
-      if (!account || account.generation !== generation)
+      if (!account || account[field] !== generation)
         throw new OAuthError(
           "Account changed during the operation; try again",
           409,
@@ -145,6 +165,51 @@ export class ProviderOAuthAccountCore {
       return account;
     });
   }
+  private coordinateTokens(
+    generation: number,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.tokenOperations.get(generation) ?? Promise.resolve();
+    const result = previous
+      .catch(() => {})
+      .then(run)
+      .finally(() => {
+        if (this.tokenOperations.get(generation) === result)
+          this.tokenOperations.delete(generation);
+      });
+    this.tokenOperations.set(generation, result);
+    return result;
+  }
+  private replaceCredentials(
+    authorizationGeneration: number,
+    inheritRefreshToken: boolean,
+    update: (account: Stored) => void | Promise<void>,
+  ): Promise<void> {
+    if (!inheritRefreshToken)
+      return this.updateAuthorization(authorizationGeneration, update);
+    const generation = this.requireAccount().generation;
+    const refreshing = this.refreshes.get("token");
+    return this.coordinateTokens(generation, async () => {
+      // Do not inherit a token from an unsuccessful in-flight rotation. Waiting
+      // outside the mutation queue lets that rotation finish its durable write.
+      if (refreshing?.generation === generation) await refreshing.result;
+      await this.updateAuthorization(
+        authorizationGeneration,
+        async (account) => {
+          if (
+            account.status !== OAuthAccountStatus.Ready ||
+            !account.tokens?.refresh_token
+          )
+            throw new OAuthError(
+              "The previous refresh token is unavailable; authorize again",
+              401,
+              "invalid_grant",
+            );
+          await update(account);
+        },
+      );
+    });
+  }
   private shareRefresh(
     kind: RefreshKind,
     generation: number,
@@ -152,19 +217,21 @@ export class ProviderOAuthAccountCore {
   ): Promise<void> {
     const pending = this.refreshes.get(kind);
     if (pending?.generation === generation) return pending.result;
-    const result = Promise.resolve()
-      .then(run)
-      .finally(() => {
-        // A late operation must not clear the replacement generation's flight.
-        if (this.refreshes.get(kind)?.result === result)
-          this.refreshes.delete(kind);
-      });
+    const operation =
+      kind === "token"
+        ? this.coordinateTokens(generation, run)
+        : Promise.resolve().then(run);
+    const result = operation.finally(() => {
+      // A late operation must not clear the replacement generation's flight.
+      if (this.refreshes.get(kind)?.result === result)
+        this.refreshes.delete(kind);
+    });
     this.refreshes.set(kind, { generation, result });
     // The caller reports errors; persistence must finish even if it disconnects.
     this.ctx.waitUntil(result.catch(() => {}));
     return result;
   }
-  private view(): AccountView {
+  private view(): ReadonlyData<AccountView> {
     return accountView(this.requireAccount());
   }
 
@@ -198,7 +265,7 @@ export class ProviderOAuthAccountCore {
         Date.now() >= current.expires_at &&
         !terminalSessionStatuses.has(current.status)
       ) {
-        account.generation++;
+        account.authorization_generation++;
         current.status = OAuthSessionStatus.Expired;
         current.tokens = null;
         current.xai_device = undefined;
@@ -209,7 +276,7 @@ export class ProviderOAuthAccountCore {
       return account;
     });
   }
-  private sessionView(id: string, actor: string): SessionView {
+  private sessionView(id: string, actor: string): ReadonlyData<SessionView> {
     const session = this.session(id, actor);
     const account = this.requireAccount();
     const device = session.flow === OAuthFlow.Device;
@@ -250,6 +317,10 @@ export class ProviderOAuthAccountCore {
         current: () => this.requireAccount(),
         update: (generation, update) =>
           this.updateGeneration(generation, update),
+        updateAuthorization: (generation, update) =>
+          this.updateAuthorization(generation, update),
+        replaceCredentials: (generation, inheritRefreshToken, update) =>
+          this.replaceCredentials(generation, inheritRefreshToken, update),
         resolve: (rejected) => this.resolve(undefined, undefined, rejected),
       },
       {
@@ -334,6 +405,7 @@ export class ProviderOAuthAccountCore {
         this.env,
         signal,
         account.provider_type,
+        this.ctx,
       ).send,
       signal,
     ];
@@ -344,7 +416,7 @@ export class ProviderOAuthAccountCore {
     connection: ProviderConnection,
     providerType: OAuthProviderType,
     flow: OAuthFlow,
-  ): Promise<SessionView> {
+  ): Promise<ReadonlyData<SessionView>> {
     const authorization = this.provider(providerType).authorization;
     if (
       flow === OAuthFlow.Device ? !authorization.device : !authorization.browser
@@ -412,7 +484,7 @@ export class ProviderOAuthAccountCore {
         models_error: null,
         quota: emptyQuota(),
       });
-      account.generation++;
+      account.authorization_generation++;
       account.session = session;
       account.antigravity_initialization = null;
       return account;
@@ -430,12 +502,13 @@ export class ProviderOAuthAccountCore {
     return this.sessionView(session.id, actor);
   }
   private async requestDeviceCode(id: string, actor: string): Promise<void> {
-    const generation = this.requireAccount().generation;
+    const session = this.session(id, actor);
+    const generation = this.requireAccount().authorization_generation;
     const device = this.provider().authorization.device;
     if (!device)
       throw new OAuthError("Device authorization is unavailable", 400);
     try {
-      await device.request(this.session(id, actor));
+      await device.request(session);
     } catch (error) {
       await this.failSession(
         generation,
@@ -447,9 +520,10 @@ export class ProviderOAuthAccountCore {
     id: string,
     actor: string,
     redirect: string,
-  ): Promise<SessionView> {
+  ): Promise<ReadonlyData<SessionView>> {
     const session = this.session(id, actor);
-    const generation = this.requireAccount().generation;
+    const generation = this.requireAccount().authorization_generation;
+    const activeTokens = this.requireAccount().tokens;
     if (
       session.status === OAuthSessionStatus.Expired ||
       session.status === OAuthSessionStatus.Cancelled ||
@@ -492,7 +566,7 @@ export class ProviderOAuthAccountCore {
       throw new OAuthError(
         "The callback URL must contain one authorization code",
       );
-    await this.updateGeneration(generation, (account) => {
+    await this.updateAuthorization(generation, (account) => {
       const pending = this.ownedSession(account, id, actor);
       if (pending.status !== OAuthSessionStatus.Pending)
         throw new OAuthError("Authorization is already being processed", 409);
@@ -503,7 +577,7 @@ export class ProviderOAuthAccountCore {
     const operation = (async () => {
       try {
         const tokens = await browser.exchange(code, session);
-        await this.updateGeneration(generation, (account) => {
+        await this.updateAuthorization(generation, async (account) => {
           const pending = this.ownedSession(account, id, actor);
           if (
             pending.status !== OAuthSessionStatus.Exchanging ||
@@ -513,7 +587,11 @@ export class ProviderOAuthAccountCore {
               "Authorization session is no longer active",
               410,
             );
-          pending.tokens = tokens;
+          pending.tokens = await authorizationTokens(
+            tokens,
+            activeTokens,
+            account.tokens,
+          );
           pending.verifier = "";
           pending.status = OAuthSessionStatus.Initializing;
           pending.next_at = Date.now();
@@ -531,8 +609,8 @@ export class ProviderOAuthAccountCore {
       generation,
       operation: "authorization",
     });
-    if (this.account?.generation !== generation) return;
-    await this.updateGeneration(generation, (account) => {
+    if (this.account?.authorization_generation !== generation) return;
+    await this.updateAuthorization(generation, (account) => {
       if (!account.session) return;
       account.session.status = OAuthSessionStatus.Error;
       account.session.error = safeError(error);
@@ -549,7 +627,7 @@ export class ProviderOAuthAccountCore {
           "Authorization is complete; disconnect the account instead",
           409,
         );
-      account.generation++;
+      account.authorization_generation++;
       session.status = OAuthSessionStatus.Cancelled;
       session.tokens = null;
       session.xai_device = undefined;
@@ -560,19 +638,7 @@ export class ProviderOAuthAccountCore {
     });
   }
   private active() {
-    const account = this.requireAccount();
-    if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
-      throw new OAuthError(
-        "Reconnect this account before sending requests",
-        503,
-        "oauth_account_unavailable",
-      );
-    const credential = this.provider().credential();
-    return {
-      generation: account.generation,
-      tokens: account.tokens,
-      credential,
-    };
+    return activeAccount(this.requireAccount());
   }
   private async resolve(
     connection?: ProviderConnection,
@@ -654,23 +720,28 @@ export class ProviderOAuthAccountCore {
     return current.credential;
   }
   private async retry(id: string, actor: string): Promise<void> {
-    await this.updateGeneration(this.requireAccount().generation, (account) => {
-      const session = this.ownedSession(account, id, actor);
-      if (
-        session.status !== OAuthSessionStatus.Error ||
-        !session.tokens ||
-        Date.now() >= session.expires_at
-      )
-        throw new OAuthError("Start a new authorization session", 409);
-      session.status = OAuthSessionStatus.Initializing;
-      session.error = null;
-      session.next_at = Date.now();
-    });
+    await this.updateAuthorization(
+      this.requireAccount().authorization_generation,
+      (account) => {
+        const session = this.ownedSession(account, id, actor);
+        if (
+          session.status !== OAuthSessionStatus.Error ||
+          !session.tokens ||
+          Date.now() >= session.expires_at
+        )
+          throw new OAuthError("Start a new authorization session", 409);
+        session.status = OAuthSessionStatus.Initializing;
+        account.authorization_generation++;
+        session.error = null;
+        session.next_at = Date.now();
+      },
+    );
   }
   private async disconnect(): Promise<void> {
     await this.change((account) => {
       if (!account) throw new OAuthError("Account does not exist", 404);
       account.generation++;
+      account.authorization_generation++;
       account.tokens = null;
       account.session = null;
       account.antigravity_initialization = null;
@@ -824,12 +895,15 @@ export class ProviderOAuthAccountCore {
           pending?.id === session.id &&
           devicePending(pending)
         )
-          await this.updateGeneration(account.generation, (current) => {
-            if (current.session?.id === session.id)
-              current.session.next_at =
-                Date.now() + current.session.poll_interval_ms * 2;
-          });
-        else await this.failSession(account.generation, error);
+          await this.updateAuthorization(
+            account.authorization_generation,
+            (current) => {
+              if (current.session?.id === session.id)
+                current.session.next_at =
+                  Date.now() + current.session.poll_interval_ms * 2;
+            },
+          );
+        else await this.failSession(account.authorization_generation, error);
       }
       return;
     }
@@ -837,7 +911,7 @@ export class ProviderOAuthAccountCore {
       try {
         await provider.authorization.initialize();
       } catch (error) {
-        await this.failSession(account.generation, error);
+        await this.failSession(account.authorization_generation, error);
       }
     }
   }

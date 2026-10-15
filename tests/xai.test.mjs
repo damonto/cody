@@ -447,6 +447,133 @@ test("xAI prefix inspection switches only before visible output", async () => {
   await after.response.text();
   assert.equal(late.length, 1);
 });
+test("xAI quota preflight commits output-bearing lifecycle and error events", async () => {
+  const failure = {
+    type: "error",
+    code: "subscription:free-usage-exhausted",
+    error: "included free usage exhausted",
+  };
+  for (const output of [
+    { type: "response.created", response: { output: [message] } },
+    { type: "response.in_progress", response: {}, delta: "generated" },
+    { type: "response.output_item.added", item: message },
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "function_call",
+        name: "write",
+        arguments: "",
+        call_id: "call",
+      },
+    },
+    {
+      type: "response.content_part.added",
+      part: { type: "output_text", text: "generated" },
+    },
+    {
+      type: "response.reasoning_summary_part.added",
+      part: { type: "summary_text", text: "generated" },
+    },
+    { ...failure, output: [message] },
+    { type: "response.completed", response: { status: "completed" } },
+  ]) {
+    const late = [];
+    const source = stream([output, failure]);
+    const expected = await source.clone().text();
+    const inspected = await inspectXaiResponse(
+      source,
+      scope.model,
+      async (limit) => late.push(limit),
+      new AbortController().signal,
+    );
+    assert.equal(inspected.accountLimit, undefined, output.type);
+    assert.equal(await inspected.response.text(), expected);
+    assert.ok(late.length > 0, output.type);
+  }
+});
+test("xAI JSON quota errors use the same output guard as streaming failures", async () => {
+  const failure = {
+    type: "error",
+    code: "subscription:free-usage-exhausted",
+    error: "included free usage exhausted",
+  };
+  for (const status of [402, 403, 429]) {
+    for (const output of [
+      {},
+      { output: [message] },
+      {
+        output: [
+          {
+            type: "function_call",
+            name: "write",
+            arguments: "",
+            call_id: "call",
+          },
+        ],
+      },
+      { response: { status: "failed", output: [message] } },
+    ]) {
+      const hasOutput = Object.keys(output).length > 0;
+      const source = JSON.stringify({ ...failure, ...output });
+      const late = [];
+      const inspected = await inspectXaiResponse(
+        new Response(source, {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+        scope.model,
+        async (limit) => late.push(limit),
+        new AbortController().signal,
+      );
+      assert.equal(!!inspected.accountLimit, !hasOutput);
+      assert.equal(await inspected.response.text(), source);
+      assert.equal(late.length, hasOutput ? 1 : 0);
+    }
+  }
+});
+test("xAI quota preflight accepts only empty matching lifecycle events", async () => {
+  // A provider-recognized message-only error remains eligible for account switching.
+  const failure = { type: "error", error: "included free usage exhausted" };
+  const empty = [
+    {
+      type: "response.created",
+      response: { status: "in_progress", output: [] },
+    },
+    {
+      type: "response.output_item.added",
+      item: { ...message, content: [] },
+    },
+    {
+      type: "response.content_part.added",
+      part: { type: "output_text", text: "" },
+    },
+    {
+      type: "response.reasoning_summary_part.added",
+      part: { type: "summary_text", text: "" },
+    },
+  ];
+  const inspected = await inspectXaiResponse(
+    stream([...empty, failure]),
+    scope.model,
+    async () => assert.fail("a preflight limit is not a late observation"),
+    new AbortController().signal,
+  );
+  assert.ok(inspected.accountLimit);
+  await inspected.response.text();
+
+  const mismatch = new Response(
+    `event: response.output_text.delta\ndata: ${JSON.stringify(empty[0])}\n\ndata: ${JSON.stringify(failure)}\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const afterMismatch = await inspectXaiResponse(
+    mismatch,
+    scope.model,
+    async () => {},
+    new AbortController().signal,
+  );
+  assert.equal(afterMismatch.accountLimit, undefined);
+  await afterMismatch.response.text();
+});
 test("xAI OAuth endpoint validation and device slow_down", async () => {
   for (const url of [
     "http://auth.x.ai/token",
@@ -514,6 +641,47 @@ test("xAI partial refresh preserves omitted fields and rejects identity changes"
   assert.equal(next.expires_at, previous.expires_at);
   subject = "different";
   await assert.rejects(client.refresh(previous, "same"), /different account/);
+});
+
+test("xAI refresh uses the new grant expiry before JWT and previous-token expiry", async () => {
+  const jwt = (exp) =>
+    `${btoa(JSON.stringify({ alg: "none" }))}.${btoa(JSON.stringify({ sub: "same", iss: "https://auth.x.ai", exp }))}.signature`;
+  const previous = {
+    access_token: jwt(1000),
+    id_token: jwt(1000),
+    refresh_token: "refresh",
+    expires_at: 1000000,
+  };
+  for (const grant of [
+    { access_token: jwt(2000) },
+    { access_token: jwt(0) },
+    { access_token: jwt(2000), expires_in: 0 },
+    { access_token: jwt(2000), expires_in: 120 },
+  ]) {
+    const client = new XaiClient(
+      async (request) =>
+        request.url.endsWith("openid-configuration")
+          ? Response.json({
+              device_authorization_endpoint: "https://auth.x.ai/device",
+              token_endpoint: "https://auth.x.ai/token",
+            })
+          : Response.json(grant),
+      new AbortController().signal,
+    );
+    const started = Date.now();
+    const tokens = await client.refresh(previous, "same");
+    if (grant.expires_in === undefined)
+      assert.equal(
+        tokens.expires_at,
+        grant.access_token === jwt(0) ? 0 : 2000000,
+      );
+    else {
+      assert.ok(tokens.expires_at >= started + grant.expires_in * 1000);
+      assert.ok(tokens.expires_at <= Date.now() + grant.expires_in * 1000);
+    }
+    assert.equal(tokens.refresh_token, previous.refresh_token);
+    assert.equal(tokens.id_token, previous.id_token);
+  }
 });
 
 test(

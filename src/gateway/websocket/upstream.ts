@@ -21,12 +21,22 @@ import type { ModelProviderTarget } from "../routing/routing.ts";
 import type { StoredWebSocketSession } from "./storage.ts";
 import {
   closeSocket,
+  messageBytes,
   normalizeMessage,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
 import type { Bindings } from "../../platform/bindings.ts";
+import { abortableDelay } from "../../shared/abort.ts";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+const MAX_PENDING_BYTES = 32 * 1024 * 1024;
+const MAX_PENDING_MESSAGES = 1024;
+
+type UpstreamEvent = { socket: WebSocket; bytes: number } & (
+  | { type: "message"; data: unknown; receivedAt: number }
+  | { type: "close"; event: CloseEvent }
+  | { type: "error" | "failure" }
+);
 
 interface WebSocketConnectResult extends FetchWithRetriesResult {
   readonly proxyError?: ProxyFailure | undefined;
@@ -41,28 +51,15 @@ interface UpstreamHandlers {
   failure: () => Promise<void>;
 }
 
-function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(new DOMException("aborted", "AbortError"));
-  }
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new DOMException("aborted", "AbortError"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 /** Owns the outgoing connection, cancellation, and ordered upstream events. */
 export class UpstreamWebSocket {
   private controller: AbortController | undefined;
   private connection: WebSocket | undefined;
-  private events = Promise.resolve();
+  private readonly events: UpstreamEvent[] = [];
+  private pendingBytes = 0;
+  private active: UpstreamEvent | undefined;
+  private processing = false;
+  private detach: (() => void) | undefined;
   private observeMessage:
     ((value: unknown, receivedAt: number) => void) | undefined;
 
@@ -184,59 +181,137 @@ export class UpstreamWebSocket {
   close(code: number, reason: string): void {
     this.controller?.abort();
     this.controller = undefined;
+    this.clearEvents();
     closeSocket(this.connection, code, reason);
     this.connection = undefined;
     this.observeMessage = undefined;
   }
 
   discard(socket: WebSocket): void {
-    if (this.connection === socket) this.connection = undefined;
+    if (this.connection === socket) {
+      this.clearEvents();
+      this.connection = undefined;
+      this.observeMessage = undefined;
+    }
     closeSocket(socket, 1000, "client disconnected");
   }
 
-  private enqueue(
-    socket: WebSocket,
-    event: "message" | "close" | "error",
-    operation: () => Promise<void>,
-  ): void {
+  private clearEvents(): void {
+    this.detach?.();
+    this.detach = undefined;
+    this.events.length = 0;
+    this.pendingBytes = 0;
+  }
+
+  private enqueue(event: UpstreamEvent): void {
     // A socket replaced by an account switch no longer reaches the handlers,
     // including events it queued before the switch.
-    if (this.connection !== socket) return;
-    const processing = this.events.then(() =>
-      this.connection === socket ? operation() : undefined,
-    );
-    this.events = processing.catch(async (error) => {
-      logError("websocket.upstream_event.failed", {
-        upstream_event: event,
-        error: errorMessage(error),
-      });
-      await this.handlers.failure();
-    });
-    this.context.waitUntil(this.events);
+    if (this.connection !== event.socket || !this.detach) return;
+    if (
+      event.type === "message" &&
+      (this.events.length + (this.active ? 1 : 0) >= MAX_PENDING_MESSAGES ||
+        this.pendingBytes + (this.active?.bytes ?? 0) + event.bytes >
+          MAX_PENDING_BYTES)
+    ) {
+      this.clearEvents();
+      closeSocket(event.socket, 1013, "upstream buffer limit exceeded");
+      this.events.push({ socket: event.socket, type: "failure", bytes: 0 });
+    } else {
+      this.events.push(event);
+      this.pendingBytes += event.bytes;
+      if (event.type !== "message") {
+        // Reserve one terminal control event even when the message budget is full.
+        // Drain earlier frames in order, but accept no later events.
+        this.detach();
+        this.detach = undefined;
+      }
+    }
+    if (this.processing) return;
+    this.processing = true;
+    this.context.waitUntil(this.drain());
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.events.length) {
+        const event = this.events.shift()!;
+        this.pendingBytes -= event.bytes;
+        this.active = event;
+        try {
+          if (this.connection !== event.socket) continue;
+          switch (event.type) {
+            case "message": {
+              const message = await normalizeMessage(event.data);
+              if (message !== undefined && this.connection === event.socket)
+                await this.handlers.message(message, event.receivedAt);
+              break;
+            }
+            case "close":
+              await this.handlers.close(event.event);
+              break;
+            case "error":
+              await this.handlers.error();
+              break;
+            case "failure":
+              await this.handlers.failure();
+              break;
+          }
+        } catch (error) {
+          if (this.connection !== event.socket) continue;
+          this.clearEvents();
+          closeSocket(event.socket, 1011, "upstream event processing failed");
+          logError("websocket.upstream_event.failed", {
+            upstream_event: event.type,
+            error: errorMessage(error),
+          });
+          if (event.type !== "failure") await this.handlers.failure();
+        } finally {
+          this.active = undefined;
+        }
+      }
+    } finally {
+      this.processing = false;
+    }
   }
 
   attach(socket: WebSocket): void {
+    if (this.connection === socket) return;
+    this.clearEvents();
+    closeSocket(this.connection, 1000, "upstream connection replaced");
+    this.connection = socket;
     socket.binaryType = "arraybuffer";
-    socket.addEventListener("message", (event) => {
-      const receivedAt = Date.now();
-      this.enqueue(socket, "message", async () => {
-        const message = await normalizeMessage(event.data);
-        if (message !== undefined) {
-          await this.handlers.message(message, receivedAt);
-        }
+    const message = (event: MessageEvent): void => {
+      this.enqueue({
+        socket,
+        type: "message",
+        bytes: messageBytes(event.data),
+        data: event.data,
+        receivedAt: Date.now(),
       });
-    });
-    socket.addEventListener("close", (event) => {
-      this.enqueue(socket, "close", () => this.handlers.close(event));
-    });
-    socket.addEventListener("error", () => {
-      this.enqueue(socket, "error", () => this.handlers.error());
-    });
+    };
+    const closed = (event: CloseEvent): void => {
+      this.enqueue({ socket, type: "close", bytes: 0, event });
+    };
+    const error = (): void => {
+      this.enqueue({ socket, type: "error", bytes: 0 });
+    };
+    socket.addEventListener("message", message);
+    socket.addEventListener("close", closed);
+    socket.addEventListener("error", error);
+    this.detach = () => {
+      socket.removeEventListener("message", message);
+      socket.removeEventListener("close", closed);
+      socket.removeEventListener("error", error);
+    };
 
     // Cloudflare only supports hibernation when the Durable Object is the
     // WebSocket server. Outgoing WebSockets use the standard API and keep the
     // object active while connected.
-    socket.accept({ allowHalfOpen: true });
-    this.connection = socket;
+    try {
+      socket.accept({ allowHalfOpen: true });
+    } catch (error) {
+      this.close(1011, "upstream websocket acceptance failed");
+      throw error;
+    }
   }
 }

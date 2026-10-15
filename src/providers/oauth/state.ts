@@ -1,5 +1,8 @@
 import { codexAccountSchema } from "../codex/account-schema.ts";
-import { claudeAccountSchema } from "../claude/account-schema.ts";
+import {
+  claudeAccountSchema,
+  claudeQuotaSyncSchema,
+} from "../claude/account-schema.ts";
 import { xaiAccountSchema } from "../xai/account-schema.ts";
 import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { xaiDeviceSchema } from "../xai/api.ts";
@@ -53,6 +56,8 @@ const storedBase = z.object({
   provider_id: z.string(),
   provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
   generation: z.number(),
+  // Pending authorization has its own fence; it must not revoke active refreshes.
+  authorization_generation: z.number().int().nonnegative().default(0),
   status: z.enum(OAuthAccountStatus),
   connection: connectionSchema,
   tokens: tokenSchema.nullable(),
@@ -90,6 +95,7 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
   }),
   storedBase.extend({
     provider_type: z.literal(ProviderType.Claude),
+    claude_quota_sync: claudeQuotaSyncSchema.prefault({}),
     project_id: z.null(),
     antigravity_initialization: z.null().optional(),
     codex: z.null().default(null),
@@ -106,7 +112,7 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
 export type Stored = z.output<typeof storedSchema>;
 export type Session = z.output<typeof sessionSchema>;
 
-type ReadonlyData<Value> = Value extends object
+export type ReadonlyData<Value> = Value extends object
   ? { readonly [Key in keyof Value]: ReadonlyData<Value[Key]> }
   : Value;
 export type AccountSnapshot = ReadonlyData<Stored>;
@@ -149,10 +155,12 @@ export const emptyQuota = (): Stored["quota"] => ({
   last_error: null,
   stale: true,
 });
-export const devicePending = (session: Session): boolean =>
+export const devicePending = (
+  session: Pick<Session, "flow" | "status">,
+): boolean =>
   session.flow === OAuthFlow.Device &&
   session.status === OAuthSessionStatus.Pending;
-export function nextAccountAlarm(account: Stored): number | null {
+export function nextAccountAlarm(account: AccountSnapshot): number | null {
   const times: number[] = [];
   const session = account.session;
   if (session && !terminalSessionStatuses.has(session.status)) {
@@ -168,7 +176,9 @@ export function nextAccountAlarm(account: Stored): number | null {
     times.push(project.next_at, project.deadline);
   return times.length ? Math.min(...times) : null;
 }
-export function accountViewStatus(account: Stored): OAuthAccountViewStatus {
+export function accountViewStatus(
+  account: AccountSnapshot,
+): OAuthAccountViewStatus {
   if (account.status === OAuthAccountStatus.Ready) return account.status;
   if (account.antigravity_initialization)
     return OAuthAccountViewStatus.Initializing;

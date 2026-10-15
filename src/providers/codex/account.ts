@@ -10,7 +10,7 @@ import type {
   AccountState,
   AccountServices,
 } from "../oauth/provider.ts";
-import { browserCallback, unavailableIdentity } from "../oauth/provider.ts";
+import { authorizationTokens, browserCallback } from "../oauth/provider.ts";
 import { devicePending } from "../oauth/state.ts";
 import {
   CODEX_DEVICE_TTL_MS,
@@ -65,9 +65,9 @@ export function codexAccount(
         ttlMs: CODEX_DEVICE_TTL_MS,
         url: () => CODEX_VERIFICATION_URI,
         async request(session) {
-          const generation = state.current().generation;
+          const generation = state.current().authorization_generation;
           const grant = await (await client(session.connection)).startDevice();
-          await state.update(generation, (account) => {
+          await state.updateAuthorization(generation, (account) => {
             const pending = account.session;
             if (pending?.id !== session.id)
               throw new OAuthError(
@@ -97,40 +97,53 @@ export function codexAccount(
             user_code: session.user_code,
           });
           if (!approved) {
-            await state.update(snapshot.generation, (account) => {
-              const pending = account.session;
-              if (pending?.id === session.id && devicePending(pending))
-                pending.next_at = Date.now() + pending.poll_interval_ms;
-            });
+            await state.updateAuthorization(
+              snapshot.authorization_generation,
+              (account) => {
+                const pending = account.session;
+                if (pending?.id === session.id && devicePending(pending))
+                  pending.next_at = Date.now() + pending.poll_interval_ms;
+              },
+            );
             return;
           }
-          await state.update(snapshot.generation, (account) => {
-            const pending = account.session;
-            if (pending?.id !== session.id || !devicePending(pending))
-              throw new OAuthError("Authorization is no longer pending", 409);
-            pending.status = OAuthSessionStatus.Exchanging;
-            pending.user_code = null;
-          });
+          await state.updateAuthorization(
+            snapshot.authorization_generation,
+            (account) => {
+              const pending = account.session;
+              if (pending?.id !== session.id || !devicePending(pending))
+                throw new OAuthError("Authorization is no longer pending", 409);
+              pending.status = OAuthSessionStatus.Exchanging;
+              pending.user_code = null;
+            },
+          );
           const tokens = await issuer.exchange(
             approved.code,
             approved.verifier,
             CODEX_DEVICE_REDIRECT_URI,
           );
-          await state.update(snapshot.generation, (account) => {
-            const pending = account.session;
-            if (
-              pending?.id !== session.id ||
-              pending.status !== OAuthSessionStatus.Exchanging
-            )
-              throw new OAuthError(
-                "Authorization session is no longer active",
-                410,
+          await state.updateAuthorization(
+            snapshot.authorization_generation,
+            async (account) => {
+              const pending = account.session;
+              if (
+                pending?.id !== session.id ||
+                pending.status !== OAuthSessionStatus.Exchanging
+              )
+                throw new OAuthError(
+                  "Authorization session is no longer active",
+                  410,
+                );
+              pending.tokens = await authorizationTokens(
+                tokens,
+                snapshot.tokens,
+                account.tokens,
               );
-            pending.tokens = tokens;
-            pending.device_auth_id = null;
-            pending.status = OAuthSessionStatus.Initializing;
-            pending.next_at = Date.now();
-          });
+              pending.device_auth_id = null;
+              pending.status = OAuthSessionStatus.Initializing;
+              pending.next_at = Date.now();
+            },
+          );
         },
       },
       async initialize() {
@@ -141,7 +154,10 @@ export function codexAccount(
           session.status !== OAuthSessionStatus.Initializing
         )
           return;
-        const tokens = session.tokens;
+        const tokens = await authorizationTokens(
+          session.tokens,
+          snapshot.tokens,
+        );
         if (!tokens.id_token)
           throw new OAuthError(
             "ChatGPT did not return an identity token; start authorization again",
@@ -156,20 +172,14 @@ export function codexAccount(
           throw new OAuthError(
             "This is a different ChatGPT account; add it as a new account instead",
           );
-        await state.update(snapshot.generation, (account) => {
-          initializeCodexAccount(account, session, claims, identity);
-        });
+        await state.replaceCredentials(
+          snapshot.authorization_generation,
+          !tokens.refresh_token,
+          (account) => {
+            initializeCodexAccount(account, session, claims, identity, tokens);
+          },
+        );
       },
-    },
-    credential() {
-      const account = state.current();
-      if (!account.codex || !account.tokens) return unavailableIdentity();
-      return {
-        token: account.tokens.access_token,
-        account_id: account.codex.account_id,
-        generation: account.generation,
-        ...(account.codex.is_fedramp ? { is_fedramp: true } : {}),
-      };
     },
     async refresh(generation, tokens, connection, config) {
       const result = await (

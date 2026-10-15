@@ -10,6 +10,10 @@ import {
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from "vitest";
 import { parseConfig } from "../../src/config/store.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
+import {
+  headerQuota,
+  quotaAvailability,
+} from "../../src/providers/claude/limits.ts";
 import type { OAuthAccountObject } from "../../src/platform/bindings.ts";
 import {
   accountReply,
@@ -282,6 +286,86 @@ test("Claude PKCE identity survives eviction and rejects stale observations", as
   expect(result.ok).toBe(false);
   expect((await a.stub.run({ action: "reset_credits" })).ok).toBe(false);
 });
+test("Claude full quota refresh retains repeated observations through durable commits", async () => {
+  const account = await ready();
+  const initial = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  const reset = Math.ceil(Date.now() / 1000) + 900;
+  const observation = {
+    action: "claude_usage" as const,
+    generation: initial.generation!,
+    groups: headerQuota(
+      new Headers({
+        "anthropic-ratelimit-unified-5h-utilization": "1",
+        "anthropic-ratelimit-unified-5h-reset": String(reset),
+      }),
+    ),
+    extra_usage_disabled_reason: "usage_limit_reached",
+  };
+  expect((await account.stub.run(observation)).ok).toBe(true);
+  const send = fetch;
+  let started = false;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (!request.url.endsWith("/api/oauth/usage")) return send(request);
+    started = true;
+    await pending;
+    return Response.json({
+      five_hour: {
+        utilization: 80,
+        resets_at: new Date(reset * 1000).toISOString(),
+      },
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 200,
+        used_credits: 50,
+        utilization: 25,
+        disabled_reason: null,
+      },
+    });
+  });
+  const refresh = account.stub.run({ action: "quota", force: true });
+  await vi.waitFor(() => expect(started).toBe(true));
+  try {
+    expect((await account.stub.run(observation)).ok).toBe(true);
+  } finally {
+    release();
+  }
+  const updated = await accountReply(refresh, accountViewSchema);
+  expect(updated.quota.stale).toBe(false);
+  expect(updated.quota.last_error).toBeNull();
+  expect(updated.quota.groups[0].buckets[0].used_percent).toBe(100);
+  expect(updated.quota.extra_usage).toMatchObject({
+    monthly_limit: 200,
+    used_credits: 50,
+    disabled_reason: "usage_limit_reached",
+  });
+  expect(quotaAvailability(updated.quota, "sonnet")).toMatchObject({
+    subscription: false,
+    extra: false,
+  });
+  await evictDurableObject(account.stub);
+  const persisted = await accountReply(
+    account.stub.run({ action: "view" }),
+    accountViewSchema,
+  );
+  expect(persisted.quota).toEqual(updated.quota);
+  const next = await accountReply(
+    account.stub.run({ action: "quota", force: true }),
+    accountViewSchema,
+  );
+  expect(next.quota.groups[0].buckets[0].used_percent).toBe(80);
+  expect(next.quota.extra_usage?.disabled_reason).toBeNull();
+  expect(quotaAvailability(next.quota, "sonnet")).toMatchObject({
+    subscription: true,
+    extra: true,
+  });
+});
 test("Claude round robin rotates new sessions and pins existing sessions", async () => {
   const accounts = await Promise.all([ready(), ready()]);
   const c = config(accounts);
@@ -362,6 +446,22 @@ test("subscription-first routing and explicit Extra Usage fallback", async () =>
   expect(
     (await infer(config([a, b], { allow_extra_usage: true }))).status,
   ).toBe(200);
+});
+test("Claude can use opted-in Extra Usage after a subscription account rejects", async () => {
+  const [a, b] = await Promise.all([ready(), ready()]);
+  usage.set(b.id, 100);
+  reject.add(a.id);
+  const response = await infer(
+    config([a, b], {
+      account_selection: "session_affinity",
+      allow_extra_usage: true,
+    }),
+    crypto.randomUUID(),
+    "claude-opus-4-6",
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ token: b.id });
+  expect(sent.map((request) => request.token)).toEqual([a.id, b.id]);
 });
 test("unknown quota fails closed and generic 429 never switches", async () => {
   const [a, b] = await Promise.all([ready(), ready()]);

@@ -357,6 +357,20 @@ test("xAI extra usage needs explicit opt-in", async () => {
   await allowed.text();
   expect(sent).toEqual([a.sub]);
 });
+test("xAI can use opted-in Extra Usage after a subscription account rejects", async () => {
+  const [a, b] = await Promise.all([ready(), ready()]);
+  usage.set(b.sub, 100);
+  reject.add(a.sub);
+  const response = await infer(
+    config([a, b], {
+      account_selection: "session_affinity",
+      allow_extra_usage: true,
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ content: [{ text: "OK" }] });
+  expect(sent).toEqual([a.sub, b.sub]);
+});
 test("xAI quota observations are fenced across disconnect", async () => {
   const a = await ready();
   const before = await accountReply(

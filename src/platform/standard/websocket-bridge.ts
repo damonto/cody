@@ -6,23 +6,13 @@
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import NetworkSocket, { type RawData } from "ws";
+import { withoutHopHeaders } from "../../gateway/transport/http.ts";
 import { webSocketUpgradeResponse } from "../websocket-upgrade.ts";
+import { incomingResponse, incomingResponseHeaders } from "./http-response.ts";
 import { MAX_WEBSOCKET_BUFFER_BYTES } from "./websocket-limits.ts";
 
 const TEXT = new TextDecoder();
-const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_CLOSE_REASON_BYTES = 123;
-const SKIPPED_HEADERS = new Set([
-  "connection",
-  "content-length",
-  "host",
-  "keep-alive",
-  "proxy-connection",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
 
 function validCloseCode(code: number): boolean {
   return (
@@ -70,13 +60,6 @@ function rawBytes(data: RawData): Buffer {
   return data instanceof ArrayBuffer ? Buffer.from(data) : data;
 }
 
-function binaryMessage(data: RawData): ArrayBuffer {
-  const bytes = rawBytes(data);
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
 /**
  * Connects a network socket to one end of a pair. The pair end is accepted
  * here; the other end belongs to the gateway code.
@@ -87,7 +70,7 @@ export function bridgeWebSocket(network: NetworkSocket, peer: WebSocket): void {
   network.on("message", (data: RawData, isBinary: boolean) => {
     if (peer.readyState !== WebSocket.OPEN) return;
     try {
-      peer.send(isBinary ? binaryMessage(data) : TEXT.decode(rawBytes(data)));
+      peer.send(isBinary ? rawBytes(data) : TEXT.decode(rawBytes(data)));
     } catch {
       closeNetworkSocket(network, 1011, "gateway peer closed");
     }
@@ -138,15 +121,9 @@ export function bridgeWebSocket(network: NetworkSocket, peer: WebSocket): void {
   network.on("error", () => {});
 }
 
-function headersFrom(message: IncomingMessage): Headers {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(message.headers)) {
-    if (value === undefined || SKIPPED_HEADERS.has(name)) continue;
-    if (name.startsWith("sec-websocket-")) continue;
-    for (const item of Array.isArray(value) ? value : [value]) {
-      headers.append(name, item);
-    }
-  }
+function withoutWebSocketHeaders(headers: Headers): Headers {
+  for (const name of [...headers.keys()])
+    if (name.startsWith("sec-websocket-")) headers.delete(name);
   return headers;
 }
 
@@ -168,8 +145,12 @@ export function connectUpstreamWebSocket(request: Request): Promise<Response> {
   if (url.protocol === "https:") url.protocol = "wss:";
   else if (url.protocol === "http:") url.protocol = "ws:";
   const headers: Record<string, string> = {};
-  request.headers.forEach((value, name) => {
-    if (!SKIPPED_HEADERS.has(name) && !name.startsWith("sec-websocket-")) {
+  withoutHopHeaders(request.headers).forEach((value, name) => {
+    if (
+      name !== "host" &&
+      name !== "content-length" &&
+      !name.startsWith("sec-websocket-")
+    ) {
       headers[name] = value;
     }
   });
@@ -194,37 +175,24 @@ export function connectUpstreamWebSocket(request: Request): Promise<Response> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
     socket.on("upgrade", (response: IncomingMessage) => {
-      upgradeHeaders = headersFrom(response);
+      upgradeHeaders = withoutWebSocketHeaders(
+        incomingResponseHeaders(response),
+      );
     });
     socket.on(
       "unexpected-response",
       (clientRequest: { destroy(): void }, response: IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          if (size >= MAX_ERROR_BODY_BYTES) return;
-          const bounded = chunk.subarray(0, MAX_ERROR_BODY_BYTES - size);
-          chunks.push(bounded);
-          size += bounded.byteLength;
-        });
-        const finish = (): void => {
+        try {
+          const result = incomingResponse(response, "GET", {
+            signal,
+            onClose: () => clientRequest.destroy(),
+          });
+          withoutWebSocketHeaders(result.headers);
+          settle(() => resolve(result));
+        } catch (error) {
           clientRequest.destroy();
-          const status = response.statusCode ?? 502;
-          settle(() =>
-            resolve(
-              new Response(
-                [204, 205, 304].includes(status) ? null : Buffer.concat(chunks),
-                {
-                  status: status >= 200 && status <= 599 ? status : 502,
-                  statusText: response.statusMessage ?? "",
-                  headers: headersFrom(response),
-                },
-              ),
-            ),
-          );
-        };
-        response.once("end", finish);
-        response.once("error", finish);
+          settle(() => reject(error));
+        }
       },
     );
     socket.once("open", () => {

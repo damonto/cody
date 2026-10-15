@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import { createServer } from "node:https";
 import { gzipSync } from "node:zlib";
 import { certificates, tlsProxyFixture } from "./helpers/socks-fixture.mjs";
@@ -283,6 +284,49 @@ test("a closed native connector never reopens a connection", async (t) => {
   );
   assert.equal(requests, 0);
 });
+
+test(
+  "an early rejection does not wait for an asynchronous upload cancellation",
+  { timeout: 5000 },
+  async (t) => {
+    const cancelling = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial request"));
+      },
+      cancel() {
+        cancelling.resolve();
+        return release.promise;
+      },
+    });
+    const fixture = await serverFor(t, (_request, response) => {
+      response.writeHead(429, { "content-type": "application/json" });
+      response.end('{"error":"quota"}');
+    });
+    const response = fixture.connector.send(
+      new Request(fixture.url, {
+        method: "POST",
+        body,
+        duplex: "half",
+        headers: { "content-length": "1000" },
+      }),
+    );
+    let delivered = false;
+    void response.then(() => {
+      delivered = true;
+    });
+    try {
+      await cancelling.promise;
+      await setImmediate();
+      assert.equal(delivered, true);
+      assert.equal(await (await response).text(), '{"error":"quota"}');
+    } finally {
+      release.resolve();
+      await response;
+    }
+  },
+);
 
 test(
   "serverless idle cleanup is awaited and releases reused sockets from the old task",

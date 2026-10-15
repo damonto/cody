@@ -2,58 +2,9 @@ import * as http from "node:http";
 import * as https from "node:https";
 import { Writable } from "node:stream";
 import type { Socket } from "node:net";
-import { decodeResponseBody } from "../../gateway/transport/compression.ts";
 import { withoutHopHeaders } from "../../gateway/transport/http.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
-
-function responseBody(
-  incoming: http.IncomingMessage,
-): ReadableStream<Uint8Array> {
-  const iterator = incoming[Symbol.asyncIterator]();
-  return new ReadableStream<Uint8Array>(
-    {
-      async pull(controller) {
-        try {
-          const { done, value } = await iterator.next();
-          if (done) controller.close();
-          else if (value instanceof Uint8Array) controller.enqueue(value);
-          else throw new Error("Upstream response is not a byte stream");
-        } catch (error) {
-          controller.error(error);
-          incoming.destroy();
-        }
-      },
-      async cancel() {
-        incoming.destroy();
-        await iterator.return?.().catch(() => {});
-      },
-    },
-    { highWaterMark: 0 },
-  );
-}
-
-function upstreamResponse(
-  incoming: http.IncomingMessage,
-  method: string,
-): Response {
-  // The peer can fail before any body read, including on a bodyless response.
-  incoming.on("error", () => {});
-  const nativeHeaders = new Headers();
-  for (let i = 0; i < incoming.rawHeaders.length; i += 2)
-    nativeHeaders.append(incoming.rawHeaders[i]!, incoming.rawHeaders[i + 1]!);
-  const headers = withoutHopHeaders(nativeHeaders);
-  const status = incoming.statusCode ?? 502;
-  const noBody = method === "HEAD" || [204, 205, 304].includes(status);
-  if (noBody) incoming.resume();
-  const body = noBody
-    ? null
-    : decodeResponseBody(responseBody(incoming), headers);
-  return new Response(body, {
-    status,
-    statusText: incoming.statusMessage ?? "",
-    headers,
-  });
-}
+import { incomingResponse } from "./http-response.ts";
 
 export interface AntigravityHttpOptions extends Pick<https.AgentOptions, "ca"> {
   readonly idleTimeoutMs?: number;
@@ -129,7 +80,6 @@ export function createAntigravityHttpConnector(
         const secureRequest = url.protocol === "https:";
         let received = false;
         const stopUpload = new AbortController();
-        let uploading = Promise.resolve();
         const outgoing = (secureRequest ? https : http).request(
           url.href,
           {
@@ -144,16 +94,13 @@ export function createAntigravityHttpConnector(
               // A fixed-length upload may be incomplete at the peer; never reuse that socket.
               outgoing.shouldKeepAlive = false;
               stopUpload.abort();
+              if (!outgoing.writableEnded && !outgoing.destroyed)
+                outgoing.end();
             }
             try {
-              const response = upstreamResponse(incoming, request.method);
-              void uploading
-                .then(() => {
-                  if (!outgoing.writableEnded && !outgoing.destroyed)
-                    outgoing.end();
-                  resolve(response);
-                })
-                .catch(reject);
+              // A producer may cancel asynchronously. The received response
+              // owns the socket now and must not wait for that cleanup.
+              resolve(incomingResponse(incoming, request.method));
             } catch (error) {
               incoming.destroy();
               reject(error);
@@ -169,7 +116,7 @@ export function createAntigravityHttpConnector(
             reject(new Error("Upstream connection closed before a response"));
         });
         if (request.body) {
-          uploading = request.body
+          void request.body
             .pipeTo(Writable.toWeb(outgoing), {
               signal: stopUpload.signal,
               preventAbort: true,

@@ -6,6 +6,7 @@ import {
   parseUsage as parseClaudeUsage,
 } from "./api.ts";
 import { claudeCredentialSchema } from "./account-schema.ts";
+import { mergeClaudeQuotaGroups } from "./limits.ts";
 
 export class ClaudeInventory {
   constructor(
@@ -25,10 +26,27 @@ export class ClaudeInventory {
       await (await this.client()).usage(token.token),
     );
     await this.state.update(generation, (account) => {
-      if (account.claude_quota_revision !== revision) return;
+      let { groups, extra_usage } = usage;
+      const sync = account.claude_quota_sync;
+      sync.windows = sync.windows.filter(
+        (window) => window.revision > revision,
+      );
+      const observed = new Set(sync.windows.map((window) => window.group_id));
+      groups = mergeClaudeQuotaGroups(
+        groups,
+        account.quota.groups.filter((group) => observed.has(group.id)),
+      ).groups;
+      if (sync.extra_usage && sync.extra_usage.revision <= revision)
+        sync.extra_usage = null;
+      if (extra_usage && sync.extra_usage)
+        extra_usage = {
+          ...extra_usage,
+          disabled_reason: sync.extra_usage.disabled_reason,
+        };
       account.quota = {
         ...account.quota,
-        ...usage,
+        groups,
+        extra_usage,
         updated_at: Date.now(),
         last_error: null,
         stale: false,

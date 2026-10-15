@@ -2,17 +2,25 @@ import { ProviderType } from "../../config/values.ts";
 
 import { type AccountView } from "./schema.ts";
 
-import { accountViewStatus, quotaIsStale, type Stored } from "./state.ts";
-export function accountView(account: Stored): AccountView {
+import {
+  accountViewStatus,
+  quotaIsStale,
+  type AccountSnapshot,
+  type ReadonlyData,
+} from "./state.ts";
+export function accountView(
+  account: AccountSnapshot,
+): ReadonlyData<AccountView> {
   const project = account.antigravity_initialization;
-  const projectView: AccountView["project_initialization"] = project
-    ? {
-        status: project.error === null ? "pending" : "error",
-        next_retry_at: project.error === null ? project.next_at : null,
-        error: project.error,
-        verification: project.verification,
-      }
-    : null;
+  const projectView: ReadonlyData<AccountView["project_initialization"]> =
+    project
+      ? {
+          status: project.error === null ? "pending" : "error",
+          next_retry_at: project.error === null ? project.next_at : null,
+          error: project.error,
+          verification: project.verification,
+        }
+      : null;
   return {
     generation: account.generation,
     account_ref: account.account_ref,

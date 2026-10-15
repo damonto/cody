@@ -11,6 +11,7 @@ export function initializeCodexAccount(
   session: Session,
   claims: ReturnType<typeof parseIdToken>,
   identity: NonNullable<Stored["identity"]>,
+  tokens: NonNullable<Session["tokens"]>,
 ): void {
   if (account.provider_type !== ProviderType.Codex)
     throw new OAuthError("Account provider changed", 409);
@@ -24,13 +25,12 @@ export function initializeCodexAccount(
     throw new OAuthError("Authorization was cancelled", 409);
   if (Date.now() >= pending.expires_at)
     throw new OAuthError("Authorization session expired; start again", 410);
-  const refreshToken =
-    pending.tokens.refresh_token ?? account.tokens?.refresh_token;
+  const refreshToken = tokens.refresh_token ?? account.tokens?.refresh_token;
   if (!refreshToken)
     throw new OAuthError(
       "ChatGPT did not return a refresh token; start authorization again",
     );
-  account.tokens = { ...pending.tokens, refresh_token: refreshToken };
+  account.tokens = { ...tokens, refresh_token: refreshToken };
   account.identity = identity;
   account.codex = {
     account_id: claims.account_id,

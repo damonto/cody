@@ -12,8 +12,9 @@ import type {
 } from "../oauth/provider.ts";
 import {
   browserCallback,
-  unavailableIdentity,
+  authorizationTokens,
   TOKEN_REFRESH_MARGIN_MS,
+  unavailableIdentity,
 } from "../oauth/provider.ts";
 import { emptyQuota, safeError } from "../oauth/state.ts";
 import {
@@ -56,11 +57,11 @@ export function antigravityAccount(
     generation: number,
     error: unknown,
   ): Promise<void> {
-    if (state.current().generation !== generation) return;
+    if (state.current().authorization_generation !== generation) return;
     // Storage/programming faults must reach the alarm runtime; only known
     // upstream failures may change the persisted project's retry state.
     if (!(error instanceof OAuthError)) throw error;
-    await state.update(generation, (account) => {
+    await state.updateAuthorization(generation, (account) => {
       const project = account.antigravity_initialization;
       if (!project) return;
       const now = Date.now();
@@ -86,8 +87,43 @@ export function antigravityAccount(
     const project = projectInitializationSchema.parse(
       snapshot.antigravity_initialization,
     );
+    if (project.inherit_refresh_token === undefined) {
+      try {
+        await state.updateAuthorization(
+          snapshot.authorization_generation,
+          async (account) => {
+            const pending = account.antigravity_initialization;
+            if (!pending || pending.inherit_refresh_token !== undefined) return;
+            if (!account.tokens) {
+              pending.inherit_refresh_token = false;
+              return;
+            }
+            const tokens = await authorizationTokens(
+              pending.tokens,
+              account.tokens,
+            );
+            if (!tokens.refresh_token && pending.tokens.refresh_token) {
+              pending.tokens = tokens;
+              pending.inherit_refresh_token = true;
+              return;
+            }
+            throw new OAuthError(
+              "Start authorization again to finish connecting this account",
+              409,
+              "project_token_source_unknown",
+            );
+          },
+        );
+      } catch (error) {
+        return projectFailure(snapshot.authorization_generation, error);
+      }
+      return initializeProject();
+    }
     if (Date.now() >= project.deadline)
-      return projectFailure(snapshot.generation, projectTimeout(project));
+      return projectFailure(
+        snapshot.authorization_generation,
+        projectTimeout(project),
+      );
 
     let projectClient: AntigravityClient;
     let tokens = project.tokens;
@@ -96,26 +132,37 @@ export function antigravityAccount(
       project.connection = selected.connection;
       projectClient = await client(selected.connection, selected.config);
       if (tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS) {
-        if (!tokens.refresh_token)
+        if (project.inherit_refresh_token) {
+          // A borrowed refresh token belongs to the active lifecycle. Resolve
+          // through it so provisioning never rotates a second copy in parallel.
+          await state.resolve();
+          const active = state.current().tokens;
+          if (!active) return unavailableIdentity();
+          tokens = { ...active, refresh_token: undefined };
+        } else if (!tokens.refresh_token)
           throw new OAuthError(
             "Reconnect this account to obtain a refresh token",
             401,
             "invalid_grant",
           );
-        tokens = {
-          ...tokens,
-          ...(await projectClient.refresh(tokens.refresh_token)),
-        };
+        else
+          tokens = {
+            ...tokens,
+            ...(await projectClient.refresh(tokens.refresh_token)),
+          };
       }
     } catch (error) {
-      return projectFailure(snapshot.generation, error);
+      return projectFailure(snapshot.authorization_generation, error);
     }
     if (tokens !== project.tokens) {
       // Rotated tokens must be durable before any later request can fail.
-      await state.update(snapshot.generation, (account) => {
-        if (account.antigravity_initialization)
-          account.antigravity_initialization.tokens = tokens;
-      });
+      await state.updateAuthorization(
+        snapshot.authorization_generation,
+        (account) => {
+          if (account.antigravity_initialization)
+            account.antigravity_initialization.tokens = tokens;
+        },
+      );
       project.tokens = tokens;
     }
 
@@ -123,51 +170,64 @@ export function antigravityAccount(
     try {
       result = await pollProject(projectClient, project);
     } catch (error) {
-      return projectFailure(snapshot.generation, error);
+      return projectFailure(snapshot.authorization_generation, error);
     }
     // Keep persistence outside the upstream error handler. A rejected commit
     // is retried by the object runtime, never classified as a Google failure.
-    await state.update(snapshot.generation, (account) => {
-      if (result.kind === "pending") {
-        account.antigravity_initialization = scheduleProjectRetry(
-          { ...project, ...result.progress },
-          Date.now(),
-        );
-        return;
-      }
-      account.tokens = project.tokens;
-      account.identity = project.identity;
-      account.project_id = result.project_id;
-      account.connection = project.connection;
-      account.status = OAuthAccountStatus.Ready;
-      account.error = null;
-      account.generation++;
-      account.quota = emptyQuota();
-      account.models = [];
-      account.models_updated_at = null;
-      account.models_error = null;
-      account.antigravity_initialization = null;
-      delete account.models_verification;
-    });
+    if (result.kind === "pending")
+      return state.updateAuthorization(
+        snapshot.authorization_generation,
+        (account) => {
+          account.antigravity_initialization = scheduleProjectRetry(
+            { ...project, ...result.progress },
+            Date.now(),
+          );
+        },
+      );
+    await state.replaceCredentials(
+      snapshot.authorization_generation,
+      project.inherit_refresh_token === true,
+      (account) => {
+        account.tokens = project.inherit_refresh_token
+          ? { ...project.tokens, refresh_token: account.tokens?.refresh_token }
+          : project.tokens;
+        account.identity = project.identity;
+        account.project_id = result.project_id;
+        account.connection = project.connection;
+        account.status = OAuthAccountStatus.Ready;
+        account.error = null;
+        account.generation++;
+        account.authorization_generation++;
+        account.quota = emptyQuota();
+        account.models = [];
+        account.models_updated_at = null;
+        account.models_error = null;
+        account.antigravity_initialization = null;
+        delete account.models_verification;
+      },
+    );
   }
   async function retryProject(): Promise<void> {
-    await state.update(state.current().generation, (account) => {
-      const project = account.antigravity_initialization;
-      if (account.provider_type !== ProviderType.Antigravity || !project)
-        throw new OAuthError(
-          "There is no pending Antigravity project initialization",
-          409,
-        );
-      if (!project.error) return;
-      account.generation++;
-      project.error = null;
-      delete project.verification;
-      project.last_result = null;
-      project.stage = "project";
-      project.attempts = 0;
-      project.next_at = Date.now();
-      project.deadline = Date.now() + PROJECT_INITIALIZATION_TTL_MS;
-    });
+    await state.updateAuthorization(
+      state.current().authorization_generation,
+      (account) => {
+        const project = account.antigravity_initialization;
+        if (account.provider_type !== ProviderType.Antigravity || !project)
+          throw new OAuthError(
+            "There is no pending Antigravity project initialization",
+            409,
+          );
+        if (!project.error) return;
+        account.authorization_generation++;
+        project.error = null;
+        delete project.verification;
+        project.last_result = null;
+        project.stage = "project";
+        project.attempts = 0;
+        project.next_at = Date.now();
+        project.deadline = Date.now() + PROJECT_INITIALIZATION_TTL_MS;
+      },
+    );
   }
 
   return {
@@ -196,56 +256,57 @@ export function antigravityAccount(
           throw new OAuthError(
             "This is a different Google account; add it as a new account instead",
           );
-        await state.update(snapshot.generation, (account) => {
-          const pending = account.session;
-          if (
-            !pending ||
-            pending.id !== session.id ||
-            pending.status !== OAuthSessionStatus.Initializing ||
-            !pending.tokens
-          )
-            throw new OAuthError("Authorization was cancelled", 409);
-          if (Date.now() >= pending.expires_at)
-            throw new OAuthError(
-              "Authorization session expired; start again",
-              410,
+        await state.updateAuthorization(
+          snapshot.authorization_generation,
+          async (account) => {
+            const pending = account.session;
+            if (
+              !pending ||
+              pending.id !== session.id ||
+              pending.status !== OAuthSessionStatus.Initializing ||
+              !pending.tokens
+            )
+              throw new OAuthError("Authorization was cancelled", 409);
+            if (Date.now() >= pending.expires_at)
+              throw new OAuthError(
+                "Authorization session expired; start again",
+                410,
+              );
+            const tokens = await authorizationTokens(
+              pending.tokens,
+              snapshot.tokens,
+              account.tokens,
             );
-          const refreshToken =
-            pending.tokens.refresh_token ?? account.tokens?.refresh_token;
-          if (!refreshToken)
-            throw new OAuthError(
-              "Google did not return a refresh token; start authorization again",
-            );
-          // The OAuth session can finish while project provisioning continues durably.
-          // Keep a working account's credentials until the replacement is ready.
-          account.antigravity_initialization = {
-            tokens: { ...pending.tokens, refresh_token: refreshToken },
-            identity,
-            connection: pending.connection,
-            stage: "project",
-            tier: "free-tier",
-            attempts: 0,
-            next_at: Date.now(),
-            deadline: Date.now() + PROJECT_INITIALIZATION_TTL_MS,
-            error: null,
-            last_result: null,
-          };
-          account.generation++;
-          pending.identity = identity;
-          pending.status = OAuthSessionStatus.Complete;
-          pending.tokens = null;
-          pending.state = "";
-          pending.verifier = "";
-        });
+            const refreshToken =
+              tokens.refresh_token ?? account.tokens?.refresh_token;
+            if (!refreshToken)
+              throw new OAuthError(
+                "Google did not return a refresh token; start authorization again",
+              );
+            // The OAuth session can finish while project provisioning continues durably.
+            // Keep a working account's credentials until the replacement is ready.
+            account.antigravity_initialization = {
+              tokens,
+              inherit_refresh_token: !tokens.refresh_token,
+              identity,
+              connection: pending.connection,
+              stage: "project",
+              tier: "free-tier",
+              attempts: 0,
+              next_at: Date.now(),
+              deadline: Date.now() + PROJECT_INITIALIZATION_TTL_MS,
+              error: null,
+              last_result: null,
+            };
+            account.authorization_generation++;
+            pending.identity = identity;
+            pending.status = OAuthSessionStatus.Complete;
+            pending.tokens = null;
+            pending.state = "";
+            pending.verifier = "";
+          },
+        );
       },
-    },
-    credential() {
-      const account = state.current();
-      if (!account.project_id || !account.tokens) return unavailableIdentity();
-      return {
-        token: account.tokens.access_token,
-        project_id: account.project_id,
-      };
     },
     async refresh(generation, tokens, connection, config) {
       const result = await (
