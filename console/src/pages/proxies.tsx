@@ -1,6 +1,6 @@
 import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useProxyResources, type ProxyResources } from "@/lib/resources";
 import { useClearProxyHealth, useProxyGroups } from "@/features/proxies/api";
 import {
@@ -58,27 +58,17 @@ export default function Proxies() {
         title="Proxies"
         description="Manage SOCKS5 groups and select them from providers or credentials."
       >
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            disabled={health.isFetching}
-            onClick={() => void health.refetch()}
-          >
-            <RefreshCw />
-            Refresh
-          </Button>
-          <Button
-            onClick={() =>
-              setDialog({
-                kind: "create",
-                snapshot: structuredClone(configuration.data),
-              })
-            }
-          >
-            <Plus />
-            Add group
-          </Button>
-        </div>
+        <Button
+          onClick={() =>
+            setDialog({
+              kind: "create",
+              snapshot: structuredClone(configuration.data),
+            })
+          }
+        >
+          <Plus />
+          Add group
+        </Button>
       </PageHeading>
       {health.error && (
         <ErrorNotice error={health.error} retry={() => void health.refetch()} />

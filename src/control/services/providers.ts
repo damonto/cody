@@ -108,10 +108,15 @@ function detachProviderRoutes(
     "providers" | "provider_models" | "model_routes" | "model_route_providers"
   >,
   providerId: string,
-  { providerRemoved }: { providerRemoved: boolean },
+  change:
+    | { providerRemoved: true }
+    | { providerRemoved: false; removedModels: ReadonlySet<string> },
 ): void {
+  if (!change.providerRemoved && change.removedModels.size === 0) return;
   const support = providerModelSupport(rows);
-  if (providerRemoved) support.delete(providerId);
+  if (change.providerRemoved) support.delete(providerId);
+  const affectedModel = (model: string) =>
+    change.providerRemoved || change.removedModels.has(model);
   const supportedModels = new Set(
     [...support.values()].flatMap((models) => [...models]),
   );
@@ -123,9 +128,9 @@ function detachProviderRoutes(
   ) => {
     const model = routeById.get(row.route_id)?.model;
     return (
-      (providerRemoved && row.provider_id === providerId) ||
+      (change.providerRemoved && row.provider_id === providerId) ||
       !model ||
-      !support.get(row.provider_id)?.has(model)
+      (affectedModel(model) && !support.get(row.provider_id)?.has(model))
     );
   };
   const routesWithProviders = new Set(
@@ -137,9 +142,11 @@ function detachProviderRoutes(
     live(rows.model_routes)
       .filter((row) =>
         row.scope === "provider"
-          ? providerRemoved && row.provider_id === providerId
-          : !supportedModels.has(row.model) ||
-            (row.restrict_providers === 1 && !routesWithProviders.has(row.id)),
+          ? change.providerRemoved && row.provider_id === providerId
+          : affectedModel(row.model) &&
+            (!supportedModels.has(row.model) ||
+              (row.restrict_providers === 1 &&
+                !routesWithProviders.has(row.id))),
       )
       .map((row) => row.id),
   );
@@ -283,21 +290,31 @@ function writeSettings(
   rows.model_prices = rows.model_prices.filter(
     (row) => row.deleted_at !== null || modelIds.has(row.provider_model_id),
   );
-  // The provider input still carries previously configured routes. Dropping a
-  // model must retire that association instead of replaying a stale route.
-  const previousSupport = supportedModelNames(
-    type,
-    live(before).map((row) => row.model),
-  );
+  // Clean up physical models only; losing derived family support must still
+  // fail reference validation if its routes or provider restrictions remain.
   const currentSupport = supportedModelNames(type, models);
-  const retainedRoutes = Object.fromEntries(
-    Object.entries(model_routes ?? {}).filter(
-      ([, route]) =>
-        currentSupport.has(route.model) || !previousSupport.has(route.model),
-    ),
+  const removedModels = new Set(
+    live(before)
+      .map((row) => row.model)
+      .filter((model) => !currentSupport.has(model)),
   );
-  replaceRoutes(work, "provider", id, retainedRoutes);
-  detachProviderRoutes(rows, id, { providerRemoved: false });
+  const previousRoutes = new Map(
+    live(rows.model_routes)
+      .filter((row) => row.scope === "provider" && row.provider_id === id)
+      .map((row) => [row.id, row]),
+  );
+  // Validate route identities first, then retire only unchanged committed routes.
+  // New or edited invalid routes must reach the snapshot's reference validator.
+  replaceRoutes(work, "provider", id, model_routes ?? {});
+  rows.model_routes = rows.model_routes.filter((row) => {
+    const previous = previousRoutes.get(row.id);
+    return !(
+      removedModels.has(row.model) &&
+      previous?.name === row.name &&
+      previous.model === row.model
+    );
+  });
+  detachProviderRoutes(rows, id, { providerRemoved: false, removedModels });
   return id;
 }
 

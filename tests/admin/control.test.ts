@@ -1070,6 +1070,249 @@ test("provider updates still reject unrelated unsupported model routes", async (
   expect(await readEntities(env.CODY_DB)).toEqual(before);
 });
 
+test.each(["new", "retargeted", "renamed"] as const)(
+  "model removal rejects a %s provider route targeting the removed model",
+  async (change) => {
+    const input = config();
+    input.providers[0].models.push("kept");
+    input.providers[0].model_routes = {
+      alias: { model: change === "retargeted" ? "kept" : "real-model" },
+    };
+    const view = await store().save(input, 0, "test");
+    const provider = view.config.providers[0];
+    const route = provider.model_routes!.alias;
+    const routes =
+      change === "new"
+        ? { alias: route, added: { model: "real-model" } }
+        : change === "retargeted"
+          ? { alias: { ...route, model: "real-model" } }
+          : { renamed: route };
+    const before = await readEntities(env.CODY_DB);
+    const response = await call(`/providers/${provider.id}`, "PUT", {
+      version: view.version,
+      provider: {
+        ...withoutId(provider),
+        models: ["kept"],
+        model_routes: routes,
+      },
+    });
+    expect(response.status).toBe(400);
+    expect(await readEntities(env.CODY_DB)).toEqual(before);
+    expect(await store().view()).toEqual(view);
+  },
+);
+
+test("model removal validates route ownership before retiring stale routes", async () => {
+  const view = await save();
+  const provider = view.config.providers[0];
+  const before = await readEntities(env.CODY_DB);
+  const response = await call(`/providers/${provider.id}`, "PUT", {
+    version: view.version,
+    provider: {
+      ...withoutId(provider),
+      models: ["replacement"],
+      model_routes: { stolen: view.config.model_routes.alias },
+    },
+  });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({
+    error: "A route cannot move to another owner",
+  });
+  expect(await readEntities(env.CODY_DB)).toEqual(before);
+});
+
+test("model removal retires unchanged provider routes when their IDs are omitted", async () => {
+  const input = config();
+  input.providers[0].models.push("kept");
+  input.providers[0].model_routes = {
+    stale: { model: "real-model" },
+    kept: { model: "kept" },
+  };
+  const view = await store().save(input, 0, "test");
+  const provider = view.config.providers[0];
+  const response = await call(`/providers/${provider.id}`, "PUT", {
+    version: view.version,
+    provider: {
+      ...withoutId(provider),
+      models: ["kept"],
+      model_routes: input.providers[0].model_routes,
+    },
+  });
+  expect(response.status).toBe(200);
+  expect((await store().current()).providers[0].model_routes).toEqual({
+    kept: provider.model_routes!.kept,
+  });
+  const rows = await readEntities(env.CODY_DB);
+  expect(
+    rows.model_routes.find((row) => row.id === provider.model_routes!.stale.id),
+  ).toMatchObject({ deleted_at: expect.any(Number), version: 2 });
+});
+
+test("model removal preserves shared routes and retires empty restrictions in both scopes", async () => {
+  const input = config();
+  const first = input.providers[0];
+  first.models.push("kept");
+  input.providers.push({
+    ...first,
+    id: "second",
+    name: "Second",
+    models: ["real-model"],
+    credentials: [{ ...first.credentials[0], id: "second-key" }],
+  });
+  const routes = {
+    shared: { model: "real-model", providers: ["provider", "second"] },
+    exclusive: { model: "real-model", providers: ["provider"] },
+    unrestricted: { model: "real-model" },
+  };
+  input.model_routes = routes;
+  input.api_keys[0].providers.push("second");
+  input.api_keys[0].model_routes = routes;
+  const view = await store().save(input, 0, "test");
+  const provider = view.config.providers[0];
+  const response = await call(`/providers/${provider.id}`, "PUT", {
+    version: view.version,
+    provider: { ...withoutId(provider), models: ["kept"] },
+  });
+  expect(response.status).toBe(200);
+  const current = await store().current();
+  const secondId = current.providers[1].id;
+  for (const [saved, original] of [
+    [current.model_routes, view.config.model_routes],
+    [current.api_keys[0].model_routes!, view.config.api_keys[0].model_routes!],
+  ])
+    expect(saved).toEqual({
+      shared: { ...original.shared, providers: [secondId] },
+      unrestricted: original.unrestricted,
+    });
+  const rows = await readEntities(env.CODY_DB);
+  expect(rows.model_routes.filter((row) => row.name === "exclusive")).toEqual([
+    expect.objectContaining({ deleted_at: expect.any(Number), version: 2 }),
+    expect.objectContaining({ deleted_at: expect.any(Number), version: 2 }),
+  ]);
+});
+
+test.each([
+  { scope: "provider", restricted: false },
+  { scope: "global", restricted: false },
+  { scope: "global", restricted: true },
+  { scope: "client", restricted: false },
+  { scope: "client", restricted: true },
+] as const)(
+  "removing the final variant rejects a referenced $scope family route (restricted: $restricted)",
+  async ({ scope, restricted }) => {
+    const input = config();
+    const family = "gemini-3.8-flash";
+    const native = newAntigravityProvider();
+    native.models = [`${family}-high`];
+    if (restricted) input.providers[0].models.push(family);
+    const route = {
+      model: family,
+      ...(restricted ? { providers: [input.providers[0].id, native.id] } : {}),
+    };
+    if (scope === "provider") native.model_routes = { family: route };
+    if (scope === "global") input.model_routes.family = route;
+    if (scope === "client") input.api_keys[0].model_routes = { family: route };
+    const view = await store().save(
+      { ...input, providers: [...input.providers, native] },
+      0,
+      "test",
+    );
+    const provider = view.config.providers[1];
+    const { id: _id, credentials: _credentials, ...settings } = provider;
+    const before = await readEntities(env.CODY_DB);
+    const response = await call("/native-providers/antigravity", "PUT", {
+      version: view.version,
+      settings: { ...settings, models: [] },
+    });
+    expect(response.status).toBe(400);
+    expect(await readEntities(env.CODY_DB)).toEqual(before);
+    expect(await store().view()).toEqual(view);
+  },
+);
+
+test("removing a variant preserves family routes supported by a retained level", async () => {
+  const input = config();
+  const family = "gemini-3.8-flash";
+  const native = newAntigravityProvider();
+  native.models = [`${family}-low`, `${family}-high`];
+  native.model_routes = { family: { model: family } };
+  const route = { model: family, providers: [native.id] };
+  input.model_routes.family = route;
+  input.api_keys[0].model_routes = { family: route };
+  const view = await store().save(
+    { ...input, providers: [...input.providers, native] },
+    0,
+    "test",
+  );
+  const provider = view.config.providers[1];
+  const { id: _id, credentials: _credentials, ...settings } = provider;
+  const response = await call("/native-providers/antigravity", "PUT", {
+    version: view.version,
+    settings: { ...settings, models: [`${family}-low`] },
+  });
+  expect(response.status).toBe(200);
+  const current = await store().current();
+  expect(current.providers[1].model_routes).toEqual(provider.model_routes);
+  expect(current.model_routes).toEqual(view.config.model_routes);
+  expect(current.api_keys[0].model_routes).toEqual(
+    view.config.api_keys[0].model_routes,
+  );
+});
+
+test("removing the final variant permits explicitly removing its provider family route", async () => {
+  const input = config();
+  const native = newAntigravityProvider();
+  const family = "gemini-3.8-flash";
+  native.models = [`${family}-high`];
+  native.model_routes = { family: { model: family } };
+  const view = await store().save(
+    { ...input, providers: [...input.providers, native] },
+    0,
+    "test",
+  );
+  const {
+    id: _id,
+    credentials: _credentials,
+    ...settings
+  } = view.config.providers[1];
+  const response = await call("/native-providers/antigravity", "PUT", {
+    version: view.version,
+    settings: { ...settings, models: [], model_routes: {} },
+  });
+  expect(response.status).toBe(200);
+  expect((await store().current()).providers[1]).toMatchObject({ models: [] });
+});
+
+test("removing the final variant preserves unrestricted family routes supported elsewhere", async () => {
+  const input = config();
+  const family = "gemini-3.8-flash";
+  input.providers[0].models.push(family);
+  input.model_routes.family = { model: family };
+  input.api_keys[0].model_routes = { family: { model: family } };
+  const native = newAntigravityProvider();
+  native.models = [`${family}-high`];
+  const view = await store().save(
+    { ...input, providers: [...input.providers, native] },
+    0,
+    "test",
+  );
+  const {
+    id: _id,
+    credentials: _credentials,
+    ...settings
+  } = view.config.providers[1];
+  const response = await call("/native-providers/antigravity", "PUT", {
+    version: view.version,
+    settings: { ...settings, models: [] },
+  });
+  expect(response.status).toBe(200);
+  const current = await store().current();
+  expect(current.model_routes).toEqual(view.config.model_routes);
+  expect(current.api_keys[0].model_routes).toEqual(
+    view.config.api_keys[0].model_routes,
+  );
+});
+
 test("resource reads mask secrets without decrypting them, and ordinary CRUD bypasses document replacement", async () => {
   const view = await save();
   const current = vi
