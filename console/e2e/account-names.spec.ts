@@ -108,9 +108,7 @@ for (const create of [
           dialog.getByText("Authorization: complete", { exact: true }),
         ).toBeVisible();
       } else {
-        await dialog
-          .getByLabel("Use an existing account for this provider")
-          .click();
+        await dialog.getByLabel("Add a previously authorized account").click();
         await page
           .getByRole("option", { name: `${email ?? ref} · ready`, exact: true })
           .click();

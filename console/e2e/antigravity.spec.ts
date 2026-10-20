@@ -1100,7 +1100,7 @@ test("removing a draft account keeps authorization available for recovery", asyn
   const dialog = page.getByRole("dialog");
   await dialog
     .getByRole("combobox", {
-      name: "Use an existing account for this provider",
+      name: "Add a previously authorized account",
       exact: true,
     })
     .click();

@@ -137,7 +137,7 @@ export function Authorization({
       {reusable?.length ? (
         <div className="space-y-2">
           <Label htmlFor={`reuse-${rowId}`}>
-            Use an existing account for this provider
+            Add a previously authorized account
           </Label>
           <Select
             value=""
@@ -151,7 +151,7 @@ export function Authorization({
             disabled={active || adopt.isPending}
           >
             <SelectTrigger id={`reuse-${rowId}`}>
-              <SelectValue placeholder="Recover an account from an earlier authorization" />
+              <SelectValue placeholder="Select a previously authorized account" />
             </SelectTrigger>
             <SelectContent>
               {reusable.map((value) => (
