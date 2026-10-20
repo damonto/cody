@@ -5,7 +5,7 @@ import { fetchWithConfiguredRetries } from "../src/gateway/http/upstream-retry.t
 import { inspectRetryError } from "../src/gateway/http/retry-errors.ts";
 import { retryResponseUsage } from "../src/telemetry/retry.ts";
 import { RequestMeter } from "../src/telemetry/meter.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../src/shared/payload-limits.ts";
+import { MAX_RETRY_INSPECTION_BYTES } from "../src/shared/payload-limits.ts";
 
 const policy = {
   status_codes: [429],
@@ -700,7 +700,7 @@ test("WebSocket handshakes and unknown content types bypass body inspection", as
 test("size boundary replays every byte and never classifies later errors", async () => {
   const body =
     ":" +
-    "x".repeat(MAX_BUFFERED_PAYLOAD_BYTES + 1024) +
+    "x".repeat(MAX_RETRY_INSPECTION_BYTES + 1024) +
     "\n\n" +
     event(failed);
   const inspected = await inspectRetryError(
@@ -717,7 +717,7 @@ test("size boundary replays every byte and never classifies later errors", async
 test("discarded usage remains bounded when a response exceeds the retry prefix limit", async () => {
   const body =
     ":" +
-    "x".repeat(MAX_BUFFERED_PAYLOAD_BYTES + 1024) +
+    "x".repeat(MAX_RETRY_INSPECTION_BYTES + 1024) +
     "\n\n" +
     event(failed);
   assert.equal(await retryResponseUsage(sse(body), "openai"), null);

@@ -3,7 +3,7 @@ import { z } from "zod";
 export const TRANSFER_VERSION = 1;
 // D1 uses native file import/export; SQL adapters exchange bounded bulk pages.
 export const PAGE_SIZE = 1000;
-export const MAX_TRANSFER_BYTES = 8 * 1024 * 1024;
+export { MAX_TRANSFER_BYTES } from "../shared/payload-limits.ts";
 export const TABLE_KEYS = {
   secret_versions: ["id"],
   proxy_groups: ["id"],

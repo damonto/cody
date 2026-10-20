@@ -4,7 +4,7 @@ import { getRequestListener } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import type { StandardRuntime } from "./runtime.ts";
 import { bridgeWebSocket, closeNetworkSocket } from "./websocket-bridge.ts";
-import { MAX_WEBSOCKET_BUFFER_BYTES } from "./websocket-limits.ts";
+import { MAX_WEBSOCKET_MESSAGE_BYTES } from "../../shared/payload-limits.ts";
 
 export interface NodeServer {
   readonly server: Server;
@@ -21,7 +21,7 @@ export function createNodeServer(runtime: StandardRuntime): NodeServer {
   });
   const sockets = new WebSocketServer({
     noServer: true,
-    maxPayload: MAX_WEBSOCKET_BUFFER_BYTES,
+    maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES,
     perMessageDeflate: false,
   });
   const upgradeHeaders = new WeakMap<IncomingMessage, Headers>();

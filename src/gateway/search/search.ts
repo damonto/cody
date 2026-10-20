@@ -20,13 +20,18 @@ import {
 } from "./search-request.ts";
 import { codexOutput, codexResults } from "./search-response.ts";
 
-const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
+import {
+  formatByteLimit,
+  MAX_SEARCH_REQUEST_BODY_BYTES,
+  requestBodyLimit,
+} from "../../shared/payload-limits.ts";
 
 export async function handleConfiguredWebSearch(
   request: Request,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestLog?: RequestLogContext,
+  platformMaxBodyBytes?: number,
 ): Promise<Response> {
   const providerConfig = config.web_search;
   if (providerConfig.mode === "proxy") {
@@ -36,10 +41,14 @@ export async function handleConfiguredWebSearch(
   requestLog?.registerSensitiveValues([providerConfig.api_key]);
 
   let rawBody: Uint8Array<ArrayBuffer>;
+  const maxBodyBytes = requestBodyLimit(
+    MAX_SEARCH_REQUEST_BODY_BYTES,
+    platformMaxBodyBytes,
+  );
   try {
     rawBody = await readBodyWithinLimit(
       request.body,
-      MAX_SEARCH_BODY_BYTES,
+      maxBodyBytes,
       request.headers.get("content-length"),
       undefined,
       request.signal,
@@ -48,11 +57,11 @@ export async function handleConfiguredWebSearch(
     if (error instanceof BodyTooLargeError) {
       requestLog?.warn({
         outcome: "request_too_large",
-        search: { max_body_bytes: MAX_SEARCH_BODY_BYTES },
+        search: { max_body_bytes: maxBodyBytes },
       });
       return openAiError(
         413,
-        `Search request body exceeds the ${MAX_SEARCH_BODY_BYTES}-byte limit`,
+        `Search request body exceeds the ${formatByteLimit(maxBodyBytes)} limit`,
         "invalid_request_error",
         "request_too_large",
       );

@@ -9,7 +9,8 @@ import { Buffer } from "node:buffer";
 import {
   MAX_WEBSOCKET_BUFFER_BYTES,
   MAX_WEBSOCKET_BUFFER_MESSAGES,
-} from "./websocket-limits.ts";
+  MAX_WEBSOCKET_MESSAGE_BYTES,
+} from "../../shared/payload-limits.ts";
 
 const OPEN = 1;
 const CLOSING = 2;
@@ -104,6 +105,7 @@ export class PairedWebSocket extends EventTarget {
   private reserve(bytes: number): boolean {
     if (this.receivedClose) return false;
     if (
+      bytes > MAX_WEBSOCKET_MESSAGE_BYTES ||
       this.queued.length >= MAX_WEBSOCKET_BUFFER_MESSAGES ||
       this.queuedBytes + bytes > MAX_WEBSOCKET_BUFFER_BYTES
     ) {

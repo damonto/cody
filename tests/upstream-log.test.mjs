@@ -1,10 +1,8 @@
+import { MAX_LOGGED_UPSTREAM_ERROR_BYTES } from "../src/shared/payload-limits.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  MAX_LOGGED_UPSTREAM_ERROR_BYTES,
-  upstreamResponseLogFields,
-} from "../src/gateway/http/upstream-log.ts";
+import { upstreamResponseLogFields } from "../src/gateway/http/upstream-log.ts";
 
 test("oversized upstream JSON is omitted without consuming the original response", async () => {
   const body = JSON.stringify({

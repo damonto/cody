@@ -42,6 +42,7 @@ export interface ProviderRequest {
   readonly model?: string;
   readonly clientId?: string;
   readonly sessionId?: string | undefined;
+  /** UTF-8 bytes of the decoded client body, before native translation. */
   readonly bodyBytes?: number;
 }
 

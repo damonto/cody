@@ -1,8 +1,5 @@
-import { constants, zstdDecompress } from "node:zlib";
-import { promisify } from "node:util";
-import { BodyTooLargeError } from "./body.ts";
-
-const decompressZstd = promisify(zstdDecompress);
+import { constants, createZstdDecompress } from "node:zlib";
+import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
 
 export class ContentEncodingError extends Error {
   constructor(
@@ -30,28 +27,50 @@ export async function decodeRequestBody(
   let decoded = body;
   for (const _encoding of encodings.reverse()) {
     signal.throwIfAborted();
+    const decoder = createZstdDecompress({
+      params: {
+        [constants.ZSTD_d_windowLogMax]: Math.max(
+          10,
+          Math.ceil(Math.log2(maxBytes)),
+        ),
+      },
+    });
+    const chunks = decoder[Symbol.asyncIterator]();
     try {
-      decoded = await decompressZstd(decoded, {
-        maxOutputLength: maxBytes,
-        params: {
-          [constants.ZSTD_d_windowLogMax]: Math.max(
-            10,
-            Math.ceil(Math.log2(maxBytes)),
-          ),
+      // Use the runtime's Web Stream: Node's toWeb() does not expose Workers' BYOB API.
+      const output = new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const chunk = await chunks.next();
+            if (chunk.done) controller.close();
+            else if (chunk.value instanceof Uint8Array)
+              controller.enqueue(chunk.value);
+            else throw new TypeError("Zstd decoder returned a non-byte chunk");
+          },
+          cancel() {
+            decoder.destroy();
+          },
         },
-      });
+        { highWaterMark: 0 },
+      );
+      decoder.end(decoded);
+      decoded = await readBodyWithinLimit(
+        output,
+        maxBytes,
+        undefined,
+        undefined,
+        signal,
+      );
     } catch (error) {
       signal.throwIfAborted();
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        error.code === "ERR_BUFFER_TOO_LARGE"
-      )
-        throw new BodyTooLargeError(maxBytes);
+      if (error instanceof BodyTooLargeError) throw error;
       throw new ContentEncodingError(
         400,
         "Request body must contain valid zstd data",
       );
+    } finally {
+      decoder.destroy();
+      await chunks.return?.().catch(() => {});
     }
     signal.throwIfAborted();
   }

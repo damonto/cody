@@ -37,6 +37,7 @@ import {
 import { nextRotationCredential } from "../src/gateway/health/health.ts";
 import { sessionModelBindings } from "./helpers/session-model-bindings.ts";
 import { proxyBindingLifecycle } from "./helpers/proxy-binding-lifecycle.ts";
+import { MAX_VERCEL_REQUEST_BODY_BYTES } from "../src/shared/payload-limits.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -763,6 +764,30 @@ for (const [name, open] of Object.entries(databases)) {
           source: { ...settings, DATABASE_URL: "postgres://localhost/cody" },
           resources,
         });
+        assert.equal(
+          vercel.bindings.REQUEST_BODY_LIMIT_BYTES,
+          MAX_VERCEL_REQUEST_BODY_BYTES,
+        );
+        for (const [path, token] of [
+          ["/v1/responses", "test-client-secret"],
+          ["/console/api/clients", "test-admin-secret"],
+        ]) {
+          const oversized = await vercel.fetch(
+            new Request(`https://cody.test${path}`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${token}`,
+                "x-cody-admin": "1",
+                origin: "https://cody.test",
+                "content-type": "application/json",
+                "content-length": String(MAX_VERCEL_REQUEST_BODY_BYTES + 1),
+              },
+              body: "{}",
+            }),
+          );
+          assert.equal(oversized.status, 413);
+          assert.match(JSON.stringify(await oversized.json()), /4\.5 MB/);
+        }
         const response = await vercel.fetch(
           new Request("https://cody.test/v1/responses", {
             headers: {

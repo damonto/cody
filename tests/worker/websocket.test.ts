@@ -792,6 +792,55 @@ test("more than 32 MiB of queued client messages closes the connection", async (
   expect((await closed).code).toBe(1009);
 });
 
+test.each(["active bytes", "message count"])(
+  "client WebSocket buffering includes %s while the handshake is blocked",
+  async (budget) => {
+    await putConfig(gatewayConfig());
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      return new Promise<Response>((_resolve, reject) => {
+        request.signal.addEventListener(
+          "abort",
+          () => reject(request.signal.reason),
+          { once: true },
+        );
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { socket, proxy } = await openGatewaySocket();
+    socket.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "client-model",
+        ...(budget === "active bytes"
+          ? { input: "x".repeat(16 * 1024 * 1024) }
+          : {}),
+      }),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const terminal = Promise.all([nextMessage(socket), nextClose(socket)]);
+    const injected = runInDurableObject(
+      proxy,
+      (instance: ResponsesWebSocketProxy, state) => {
+        const client = state.getWebSockets("client")[0];
+        if (!client) throw new Error("Client WebSocket is missing");
+        if (budget === "active bytes")
+          instance.webSocketMessage(client, new ArrayBuffer(17 * 1024 * 1024));
+        else
+          for (let i = 0; i < 1024; i++)
+            instance.webSocketMessage(client, new ArrayBuffer(0));
+      },
+    );
+    const [[errorMessage, closed]] = await Promise.all([terminal, injected]);
+    expect(JSON.parse(errorMessage as string)).toMatchObject({
+      status: 413,
+      error: { code: "websocket_queue_too_large" },
+    });
+    expect(closed.code).toBe(1009);
+  },
+);
+
 test("the client WebSocket survives Durable Object hibernation before routing", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
@@ -870,7 +919,9 @@ test("an upstream WebSocket handshake times out after 10 seconds", async () => {
       delay?: number,
       ...args: unknown[]
     ): number | ReturnType<typeof setTimeout> => {
-      if (delay === 10_000) {
+      // The executor subtracts elapsed setup time from its 10-second budget.
+      // Leave Vitest's short polling timers on the real clock.
+      if (delay !== undefined && delay > 1000 && delay <= 10_000) {
         callback(...args);
         return 0;
       }
@@ -1176,7 +1227,7 @@ test("every upstream error frame is forwarded before the connection closes", asy
   await upstreamClosed;
 });
 
-test("an unexpected upstream close propagates and records a provider failure", async () => {
+test("an unexpected upstream close preserves diagnostics and records a provider failure", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
   vi.stubGlobal(
@@ -1190,11 +1241,47 @@ test("an unexpected upstream close propagates and records a provider failure", a
   );
   await firstFrame;
 
-  const clientClosed = nextClose(socket);
-  await closeUpstream(upstream, 1011, "upstream lost");
-  expect((await clientClosed).code).toBe(1011);
-  await waitOnExecutionContext(context);
-  expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(1);
+  const responseId = "resp_before_disconnect";
+  const forwarded = nextMessage(socket);
+  await sendUpstream(
+    upstream,
+    JSON.stringify({
+      type: "response.created",
+      response: { id: responseId },
+    }),
+  );
+  await forwarded;
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    const clientClosed = nextClose(socket);
+    const reason = "upstream lost Bearer private-token";
+    await closeUpstream(upstream, 1011, reason);
+    expect(await clientClosed).toMatchObject({ code: 1011, reason });
+    await waitOnExecutionContext(context);
+    expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(
+      1,
+    );
+    const entries = warn.mock.calls.map(([entry]) => entry);
+    const terminal = entries.find(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        Reflect.get(entry, "event") === "websocket.closed",
+    );
+    expect(terminal).toMatchObject({
+      outcome: "upstream_closed_during_response",
+      connection_id: expect.any(String),
+      close_code: 1011,
+      close_reason: "upstream lost Bearer [REDACTED]",
+      was_clean: expect.any(Boolean),
+      last_response_id: responseId,
+      last_upstream_event_type: "response.created",
+      upstream_idle_ms: expect.any(Number),
+    });
+    expect(JSON.stringify(entries)).not.toContain("private-token");
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test("an upstream close while connecting records a provider failure", async () => {

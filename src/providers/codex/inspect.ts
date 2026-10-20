@@ -1,3 +1,4 @@
+import { MAX_QUOTA_ERROR_BYTES } from "../../shared/payload-limits.ts";
 import {
   inspectRetryError,
   type RetryErrorInspection,
@@ -8,8 +9,6 @@ import {
   codexUsageLimitFromError,
   type CodexUsageLimit,
 } from "./limits.ts";
-
-const MAX_QUOTA_ERROR_BYTES = 64 * 1024;
 
 interface CodexInspectionOptions {
   signal: AbortSignal;

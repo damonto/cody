@@ -30,6 +30,7 @@ import {
 } from "../src/providers/antigravity/response.ts";
 import { aggregateCodexModels } from "../src/gateway/catalog/models.ts";
 import { retryResponseUsage } from "../src/telemetry/retry.ts";
+import { MAX_NATIVE_REQUEST_BODY_BYTES } from "../src/shared/payload-limits.ts";
 
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ref = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -51,6 +52,45 @@ test("Antigravity enforces the native upload limit before resolving OAuth", asyn
       bodyBytes: 16 * 1024 * 1024 + 1,
     }),
     { status: 413, code: "request_too_large" },
+  );
+});
+
+test("Antigravity bounds the translated envelope even when the client body fits", async () => {
+  const value = config();
+  const payload = { model: "native-model", input: "" };
+  payload.input = "x".repeat(
+    MAX_NATIVE_REQUEST_BODY_BYTES - Buffer.byteLength(JSON.stringify(payload)),
+  );
+  assert.equal(
+    Buffer.byteLength(JSON.stringify(payload)),
+    MAX_NATIVE_REQUEST_BODY_BYTES,
+  );
+  await assert.rejects(
+    antigravityAdapter.prepare(
+      value.providers[0],
+      {
+        type: "oauth",
+        account_ref: ref,
+        token: "access",
+        project_id: "project",
+      },
+      {
+        request: new Request("https://gateway.test/v1/responses"),
+        endpoint: "responses",
+        transport: "http",
+        protocol: "openai",
+        payload,
+        bodyBytes: MAX_NATIVE_REQUEST_BODY_BYTES,
+        model: "native-model",
+        clientId: "client",
+      },
+      { config: value, env: { CONFIG_ENCRYPTION_KEY: key } },
+    ),
+    {
+      status: 413,
+      code: "request_too_large",
+      message: /Translated Antigravity request/,
+    },
   );
 });
 

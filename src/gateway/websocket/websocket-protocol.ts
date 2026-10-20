@@ -1,7 +1,7 @@
+import { MAX_WEBSOCKET_UPGRADE_ERROR_BYTES } from "../../shared/payload-limits.ts";
 import { Buffer } from "node:buffer";
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { codexTurnMetadata } from "../sessions/codex-metadata.ts";
-const MAX_UPSTREAM_ERROR_BYTES = 32 * 1024;
 const UPSTREAM_ERROR_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_REASON_BYTES = 123;
 
@@ -245,7 +245,7 @@ async function upstreamErrorText(
   try {
     const body = await readBodyWithinLimit(
       response.body,
-      MAX_UPSTREAM_ERROR_BYTES,
+      MAX_WEBSOCKET_UPGRADE_ERROR_BYTES,
       response.headers.get("content-length"),
       undefined,
       controller.signal,

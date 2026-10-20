@@ -1,3 +1,4 @@
+import { MAX_UPSTREAM_ERROR_BODY_BYTES } from "../../shared/payload-limits.ts";
 import { ProviderRequestError } from "../errors.ts";
 import {
   notifyUpstreamMetadata,
@@ -23,7 +24,7 @@ export async function convertResponse(
   if (!response.ok) {
     const data = await readBodyWithinLimit(
       response.body,
-      1024 * 1024,
+      MAX_UPSTREAM_ERROR_BODY_BYTES,
       response.headers.get("content-length"),
       undefined,
       options.signal,

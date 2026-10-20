@@ -1,3 +1,4 @@
+import { MAX_LOGGED_UPSTREAM_ERROR_BYTES } from "./payload-limits.ts";
 export type LogFields = Record<string, unknown>;
 export type LogLevel = "info" | "warn" | "error" | "off";
 type EmittedLogLevel = Exclude<LogLevel, "off">;
@@ -5,8 +6,6 @@ type EmittedLogLevel = Exclude<LogLevel, "off">;
 export interface LogExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
-
-const MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES = 32 * 1024;
 
 const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
   info: 1,
@@ -71,10 +70,6 @@ function redactTextWithSensitiveValues(
     redacted = redacted.split(sensitiveValue).join(REDACTED);
   }
   return redacted;
-}
-
-function redactText(value: string): string {
-  return redactTextWithSensitiveValues(value, []);
 }
 
 function sanitizeValue(
@@ -205,7 +200,7 @@ export class RequestLogContext {
   private level: EmittedLogLevel = "info";
   private completed = false;
   private completionPromise?: Promise<void>;
-  private remainingErrorBodyBytes = MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES;
+  private remainingErrorBodyBytes = MAX_LOGGED_UPSTREAM_ERROR_BYTES;
   private sensitiveValues: string[] = [];
 
   constructor(
@@ -284,7 +279,7 @@ export class RequestLogContext {
     return {
       ...metadata,
       error_json_omitted: "request_log_budget_exceeded",
-      error_body_limit_bytes: MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES,
+      error_body_limit_bytes: MAX_LOGGED_UPSTREAM_ERROR_BYTES,
     };
   }
 
@@ -360,7 +355,10 @@ export function bounded(value: unknown, maxLength = 256): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength)}…`;
 }
 
-export function errorMessage(error: unknown): string {
+export function errorMessage(
+  error: unknown,
+  sensitiveValues: Iterable<unknown> = [],
+): string {
   let message: string;
   if (error instanceof Error) {
     message = error.message;
@@ -373,5 +371,55 @@ export function errorMessage(error: unknown): string {
       message = String(error);
     }
   }
-  return bounded(redactText(message));
+  return bounded(
+    redactTextWithSensitiveValues(
+      message,
+      normalizedSensitiveValues(sensitiveValues).sort(
+        (left, right) => right.length - left.length,
+      ),
+    ),
+  );
+}
+
+interface ErrorIdentity {
+  readonly error_name: string;
+  readonly error_code?: string;
+}
+
+export interface ErrorDiagnostics extends Partial<ErrorIdentity> {
+  readonly error: string;
+  readonly error_causes?: readonly ErrorIdentity[];
+}
+
+/** Keep low-level error identifiers without logging TLS internals or stacks. */
+export function errorDiagnostics(
+  error: unknown,
+  sensitiveValues: readonly unknown[] = [],
+): ErrorDiagnostics {
+  const identity = (value: Error): ErrorIdentity => {
+    const code: unknown = Reflect.get(value, "code");
+    return {
+      error_name: errorMessage(value.name, sensitiveValues),
+      ...(typeof code === "string" || typeof code === "number"
+        ? { error_code: errorMessage(String(code), sensitiveValues) }
+        : {}),
+    };
+  };
+  const causes: ErrorIdentity[] = [];
+  if (error instanceof Error) {
+    const seen = new Set<Error>([error]);
+    for (
+      let cause = error.cause;
+      cause instanceof Error && !seen.has(cause) && causes.length < 3;
+      cause = cause.cause
+    ) {
+      seen.add(cause);
+      causes.push(identity(cause));
+    }
+  }
+  return {
+    error: errorMessage(error, sensitiveValues),
+    ...(error instanceof Error ? identity(error) : {}),
+    ...(causes.length ? { error_causes: causes } : {}),
+  };
 }

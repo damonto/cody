@@ -1,6 +1,11 @@
 import type { GatewayConfig } from "../../config/types.ts";
 import { abortable } from "../../shared/abort.ts";
-import { logInfo, type RequestLogContext } from "../../shared/log.ts";
+import {
+  errorDiagnostics,
+  logInfo,
+  logWarn,
+  type RequestLogContext,
+} from "../../shared/log.ts";
 import type { HealthExecutionContext } from "../health/health.ts";
 import type { UpstreamTransport } from "../transport/index.ts";
 import {
@@ -16,7 +21,7 @@ import {
 } from "./errors.ts";
 import { ProxyGroupClient } from "./group-client.ts";
 import { fetchWithProxyRetries } from "./retry.ts";
-import type { ProxyLease } from "./schema.ts";
+import type { ProxyLease, ProxyOwner } from "./schema.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ProxyTransportContext {
@@ -36,6 +41,31 @@ type ProxyPhase = "selecting" | "recording_health" | SocksStage;
 type SwitchReason = "proxy_failure" | "target_rejected";
 type ConnectionOutcome =
   "connected" | SwitchReason | ProxyUnavailableError["code"];
+
+interface WebSocketLogContext extends ProxyOwner {
+  readonly request_id: string | undefined;
+  readonly group_id: string;
+  readonly proxy_id: string;
+}
+
+/** Retain only routing identifiers and credential strings for the socket lifetime. */
+function webSocketFailureLogger(
+  context: WebSocketLogContext,
+  sensitiveValues: readonly unknown[],
+): NonNullable<SocksFetchOptions["onWebSocketFailure"]> {
+  return ({ error, ...diagnostic }) => {
+    const fields = {
+      ...context,
+      connection_id: context.request_id,
+      transport: "socks5",
+      ...diagnostic,
+      ...errorDiagnostics(error, sensitiveValues),
+    };
+    if (diagnostic.stage === "abort")
+      logInfo("websocket.transport.cancelled", fields);
+    else logWarn("websocket.transport.failed", fields);
+  };
+}
 
 function setupTimeout(phase: ProxyPhase): Error {
   switch (phase) {
@@ -157,8 +187,29 @@ export function createProxyTransport(
           let successPending = false;
           phase = "proxy";
           try {
+            const authorization = request.headers.get("authorization");
+            const proxyAuthorization = request.headers.get(
+              "proxy-authorization",
+            );
             const response = await fetchWithProxyRetries(outgoing, node, {
               ...socksOptions,
+              onWebSocketFailure: webSocketFailureLogger(
+                {
+                  request_id: runtime.requestId,
+                  group_id: reference.groupId,
+                  proxy_id: node.id,
+                  ...reference.owner,
+                },
+                [
+                  node.username,
+                  node.password,
+                  authorization,
+                  authorization?.replace(/^(?:Bearer|Basic)\s+/i, ""),
+                  proxyAuthorization,
+                  proxyAuthorization?.replace(/^(?:Bearer|Basic)\s+/i, ""),
+                  request.headers.get("x-api-key"),
+                ],
+              ),
               clientSignal: runtime.clientSignal,
               deadline,
               onStage(stage) {

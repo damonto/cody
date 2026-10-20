@@ -8,7 +8,7 @@ import { bridgeWebSocket } from "../src/platform/standard/websocket-bridge.ts";
 import {
   MAX_WEBSOCKET_BUFFER_BYTES,
   MAX_WEBSOCKET_BUFFER_MESSAGES,
-} from "../src/platform/standard/websocket-limits.ts";
+} from "../src/shared/payload-limits.ts";
 
 test("Redis closes only idle connections, reconnects once and tracks cleanup with waitUntil", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });

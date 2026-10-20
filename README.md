@@ -21,6 +21,29 @@ All platforms run the same gateway and console. Every build requires Node.js 24 
 
 libSQL works with [Turso](https://turso.tech/) or a self-hosted `sqld`.
 
+### Payload limits
+
+| Operation                                                      | Application limit        |
+| -------------------------------------------------------------- | ------------------------ |
+| HTTP inference on Node.js                                      | 64 MiB                   |
+| HTTP inference on Workers                                      | 16 MiB                   |
+| HTTP inference on Vercel                                       | 4.5 MB (4,500,000 bytes) |
+| Antigravity / xAI decoded and translated requests              | 16 MiB                   |
+| WebSocket message                                              | 32 MiB                   |
+| Each WebSocket processing buffer, including the active message | 32 MiB / 1024 messages   |
+| Management API request                                         | 16 MiB                   |
+| Configured search request                                      | 1 MiB                    |
+
+Inference upload limits apply separately before and after decompression. The effective
+upload limit is the smaller of the operation budget and the deployment ceiling;
+Workers use a 16 MiB buffering budget to leave memory for decoded text, parsed JSON
+and translated requests within their [128 MB isolate limit](https://developers.cloudflare.com/workers/platform/limits/#memory).
+Vercel also narrows management requests to 4.5 MB. Reverse proxies and upstream
+APIs may impose smaller limits. See the [Vercel Function limits](https://vercel.com/docs/functions/limitations#request-body-size)
+and [Cloudflare WebSocket limits](https://developers.cloudflare.com/durable-objects/platform/limits/).
+Response inspection and usage observation have independent 16 MiB budgets;
+reaching an observation limit does not truncate a forwarded response.
+
 ## Cloudflare Workers
 
 HTTP inference and context-management requests run in a dedicated `HttpExecution`

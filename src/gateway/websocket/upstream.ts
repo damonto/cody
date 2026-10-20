@@ -1,3 +1,7 @@
+import {
+  MAX_WEBSOCKET_BUFFER_BYTES,
+  MAX_WEBSOCKET_BUFFER_MESSAGES,
+} from "../../shared/payload-limits.ts";
 import { ProviderType } from "../../config/values.ts";
 import { ProviderTransport } from "../../providers/transport-values.ts";
 import { ApiProtocol } from "../protocol-values.ts";
@@ -29,8 +33,6 @@ import type { Bindings } from "../../platform/bindings.ts";
 import { abortableDelay } from "../../shared/abort.ts";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
-const MAX_PENDING_BYTES = 32 * 1024 * 1024;
-const MAX_PENDING_MESSAGES = 1024;
 
 type UpstreamEvent = { socket: WebSocket; bytes: number } & (
   | { type: "message"; data: unknown; receivedAt: number }
@@ -209,9 +211,10 @@ export class UpstreamWebSocket {
     if (this.connection !== event.socket || !this.detach) return;
     if (
       event.type === "message" &&
-      (this.events.length + (this.active ? 1 : 0) >= MAX_PENDING_MESSAGES ||
+      (this.events.length + (this.active ? 1 : 0) >=
+        MAX_WEBSOCKET_BUFFER_MESSAGES ||
         this.pendingBytes + (this.active?.bytes ?? 0) + event.bytes >
-          MAX_PENDING_BYTES)
+          MAX_WEBSOCKET_BUFFER_BYTES)
     ) {
       this.clearEvents();
       closeSocket(event.socket, 1013, "upstream buffer limit exceeded");

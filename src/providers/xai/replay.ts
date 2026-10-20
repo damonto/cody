@@ -2,6 +2,10 @@ import { records, text, type Wire } from "./json.ts";
 import { z } from "zod";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { ProviderRequestError } from "../errors.ts";
+import {
+  MAX_XAI_REPLAY_CIPHERTEXT_BYTES,
+  MAX_XAI_REPLAY_ENVELOPE_BYTES,
+} from "../../shared/payload-limits.ts";
 
 export interface XaiScope {
   client_id: string;
@@ -36,12 +40,18 @@ export async function sealReasoning(
     { purpose: "xai-replay", scope, item, visible },
     key,
   );
-  if (encrypted.length > 8 * 1024 * 1024)
+  if (encrypted.length > MAX_XAI_REPLAY_CIPHERTEXT_BYTES)
     throw new ProviderRequestError(
       "xAI reasoning exceeds the replay limit",
       502,
     );
-  return PREFIX + btoa(encrypted);
+  const envelope = PREFIX + btoa(encrypted);
+  if (envelope.length > MAX_XAI_REPLAY_ENVELOPE_BYTES)
+    throw new ProviderRequestError(
+      "xAI reasoning exceeds the replay limit",
+      502,
+    );
+  return envelope;
 }
 export async function openReasoning(
   value: string,
@@ -51,11 +61,15 @@ export async function openReasoning(
   accounts: readonly string[],
 ): Promise<Wire> {
   try {
-    if (!value.startsWith(PREFIX) || value.length > 12 * 1024 * 1024)
+    if (
+      !value.startsWith(PREFIX) ||
+      value.length > MAX_XAI_REPLAY_ENVELOPE_BYTES
+    )
       throw new Error("envelope");
-    const replay = schema.parse(
-      await decryptConfig(atob(value.slice(PREFIX.length)), key),
-    );
+    const encrypted = atob(value.slice(PREFIX.length));
+    if (encrypted.length > MAX_XAI_REPLAY_CIPHERTEXT_BYTES)
+      throw new Error("envelope");
+    const replay = schema.parse(await decryptConfig(encrypted, key));
     if (
       replay.scope.client_id !== scope.client_id ||
       replay.scope.provider_id !== scope.provider_id ||

@@ -15,6 +15,12 @@ import { translateRequest } from "./request.ts";
 import { convertResponse, translatedUsage } from "./response.ts";
 import { antigravityResponsePolicy } from "./response-policy.ts";
 import { antigravityUserAgent, antigravityVersion } from "./version.ts";
+import { Buffer } from "node:buffer";
+import {
+  formatByteLimit,
+  MAX_CONTROL_RESPONSE_BODY_BYTES,
+  MAX_NATIVE_REQUEST_BODY_BYTES,
+} from "../../shared/payload-limits.ts";
 
 export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
   type: ProviderType.Antigravity,
@@ -27,9 +33,12 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
     );
   },
   validate(input) {
-    if (input.bodyBytes !== undefined && input.bodyBytes > 16 * 1024 * 1024)
+    if (
+      input.bodyBytes !== undefined &&
+      input.bodyBytes > MAX_NATIVE_REQUEST_BODY_BYTES
+    )
       throw new ProviderRequestError(
-        "Native provider requests must not exceed 16 MiB",
+        `Native provider requests must not exceed ${formatByteLimit(MAX_NATIVE_REQUEST_BODY_BYTES)}`,
         413,
         "request_too_large",
       );
@@ -118,6 +127,12 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
             requestId: `agent-${crypto.randomUUID()}`,
           },
     );
+    if (Buffer.byteLength(body, "utf8") > MAX_NATIVE_REQUEST_BODY_BYTES)
+      throw new ProviderRequestError(
+        `Translated Antigravity request exceeds ${formatByteLimit(MAX_NATIVE_REQUEST_BODY_BYTES)}`,
+        413,
+        "request_too_large",
+      );
     return {
       accountSwitching: { timeoutScope: "request" },
       url: `${ANTIGRAVITY_BASE}/v1internal:${method}`,
@@ -144,7 +159,7 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
         if (endpoint === "messages/count_tokens" && response.ok) {
           const bytes = await readBodyWithinLimit(
             response.body,
-            1024 * 1024,
+            MAX_CONTROL_RESPONSE_BODY_BYTES,
             response.headers.get("content-length"),
             undefined,
             input.request.signal,

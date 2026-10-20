@@ -87,8 +87,15 @@ import type {
 } from "../../platform/object-context.ts";
 import { webSocketUpgradeResponse } from "../../platform/websocket-upgrade.ts";
 
+import {
+  formatByteLimit,
+  MAX_WEBSOCKET_BUFFER_BYTES,
+  MAX_WEBSOCKET_BUFFER_MESSAGES,
+  MAX_WEBSOCKET_MESSAGE_BYTES,
+  MAX_WEBSOCKET_OBSERVATION_BYTES,
+} from "../../shared/payload-limits.ts";
+
 const FIRST_FRAME_TIMEOUT_MS = 10_000;
-const MAX_PENDING_WEBSOCKET_BYTES = 32 * 1024 * 1024;
 
 type SocketRole = "client" | "upstream";
 interface SocketAttachment {
@@ -181,9 +188,25 @@ type ResponseTurn =
   | { kind: "active"; sequence: number; replayable: boolean }
   | { kind: "untracked" };
 
+interface PendingClientMessage {
+  message: WebSocketMessage;
+  bytes: number;
+  receivedAt: number;
+  sequence: number;
+}
+
+interface WebSocketCloseOptions {
+  readonly expectedPhases?: readonly SessionPhase[];
+  readonly clientMessage?: WebSocketMessage;
+  readonly wasClean?: boolean;
+}
+
 export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private pendingClientBytes = 0;
-  private clientMessages = Promise.resolve();
+  private readonly clientMessages: PendingClientMessage[] = [];
+  private activeClientMessage: PendingClientMessage | undefined;
+  private processingClientMessages = false;
+  private clientMessagesClosed = false;
   /** Client messages received by this instance, including the first frame. */
   private receivedClientMessages = 0;
   // Overlapping turns or object recovery make response ownership ambiguous.
@@ -196,6 +219,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private readonly health: WebSocketHealth;
   private readonly storage: WebSocketStorage;
   private readonly usage: WebSocketUsage;
+  private lastUpstreamMessageAt: number | undefined;
+  private lastUpstreamEventType: string | undefined;
+  private lastResponseId: string | undefined;
 
   constructor(
     protected readonly ctx: WebSocketObjectContext,
@@ -300,12 +326,14 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       1008,
       "response.create timeout",
       "first_frame_timeout",
-      [SessionPhase.AwaitingFirstFrame],
-      gatewayErrorEvent(
-        408,
-        "A response.create frame was not received in time",
-        "websocket_first_frame_timeout",
-      ),
+      {
+        expectedPhases: [SessionPhase.AwaitingFirstFrame],
+        clientMessage: gatewayErrorEvent(
+          408,
+          "A response.create frame was not received in time",
+          "websocket_first_frame_timeout",
+        ),
+      },
     );
   }
 
@@ -325,9 +353,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     code: number,
     reason: string,
     outcome: string,
-    expectedPhases: readonly SessionPhase[] = LIVE_PHASES,
-    clientMessage?: WebSocketMessage,
+    options: WebSocketCloseOptions = {},
   ): Promise<void> {
+    const { expectedPhases = LIVE_PHASES, clientMessage, wasClean } = options;
     const transition = await this.storage.transition(
       expectedPhases,
       (state) => ({
@@ -339,6 +367,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
 
+    this.clearClientMessages();
     if (clientMessage !== undefined) {
       safeSend(this.clientSocket(), clientMessage);
     }
@@ -350,8 +379,23 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     this.usage.finishAll(requestOutcomeOnClose(code, outcome), outcome);
     const fields = {
       request_id: state.request_id,
+      connection_id: state.request_id,
       outcome,
       close_code: code,
+      close_reason: errorMessage(reason),
+      ...(wasClean === undefined ? {} : { was_clean: wasClean }),
+      ...(this.lastUpstreamMessageAt === undefined
+        ? {}
+        : {
+            upstream_idle_ms: Math.max(
+              0,
+              Date.now() - this.lastUpstreamMessageAt,
+            ),
+          }),
+      ...(this.lastUpstreamEventType
+        ? { last_upstream_event_type: this.lastUpstreamEventType }
+        : {}),
+      ...(this.lastResponseId ? { last_response_id: this.lastResponseId } : {}),
       phase: state.phase,
       active_response: state.active_response,
       duration_ms: Math.max(0, Date.now() - state.started_at),
@@ -445,7 +489,16 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
     const payload =
       typeof message === "string" ? parseObject(message) : undefined;
-    if (payload && typeof message === "string" && message.length <= 64 * 1024)
+    this.lastUpstreamMessageAt = receivedAt;
+    this.lastUpstreamEventType = nonBlankString(payload?.type)?.slice(0, 160);
+    const response = payload?.response;
+    const responseId =
+      nonBlankString(payload?.response_id) ??
+      (typeof response === "object" && response !== null
+        ? nonBlankString(Reflect.get(response, "id"))
+        : undefined);
+    if (responseId) this.lastResponseId = responseId.slice(0, 160);
+    if (payload && messageBytes(message) <= MAX_WEBSOCKET_OBSERVATION_BYTES)
       this.upstream.observeEvent(payload, receivedAt);
     const status = payload ? errorStatus(payload) : undefined;
     const usageLimit =
@@ -584,12 +637,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       1012,
       "full input required on a new connection",
       diagnostic,
-      LIVE_PHASES,
-      gatewayErrorEvent(
-        409,
-        "The previous response is unavailable on this connection; resend the full input without previous_response_id",
-        "previous_response_not_found",
-      ),
+      {
+        clientMessage: gatewayErrorEvent(
+          409,
+          "The previous response is unavailable on this connection; resend the full input without previous_response_id",
+          "previous_response_not_found",
+        ),
+      },
     );
   }
 
@@ -617,6 +671,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       event.code,
       event.reason || "upstream websocket closed",
       outcome,
+      { wasClean: event.wasClean },
     );
   }
 
@@ -1174,12 +1229,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
             1012,
             "session binding store unavailable",
             "session_affinity_unavailable",
-            LIVE_PHASES,
-            gatewayErrorEvent(
-              503,
-              "The session binding store is unavailable",
-              "session_affinity_unavailable",
-            ),
+            {
+              clientMessage: gatewayErrorEvent(
+                503,
+                "The session binding store is unavailable",
+                "session_affinity_unavailable",
+              ),
+            },
           );
           return;
         }
@@ -1197,12 +1253,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
             1012,
             "upstream binding changed",
             "binding_changed",
-            LIVE_PHASES,
-            gatewayErrorEvent(
-              503,
-              "The bound upstream provider or key is no longer available; reconnect the WebSocket",
-              "websocket_reconnect_required",
-            ),
+            {
+              clientMessage: gatewayErrorEvent(
+                503,
+                "The bound upstream provider or key is no longer available; reconnect the WebSocket",
+                "websocket_reconnect_required",
+              ),
+            },
           );
           return;
         }
@@ -1264,49 +1321,90 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
   }
 
-  private enqueueClientMessage(message: WebSocketMessage): Promise<void> {
+  private clearClientMessages(): void {
+    this.clientMessagesClosed = true;
+    this.clientMessages.length = 0;
+    this.pendingClientBytes = 0;
+  }
+
+  private enqueueClientMessage(message: WebSocketMessage): void {
+    if (this.clientMessagesClosed) return;
     const receivedAt = Date.now();
     const bytes = messageBytes(message);
-    this.pendingClientBytes += bytes;
-    if (this.pendingClientBytes > MAX_PENDING_WEBSOCKET_BYTES) {
-      safeSend(
-        this.clientSocket(),
-        gatewayErrorEvent(
-          413,
-          "Pending WebSocket messages exceed 32 MiB",
-          "websocket_queue_too_large",
+    if (
+      bytes > MAX_WEBSOCKET_MESSAGE_BYTES ||
+      this.pendingClientBytes + (this.activeClientMessage?.bytes ?? 0) + bytes >
+        MAX_WEBSOCKET_BUFFER_BYTES ||
+      this.clientMessages.length + (this.activeClientMessage ? 1 : 0) >=
+        MAX_WEBSOCKET_BUFFER_MESSAGES
+    ) {
+      this.clearClientMessages();
+      this.ctx.waitUntil(
+        this.closeAll(
+          1009,
+          "pending websocket messages too large",
+          "client_queue_too_large",
+          {
+            clientMessage: gatewayErrorEvent(
+              413,
+              `WebSocket messages exceed the ${formatByteLimit(MAX_WEBSOCKET_BUFFER_BYTES)} or ${MAX_WEBSOCKET_BUFFER_MESSAGES}-message buffer limit`,
+              "websocket_queue_too_large",
+            ),
+          },
         ),
       );
-      return this.closeAll(
-        1009,
-        "pending websocket messages too large",
-        "client_queue_too_large",
-      );
+      return;
     }
 
-    const sequence = ++this.receivedClientMessages;
-    const processing = this.clientMessages.then(async () => {
-      this.pendingClientBytes -= bytes;
-      while (this.switching) await this.switching;
-      await this.processClientMessage(message, receivedAt, sequence);
+    this.pendingClientBytes += bytes;
+    this.clientMessages.push({
+      message,
+      bytes,
+      receivedAt,
+      sequence: ++this.receivedClientMessages,
     });
-    this.clientMessages = processing.catch(async (error) => {
-      logError("websocket.client_message.failed", {
-        error: errorMessage(error),
-      });
-      await this.closeAll(
-        1011,
-        "client message processing failed",
-        "client_message_processing_failed",
-      );
-    });
-    return this.clientMessages;
+    if (this.processingClientMessages) return;
+    this.processingClientMessages = true;
+    this.ctx.waitUntil(this.drainClientMessages());
+  }
+
+  private async drainClientMessages(): Promise<void> {
+    try {
+      while (this.clientMessages.length) {
+        const pending = this.clientMessages.shift()!;
+        this.pendingClientBytes -= pending.bytes;
+        this.activeClientMessage = pending;
+        try {
+          while (this.switching) await this.switching;
+          if (!this.clientMessagesClosed)
+            await this.processClientMessage(
+              pending.message,
+              pending.receivedAt,
+              pending.sequence,
+            );
+        } catch (error) {
+          this.clearClientMessages();
+          logError("websocket.client_message.failed", {
+            error: errorMessage(error),
+          });
+          await this.closeAll(
+            1011,
+            "client message processing failed",
+            "client_message_processing_failed",
+          );
+        } finally {
+          this.activeClientMessage = undefined;
+        }
+      }
+    } finally {
+      this.processingClientMessages = false;
+    }
   }
 
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     const role = this.socketRole(socket);
     if (role === "client") {
-      this.ctx.waitUntil(this.enqueueClientMessage(message));
+      this.enqueueClientMessage(message);
       return;
     }
     this.ctx.waitUntil(
@@ -1318,9 +1416,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     socket: WebSocket,
     code: number,
     reason: string,
-    _wasClean: boolean,
+    wasClean: boolean,
   ): Promise<void> {
     const role = this.socketRole(socket);
+    this.clearClientMessages();
     await this.closeAll(
       code,
       reason || `${role ?? "unknown"} websocket closed`,
@@ -1329,11 +1428,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           ? "client_closed"
           : "client_closed_abnormally"
         : "unknown_socket_closed",
+      { wasClean },
     );
   }
 
   async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
     const role = this.socketRole(socket);
+    this.clearClientMessages();
     const state = await this.storage.loadSession();
     logWarn("websocket.socket_error", {
       request_id: state?.request_id,

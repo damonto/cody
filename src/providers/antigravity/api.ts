@@ -1,3 +1,4 @@
+import { MAX_ACCOUNT_METADATA_BYTES } from "../../shared/payload-limits.ts";
 import { z } from "zod";
 import {
   BodyTooLargeError,
@@ -266,7 +267,7 @@ export class AntigravityClient {
         );
         bytes = await readBodyWithinLimit(
           response.body,
-          8 * 1024 * 1024,
+          MAX_ACCOUNT_METADATA_BYTES,
           response.headers.get("content-length"),
           undefined,
           signal,

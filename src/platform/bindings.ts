@@ -225,6 +225,8 @@ type WorkerSettings = Pick<
 >;
 
 export interface Bindings extends Partial<WorkerSettings> {
+  /** Runtime upload ceiling, accounting for host limits and buffering memory. */
+  readonly REQUEST_BODY_LIMIT_BYTES?: number;
   /** Optional shared model-result cache; unrelated to authoritative configuration. */
   readonly MODELS_CACHE?: {
     get(key: string): Promise<string | null>;

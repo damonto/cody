@@ -1,5 +1,5 @@
 import { SseObserver } from "./stream.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
+import { MAX_RESPONSE_OBSERVATION_BYTES } from "../shared/payload-limits.ts";
 import type {
   ResponseFormat,
   ResponseObservationFormat,
@@ -37,7 +37,7 @@ export class ResponseObserver {
   private resolvedFormat: ResponseFormat | undefined;
 
   constructor(private readonly options: ResponseObserverOptions) {
-    this.limit = options.maxPayloadBytes ?? MAX_BUFFERED_PAYLOAD_BYTES;
+    this.limit = options.maxPayloadBytes ?? MAX_RESPONSE_OBSERVATION_BYTES;
     if (!Number.isSafeInteger(this.limit) || this.limit <= 0)
       throw new RangeError(
         "Response observation limit must be a positive integer",

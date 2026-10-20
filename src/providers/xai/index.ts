@@ -13,6 +13,11 @@ import { xaiModels } from "./models.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
 import { historySession, prepareHistory } from "./history.ts";
 import { records } from "./json.ts";
+import { Buffer } from "node:buffer";
+import {
+  formatByteLimit,
+  MAX_NATIVE_REQUEST_BODY_BYTES,
+} from "../../shared/payload-limits.ts";
 
 export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
   type: ProviderType.Xai,
@@ -25,9 +30,12 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
     );
   },
   validate(input) {
-    if (input.bodyBytes !== undefined && input.bodyBytes > 16 * 1024 * 1024)
+    if (
+      input.bodyBytes !== undefined &&
+      input.bodyBytes > MAX_NATIVE_REQUEST_BODY_BYTES
+    )
       throw new ProviderRequestError(
-        "Native provider requests must not exceed 16 MiB",
+        `Native provider requests must not exceed ${formatByteLimit(MAX_NATIVE_REQUEST_BODY_BYTES)}`,
         413,
         "request_too_large",
       );
@@ -99,9 +107,9 @@ export const xaiAdapter: ProviderAdapter<XaiProviderConfig> = {
       translated.body.prompt_cache_key = session;
     }
     const body = JSON.stringify(translated.body);
-    if (new TextEncoder().encode(body).byteLength > 16 * 1024 * 1024)
+    if (Buffer.byteLength(body, "utf8") > MAX_NATIVE_REQUEST_BODY_BYTES)
       throw new ProviderRequestError(
-        "Translated xAI request exceeds 16 MiB",
+        `Translated xAI request exceeds ${formatByteLimit(MAX_NATIVE_REQUEST_BODY_BYTES)}`,
         413,
         "request_too_large",
       );

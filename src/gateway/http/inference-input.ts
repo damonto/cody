@@ -16,6 +16,10 @@ import { ContentEncodingError, decodeRequestBody } from "./content-encoding.ts";
 import { rewriteModel } from "./model-rewrite.ts";
 
 import { apiError } from "./http.ts";
+import {
+  formatByteLimit,
+  MAX_INFERENCE_BODY_BYTES,
+} from "../../shared/payload-limits.ts";
 
 import type { ModelRoute } from "../routing/routing.ts";
 export interface InferencePayload {
@@ -24,9 +28,6 @@ export interface InferencePayload {
 }
 
 export type { InferencePath } from "../protocol.ts";
-
-const MAX_INFERENCE_BODY_MIB = 96;
-export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
 
 function nonBlankString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
@@ -122,6 +123,7 @@ export function upstreamBody(
 
 export interface InferenceInput {
   rawBody: Uint8Array<ArrayBuffer>;
+  decodedBodyBytes: number;
   originalText: string;
   payload: InferencePayload;
   sessionId: string | undefined;
@@ -137,6 +139,7 @@ export async function prepareInferenceInput(
   upstreamPath: InferencePath,
   requestId: string,
   requestLog?: RequestLogContext,
+  maxBodyBytes = MAX_INFERENCE_BODY_BYTES,
 ): Promise<InferenceInput | Response> {
   requestLog?.registerSensitiveValues([
     client.api_key,
@@ -148,7 +151,7 @@ export async function prepareInferenceInput(
   try {
     rawBody = await readBodyWithinLimit(
       request.body,
-      MAX_INFERENCE_BODY_BYTES,
+      maxBodyBytes,
       request.headers.get("content-length"),
       undefined,
       request.signal,
@@ -156,19 +159,19 @@ export async function prepareInferenceInput(
     decodedBody = await decodeRequestBody(
       rawBody,
       request.headers.get("content-encoding"),
-      MAX_INFERENCE_BODY_BYTES,
+      maxBodyBytes,
       request.signal,
     );
   } catch (error) {
     if (error instanceof BodyTooLargeError) {
       requestLog?.warn({
         outcome: "request_too_large",
-        inference: { max_body_bytes: MAX_INFERENCE_BODY_BYTES },
+        inference: { max_body_bytes: maxBodyBytes },
       });
       return apiError(
         protocol,
         413,
-        `Request body exceeds the ${MAX_INFERENCE_BODY_MIB} MiB limit`,
+        `Request body exceeds the ${formatByteLimit(maxBodyBytes)} limit`,
         { code: "request_too_large", requestId },
       );
     }
@@ -177,7 +180,10 @@ export async function prepareInferenceInput(
     throw error;
   }
   const originalText = new TextDecoder().decode(decodedBody);
-  requestLog?.mergeSection("inference", { body_bytes: rawBody.byteLength });
+  requestLog?.mergeSection("inference", {
+    body_bytes: rawBody.byteLength,
+    decoded_body_bytes: decodedBody.byteLength,
+  });
   let payload: InferencePayload;
   try {
     payload = parseInferencePayload(originalText);
@@ -229,6 +235,7 @@ export async function prepareInferenceInput(
   }
   return {
     rawBody,
+    decodedBodyBytes: decodedBody.byteLength,
     originalText,
     payload,
     sessionId,

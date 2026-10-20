@@ -53,11 +53,11 @@ import {
 } from "./upstream-log.ts";
 
 import { prepareInferenceInput, upstreamBody } from "./inference-input.ts";
-export {
+import {
   MAX_INFERENCE_BODY_BYTES,
-  sessionIdForInference,
-  upstreamBody,
-} from "./inference-input.ts";
+  requestBodyLimit,
+} from "../../shared/payload-limits.ts";
+export { sessionIdForInference, upstreamBody } from "./inference-input.ts";
 export type { InferencePath } from "../protocol.ts";
 
 export async function handleInference(
@@ -79,10 +79,12 @@ export async function handleInference(
     upstreamPath,
     requestId,
     requestLog,
+    requestBodyLimit(MAX_INFERENCE_BODY_BYTES, env.REQUEST_BODY_LIMIT_BYTES),
   );
   if (input instanceof Response) return input;
   const {
     rawBody,
+    decodedBodyBytes,
     originalText,
     payload,
     sessionId,
@@ -211,7 +213,7 @@ export async function handleInference(
           transport: ProviderTransport.Http,
           protocol,
           payload,
-          bodyBytes: rawBody.byteLength,
+          bodyBytes: decodedBodyBytes,
           model: upstreamModel,
           clientId: client.id,
           sessionId,

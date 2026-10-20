@@ -4,11 +4,36 @@ import test from "node:test";
 import {
   configureLogging,
   errorMessage,
+  errorDiagnostics,
   logError,
   logInfo,
   logWarn,
   RequestLogContext,
 } from "../src/shared/log.ts";
+
+test("transport errors keep bounded cause identifiers without logging TLS internals", () => {
+  const source = Object.assign(new Error("private TLS diagnostic material"), {
+    code: "ECONNRESET",
+  });
+  source.cause = source;
+  const details = errorDiagnostics(
+    new Error("read opaque-password " + "x".repeat(300), { cause: source }),
+    ["opaque-password"],
+  );
+  assert.match(details.error, /^read \[REDACTED\]/);
+  assert(details.error.length <= 257);
+  assert.equal(details.error_causes.length, 1);
+  assert.equal(details.error_causes[0].error_code, "ECONNRESET");
+  assert.doesNotMatch(JSON.stringify(details), /opaque-password|private TLS/);
+});
+
+test("transport error causes stop at the diagnostic depth limit", () => {
+  let error = new Error("deepest failure");
+  for (let depth = 0; depth < 6; depth++) {
+    error = new Error("wrapped failure", { cause: error });
+  }
+  assert.equal(errorDiagnostics(error).error_causes.length, 3);
+});
 
 test("OAuth callback, verifier and token material is redacted without hiding diagnostic codes", () => {
   const original = console.warn;

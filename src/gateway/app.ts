@@ -134,6 +134,7 @@ async function inference(
       r.config,
       r.client,
       r.requestLog,
+      r.env.REQUEST_BODY_LIMIT_BYTES,
     );
   }
   if (r.websocketRequest) {

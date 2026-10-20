@@ -3,7 +3,10 @@ import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { readBodyWithinLimit } from "../gateway/http/body.ts";
 import { configureLogging } from "../shared/log.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
+import {
+  MAX_ADMIN_BODY_BYTES,
+  requestBodyLimit,
+} from "../shared/payload-limits.ts";
 import type { AdminContext } from "./context.ts";
 import { serveConsoleAsset } from "./assets.ts";
 import { adminError, adminSecurity, CONSOLE_CSP } from "./middleware.ts";
@@ -33,7 +36,7 @@ const adminBodyLimit = createMiddleware<AdminContext>(async (c, next) => {
   if (!request.body) return next();
   const body = await readBodyWithinLimit(
     request.body,
-    MAX_BUFFERED_PAYLOAD_BYTES,
+    requestBodyLimit(MAX_ADMIN_BODY_BYTES, c.env.REQUEST_BODY_LIMIT_BYTES),
     request.headers.get("content-length"),
     undefined,
     request.signal,

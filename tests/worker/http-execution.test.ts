@@ -9,6 +9,8 @@ import {
 } from "cloudflare:test";
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from "vitest";
 import worker from "../../src/worker.ts";
+import { MAX_WORKER_REQUEST_BODY_BYTES } from "../../src/shared/payload-limits.ts";
+import { zstdCompressSync } from "node:zlib";
 import type { HttpExecution } from "../../src/platform/cloudflare/http-execution.ts";
 import { RequestMeter } from "../../src/telemetry/meter.ts";
 import {
@@ -145,6 +147,52 @@ test("real execution DO authenticates and preserves raw request, query and upstr
     },
   });
 });
+
+test.each(["declared", "streamed", "decoded"])(
+  "real execution DO enforces its buffering budget on %s request bytes",
+  async (kind) => {
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const input = request();
+    let body: BodyInit = "{}";
+    if (kind === "declared")
+      input.headers.set(
+        "content-length",
+        String(MAX_WORKER_REQUEST_BODY_BYTES + 1),
+      );
+    else if (kind === "decoded") {
+      body = new Uint8Array(
+        zstdCompressSync("x".repeat(MAX_WORKER_REQUEST_BODY_BYTES + 1)),
+      );
+      input.headers.set("content-encoding", "zstd");
+    } else {
+      let remaining = MAX_WORKER_REQUEST_BODY_BYTES + 1;
+      const chunk = new Uint8Array(64 * 1024);
+      body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!remaining) return controller.close();
+          const bytes = chunk.subarray(
+            0,
+            Math.min(remaining, chunk.byteLength),
+          );
+          remaining -= bytes.byteLength;
+          controller.enqueue(bytes);
+        },
+      });
+    }
+    const response = await dispatch(
+      new Request(input, { method: "POST", body }),
+    );
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "request_too_large",
+        message: expect.stringContaining("16 MiB"),
+      },
+    });
+    expect(upstream).not.toHaveBeenCalled();
+  },
+);
 
 test("real execution DO rejects invalid credentials with the request dialect", async () => {
   const upstream = vi.fn();

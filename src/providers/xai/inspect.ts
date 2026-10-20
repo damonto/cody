@@ -1,3 +1,4 @@
+import { MAX_QUOTA_ERROR_BYTES } from "../../shared/payload-limits.ts";
 import { xaiBadCredentials } from "./errors.ts";
 import { inspectResponsePrefix } from "../../gateway/http/response-prefix.ts";
 import { responseReplaySafety } from "../../gateway/http/retry-errors.ts";
@@ -37,7 +38,7 @@ export async function inspectXaiResponse(
     } else if (replay !== "inspect") ready = true;
   };
   const observer = new SseObserver({
-    maxEventBytes: 65536,
+    maxEventBytes: MAX_QUOTA_ERROR_BYTES,
     onIssue: () => {
       ready = true;
     },
@@ -50,7 +51,7 @@ export async function inspectXaiResponse(
     response,
     signal,
     {
-      maxBytes: 65536,
+      maxBytes: MAX_QUOTA_ERROR_BYTES,
       timeoutMs: 5000,
       async observe(chunk) {
         if (!sse) {

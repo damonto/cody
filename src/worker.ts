@@ -4,6 +4,7 @@ import { ingestUsage } from "./reporting/store.ts";
 import { parseUsageEvent } from "./telemetry/schema.ts";
 import { httpExecutionEndpoint } from "./gateway/protocol.ts";
 import { dispatchHttpExecution } from "./platform/cloudflare/http-dispatch.ts";
+import { MAX_WORKER_REQUEST_BODY_BYTES } from "./shared/payload-limits.ts";
 
 export { HttpExecution } from "./platform/cloudflare/http-execution.ts";
 
@@ -27,7 +28,11 @@ export default {
     const endpoint = httpExecutionEndpoint(request);
     return endpoint
       ? dispatchHttpExecution(request, endpoint, env, ctx)
-      : app.fetch(request, env, ctx);
+      : app.fetch(
+          request,
+          { ...env, REQUEST_BODY_LIMIT_BYTES: MAX_WORKER_REQUEST_BODY_BYTES },
+          ctx,
+        );
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {

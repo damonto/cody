@@ -92,8 +92,10 @@ export async function secureConnection(
       try {
         validatePeerCertificates(certificates, hostname, roots);
         verified = true;
-      } catch {
-        failure = new Error("Upstream TLS certificate validation failed");
+      } catch (error) {
+        failure = new Error("Upstream TLS certificate validation failed", {
+          cause: error,
+        });
         throw failure;
       }
     },
@@ -109,7 +111,9 @@ export async function secureConnection(
     onTlsEnd(error) {
       ended = true;
       if (error) {
-        failure ??= new Error("Upstream TLS connection failed");
+        failure ??= new Error("Upstream TLS connection failed", {
+          cause: error,
+        });
       }
       // The response/handshake owner awaits the same idempotent socket teardown.
       void connection.close();
@@ -151,8 +155,10 @@ export async function secureConnection(
             keyUpdateQueued = false;
           }
         })
-        .catch(async () => {
-          failure ??= new Error("Upstream TLS key update failed");
+        .catch(async (error) => {
+          failure ??= new Error("Upstream TLS key update failed", {
+            cause: error,
+          });
           await close();
         });
     }
@@ -189,9 +195,11 @@ export async function secureConnection(
     ) {
       throw new Error("Unsupported upstream TLS negotiation");
     }
-  } catch {
+  } catch (error) {
     await close();
-    throw failure ?? new Error("Upstream TLS handshake failed");
+    throw (
+      failure ?? new Error("Upstream TLS handshake failed", { cause: error })
+    );
   }
   // Serialize send-side state while allowing receives to unblock early HTTP responses.
   return {
@@ -211,9 +219,12 @@ export async function secureConnection(
           }
           await receive();
         }
-      } catch {
+      } catch (error) {
         await close();
-        throw failure ?? new Error("Upstream TLS stream ended unexpectedly");
+        throw (
+          failure ??
+          new Error("Upstream TLS stream ended unexpectedly", { cause: error })
+        );
       }
     },
     write(data) {
@@ -233,8 +244,8 @@ export async function secureConnection(
           await tls.write(data.subarray(offset, offset + MAX_ENC_PACKET_SIZE));
         }
       });
-      writes = next.catch(async () => {
-        failure ??= new Error("Upstream TLS write failed");
+      writes = next.catch(async (error) => {
+        failure ??= new Error("Upstream TLS write failed", { cause: error });
         await close();
       });
       return next;

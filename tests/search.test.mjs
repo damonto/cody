@@ -4,7 +4,7 @@ import test from "node:test";
 import { handleConfiguredWebSearch } from "../src/gateway/search/search.ts";
 import { webSearchProviderFor } from "../src/gateway/search/providers/index.ts";
 import { SEARCH_PROVIDER_CONCURRENCY } from "../src/gateway/search/search-executor.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../src/shared/payload-limits.ts";
+import { MAX_SEARCH_RESPONSE_BODY_BYTES } from "../src/shared/payload-limits.ts";
 
 function fixture(mode) {
   return {
@@ -633,7 +633,9 @@ test("adapter rejects and cancels a response over the per-query budget", async (
     new Response(
       new ReadableStream({
         start(controller) {
-          controller.enqueue(new Uint8Array(MAX_BUFFERED_PAYLOAD_BYTES + 1));
+          controller.enqueue(
+            new Uint8Array(MAX_SEARCH_RESPONSE_BODY_BYTES + 1),
+          );
         },
         cancel() {
           cancelled = true;
@@ -661,7 +663,7 @@ test("adapter enforces a total response budget across the query batch", async ()
   const { config, client } = fixture("exa");
   const originalFetch = globalThis.fetch;
   const content = "x".repeat(
-    Math.floor(MAX_BUFFERED_PAYLOAD_BYTES / 4) + 64 * 1024,
+    Math.floor(MAX_SEARCH_RESPONSE_BODY_BYTES / 4) + 64 * 1024,
   );
   globalThis.fetch = async (input, init) => {
     const upstream =

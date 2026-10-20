@@ -1,6 +1,6 @@
+import { MAX_LOGGED_UPSTREAM_ERROR_BYTES } from "../../shared/payload-limits.ts";
 import { bounded, errorMessage, type LogFields } from "../../shared/log.ts";
 
-export const MAX_LOGGED_UPSTREAM_ERROR_BYTES = 32 * 1024;
 const UPSTREAM_ERROR_LOG_TIMEOUT_MS = 750;
 
 type ErrorBodyReadResult =

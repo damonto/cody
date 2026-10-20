@@ -1,3 +1,4 @@
+import { MAX_CONTROL_RESPONSE_BODY_BYTES } from "../shared/payload-limits.ts";
 /**
  * OpenID Connect administrator sign-in for the standard (Node/Vercel)
  * backend. Cloudflare deployments keep Cloudflare Access; this module is only
@@ -34,7 +35,6 @@ const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const SESSION_AUDIENCE = "cody-admin-session";
 const LOGIN_AUDIENCE = "cody-admin-login";
 const TOKEN_ISSUER = "cody-admin";
-const MAX_OIDC_RESPONSE_BYTES = 1024 * 1024;
 
 export type OidcEnv = Pick<
   Bindings,
@@ -434,7 +434,7 @@ export function createOidcApp(transport: OidcTransport = {}) {
     // Discovery, token responses and JOSE's JWKS fetch all cross this boundary.
     const bytes = await readBodyWithinLimit(
       response.body,
-      MAX_OIDC_RESPONSE_BYTES,
+      MAX_CONTROL_RESPONSE_BODY_BYTES,
       response.headers.get("content-length"),
       undefined,
       init?.signal ?? (input instanceof Request ? input.signal : undefined),

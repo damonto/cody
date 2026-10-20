@@ -1,3 +1,4 @@
+import { MAX_ACCOUNT_METADATA_BYTES } from "../../shared/payload-limits.ts";
 import { z } from "zod";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
@@ -242,7 +243,7 @@ export class CodexClient {
       );
       const bytes = await readBodyWithinLimit(
         response.body,
-        8 * 1024 * 1024,
+        MAX_ACCOUNT_METADATA_BYTES,
         response.headers.get("content-length"),
         undefined,
         signal,

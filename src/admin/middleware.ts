@@ -9,6 +9,7 @@ import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { BodyTooLargeError } from "../gateway/http/body.ts";
+import { formatByteLimit } from "../shared/payload-limits.ts";
 import { errorMessage, logError } from "../shared/log.ts";
 import {
   adminChallenge,
@@ -57,7 +58,7 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
   if (error instanceof BodyTooLargeError)
     return context.json(
       {
-        error: `Request exceeds ${error.maxBytes / 1024 / 1024} MiB`,
+        error: `Request exceeds ${formatByteLimit(error.maxBytes)}`,
       },
       413,
     );

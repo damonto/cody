@@ -1,3 +1,4 @@
+import { MAX_DIAGNOSTIC_RESPONSE_BYTES } from "../shared/payload-limits.ts";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { SocksProxyConfig } from "../config/types.ts";
@@ -13,7 +14,6 @@ import {
 } from "./proxy-test-schema.ts";
 
 const TIMEOUT_MS = 15_000;
-const MAX_RESPONSE_BYTES = 64 * 1024;
 const ipInfoSchema = z.object({
   ip: proxyTestResultSchema.shape.ip,
   country: proxyTestResultSchema.shape.country.catch(null),
@@ -67,7 +67,7 @@ export async function testProxy(
     }
     const bytes = await readBodyWithinLimit(
       response.body,
-      MAX_RESPONSE_BYTES,
+      MAX_DIAGNOSTIC_RESPONSE_BYTES,
       response.headers.get("content-length"),
       undefined,
       signal,

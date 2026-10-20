@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { gatewayApp } from "../../gateway/app.ts";
+import { MAX_WORKER_REQUEST_BODY_BYTES } from "../../shared/payload-limits.ts";
 import { apiError } from "../../gateway/http/http.ts";
 import {
   httpExecutionEndpoint,
@@ -53,7 +54,10 @@ export class HttpExecution extends DurableObject<Env> {
     const signal = AbortSignal.any([request.signal, this.cancellation.signal]);
     const response = await gatewayApp.fetch(
       new Request(request, { signal }),
-      this.env,
+      {
+        ...this.env,
+        REQUEST_BODY_LIMIT_BYTES: MAX_WORKER_REQUEST_BODY_BYTES,
+      },
       {
         props: {},
         waitUntil: (task) => this.background(task),

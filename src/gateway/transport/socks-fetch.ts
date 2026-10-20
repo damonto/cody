@@ -1,7 +1,10 @@
 import type { SocksProxyConfig } from "../../config/types.ts";
 import { openSocksTunnel, type SocksDial } from "./socks.ts";
 import { httpOverConnection } from "./http.ts";
-import { websocketOverConnection } from "./websocket.ts";
+import {
+  websocketOverConnection,
+  type WebSocketTransportFailure,
+} from "./websocket.ts";
 import type { Connection } from "./bytes.ts";
 import { SocksProxyError } from "../proxies/errors.ts";
 
@@ -18,6 +21,7 @@ export interface SocksFetchOptions {
   readonly clientSignal?: AbortSignal;
   readonly onStage?: (stage: SocksStage) => void;
   readonly onTunnelEstablished?: () => void;
+  readonly onWebSocketFailure?: (diagnostic: WebSocketTransportFailure) => void;
 }
 
 /** No pooling, implicit retries, direct fallback, or redirect following. */
@@ -83,7 +87,11 @@ export async function socksFetch(
     options.onStage?.(stage);
     const outgoing = new Request(request, { signal });
     return await (request.headers.get("upgrade")?.toLowerCase() === "websocket"
-      ? websocketOverConnection(outgoing, connection)
+      ? websocketOverConnection(
+          outgoing,
+          connection,
+          options.onWebSocketFailure,
+        )
       : httpOverConnection(outgoing, connection));
   } catch (error) {
     await connection?.close();

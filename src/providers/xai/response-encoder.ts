@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+import { MAX_XAI_OUTPUT_BYTES } from "../../shared/payload-limits.ts";
 import { ProviderRequestError } from "../errors.ts";
 import type { UpstreamMetadataObserver } from "../../telemetry/inference-metadata.ts";
 import { object, records, text, type Wire } from "./json.ts";
@@ -509,8 +511,8 @@ export class ResponseEncoder {
       if (!filtered) return [];
       event = filtered;
     }
-    this.bytes += JSON.stringify(event).length;
-    if (this.bytes > 32 * 1024 * 1024)
+    this.bytes += Buffer.byteLength(JSON.stringify(event), "utf8");
+    if (this.bytes > MAX_XAI_OUTPUT_BYTES)
       throw new ProviderRequestError("xAI output exceeds limit", 502);
     const type = text(event.type);
     if (type === "error" || type === "response.failed") {

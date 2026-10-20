@@ -9,7 +9,10 @@ import NetworkSocket, { type RawData } from "ws";
 import { withoutHopHeaders } from "../../gateway/transport/http.ts";
 import { webSocketUpgradeResponse } from "../websocket-upgrade.ts";
 import { incomingResponse, incomingResponseHeaders } from "./http-response.ts";
-import { MAX_WEBSOCKET_BUFFER_BYTES } from "./websocket-limits.ts";
+import {
+  MAX_WEBSOCKET_BUFFER_BYTES,
+  MAX_WEBSOCKET_MESSAGE_BYTES,
+} from "../../shared/payload-limits.ts";
 
 const TEXT = new TextDecoder();
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -161,7 +164,7 @@ export function connectUpstreamWebSocket(request: Request): Promise<Response> {
       headers,
       perMessageDeflate: false,
       followRedirects: false,
-      maxPayload: MAX_WEBSOCKET_BUFFER_BYTES,
+      maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES,
     });
     const settle = (outcome: () => void): void => {
       if (settled) return;

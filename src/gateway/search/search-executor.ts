@@ -1,6 +1,9 @@
 import type { WebSearchProviderConfig } from "../../config/types.ts";
 import { errorMessage } from "../../shared/log.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
+import {
+  MAX_SEARCH_RESPONSE_BODY_BYTES,
+  MAX_SEARCH_BATCH_RESPONSE_BYTES,
+} from "../../shared/payload-limits.ts";
 import {
   BodyTooLargeError,
   discardBody,
@@ -130,13 +133,13 @@ async function fetchProvider(
     try {
       bytes = await readBodyWithinLimit(
         response.body,
-        MAX_BUFFERED_PAYLOAD_BYTES,
+        MAX_SEARCH_RESPONSE_BODY_BYTES,
         response.headers.get("content-length"),
         (byteLength) => budget.consume(byteLength),
       );
     } catch (error) {
       if (error instanceof BodyTooLargeError) {
-        throw new ProviderResponseTooLargeError(MAX_BUFFERED_PAYLOAD_BYTES);
+        throw new ProviderResponseTooLargeError(MAX_SEARCH_RESPONSE_BODY_BYTES);
       }
       throw error;
     }
@@ -178,7 +181,7 @@ export async function executeSearchBatch(
 ): Promise<NormalizedSearchResult[]> {
   const batchController = new AbortController();
   const signal = AbortSignal.any([requestSignal, batchController.signal]);
-  const budget = new SearchBatchBudget(MAX_BUFFERED_PAYLOAD_BYTES);
+  const budget = new SearchBatchBudget(MAX_SEARCH_BATCH_RESPONSE_BYTES);
   const responses: NormalizedSearchResult[][] = [];
   let nextIndex = 0;
   let firstError: unknown;

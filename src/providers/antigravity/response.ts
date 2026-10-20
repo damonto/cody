@@ -1,3 +1,7 @@
+import {
+  MAX_ANTIGRAVITY_OUTPUT_BYTES,
+  MAX_NATIVE_RESPONSE_BODY_BYTES,
+} from "../../shared/payload-limits.ts";
 import { ApiProtocol } from "../../gateway/protocol-values.ts";
 import { antigravityMetadata } from "./observation.ts";
 import {
@@ -472,7 +476,7 @@ class ResponseEncoder {
       this.nativeBytes += new TextEncoder().encode(
         JSON.stringify(part),
       ).byteLength;
-      if (this.nativeBytes > 8 * 1024 * 1024)
+      if (this.nativeBytes > MAX_ANTIGRAVITY_OUTPUT_BYTES)
         throw new ProviderRequestError(
           "Antigravity response exceeded the output limit",
           502,
@@ -607,7 +611,7 @@ async function* frames(
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
     const bytes = await readBodyWithinLimit(
       response.body,
-      16 * 1024 * 1024,
+      MAX_NATIVE_RESPONSE_BODY_BYTES,
       response.headers.get("content-length"),
       undefined,
       signal,

@@ -1,9 +1,9 @@
+import { MAX_QUOTA_ERROR_BYTES } from "../../shared/payload-limits.ts";
 import { inspectResponsePrefix } from "../../gateway/http/response-prefix.ts";
 import { SseObserver } from "../../telemetry/stream.ts";
 import type { AccountLimit, InspectedResponse } from "../types.ts";
 import { antigravityAccountLimit } from "./limits.ts";
 
-const MAX_PREFLIGHT_BYTES = 64 * 1024;
 export const MAX_ANTIGRAVITY_PREFLIGHT_MS = 5000;
 
 /** Inspect native errors without rewriting the upstream status, headers or bytes. */
@@ -28,7 +28,7 @@ export async function inspectAntigravityResponse(
   let streamLimit: AccountLimit | undefined;
   let json = "";
   const observer = new SseObserver({
-    maxEventBytes: MAX_PREFLIGHT_BYTES,
+    maxEventBytes: MAX_QUOTA_ERROR_BYTES,
     onIssue: () => {
       firstEventSeen = true;
     },
@@ -49,7 +49,7 @@ export async function inspectAntigravityResponse(
     response,
     signal,
     {
-      maxBytes: MAX_PREFLIGHT_BYTES,
+      maxBytes: MAX_QUOTA_ERROR_BYTES,
       timeoutMs: MAX_ANTIGRAVITY_PREFLIGHT_MS,
       async observe(chunk) {
         if (httpLimit) {

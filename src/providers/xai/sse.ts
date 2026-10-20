@@ -1,8 +1,11 @@
 import { ProviderRequestError } from "../errors.ts";
 import type { Wire } from "./json.ts";
 import { z } from "zod";
+import { SseObserver } from "../../telemetry/stream.ts";
+import { MAX_SSE_EVENT_BYTES } from "../../shared/payload-limits.ts";
 
-const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+// Drain parsed events between bounded decode slices, even for one large network chunk.
+const DECODE_CHUNK_BYTES = 64 * 1024;
 const eventSchema = z.looseObject({
   type: z.string().min(1),
   delta: z.string().optional(),
@@ -24,7 +27,37 @@ export async function* xaiEvents(
 ): AsyncGenerator<Wire> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let pending = "";
+  const events: Wire[] = [];
+  function* drainEvents(): Generator<Wire> {
+    try {
+      for (const event of events) {
+        signal?.throwIfAborted();
+        yield event;
+      }
+    } finally {
+      events.length = 0;
+    }
+  }
+  const observer = new SseObserver({
+    maxEventBytes: MAX_SSE_EVENT_BYTES,
+    requireTerminator: true,
+    onIssue(issue) {
+      throw new ProviderRequestError(
+        issue === "sse_event_too_large"
+          ? "xAI SSE event exceeds limit"
+          : issue === "truncated_sse_event"
+            ? "Truncated xAI SSE event"
+            : "Invalid xAI SSE event",
+        502,
+      );
+    },
+    onEvent(value) {
+      const event = eventSchema.safeParse(value);
+      if (!event.success)
+        throw new ProviderRequestError("Invalid xAI SSE event", 502);
+      events.push(event.data);
+    },
+  });
   const cancel = () => {
     void reader.cancel(signal?.reason).catch(() => {});
   };
@@ -34,34 +67,31 @@ export async function* xaiEvents(
       signal?.throwIfAborted();
       const chunk = await reader.read();
       signal?.throwIfAborted();
-      if (chunk.value && chunk.value.byteLength > MAX_FRAME_BYTES)
-        throw new ProviderRequestError("xAI SSE chunk exceeds limit", 502);
-      pending += decoder.decode(chunk.value, { stream: !chunk.done });
-      let match: RegExpExecArray | null;
-      while ((match = /\r?\n\r?\n/.exec(pending))) {
-        const frame = pending.slice(0, match.index);
-        pending = pending.slice(match.index + match[0].length);
-        if (frame.length > MAX_FRAME_BYTES)
-          throw new ProviderRequestError("xAI SSE frame exceeds limit", 502);
-        const data = frame
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        if (data && data !== "[DONE]") {
+      if (chunk.value) {
+        for (
+          let offset = 0;
+          offset < chunk.value.byteLength;
+          offset += DECODE_CHUNK_BYTES
+        ) {
           try {
-            yield eventSchema.parse(JSON.parse(data));
+            observer.push(
+              decoder.decode(
+                chunk.value.subarray(offset, offset + DECODE_CHUNK_BYTES),
+                { stream: true },
+              ),
+            );
           } catch (error) {
-            if (error instanceof ProviderRequestError) throw error;
-            throw new ProviderRequestError("Invalid xAI SSE event", 502);
+            // Deliver earlier complete events before surfacing a later parse failure.
+            yield* drainEvents();
+            throw error;
           }
+          yield* drainEvents();
         }
       }
-      if (pending.length > MAX_FRAME_BYTES)
-        throw new ProviderRequestError("xAI SSE frame exceeds limit", 502);
       if (chunk.done) {
-        if (pending.trim() && !pending.trim().startsWith(":"))
-          throw new ProviderRequestError("Truncated xAI SSE event", 502);
+        observer.push(decoder.decode());
+        observer.end();
+        yield* drainEvents();
         break;
       }
     }

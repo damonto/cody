@@ -1,5 +1,6 @@
 import path from "node:path";
 import { app } from "../../app.ts";
+import { MAX_VERCEL_REQUEST_BODY_BYTES } from "../../shared/payload-limits.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import { SessionAffinityCore } from "../../gateway/sessions/session-affinity.ts";
 import { createAntigravityHttpConnector } from "./antigravity-http.ts";
@@ -124,6 +125,9 @@ export async function createRuntime(
   const accountCache = new AccountDecodeCache(settings.CONFIG_ENCRYPTION_KEY);
   // The factories run only after all namespaces have been assembled.
   const env: Bindings = {
+    ...(options.target === "vercel"
+      ? { REQUEST_BODY_LIMIT_BYTES: MAX_VERCEL_REQUEST_BODY_BYTES }
+      : {}),
     UPSTREAM_HTTP: {
       direct: (request) =>
         request.headers.get("upgrade")?.toLowerCase() === "websocket"

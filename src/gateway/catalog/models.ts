@@ -1,3 +1,4 @@
+import { MAX_MODEL_CATALOG_BODY_BYTES } from "../../shared/payload-limits.ts";
 import {
   fetchWithConfiguredRetries,
   type UpstreamRetryOptions,
@@ -74,7 +75,6 @@ import codexCatalog from "./models.json" with { type: "json" };
 import type { Bindings } from "../../platform/bindings.ts";
 
 const MODEL_CATALOG_TIMEOUT_MS = 3_000;
-export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
 export const MODEL_CATALOG_CONCURRENCY = PROVIDER_FAN_OUT_CONCURRENCY;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
 const MAX_MODELS_CACHE_TTL_SECONDS = 300;

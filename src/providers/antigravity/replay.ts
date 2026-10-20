@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
 import { ProviderRequestError } from "../errors.ts";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../../shared/payload-limits.ts";
+import { MAX_REPLAY_ENVELOPE_BYTES } from "../../shared/payload-limits.ts";
 
 export const partSchema = z.looseObject({
   text: z.string().optional(),
@@ -64,7 +64,7 @@ export async function sealPart(
     key,
   );
   const envelope = PREFIX + btoa(encrypted);
-  if (envelope.length > MAX_BUFFERED_PAYLOAD_BYTES)
+  if (envelope.length > MAX_REPLAY_ENVELOPE_BYTES)
     throw new ProviderRequestError(
       "Signed Antigravity content exceeds the replay limit",
       502,
@@ -102,7 +102,7 @@ export async function openPart(
   try {
     if (accountRefs && !accountRefs.includes(scope.account_ref))
       throw new Error("Target account is outside the pool");
-    if (!value.startsWith(PREFIX) || value.length > MAX_BUFFERED_PAYLOAD_BYTES)
+    if (!value.startsWith(PREFIX) || value.length > MAX_REPLAY_ENVELOPE_BYTES)
       throw new Error("Invalid envelope");
     const replay = replaySchema.parse(
       await decryptConfig(atob(value.slice(PREFIX.length)), key),

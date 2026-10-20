@@ -1,3 +1,7 @@
+import {
+  formatByteLimit,
+  MAX_COMPILED_CONFIG_BYTES,
+} from "../shared/payload-limits.ts";
 import { ControlConflict, ControlInputError } from "./errors.ts";
 import {
   maskSecrets,
@@ -272,8 +276,13 @@ export class ControlStore {
         throw new ControlInputError(configurationError(error));
       throw error;
     }
-    if (new TextEncoder().encode(JSON.stringify(snapshot)).length > 1024 * 1024)
-      throw new ControlInputError("Configuration exceeds 1 MiB");
+    if (
+      new TextEncoder().encode(JSON.stringify(snapshot)).length >
+      MAX_COMPILED_CONFIG_BYTES
+    )
+      throw new ControlInputError(
+        `Configuration exceeds ${formatByteLimit(MAX_COMPILED_CONFIG_BYTES)}`,
+      );
     await validateClientKeys(work, rows);
     await validateOAuth(this.db, snapshot);
     const inputHash = await digest({
@@ -345,9 +354,11 @@ export class ControlStore {
         const config = parseConfig(input);
         if (
           new TextEncoder().encode(JSON.stringify(config)).length >
-          1024 * 1024
+          MAX_COMPILED_CONFIG_BYTES
         )
-          throw new ControlInputError("Configuration exceeds 1 MiB");
+          throw new ControlInputError(
+            `Configuration exceeds ${formatByteLimit(MAX_COMPILED_CONFIG_BYTES)}`,
+          );
         const { sealed, secrets } = await sealConfiguration(
           config,
           previous,

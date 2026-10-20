@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { MAX_BUFFERED_PAYLOAD_BYTES } from "../shared/payload-limits.ts";
+import { MAX_SSE_EVENT_BYTES } from "../shared/payload-limits.ts";
 
 const DATA_FIELD = "data:";
 const DONE_MARKER = "[DONE]";
@@ -8,6 +8,8 @@ export interface SseObserverOptions {
   readonly onEvent: (value: unknown, event: string) => void;
   readonly onIssue: (issue: string) => void;
   readonly maxEventBytes?: number;
+  /** Native translators may require the final event's blank-line terminator. */
+  readonly requireTerminator?: boolean;
   readonly onDone?: () => void;
   readonly onFirstData?: () => void;
   /** Skip JSON parsing for events the consumer does not need; they are not delivered. */
@@ -30,7 +32,7 @@ export class SseObserver {
   private readonly lineLimit: number;
 
   constructor(private readonly options: SseObserverOptions) {
-    this.limit = options.maxEventBytes ?? MAX_BUFFERED_PAYLOAD_BYTES;
+    this.limit = options.maxEventBytes ?? MAX_SSE_EVENT_BYTES;
     if (!Number.isSafeInteger(this.limit) || this.limit <= 0) {
       throw new RangeError("SSE observation limit must be a positive integer");
     }
@@ -174,6 +176,20 @@ export class SseObserver {
   }
 
   end(): void {
+    if (
+      this.options.requireTerminator &&
+      (this.data.length > 0 ||
+        this.event !== "" ||
+        (this.buffer.trim() !== "" && !this.buffer.trimStart().startsWith(":")))
+    ) {
+      this.buffer = "";
+      this.bufferBytes = 0;
+      this.data = [];
+      this.event = "";
+      this.size = 0;
+      this.options.onIssue("truncated_sse_event");
+      return;
+    }
     // Dispatch a final event even for providers that omit the trailing blank line.
     if (this.droppingLine) this.finishDroppedLine();
     else if (this.buffer) this.line(this.buffer.replace(/\r$/, ""));

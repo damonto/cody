@@ -1,3 +1,4 @@
+import { MAX_MODEL_CATALOG_BODY_BYTES } from "../src/shared/payload-limits.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -10,7 +11,6 @@ import {
   aggregateStandardModels,
   clearModelsCacheForTests,
   handleModels,
-  MAX_MODEL_CATALOG_BODY_BYTES,
   MODEL_CATALOG_CONCURRENCY,
   modelsFormatFor,
 } from "../src/gateway/catalog/models.ts";

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_VERSION_MANIFEST_BYTES } from "../../shared/payload-limits.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { KeyValueStore } from "../../platform/bindings.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
@@ -108,7 +109,7 @@ export async function refreshAntigravityVersion(
     }
     const bytes = await readBodyWithinLimit(
       response.body,
-      4096,
+      MAX_VERSION_MANIFEST_BYTES,
       response.headers.get("content-length"),
       undefined,
       signal,
