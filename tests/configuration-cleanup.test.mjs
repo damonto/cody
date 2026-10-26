@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { test } from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
-import {
-  postgresDatabase,
-  pgliteQueryable,
-} from "../src/platform/standard/sql/postgres.ts";
+import { createTestPostgresDatabase } from "./helpers/postgres.mjs";
 import {
   checkConfigurationCleanup,
   configurationTables,
@@ -19,7 +15,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     const db =
       dialect === "sqlite"
         ? await createSqliteDatabase(":memory:")
-        : postgresDatabase(pgliteQueryable(new PGlite()));
+        : createTestPostgresDatabase();
     try {
       const directory = new URL(
         `../migrations/${dialect === "sqlite" ? "d1" : "postgres"}/`,

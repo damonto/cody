@@ -12,13 +12,8 @@ import {
   loadSqliteDump,
   writeD1Import,
 } from "../scripts/transfer-database.mjs";
-import { PGlite } from "@electric-sql/pglite";
 import { createClient } from "@libsql/client";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
-import {
-  postgresDatabase,
-  pgliteQueryable,
-} from "../src/platform/standard/sql/postgres.ts";
 import { libsqlDatabase } from "../src/platform/standard/sql/libsql.ts";
 import {
   applyMigrations,
@@ -37,6 +32,7 @@ import { ControlStore } from "../src/control/store.ts";
 import { ingestUsage, cleanupRequests } from "../src/reporting/store.ts";
 import { config, usage } from "./admin/fixtures.ts";
 import { seedTransferAccounts } from "./helpers/transfer-fixture.ts";
+import { createTestPostgresDatabase } from "./helpers/postgres.mjs";
 import {
   AlarmState,
   BackedObjectStorage,
@@ -49,7 +45,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const factories = {
   sqlite: (path = ":memory:") => createSqliteDatabase(path),
-  postgres: async () => postgresDatabase(pgliteQueryable(new PGlite())),
+  postgres: createTestPostgresDatabase,
   libsql: async () => libsqlDatabase(createClient({ url: ":memory:" })),
 };
 async function instance(kind = "sqlite", key = KEY, path) {

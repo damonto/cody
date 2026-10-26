@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
 import { config as configFixture, usage } from "./admin/fixtures.ts";
 import { ControlStore } from "../src/control/store.ts";
 import {
@@ -18,14 +17,11 @@ import {
   applyMigrations,
   migrationDirectories,
 } from "../src/platform/standard/sql/migrate.ts";
-import {
-  numberPlaceholders,
-  pgliteQueryable,
-  postgresDatabase,
-} from "../src/platform/standard/sql/postgres.ts";
+import { numberPlaceholders } from "../src/platform/standard/sql/postgres.ts";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
 import { checkExpiredUsageCorrection } from "./helpers/expired-usage.ts";
 import { checkIncrementalConfiguration } from "./helpers/entity-configuration.ts";
+import { createTestPostgresDatabase } from "./helpers/postgres.mjs";
 
 const KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -34,7 +30,7 @@ const range = (from, to) => ({ from, to, time_zone: "UTC", period: "custom" });
 
 const factories = {
   sqlite: async () => createSqliteDatabase(":memory:"),
-  postgres: async () => postgresDatabase(pgliteQueryable(new PGlite())),
+  postgres: createTestPostgresDatabase,
 };
 
 test("placeholders are numbered outside string literals", () => {
@@ -45,8 +41,9 @@ test("placeholders are numbered outside string literals", () => {
 });
 
 for (const [dialect, create] of Object.entries(factories)) {
-  test(`${dialect}: reporting groups persisted canonical models`, async () => {
+  test(`${dialect}: reporting groups persisted canonical models`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     const provider = await db
       .prepare("SELECT id FROM providers WHERE type = 'antigravity'")
@@ -120,13 +117,15 @@ for (const [dialect, create] of Object.entries(factories)) {
       `${family}-high`,
     );
   });
-  test(`${dialect}: saves touch only changed rows and swap aliases atomically`, async () => {
+  test(`${dialect}: saves touch only changed rows and swap aliases atomically`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     await checkIncrementalConfiguration(db, KEY);
   });
-  test(`${dialect}: correction migration marks historical inferred failures without changing rollups`, async () => {
+  test(`${dialect}: correction migration marks historical inferred failures without changing rollups`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     const directory = migrationDirectories(dialect, ROOT)[0];
     await db.exec(
       await readFile(`${directory}/0001_control_and_usage.sql`, "utf8"),
@@ -179,13 +178,15 @@ for (const [dialect, create] of Object.entries(factories)) {
       before,
     );
   });
-  test(`${dialect}: late terminal usage corrects provisional failures atomically`, async () => {
+  test(`${dialect}: late terminal usage corrects provisional failures atomically`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     await checkExpiredUsageCorrection(db);
   });
-  test(`${dialect}: migrations apply once`, async () => {
+  test(`${dialect}: migrations apply once`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     const first = await applyMigrations(
       db,
       migrationDirectories(dialect, ROOT),
@@ -209,8 +210,9 @@ for (const [dialect, create] of Object.entries(factories)) {
     );
   });
 
-  test(`${dialect}: usage ingestion, rollup and reports`, async () => {
+  test(`${dialect}: usage ingestion, rollup and reports`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     const base = Date.UTC(2026, 8, 12, 10);
     const finished = usage("req-finished", base + 60_000);
@@ -275,8 +277,9 @@ for (const [dialect, create] of Object.entries(factories)) {
     assert.equal(Number(remaining?.count), 0);
   });
 
-  test(`${dialect}: configuration entities and snapshots commit atomically`, async () => {
+  test(`${dialect}: configuration entities and snapshots commit atomically`, async (t) => {
     const db = await create();
+    t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     const store = new ControlStore(db, KEY);
     assert.equal((await store.state()).version, 0);
