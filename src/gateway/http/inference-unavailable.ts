@@ -16,10 +16,14 @@ import type { GatewayConfig } from "../../config/types.ts";
 import { type RequestLogContext } from "../../shared/log.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
 
-import { codexUsageLimitResponse } from "../../providers/codex/limits.ts";
+import {
+  codexUsageLimitResponse,
+  siwcUsageLimitResponse,
+} from "../../providers/codex/limits.ts";
 import {
   codexQuotaResetsAt,
   restoreCodexAccount,
+  siwcOnlySelection,
 } from "../../providers/codex/exhaustion.ts";
 
 import { discardBody } from "./body.ts";
@@ -97,7 +101,8 @@ export async function unavailableInference({
     meter?.diagnostic("usage_limit_reached");
     return antigravityQuotaResponse(protocol, antigravityReset, requestId);
   }
-  if (!resetConsumed) {
+  const siwcOnly = siwcOnlySelection(selection);
+  if (!resetConsumed && !siwcOnly) {
     if (
       await restoreCodexAccount(
         env,
@@ -132,6 +137,19 @@ export async function unavailableInference({
       );
     return response;
   }
+  const requestError = selection.credentialChecks.find(
+    (check) => check.request_error,
+  )?.request_error;
+  if (
+    requestError &&
+    !selection.credentialChecks.some(
+      (check) => check.reason !== ProviderAvailabilityReason.RequestUnsupported,
+    )
+  )
+    return apiError(protocol, 400, requestError.message, {
+      ...requestError,
+      requestId,
+    });
   const quotaResetsAt = codexQuotaResetsAt(
     route.targets,
     selection,
@@ -140,7 +158,9 @@ export async function unavailableInference({
   if (quotaResetsAt !== undefined) {
     requestLog?.warn({ outcome: "usage_limit_reached" });
     meter?.diagnostic("usage_limit_reached");
-    return codexUsageLimitResponse(quotaResetsAt, requestId);
+    return siwcOnly
+      ? siwcUsageLimitResponse(requestId)
+      : codexUsageLimitResponse(quotaResetsAt, requestId);
   }
   requestLog?.warn({ outcome: "provider_cooling_down" });
   return apiError(

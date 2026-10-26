@@ -4,7 +4,7 @@
 
 ## Scope
 
-The CLI copies all declared business tables: configuration entities and relationships, soft-deleted records, encrypted secret versions, configuration snapshots, price history, audit/idempotency records, OAuth indexes, requests, attempts and hourly aggregates. UUIDs, timestamps, versions, stored costs and JSON content stay unchanged. Integers remain exact across database engines. Deployment migration records and object coordination tables are excluded.
+The CLI copies all declared business tables: configuration entities and relationships, soft-deleted records, encrypted secret versions, configuration snapshots, price history, audit/idempotency records, OAuth indexes, requests, attempts and hourly aggregates. UUIDs, timestamps, versions, stored costs and JSON content stay unchanged. Integers remain exact across database engines. Deployment migration records, object coordination tables and the deployment-local SIWC host identity are excluded. A target retains its own host ID; a fresh target generates one on its next SIWC authorization. Transferred SIWC registrations retain their issued client IDs and encrypted token sessions.
 
 The four native providers' encrypted OAuth account records are copied unchanged, including tokens, account identity, generation and any state stored within that ciphertext. Import does not refresh tokens or call providers. Source OAuth alarms are paused and target schedules are enabled only after verification.
 

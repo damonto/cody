@@ -110,6 +110,8 @@ interface CoolingCredentialHealth extends ProviderHealthSnapshot {
 export type CoolingHealth = CoolingProviderHealth | CoolingCredentialHealth;
 
 export interface ProviderAvailability {
+  codex_mode?: "native" | "siwc";
+  request_error?: { message: string; code: string; param?: string };
   available: boolean;
   reason: ProviderAvailabilityReason;
   failures?: number;

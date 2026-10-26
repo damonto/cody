@@ -103,6 +103,7 @@ export async function handleInference(
   let exhausted: Response | undefined;
   let resetConsumed = false;
   let lockedProvider: string | undefined;
+  let lockedMode: "native" | "siwc" | undefined;
   const accountDeadline =
     retryOptions.attemptTimeoutMs === undefined
       ? undefined
@@ -125,6 +126,12 @@ export async function handleInference(
         skipXaiQuota: upstreamPath === "messages/count_tokens",
         skipClaudeQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
+        codexRequest: {
+          endpoint: upstreamPath,
+          transport: ProviderTransport.Http,
+          payload,
+          mode: lockedMode,
+        },
         ...(sessionId
           ? {
               session: {
@@ -237,7 +244,13 @@ export async function handleInference(
         error instanceof ProviderRequestError || error instanceof OAuthError
           ? error.message
           : "The selected provider account is unavailable",
-        { code, requestId },
+        {
+          code,
+          requestId,
+          ...(error instanceof ProviderRequestError && error.param
+            ? { param: error.param }
+            : {}),
+        },
       );
     }
     if (preparation.kind === "local") return preparation.response;
@@ -314,6 +327,7 @@ export async function handleInference(
       }
       if (persisted === "recorded") {
         lockedProvider = provider.id;
+        lockedMode = prepared.codexMode;
         excludedCredentials.add(
           credentialKey(provider.id, selectedCredential.id),
         );

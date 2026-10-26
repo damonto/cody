@@ -1,3 +1,4 @@
+import { siwcHostId } from "../src/providers/codex/siwc-host.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -117,6 +118,8 @@ for (const [from, to] of [
     const source = await instance(from),
       target = await instance(to);
     try {
+      const sourceHost = await siwcHostId(source.db);
+      const targetHost = await siwcHostId(target.db);
       const accounts = await seed(source);
       await seedUsage(source);
       const info = await preflight(source, target);
@@ -130,6 +133,8 @@ for (const [from, to] of [
         save: async () => {},
       };
       await transferInstances(source, target, journal);
+      assert.equal(await siwcHostId(target.db), targetHost);
+      assert.notEqual(targetHost, sourceHost);
       for (const table of [
         "providers",
         "secret_versions",

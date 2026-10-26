@@ -66,7 +66,12 @@ export function useAuthorization({
     setId(value.id);
   };
   const start = useMutation({
-    mutationFn: async (flow: OAuthFlow = OAuthFlow.Pkce) => {
+    mutationFn: async (
+      selection:
+        | OAuthFlow
+        | { flow: OAuthFlow; requestConsent: boolean } = OAuthFlow.Pkce,
+    ) => {
+      const flow = typeof selection === "string" ? selection : selection.flow;
       if (version !== configurationVersion)
         throw new Error(
           "The configuration changed. Your form is retained; reopen it from the latest configuration before starting authorization.",
@@ -81,6 +86,9 @@ export function useAuthorization({
               provider_type: connection.provider_type,
               version,
               flow,
+              ...(typeof selection !== "string" && selection.requestConsent
+                ? { request_consent: true }
+                : {}),
               ...(accountRef ? { account_ref: accountRef } : {}),
             },
           }),
@@ -135,12 +143,18 @@ export function useAuthorization({
     }: {
       ref: string;
       kind: "models" | "quota" | "disconnect";
-    }) =>
-      kind === "models"
-        ? refreshModels(ref)
-        : kind === "quota"
-          ? refreshQuota(ref, true)
-          : disconnectAccount(ref),
+    }) => {
+      switch (kind) {
+        case "models":
+          return refreshModels(ref);
+        case "quota":
+          return account.data?.codex?.mode === "siwc"
+            ? refreshModels(ref)
+            : refreshQuota(ref, true);
+        case "disconnect":
+          return disconnectAccount(ref);
+      }
+    },
     onSuccess: async (value, { kind }) => {
       await cacheAccounts(cache, [value]);
       if (kind === "disconnect") setDisconnect(false);
@@ -168,7 +182,10 @@ export function useAuthorization({
   const onCompleted = useEffectEvent((value: SessionView) => {
     adopt.mutate({
       account: value.account,
-      discover: value.account.status === OAuthAccountViewStatus.Ready,
+      discover:
+        value.account.status === OAuthAccountViewStatus.Ready &&
+        (value.account.codex?.mode !== "siwc" ||
+          value.account.codex.plan_usage_enabled),
     });
   });
   const authorization = session.data;

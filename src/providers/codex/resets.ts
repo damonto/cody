@@ -74,7 +74,11 @@ export async function consumeCodexResetForExhaustion(
             ).run({ action: "reset_credits" }),
             accountViewSchema,
           ).catch(() => undefined);
-          if (account?.quota.reset_credits?.error) return [];
+          if (
+            account?.codex?.mode === "siwc" ||
+            account?.quota.reset_credits?.error
+          )
+            return [];
           return (account?.quota.reset_credits?.credits ?? []).flatMap(
             (credit) =>
               !creditAvailable(credit)

@@ -71,16 +71,21 @@ export function codexAccountHooks(
         );
         signal.throwIfAborted();
         if (
-          !("account_id" in token) ||
+          !("generation" in token) ||
           token.generation !== credential.generation ||
-          token.account_id !== credential.account_id
+          (credential.mode === "siwc"
+            ? !("siwc_subject" in token) ||
+              token.siwc_subject !== credential.siwc_subject
+            : !("account_id" in token) ||
+              token.account_id !== credential.account_id)
         )
           return;
         context.requestLog?.registerSensitiveValues([token.token]);
         const recoveredHeaders = new Headers(headers);
         recoveredHeaders.set("authorization", `Bearer ${token.token}`);
         recoveredHeaders.delete("x-openai-fedramp");
-        if (token.is_fedramp) recoveredHeaders.set("x-openai-fedramp", "true");
+        if ("is_fedramp" in token && token.is_fedramp)
+          recoveredHeaders.set("x-openai-fedramp", "true");
         return { headers: recoveredHeaders };
       } catch (error) {
         signal.throwIfAborted();

@@ -12,7 +12,7 @@ export function accountName(
   if (email) return email;
   const identifier = {
     antigravity: undefined,
-    codex: account.codex?.account_id,
+    codex: account.codex?.siwc?.subject ?? account.codex?.account_id,
     claude: account.claude?.account_id,
     xai: account.xai?.subject,
   }[provider];

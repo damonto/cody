@@ -9,7 +9,7 @@ import { safeError } from "../oauth/state.ts";
 import type { AccountState } from "../oauth/provider.ts";
 import { type CodexClient, parseModels, parseResetCredits } from "./api.ts";
 import { mergeCodexQuotaRefresh, parseUsage } from "./quota.ts";
-import { codexCredentialSchema } from "./account-schema.ts";
+import { nativeCodexCredentialSchema as codexCredentialSchema } from "./account-schema.ts";
 import type { z } from "zod";
 type CodexAccess = z.output<typeof codexCredentialSchema>;
 interface CodexReadResult<T> {

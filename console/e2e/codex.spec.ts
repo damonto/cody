@@ -132,6 +132,8 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
     starts: new Array<Record<string, unknown>>(),
     consumes: new Array<Record<string, unknown>>(),
     polls: 0,
+    callbacks: new Array<Record<string, unknown>>(),
+    planUsageEnabled: true,
   };
   await page.route(
     (url) => url.pathname.startsWith("/console/api/oauth/"),
@@ -141,8 +143,11 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
       if (path.endsWith("/sessions")) {
         const input: Record<string, unknown> = request.postDataJSON();
         controls.starts.push(input);
-        const ref = crypto.randomUUID();
-        const view = account(ref, false);
+        const ref =
+          typeof input.account_ref === "string"
+            ? input.account_ref
+            : crypto.randomUUID();
+        const view = accounts.get(ref) ?? account(ref, false);
         accounts.set(ref, view);
         const device = input.flow === "device";
         const session: SessionView = {
@@ -153,7 +158,7 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
           url: device
             ? "https://auth.openai.com/codex/device"
             : "https://auth.openai.com/oauth/authorize?state=e2e-state",
-          flow: device ? "device" : "pkce",
+          flow: input.flow === "siwc" ? "siwc" : device ? "device" : "pkce",
           user_code: device ? "ABCD-1234" : null,
           verification_uri: device
             ? "https://auth.openai.com/codex/device"
@@ -173,6 +178,21 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
           json: { error: "Missing session" },
         });
         return;
+      }
+      if (
+        request.method() === "POST" &&
+        path.endsWith("/callback") &&
+        session.flow === "siwc"
+      ) {
+        controls.callbacks.push(request.postDataJSON());
+        const ready = siwcAccount(
+          session.account_ref,
+          controls.planUsageEnabled,
+        );
+        accounts.set(ready.account_ref, ready);
+        session.account = ready;
+        session.status = "complete";
+        session.url = null;
       }
       // The device grant completes on the first poll, as the alarm would after approval.
       if (
@@ -466,4 +486,113 @@ test("retrying a reset keeps the original credit and idempotency key after a lis
   expect(requests).toHaveLength(2);
   expect(requests[1]).toEqual(requests[0]);
   expect(requests[0]?.credit_id).toBe("credit-soon");
+});
+
+function siwcAccount(
+  ref: string = crypto.randomUUID(),
+  enabled = true,
+): AccountView {
+  const view = account(ref);
+  view.codex = {
+    mode: "siwc",
+    account_id: null,
+    user_id: null,
+    plan_type: null,
+    subscription_active_until: null,
+    siwc: {
+      issuer: "https://auth.openai.com",
+      subject: "operator-subject",
+      client_id: "oaiapp_test",
+      scopes: enabled
+        ? ["chatgpt.tokens.use.direct", "resource.invoke"]
+        : ["openid"],
+    },
+    plan_usage_enabled: enabled,
+  };
+  view.quota = {
+    groups: [],
+    subscription: null,
+    updated_at: null,
+    stale: true,
+    last_error: null,
+  };
+  return view;
+}
+
+test("SIWC signs in with a pasted callback and explains ChatGPT plan usage", async ({
+  page,
+}) => {
+  await mockApi(page, configured([]));
+  const controls = await mockCodex(page);
+  await page.goto("/console/providers/codex");
+  await page.getByRole("button", { name: "Add ChatGPT account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("tab", { name: "SIWC", exact: true }).click();
+  await dialog.getByRole("button", { name: "Continue with ChatGPT" }).click();
+  await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
+  await dialog
+    .getByLabel("127.0.0.1 callback URL")
+    .fill(
+      "http://127.0.0.1:1455/auth/callback?code=test&state=e2e-state&client_id=oaiapp_test",
+    );
+  await dialog.getByRole("button", { name: "Complete authorization" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "You’re using your ChatGPT plan",
+  );
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("alertdialog")).toBeHidden();
+  expect(controls.starts[0]).toMatchObject({ flow: "siwc" });
+  expect(controls.callbacks).toHaveLength(1);
+  await expect(
+    dialog.getByText("ChatGPT plan usage enabled", { exact: true }),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Save account", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  const card = page.locator("[data-account-id]");
+  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: /^Reset/ })).toHaveCount(0);
+  await expect(
+    card.getByRole("link", { name: "Manage ChatGPT usage" }),
+  ).toBeVisible();
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Continue with ChatGPT", exact: true })
+    .click();
+  await dialog
+    .getByLabel("127.0.0.1 callback URL")
+    .fill(
+      "http://127.0.0.1:1455/auth/callback?code=again&state=e2e-state&client_id=oaiapp_test",
+    );
+  await dialog
+    .getByRole("button", { name: "Complete authorization", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Authorization: complete", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+});
+
+test("SIWC consent-disabled accounts can reauthorize without changing sign-in mode", async ({
+  page,
+}) => {
+  const value = siwcAccount(undefined, false);
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await expect(card.getByText("Plan usage disabled").first()).toBeVisible();
+  await expect(card.getByRole("button", { name: /^Reset/ })).toHaveCount(0);
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("tab", { name: "Device code" })).toBeDisabled();
+  await dialog
+    .getByRole("button", { name: "Enable ChatGPT plan usage" })
+    .click();
+  expect(controls.starts[0]).toMatchObject({
+    flow: "siwc",
+    account_ref: value.account_ref,
+    request_consent: true,
+  });
 });

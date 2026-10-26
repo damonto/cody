@@ -1036,3 +1036,180 @@ test("HTTP quota observations retain bytes and never wait for account storage", 
     });
   }
 });
+
+function withCodexModes(f, modes) {
+  f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+    run: async (command) => {
+      const index = f.config.providers[0].credentials.findIndex(
+        (credential) => credential.auth.account_ref === ref,
+      );
+      const mode = modes[index] ?? "native";
+      return {
+        ok: true,
+        data:
+          command.action === "readiness"
+            ? { ready: true, codex_mode: mode }
+            : command.action === "codex_usage"
+              ? { observed: true }
+              : mode === "siwc"
+                ? {
+                    mode,
+                    token: `access-${index}`,
+                    siwc_subject: `subject-${index}`,
+                    generation: 1,
+                  }
+                : {
+                    token: `access-${index}`,
+                    account_id: `workspace-${index}`,
+                    generation: 1,
+                  },
+      };
+    },
+  });
+  return f;
+}
+const siwcRequest = () =>
+  request(
+    JSON.stringify({ model: MODEL, input: [], stream: true, store: false }),
+  );
+const siwcQuota = () =>
+  Response.json(
+    {
+      error: {
+        code: "subscription_sharing_usage_limit_exceeded",
+        message: "original account limit",
+      },
+    },
+    { status: 429 },
+  );
+
+test("a mixed Codex pool selects a compatible native account for a non-streaming body", async () => {
+  const f = withCodexModes(fixture(), ["siwc", "native"]);
+  const sent = [];
+  const response = await infer(f, async (request) => {
+    sent.push(request.url);
+    return Response.json({ id: "native" });
+  });
+  assert.deepEqual(sent, ["https://chatgpt.com/backend-api/codex/responses"]);
+  assert.equal((await response.json()).id, "native");
+});
+
+test("SIWC switches quota accounts within its mode and preserves request bytes", async () => {
+  const f = withCodexModes(fixture({ accounts: 3 }), [
+    "siwc",
+    "native",
+    "siwc",
+  ]);
+  const sent = [];
+  const req = siwcRequest();
+  const body = await req.clone().text();
+  const response = await infer(
+    f,
+    async (request) => {
+      sent.push({
+        url: request.url,
+        authorization: request.headers.get("authorization"),
+        body: await request.text(),
+      });
+      return sent.length === 1
+        ? siwcQuota()
+        : Response.json({ id: "second-siwc" });
+    },
+    req,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    sent.map((item) => item.authorization),
+    ["Bearer access-0", "Bearer access-2"],
+  );
+  assert.ok(
+    sent.every(
+      (item) =>
+        item.url === "https://api.openai.com/v1/responses" &&
+        item.body === body,
+    ),
+  );
+});
+
+test("an exhausted SIWC request never falls back to a native Codex credential", async () => {
+  const f = withCodexModes(fixture(), ["siwc", "native"]);
+  let sent = 0;
+  const response = await infer(
+    f,
+    async () => {
+      sent++;
+      return siwcQuota();
+    },
+    siwcRequest(),
+  );
+  assert.equal(sent, 1);
+  assert.equal(response.status, 429);
+  assert.equal((await response.json()).error.message, "original account limit");
+});
+
+test("SIWC-only unsupported requests return a parameter error without any upstream call", async () => {
+  const f = withCodexModes(fixture(), ["siwc", "siwc"]);
+  let sent = 0;
+  const response = await infer(f, async () => {
+    sent++;
+    return new Response();
+  });
+  assert.equal(sent, 0);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.param, "store");
+});
+
+test("SIWC cooldown synthesis never advertises the internal retry time as a plan reset", async () => {
+  const f = withCodexModes(fixture({ accounts: 1 }), ["siwc"]);
+  const first = await infer(f, async () => siwcQuota(), siwcRequest());
+  await first.text();
+  let sent = 0;
+  const second = await infer(
+    f,
+    async () => {
+      sent++;
+      return new Response();
+    },
+    siwcRequest(),
+  );
+  assert.equal(sent, 0);
+  assert.equal(second.status, 429);
+  const body = await second.json();
+  assert.equal(body.error.code, "subscription_sharing_usage_limit_exceeded");
+  assert.equal("resets_at" in body.error, false);
+});
+
+test("failed SIWC cooldown persistence forbids account replay", async () => {
+  const f = withCodexModes(fixture({ failWrite: true }), ["siwc", "siwc"]);
+  let sent = 0;
+  const response = await infer(
+    f,
+    async () => {
+      sent++;
+      return siwcQuota();
+    },
+    siwcRequest(),
+  );
+  assert.equal(sent, 1);
+  assert.equal(response.status, 429);
+});
+
+test("a SIWC limit after output is forwarded and cannot replay", async () => {
+  const f = withCodexModes(fixture(), ["siwc", "siwc"]);
+  let sent = 0;
+  const body =
+    event({ type: "response.output_text.delta", delta: "visible" }) +
+    event(failed("subscription_sharing_usage_limit_exceeded"));
+  const response = await infer(
+    f,
+    async () => {
+      sent++;
+      return new Response(body, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    siwcRequest(),
+  );
+  assert.equal(await response.text(), body);
+  assert.equal(sent, 1);
+});

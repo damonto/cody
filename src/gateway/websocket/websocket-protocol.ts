@@ -266,6 +266,7 @@ export function gatewayErrorEvent(
   status: number,
   message: string,
   code: string,
+  param?: string,
 ): string {
   return JSON.stringify({
     type: "error",
@@ -273,6 +274,7 @@ export function gatewayErrorEvent(
     error: {
       message,
       type: status >= 500 ? "server_error" : "invalid_request_error",
+      ...(param ? { param } : {}),
       code,
     },
   });

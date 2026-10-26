@@ -6,7 +6,6 @@ import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
 } from "../../../../src/shared/concurrency";
-import type { AccountView } from "../../../../src/providers/oauth/schema";
 import type { CodexProviderConfig } from "../../../../src/config/types";
 import { Empty, ErrorNotice } from "@/components/common";
 import { AccountCardGrid } from "@/features/oauth-accounts/account-card-grid";
@@ -14,6 +13,7 @@ import { AccountCardsSkeleton } from "@/features/oauth-accounts/account-cards-sk
 import { Button } from "@/components/ui/button";
 import {
   accountHealthOptions,
+  cacheAccounts,
   accountsOptions,
   quotaQueryKey,
   refreshAccountQuota,
@@ -67,32 +67,15 @@ export function CodexAccounts({
         (query.data ?? []).filter(
           (account) =>
             account.status === OAuthAccountViewStatus.Ready &&
+            (account.codex?.mode !== "siwc" ||
+              account.codex.plan_usage_enabled) &&
             (!ref || account.account_ref === ref),
         ),
         PROVIDER_FAN_OUT_CONCURRENCY,
         (account) => refreshAccountQuota(account, true),
       ),
-    onSuccess: (accounts) => {
-      const updates = new Map(
-        accounts.map((account) => [account.account_ref, account.quota]),
-      );
-      cache.setQueryData<AccountView[]>(key, (previous) =>
-        previous?.map((account) => {
-          const quota = updates.get(account.account_ref);
-          // A slow batch must not restore authorization state changed by a concurrent account operation.
-          return quota
-            ? {
-                ...account,
-                quota: {
-                  ...quota,
-                  stale:
-                    account.status !== OAuthAccountViewStatus.Ready ||
-                    quota.stale,
-                },
-              }
-            : account;
-        }),
-      );
+    onSuccess: async (accounts) => {
+      await cacheAccounts(cache, accounts);
       void health.refetch();
     },
   });
@@ -111,7 +94,10 @@ export function CodexAccounts({
           variant="outline"
           disabled={
             !query.data?.some(
-              (account) => account.status === OAuthAccountViewStatus.Ready,
+              (account) =>
+                account.status === OAuthAccountViewStatus.Ready &&
+                (account.codex?.mode !== "siwc" ||
+                  account.codex.plan_usage_enabled),
             ) || busy
           }
           onClick={() => refresh.mutate(undefined)}

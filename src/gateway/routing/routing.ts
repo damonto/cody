@@ -1,3 +1,5 @@
+import type { CodexRequestPolicy } from "../../providers/codex/siwc-policy.ts";
+import { codexRequestAvailability } from "../../providers/codex/availability.ts";
 import { oauthAccountAvailability } from "../../providers/oauth/availability.ts";
 import { supportsProviderModel } from "../../shared/antigravity-models.ts";
 import { resolveAntigravityModel } from "../../providers/antigravity/reasoning.ts";
@@ -95,6 +97,7 @@ export interface ProviderSelection extends TargetSelection {
 }
 
 export interface ProviderSelectionOptions {
+  codexRequest?: CodexRequestPolicy;
   /** Real models resolved per provider; catalogs do not consult inference quotas. */
   upstreamModels?: ReadonlyMap<string, string>;
   scope?: HealthScope;
@@ -334,6 +337,7 @@ async function evaluateAvailability<T extends RoutedProvider>(
   routedProviders: T[],
   scope: HealthScope,
   upstreamModels?: ReadonlyMap<string, string>,
+  codexRequest?: CodexRequestPolicy,
 ): Promise<RouteAvailability<T>> {
   const checks = await mapWithConcurrency(
     routedProviders,
@@ -370,12 +374,29 @@ async function evaluateAvailability<T extends RoutedProvider>(
       );
       const model = upstreamModels?.get(provider.id);
       if (
-        health.available &&
         key.auth.type === "oauth" &&
-        (provider.type === ProviderType.Antigravity ||
-          provider.type === ProviderType.Codex)
-      )
-        health = await oauthAccountAvailability(env, key.auth.account_ref);
+        (provider.type === ProviderType.Codex ||
+          (provider.type === ProviderType.Antigravity && health.available))
+      ) {
+        const readiness = await oauthAccountAvailability(
+          env,
+          key.auth.account_ref,
+        );
+        if (health.reason !== ProviderAvailabilityReason.HealthReadFailed) {
+          health =
+            health.available || !readiness.available
+              ? { ...health, ...readiness }
+              : {
+                  ...health,
+                  ...(readiness.codex_mode
+                    ? { codex_mode: readiness.codex_mode }
+                    : {}),
+                };
+        }
+        if (provider.type === ProviderType.Codex && codexRequest)
+          health = codexRequestAvailability(health, codexRequest);
+      }
+
       if (provider.type === ProviderType.Antigravity) {
         if (
           health.available &&
@@ -586,6 +607,7 @@ export async function selectAvailableTargetWithDetails(
     providers,
     options.scope ?? HealthScope.Inference,
     options.upstreamModels,
+    options.codexRequest,
   );
   const availability = {
     ...evaluated,

@@ -66,20 +66,14 @@ export function readAccountSnapshot(
   )
     return { ok: true, data: accountView(account) };
   if (command.action !== "resolve" && command.action !== "readiness") return;
+  if (command.action === "readiness")
+    return { ok: true, data: accountReadiness(account) };
   let active: ReturnType<typeof activeAccount>;
   try {
     active = activeAccount(account);
-  } catch (error) {
-    if (
-      command.action === "readiness" &&
-      error instanceof OAuthError &&
-      error.code === "oauth_account_unavailable"
-    )
-      return { ok: true, data: { ready: false } };
+  } catch {
     return;
   }
-  if (command.action === "readiness")
-    return { ok: true, data: { ready: true } };
   if (command.action !== "resolve") return;
   if (
     command.connection.provider_id !== account.provider_id ||
@@ -87,4 +81,24 @@ export function readAccountSnapshot(
   )
     return;
   return { ok: true, data: active.credential };
+}
+
+/** Token-free projection shared by locked and coordinated snapshot reads. */
+export function accountReadiness(account: AccountSnapshot) {
+  const mode =
+    account.provider_type === ProviderType.Codex
+      ? (account.codex?.mode ?? "native")
+      : undefined;
+  let ready = false;
+  try {
+    activeAccount(account);
+    ready = true;
+  } catch (error) {
+    if (
+      !(error instanceof OAuthError) ||
+      error.code !== "oauth_account_unavailable"
+    )
+      throw error;
+  }
+  return { ready, ...(mode ? { codex_mode: mode } : {}) };
 }

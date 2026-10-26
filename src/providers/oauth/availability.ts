@@ -9,13 +9,14 @@ export async function oauthAccountAvailability(
   accountRef: string,
 ): Promise<ProviderAvailability> {
   try {
-    const { ready } = await accountReply(
+    const { ready, codex_mode } = await accountReply(
       env.PROVIDER_OAUTH_ACCOUNT.getByName(accountRef).run({
         action: "readiness",
       }),
       accountReadinessSchema,
     );
     return {
+      ...(codex_mode ? { codex_mode } : {}),
       available: ready,
       reason: ready
         ? ProviderAvailabilityReason.Available

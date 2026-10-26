@@ -1,3 +1,4 @@
+import type { OAuthFlow } from "./values.ts";
 import type { z } from "zod";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import type { Bindings } from "../../platform/bindings.ts";
@@ -14,7 +15,12 @@ import {
   type resolvedOAuthSchema,
   type tokenSchema,
 } from "./schema.ts";
-import type { Stored, Session, AccountSnapshot } from "./state.ts";
+import type {
+  Stored,
+  Session,
+  AccountSnapshot,
+  ReadonlyData,
+} from "./state.ts";
 import { equalSecret } from "../../shared/equal-secret.ts";
 
 export type AccountTokens = z.output<typeof tokenSchema>;
@@ -77,16 +83,30 @@ export interface AccountServices {
     fallback: ProviderConnection,
   ): Promise<{ connection: ProviderConnection; config: ProxyConfiguration }>;
   metadata: Pick<Bindings, "CODY_CONFIG_KV">;
+  hostId(): Promise<string>;
   context: Pick<ObjectContext, "waitUntil">;
 }
 
+export interface BrowserAuthorization {
+  prepare?(
+    session: Session,
+    consent: boolean,
+    previous?: ReadonlyData<Session>,
+  ): Promise<void>;
+  redirectUri: string;
+  url(session: Session): string;
+  normalizeCallback(redirect: string): { url: URL | null; state: string };
+  exchange(
+    code: string,
+    session: Session,
+    callback: URL,
+  ): Promise<AccountTokens>;
+}
 export interface AccountAuthorization {
-  browser?: {
-    redirectUri: string;
-    url(session: Session): string;
-    normalizeCallback(redirect: string): { url: URL | null; state: string };
-    exchange(code: string, session: Session): Promise<AccountTokens>;
-  };
+  /** Runs on the detached account inside the fenced start transaction. */
+  validateStart?(account: AccountSnapshot, flow: OAuthFlow): void;
+  browser?: BrowserAuthorization;
+  siwc?: BrowserAuthorization;
   device?: {
     ttlMs: number;
     url(session: Session): string | null;
@@ -113,19 +133,22 @@ export interface AccountProvider {
   ): Promise<void>;
   inventory: AccountMetadata;
   observe?(command: AccountObservation): Promise<void>;
-  resets?: {
-    refresh(): Promise<void>;
-    consume(
-      redeemRequestId: string,
-      creditId?: string,
-    ): Promise<ConsumeResetResult>;
-  };
+  resets?:
+    | {
+        refresh(): Promise<void>;
+        consume(
+          redeemRequestId: string,
+          creditId?: string,
+        ): Promise<ConsumeResetResult>;
+      }
+    | undefined;
   background?: {
     pending(): boolean;
     run(): Promise<void>;
     retry(): Promise<void>;
   };
   recoverUnauthorized?: boolean;
+  disconnect?: (() => Promise<void>) | undefined;
 }
 
 function matches<

@@ -35,6 +35,8 @@ export function codexQuotaResetsAt(
         entry.provider_id === codex.provider.id &&
         entry.credential_id === credential.id,
     );
+    if (check?.reason === ProviderAvailabilityReason.RequestUnsupported)
+      continue;
     if (
       check?.cooldown_reason !== HealthCooldownReason.Quota ||
       typeof check.cooling_until !== "number"
@@ -81,10 +83,36 @@ export async function restoreCodexAccount(
   const restored = await consumeCodexResetForExhaustion(
     env,
     config,
-    provider,
+    {
+      ...provider,
+      credentials: provider.credentials.filter((credential) => {
+        const check = selection.credentialChecks.find(
+          (entry) =>
+            entry.provider_id === provider.id &&
+            entry.credential_id === credential.id,
+        );
+        return (
+          check?.codex_mode !== "siwc" &&
+          check?.reason !== ProviderAvailabilityReason.RequestUnsupported
+        );
+      }),
+    },
     requestId,
   );
   if (!restored) return false;
   excluded.delete(credentialKey(provider.id, restored));
   return true;
+}
+
+/** Ignore credentials excluded by endpoint, request or the current attempt's mode. */
+export function siwcOnlySelection(
+  selection: Pick<ProviderSelection, "credentialChecks">,
+): boolean {
+  const compatible = selection.credentialChecks.filter(
+    (check) => check.reason !== ProviderAvailabilityReason.RequestUnsupported,
+  );
+  return (
+    compatible.length > 0 &&
+    compatible.every((check) => check.codex_mode === "siwc")
+  );
 }

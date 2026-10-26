@@ -6,11 +6,13 @@ import {
 import { responseFormat } from "../../gateway/http/response-format.ts";
 import {
   CODEX_QUOTA_CODES,
+  SIWC_QUOTA_CODE,
   codexUsageLimitFromError,
   type CodexUsageLimit,
 } from "./limits.ts";
 
 interface CodexInspectionOptions {
+  mode?: "native" | "siwc";
   signal: AbortSignal;
   timeoutMs?: number | undefined;
   errorCodes?: readonly string[] | undefined;
@@ -43,7 +45,11 @@ export async function inspectCodexResponse(
     options.signal,
     [
       ...(options.errorCodes ?? []),
-      ...(quotaResponse ? CODEX_QUOTA_CODES : []),
+      ...(quotaResponse
+        ? options.mode === "siwc"
+          ? [SIWC_QUOTA_CODE]
+          : CODEX_QUOTA_CODES
+        : []),
     ],
     options.timeoutMs,
     {
@@ -57,6 +63,7 @@ export async function inspectCodexResponse(
           value,
           (name) => response.headers.get(name),
           options.now,
+          options.mode,
         );
         if (!limit) return;
         if (replayable) usageLimit = limit;

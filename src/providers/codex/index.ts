@@ -1,3 +1,5 @@
+import { validateSiwcRequest } from "./siwc-policy.ts";
+import { SIWC_RESOURCE } from "./siwc.ts";
 import { codexAccountHooks } from "./account-hooks.ts";
 import { codexResponsePolicy } from "./response-policy.ts";
 import { ProviderType } from "../../config/values.ts";
@@ -45,19 +47,42 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     return HTTP_ENDPOINTS.has(endpoint);
   },
   prepare(provider, credential, input, context) {
-    const url = upstreamUrl(input.endpoint, new URL(input.request.url).search);
+    const siwc = credential.mode === "siwc";
+    if (siwc) validateSiwcRequest(input);
+    const search = new URL(input.request.url).search;
+    const url = siwc
+      ? `${SIWC_RESOURCE}/${input.endpoint}${search}`
+      : upstreamUrl(input.endpoint, search);
     const headers =
       input.transport === ProviderTransport.Websocket
         ? forwardWebSocketHeaders(input.request, credential.token)
         : forwardRequestHeaders(input.request, credential.token);
-    headers.set("chatgpt-account-id", credential.account_id);
+    if (!siwc) headers.set("chatgpt-account-id", credential.account_id);
+    else {
+      headers.delete("chatgpt-account-id");
+      headers.delete("x-codex-turn-state");
+      headers.delete("x-openai-actor-authorization");
+    }
     // Each gateway WebSocket creates a fresh upstream connection from full
     // input. A client routing hint may belong to a previously selected account.
     if (input.transport === ProviderTransport.Websocket)
       headers.delete("x-codex-turn-state");
     headers.delete("x-openai-fedramp");
-    if (credential.is_fedramp) headers.set("x-openai-fedramp", "true");
+    if (!siwc && credential.is_fedramp) headers.set("x-openai-fedramp", "true");
     const account = {
+      codexMode: siwc ? ("siwc" as const) : ("native" as const),
+      ...(siwc
+        ? {
+            validateWebSocketRequest: (
+              payload: Readonly<Record<string, unknown>>,
+            ) =>
+              validateSiwcRequest({
+                endpoint: "responses",
+                transport: ProviderTransport.Websocket,
+                payload,
+              }),
+          }
+        : {}),
       accountSwitching: { timeoutScope: "attempt" as const },
       ...(context?.connection
         ? {
@@ -73,6 +98,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
               context,
               input.endpoint === "responses" &&
                 input.transport === ProviderTransport.Http,
+              siwc ? "siwc" : "native",
             ),
           }
         : {}),
@@ -97,7 +123,9 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
           ? value.models
           : []
         ).flatMap((model: unknown) =>
-          isRecord(model) && typeof model.slug === "string"
+          isRecord(model) &&
+          (!siwc || model.visibility === "list") &&
+          typeof model.slug === "string"
             ? [
                 {
                   id: model.slug,

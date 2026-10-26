@@ -145,13 +145,14 @@ export function openAiError(
   message: string,
   type = "invalid_request_error",
   code?: string,
+  param?: string,
 ): Response {
   return jsonResponse(
     {
       error: {
         message,
         type,
-        param: null,
+        param: param ?? null,
         ...(code ? { code } : {}),
       },
     },
@@ -160,6 +161,7 @@ export function openAiError(
 }
 
 export interface ApiErrorOptions {
+  param?: string;
   /** OpenAI error `type`. Anthropic derives its own type from the status. */
   type?: string;
   /** OpenAI-only diagnostic code; Anthropic error bodies have no `code`. */
@@ -181,6 +183,7 @@ export function apiError(
         message,
         options.type ?? "invalid_request_error",
         options.code,
+        options.param,
       );
 }
 

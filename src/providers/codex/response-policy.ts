@@ -15,6 +15,7 @@ export function codexResponsePolicy(
   credentialId: string,
   context: ProviderRuntimeContext,
   detectFormat: boolean,
+  mode: "native" | "siwc" = "native",
 ): Pick<PreparedUpstreamRequest, "responseInspector"> {
   const persist = async (limit: CodexUsageLimit) => {
     const health = context.env.HEALTH;
@@ -39,6 +40,7 @@ export function codexResponsePolicy(
         } = await inspectCodexResponse(response, {
           signal,
           timeoutMs,
+          mode,
           detectFormat,
           errorCodes: provider.retry?.error_codes,
           onStreamLimit: (limit) =>

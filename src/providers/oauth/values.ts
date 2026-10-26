@@ -3,6 +3,7 @@
 export const OAuthFlow = {
   Pkce: "pkce",
   Device: "device",
+  Siwc: "siwc",
 } as const;
 
 export type OAuthFlow = (typeof OAuthFlow)[keyof typeof OAuthFlow];

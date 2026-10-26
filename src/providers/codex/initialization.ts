@@ -33,6 +33,7 @@ export function initializeCodexAccount(
   account.tokens = { ...tokens, refresh_token: refreshToken };
   account.identity = identity;
   account.codex = {
+    mode: "native",
     account_id: claims.account_id,
     ...(claims.is_fedramp ? { is_fedramp: true } : {}),
     user_id: claims.user_id,

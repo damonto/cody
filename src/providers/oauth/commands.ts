@@ -64,6 +64,7 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     connection: connectionSchema,
     provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
     flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
+    request_consent: z.boolean().optional(),
   }),
   z.strictObject({
     action: z.enum(["session", "cancel", "retry"]),

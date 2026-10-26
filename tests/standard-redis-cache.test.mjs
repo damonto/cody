@@ -234,6 +234,7 @@ test("OAuth cache readers reject revisions replaced during a delayed read", asyn
   assert.equal(reply.code, "oauth_account_unavailable");
   assert.deepEqual((await reader.run({ action: "readiness" })).data, {
     ready: false,
+    codex_mode: "native",
   });
 });
 
@@ -562,7 +563,7 @@ test("warm OAuth readiness avoids SQL and repeated decryption but observes disco
   });
   assert.deepEqual(await account.run({ action: "readiness" }), {
     ok: true,
-    data: { ready: true },
+    data: { ready: true, codex_mode: "native" },
   });
   const initial = decryptions;
   assert.ok(initial > 0);
@@ -570,7 +571,7 @@ test("warm OAuth readiness avoids SQL and repeated decryption but observes disco
   f.queries.length = 0;
   assert.deepEqual(await account.run({ action: "readiness" }), {
     ok: true,
-    data: { ready: true },
+    data: { ready: true, codex_mode: "native" },
   });
   assert.equal(decryptions, initial);
   assert.equal(f.queries.length, 0);
@@ -584,7 +585,7 @@ test("warm OAuth readiness avoids SQL and repeated decryption but observes disco
   );
   assert.deepEqual(await account.run({ action: "readiness" }), {
     ok: true,
-    data: { ready: false },
+    data: { ready: false, codex_mode: "native" },
   });
 });
 

@@ -1,4 +1,7 @@
-import { codexAccountSchema } from "../codex/account-schema.ts";
+import {
+  codexAccountSchema,
+  siwcSessionSchema,
+} from "../codex/account-schema.ts";
 import {
   claudeAccountSchema,
   claudeQuotaSyncSchema,
@@ -45,6 +48,7 @@ const sessionSchema = z.object({
   identity: identitySchema.nullable(),
   next_at: z.number(),
   flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
+  siwc: siwcSessionSchema.optional(),
   // Device authorization polls the issuer from the alarm until approval.
   xai_device: xaiDeviceSchema.optional(),
   device_auth_id: z.string().nullable().default(null),

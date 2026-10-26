@@ -39,6 +39,7 @@ const startSchema = connectionSchema
     account_ref: z.uuid().optional(),
     version: z.number().int().nonnegative(),
     flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
+    request_consent: z.boolean().optional(),
   })
   .refine(
     (input) =>
@@ -46,7 +47,11 @@ const startSchema = connectionSchema
         ? input.flow === OAuthFlow.Device
         : input.flow === OAuthFlow.Pkce ||
           input.provider_type === ProviderType.Codex,
-    "xAI requires device authorization; other device authorization is only available for Codex",
+    "xAI requires device authorization; device and SIWC authorization are only available for Codex",
+  )
+  .refine(
+    (input) => !input.request_consent || input.flow === OAuthFlow.Siwc,
+    "Explicit consent is only available for SIWC",
   );
 const accountParam = z.object({ ref: z.uuid() });
 const sessionParam = z.object({
@@ -160,6 +165,7 @@ export const oauthRoutes = new Hono<AdminContext>()
         connection: connectionSchema.parse(input),
         provider_type: input.provider_type,
         flow: input.flow,
+        ...(input.request_consent ? { request_consent: true } : {}),
       }),
       sessionViewSchema,
     );

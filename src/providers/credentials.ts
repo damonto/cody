@@ -29,7 +29,8 @@ export interface ResolvedAntigravityOAuth {
   readonly project_id: string;
   readonly account_ref: string;
 }
-export interface ResolvedCodexOAuth {
+export interface ResolvedNativeCodexOAuth {
+  readonly mode?: "native";
   readonly generation: number;
   readonly type: typeof CredentialAuthType.OAuth;
   readonly provider: typeof ProviderType.Codex;
@@ -38,6 +39,16 @@ export interface ResolvedCodexOAuth {
   readonly is_fedramp?: boolean;
   readonly account_ref: string;
 }
+export interface ResolvedSiwcOAuth {
+  readonly mode: "siwc";
+  readonly generation: number;
+  readonly type: typeof CredentialAuthType.OAuth;
+  readonly provider: typeof ProviderType.Codex;
+  readonly token: string;
+  readonly siwc_subject: string;
+  readonly account_ref: string;
+}
+export type ResolvedCodexOAuth = ResolvedNativeCodexOAuth | ResolvedSiwcOAuth;
 export interface ResolvedClaudeOAuth {
   readonly generation: number;
   readonly type: typeof CredentialAuthType.OAuth;
@@ -147,8 +158,15 @@ const oauthResolver: CredentialResolver<
       };
     }
     if (provider === ProviderType.Codex) {
-      const { account_id, is_fedramp, generation } =
-        codexCredentialSchema.parse(token);
+      const parsed = codexCredentialSchema.parse(token);
+      if (parsed.mode === "siwc")
+        return {
+          ...parsed,
+          type: CredentialAuthType.OAuth,
+          provider,
+          account_ref,
+        };
+      const { account_id, is_fedramp, generation } = parsed;
       return {
         type: CredentialAuthType.OAuth,
         provider,

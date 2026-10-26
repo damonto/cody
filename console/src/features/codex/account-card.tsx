@@ -61,6 +61,7 @@ export function AccountCard({
   const [resetting, setResetting] = useState(false);
   const title = account?.email ?? `ChatGPT account ${index + 1}`;
   const badge = healthBadge(credential, account, health, now);
+  const siwc = account?.codex?.mode === "siwc";
   const quota = account?.quota;
   const plan =
     quota?.subscription?.tier_id ?? account?.codex?.plan_type ?? null;
@@ -87,6 +88,10 @@ export function AccountCard({
           </p>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <Badge variant="secondary">{planLabel(plan)}</Badge>
+            <Badge variant="outline">{siwc ? "SIWC" : "Codex"}</Badge>
+            {siwc && !account?.codex?.plan_usage_enabled && (
+              <Badge variant="outline">Plan usage disabled</Badge>
+            )}
             {days !== null && (
               <span className={toneText[expiryTone(days)]}>
                 {days > 0 ? `${days}d left` : "Expired"}
@@ -129,7 +134,21 @@ export function AccountCard({
         )}
         {quota && !quota.groups.length && (
           <p className="text-xs text-muted-foreground">
-            Quota unknown. Refresh after authorization is ready.
+            {siwc ? (
+              <>
+                Quota unknown.{" "}
+                <a
+                  className="underline"
+                  href="https://chatgpt.com/settings/usage"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Manage ChatGPT usage
+                </a>
+              </>
+            ) : (
+              "Quota unknown. Refresh after authorization is ready."
+            )}
           </p>
         )}
         {quota?.groups.map((group) => (
@@ -159,10 +178,10 @@ export function AccountCard({
             ) : credits.has_credits ? (
               <span>Credits: {credits.balance ?? "available"}</span>
             ) : null)}
-          {(quota?.stale || staleError) && (
+          {((!siwc && quota?.stale) || staleError) && (
             <Badge variant="outline">Stale</Badge>
           )}
-          {quota && (
+          {quota && !siwc && (
             <span>
               Updated{" "}
               {quota.updated_at === null
@@ -184,24 +203,28 @@ export function AccountCard({
         count={count}
         pending={pending}
         refreshDisabled={
-          account?.status !== OAuthAccountViewStatus.Ready || refreshing
+          account?.status !== OAuthAccountViewStatus.Ready ||
+          (siwc && !account?.codex?.plan_usage_enabled) ||
+          refreshing
         }
         onRefresh={onRefresh}
         onConfigure={onConfigure}
         onMove={onMove}
         onRemove={onRemove}
       >
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={account?.status !== OAuthAccountViewStatus.Ready}
-          onClick={() => setResetting(true)}
-        >
-          <RotateCcw />
-          Reset{resets ? ` (${resets})` : ""}
-        </Button>
+        {!siwc && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={account?.status !== OAuthAccountViewStatus.Ready}
+            onClick={() => setResetting(true)}
+          >
+            <RotateCcw />
+            Reset{resets ? ` (${resets})` : ""}
+          </Button>
+        )}
       </AccountCardFooter>
-      {account && (
+      {account && !siwc && (
         <ResetCreditsDialog
           key={account.account_ref}
           account={account}

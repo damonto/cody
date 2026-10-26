@@ -1,10 +1,14 @@
+import { ProviderRequestError } from "../../providers/errors.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
 import { RequestOutcome } from "../../telemetry/values.ts";
 import { SessionPhase } from "./values.ts";
 import { ProviderType } from "../../config/values.ts";
 import { ApiProtocol } from "../protocol-values.ts";
-import { HealthFailureScope } from "../health/values.ts";
+import {
+  HealthFailureScope,
+  ProviderAvailabilityReason,
+} from "../health/values.ts";
 import { ProviderTransport } from "../../providers/transport-values.ts";
 
 import { WebSocketHealth, shouldRecordUpstreamFailure } from "./health.ts";
@@ -71,10 +75,13 @@ import {
 import {
   codexQuotaResetsAt,
   restoreCodexAccount,
+  siwcOnlySelection,
 } from "../../providers/codex/exhaustion.ts";
 import {
   CODEX_QUOTA_CODES,
+  SIWC_QUOTA_CODE,
   codexUsageLimitEvent,
+  siwcUsageLimitEvent,
   codexUsageLimitFromError,
   type CodexUsageLimit,
 } from "../../providers/codex/limits.ts";
@@ -127,7 +134,10 @@ function clientDigestFrom(request: Request): string | undefined {
     : undefined;
 }
 
-function replayableQuotaError(payload: Record<string, unknown>): boolean {
+function replayableQuotaError(
+  payload: Record<string, unknown>,
+  mode: "native" | "siwc" = "native",
+): boolean {
   // WebSocket error envelopes carry an HTTP status; the shared SSE guard
   // interprets status as a response lifecycle state instead.
   const frame =
@@ -138,7 +148,11 @@ function replayableQuotaError(payload: Record<string, unknown>): boolean {
     payload.status <= 599
       ? { ...payload, status: undefined }
       : payload;
-  return retryErrorIsReplayable(frame, "", CODEX_QUOTA_CODES);
+  return retryErrorIsReplayable(
+    frame,
+    "",
+    mode === "siwc" ? [SIWC_QUOTA_CODE] : CODEX_QUOTA_CODES,
+  );
 }
 
 /**
@@ -146,6 +160,7 @@ function replayableQuotaError(payload: Record<string, unknown>): boolean {
  * reports exhausted quota can still hand it to another account.
  */
 interface FirstFrameAttempt {
+  lockedMode?: "native" | "siwc";
   readonly requestId: string;
   readonly message: string;
   readonly frame: ResponseCreateFrame;
@@ -505,8 +520,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       payload &&
       (payload.type === "error" || payload.type === "response.failed") &&
       state.selected_provider_type === ProviderType.Codex
-        ? codexUsageLimitFromError(payload, (name) =>
-            eventHeader(payload, name),
+        ? codexUsageLimitFromError(
+            payload,
+            (name) => eventHeader(payload, name),
+            Date.now(),
+            this.upstream.codexMode,
           )
         : undefined;
     const attempt = this.attempt;
@@ -515,7 +533,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       typeof message === "string" &&
       attempt &&
       payload &&
-      replayableQuotaError(payload) &&
+      replayableQuotaError(payload, this.upstream.codexMode) &&
       this.receivedClientMessages <= 1
     ) {
       // Nothing but this error has reached the upstream's reply, and the
@@ -541,7 +559,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         replaySequence !== undefined &&
         this.isCurrentTurn(replaySequence) &&
         payload &&
-        replayableQuotaError(payload)
+        replayableQuotaError(payload, this.upstream.codexMode)
       ) {
         // Keep the real upstream failure in metering. Codex treats usage-limit
         // events as terminal, but a missing continuation as recoverable.
@@ -767,7 +785,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       if (result.usageLimit) {
         const error = await upstreamErrorEvent(
           response,
-          codexUsageLimitEvent(result.usageLimit.resets_at),
+          this.upstream.codexMode === "siwc"
+            ? siwcUsageLimitEvent()
+            : codexUsageLimitEvent(result.usageLimit.resets_at),
         );
         const routing = await this.storage.transition(
           [SessionPhase.Connecting],
@@ -996,6 +1016,12 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         route,
         {
           excludedCredentials: attempt.excluded,
+          codexRequest: {
+            endpoint: "responses",
+            transport: ProviderTransport.Websocket,
+            payload: frame.payload,
+            mode: attempt.lockedMode,
+          },
           ...(sessionId
             ? {
                 session: {
@@ -1014,7 +1040,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       }
       const target = selection.target;
       if (!target) {
-        if (!attempt.resetConsumed) {
+        if (!attempt.resetConsumed && !siwcOnlySelection(selection)) {
           attempt.resetConsumed = true;
           if (
             await restoreCodexAccount(
@@ -1062,13 +1088,32 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         : codexQuotaResetsAt(route.targets, selection, attempt.excluded);
     const exhausted =
       attempt.exhausted ??
-      (resetsAt === undefined ? undefined : codexUsageLimitEvent(resetsAt));
+      (resetsAt === undefined
+        ? undefined
+        : siwcOnlySelection(selection)
+          ? siwcUsageLimitEvent()
+          : codexUsageLimitEvent(resetsAt));
+    const requestError = selection.credentialChecks.every(
+      (check) => check.reason === ProviderAvailabilityReason.RequestUnsupported,
+    )
+      ? selection.credentialChecks.find((check) => check.request_error)
+          ?.request_error
+      : undefined;
     safeSend(
       this.clientSocket(),
-      exhausted ?? unavailableTargetError(selection, attempt.frame.model),
+      exhausted ??
+        (requestError
+          ? gatewayErrorEvent(
+              400,
+              requestError.message,
+              requestError.code,
+              requestError.param,
+            )
+          : undefined) ??
+        unavailableTargetError(selection, attempt.frame.model),
     );
     await this.closeAll(
-      1013,
+      requestError && !exhausted ? 1008 : 1013,
       exhausted ? "codex usage limit reached" : "no healthy upstream provider",
       exhausted ? "usage_limit_reached" : "no_healthy_upstream",
     );
@@ -1101,6 +1146,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return false;
     }
     attempt.lockedProvider = target.provider.id;
+    attempt.lockedMode = this.upstream.codexMode ?? "native";
     attempt.excluded.add(
       credentialKey(target.provider.id, target.credential.id),
     );
@@ -1185,6 +1231,26 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         return;
       }
       if (parsedFrame.kind === "response_create") {
+        try {
+          this.upstream.validateRequest?.(parsedFrame.frame.payload);
+        } catch (error) {
+          if (!(error instanceof ProviderRequestError)) throw error;
+          safeSend(
+            this.clientSocket(),
+            gatewayErrorEvent(
+              error.status,
+              error.message,
+              error.code,
+              error.param,
+            ),
+          );
+          await this.closeAll(
+            1008,
+            "invalid SIWC request",
+            "siwc_unsupported_capability",
+          );
+          return;
+        }
         this.turn =
           this.turn.kind === "idle"
             ? { kind: "active", sequence, replayable: true }

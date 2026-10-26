@@ -4,6 +4,7 @@ export class ProviderRequestError extends Error {
     message: string,
     readonly status = 400,
     readonly code = "invalid_provider_request",
+    readonly param?: string,
   ) {
     super(message);
   }

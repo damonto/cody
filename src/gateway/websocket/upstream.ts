@@ -9,6 +9,7 @@ import { HealthFailureScope } from "../health/values.ts";
 
 import type { GatewayConfig } from "../../config/types.ts";
 import type { CodexUsageLimit } from "../../providers/codex/limits.ts";
+import type { CodexMode } from "../../providers/codex/account-schema.ts";
 import { inspectCodexResponse } from "../../providers/codex/inspect.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { errorMessage, logError } from "../../shared/log.ts";
@@ -55,6 +56,9 @@ interface UpstreamHandlers {
 
 /** Owns the outgoing connection, cancellation, and ordered upstream events. */
 export class UpstreamWebSocket {
+  codexMode: CodexMode | undefined;
+  validateRequest:
+    ((payload: Readonly<Record<string, unknown>>) => void) | undefined;
   private controller: AbortController | undefined;
   private connection: WebSocket | undefined;
   private readonly events: UpstreamEvent[] = [];
@@ -105,6 +109,8 @@ export class UpstreamWebSocket {
       );
       if (prepared.kind === "local")
         throw new Error("Unexpected local provider response");
+      this.codexMode = prepared.codexMode;
+      this.validateRequest = prepared.validateWebSocketRequest;
       const result = await fetchWithConfiguredRetries(
         () =>
           new Request(prepared.url, {
@@ -134,6 +140,7 @@ export class UpstreamWebSocket {
                   } = await inspectCodexResponse(response, {
                     signal,
                     timeoutMs,
+                    ...(prepared.codexMode ? { mode: prepared.codexMode } : {}),
                   });
                   usageLimit = limit;
                   return {

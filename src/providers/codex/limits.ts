@@ -1,5 +1,6 @@
 /** Used when the upstream names no reset time. */
 export const DEFAULT_QUOTA_COOLDOWN_MS = 15 * 60_000;
+export const SIWC_QUOTA_CODE = "subscription_sharing_usage_limit_exceeded";
 export const CODEX_QUOTA_CODES: readonly string[] = [
   "usage_limit_reached",
   "usage_not_included",
@@ -58,6 +59,7 @@ export function codexUsageLimitFromError(
   payload: unknown,
   header: HeaderLookup,
   now = Date.now(),
+  mode: "native" | "siwc" = "native",
 ): CodexUsageLimit | undefined {
   const envelope = record(payload);
   const error = record(
@@ -69,7 +71,11 @@ export function codexUsageLimitFromError(
   const type = typeof error.type === "string" ? error.type : undefined;
   const code = typeof error.code === "string" ? error.code : undefined;
   const matched = [type, code].find(
-    (value) => value && CODEX_QUOTA_CODES.includes(value),
+    (value) =>
+      value &&
+      (mode === "siwc"
+        ? value === SIWC_QUOTA_CODE
+        : CODEX_QUOTA_CODES.includes(value)),
   );
   if (!matched) return undefined;
   const resetsAtSeconds = finite(error.resets_at);
@@ -77,15 +83,54 @@ export function codexUsageLimitFromError(
   const candidates = [
     resetsAtSeconds === undefined ? undefined : resetsAtSeconds * 1000,
     resetsIn === undefined ? undefined : now + resetsIn * 1000,
-    headerResetAt(header),
+    ...(mode === "siwc" ? [] : [headerResetAt(header)]),
+    ...(mode === "siwc" ? [retryAfter(header("retry-after"), now)] : []),
   ];
   const resetsAt = candidates.find(
     (value): value is number => value !== undefined && value > now,
   );
   return {
     code: matched,
-    resets_at: resetsAt ?? now + DEFAULT_QUOTA_COOLDOWN_MS,
+    resets_at:
+      resetsAt ?? now + (mode === "siwc" ? 60_000 : DEFAULT_QUOTA_COOLDOWN_MS),
   };
+}
+
+function retryAfter(
+  value: string | null | undefined,
+  now: number,
+): number | undefined {
+  if (!value) return;
+  const seconds = Number(value);
+  const until = Number.isFinite(seconds)
+    ? now + seconds * 1000
+    : Date.parse(value);
+  return Number.isFinite(until) && until > now ? until : undefined;
+}
+
+export function siwcUsageLimitResponse(requestId: string): Response {
+  return Response.json(
+    {
+      error: {
+        type: "rate_limit_error",
+        code: SIWC_QUOTA_CODE,
+        message:
+          "ChatGPT plan usage is limited; review ChatGPT Settings → Usage",
+      },
+    },
+    { status: 429, headers: { "x-request-id": requestId } },
+  );
+}
+export function siwcUsageLimitEvent(): string {
+  return JSON.stringify({
+    type: "error",
+    status: 429,
+    error: {
+      type: "rate_limit_error",
+      code: SIWC_QUOTA_CODE,
+      message: "ChatGPT plan usage is limited; review ChatGPT Settings → Usage",
+    },
+  });
 }
 
 function usageLimitError(resetsAt: number, now: number) {

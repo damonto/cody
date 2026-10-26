@@ -1,3 +1,4 @@
+import type { CodexMode } from "./codex/account-schema.ts";
 import { type ProviderTransport } from "./transport-values.ts";
 import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
@@ -100,6 +101,10 @@ export interface RecoveredUpstreamAuth {
 
 export interface PreparedUpstreamRequest {
   /** Codex-only recovery of the same OAuth account after an HTTP 401, before output. */
+  readonly codexMode?: CodexMode;
+  readonly validateWebSocketRequest?: (
+    payload: Readonly<Record<string, unknown>>,
+  ) => void;
   readonly recoverUnauthorized?: (
     signal: AbortSignal,
   ) => Promise<RecoveredUpstreamAuth | undefined>;

@@ -761,3 +761,50 @@ for (const transition of ["start", "cancel", "expire"]) {
     await f.drain();
   });
 }
+
+test("Codex mode validation runs in the fenced write after a concurrent authorization commits", async (t) => {
+  const initial = authorizationAccount("codex", "new-native-refresh");
+  initial.status = "disconnected";
+  initial.codex = null;
+  initial.identity = null;
+  initial.tokens = null;
+  const f = await refreshDuringAuthorizationFixture(
+    async () => {
+      throw new Error("No upstream request expected");
+    },
+    { account: initial },
+  );
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  let paused = false;
+  t.mock.method(crypto.subtle, "digest", async (...args) => {
+    if (!paused) {
+      paused = true;
+      started.resolve();
+      await release.promise;
+    }
+    return digest(...args);
+  });
+  const starting = f.core.run({
+    action: "start",
+    account_ref: initial.account_ref,
+    actor: "admin",
+    connection: initial.connection,
+    provider_type: "codex",
+    flow: "siwc",
+  });
+  await started.promise;
+  try {
+    await f.core.alarm();
+  } finally {
+    release.resolve();
+  }
+  const result = await starting;
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  const committed = await f.stored();
+  assert.equal(committed.codex.mode, "native");
+  assert.equal(committed.tokens.access_token, "replacement-access");
+  assert.equal(committed.session.status, "complete");
+});

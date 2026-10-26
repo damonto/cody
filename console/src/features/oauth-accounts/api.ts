@@ -1,6 +1,6 @@
 import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
 
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import { read, rpc } from "@/lib/api";
 import {
   accountHealthSchema,
@@ -10,14 +10,12 @@ import {
   type AccountView,
 } from "../../../../src/providers/oauth/schema";
 
-const QUOTAS = "provider-quotas";
-/** Quota views scoped to a provider and its current account references. */
-export const quotaQueryKey = (providerIds: readonly string[]) =>
-  [QUOTAS, ...providerIds] as const;
+import { accountQueryKey, accountsQueryKey } from "./cache";
+export { cacheAccounts, quotaQueryKey } from "./cache";
 
 export const accountsOptions = (providerId: string) =>
   queryOptions({
-    queryKey: ["provider-accounts", providerId],
+    queryKey: accountsQueryKey(providerId),
     queryFn: async ({ signal }) => {
       const result = await read(
         rpc["provider-accounts"].$get(
@@ -31,7 +29,7 @@ export const accountsOptions = (providerId: string) =>
   });
 export const accountOptions = (ref: string) =>
   queryOptions({
-    queryKey: ["provider-account", ref],
+    queryKey: accountQueryKey(ref),
     queryFn: async ({ signal }) =>
       accountViewSchema.parse(
         await read(
@@ -89,8 +87,15 @@ export async function refreshAccountQuota(
 ): Promise<AccountView> {
   signal?.throwIfAborted();
   if (account.status !== OAuthAccountViewStatus.Ready) return account;
+  if (
+    account.codex?.mode === "siwc" &&
+    (!force || !account.codex.plan_usage_enabled)
+  )
+    return account;
   try {
-    return await refreshQuota(account.account_ref, force, signal);
+    return account.codex?.mode === "siwc"
+      ? await refreshModels(account.account_ref)
+      : await refreshQuota(account.account_ref, force, signal);
   } catch (error) {
     signal?.throwIfAborted();
     return {
@@ -105,74 +110,6 @@ export async function refreshAccountQuota(
   }
 }
 
-function mergeAccounts(
-  previous: AccountView[],
-  updates: readonly AccountView[],
-) {
-  const accounts = new Map(
-    previous.map((account) => [account.account_ref, account]),
-  );
-  for (const account of updates) accounts.set(account.account_ref, account);
-  return [...accounts.values()];
-}
-
-/** Commit authoritative mutations to every account view, after fencing older reads. */
-export async function cacheAccounts(
-  cache: QueryClient,
-  updates: readonly AccountView[],
-): Promise<void> {
-  const providers = new Set(updates.map((account) => account.provider_id));
-  const quotaQueries = cache.getQueryCache().findAll({
-    queryKey: [QUOTAS],
-    predicate: (query) =>
-      query.queryKey
-        .slice(1)
-        .some((id) => typeof id === "string" && providers.has(id)),
-  });
-  await Promise.all([
-    ...updates.map((account) =>
-      cache.cancelQueries({
-        queryKey: accountOptions(account.account_ref).queryKey,
-      }),
-    ),
-    ...[...providers].map((id) =>
-      cache.cancelQueries({ queryKey: accountsOptions(id).queryKey }),
-    ),
-    ...quotaQueries.map((query) =>
-      cache.cancelQueries({ queryKey: query.queryKey, exact: true }),
-    ),
-  ]);
-  for (const account of updates)
-    cache.setQueryData(accountOptions(account.account_ref).queryKey, account);
-  for (const id of providers) {
-    const key = accountsOptions(id).queryKey;
-    cache.setQueryData(
-      key,
-      (previous) =>
-        previous &&
-        mergeAccounts(
-          previous,
-          updates.filter((account) => account.provider_id === id),
-        ),
-    );
-    // A previously unloaded list may contain other accounts, so never replace it with a partial inventory.
-    void cache.invalidateQueries({ queryKey: key });
-  }
-  for (const query of quotaQueries) {
-    cache.setQueryData<AccountView[]>(
-      query.queryKey,
-      (previous) =>
-        previous &&
-        mergeAccounts(
-          previous,
-          updates.filter((account) =>
-            query.queryKey.slice(1).includes(account.provider_id),
-          ),
-        ),
-    );
-    void cache.invalidateQueries({ queryKey: query.queryKey, exact: true });
-  }
-}
 export async function disconnectAccount(ref: string) {
   return accountViewSchema.parse(
     await read(

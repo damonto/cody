@@ -1,3 +1,4 @@
+import { siwcHostId } from "../codex/siwc-host.ts";
 import { accountProvider } from "./registry.ts";
 import {
   authorizationTokens,
@@ -19,7 +20,7 @@ import {
 } from "./state.ts";
 import { AccountInventory } from "./inventory.ts";
 import { accountView } from "./presentation.ts";
-import { activeAccount } from "./reads.ts";
+import { activeAccount, accountReadiness } from "./reads.ts";
 import { ControlStore } from "../../control/store.ts";
 import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
 import { CredentialAuthType } from "../../config/values.ts";
@@ -291,7 +292,10 @@ export class ProviderOAuthAccountCore {
           ? null
           : device
             ? (authorization.device?.url(session) ?? null)
-            : (authorization.browser?.url(session) ?? null),
+            : ((session.flow === OAuthFlow.Siwc
+                ? authorization.siwc
+                : authorization.browser
+              )?.url(session) ?? null),
       flow: session.flow,
       user_code:
         device && session.status === OAuthSessionStatus.Pending
@@ -327,6 +331,7 @@ export class ProviderOAuthAccountCore {
         outbound: (connection, config) => this.outbound(connection, config),
         configuredConnection: (fallback) => this.configuredConnection(fallback),
         metadata: this.env,
+        hostId: () => siwcHostId(this.env.CODY_DB),
         context: this.ctx,
       },
     );
@@ -416,11 +421,16 @@ export class ProviderOAuthAccountCore {
     connection: ProviderConnection,
     providerType: OAuthProviderType,
     flow: OAuthFlow,
+    requestConsent = false,
   ): Promise<ReadonlyData<SessionView>> {
     const authorization = this.provider(providerType).authorization;
-    if (
-      flow === OAuthFlow.Device ? !authorization.device : !authorization.browser
-    )
+    const browser =
+      flow === OAuthFlow.Siwc ? authorization.siwc : authorization.browser;
+    if (requestConsent && flow !== OAuthFlow.Siwc)
+      throw new OAuthError("Unsupported authorization flow", 400);
+    const existing = this.account;
+    const previousSession = existing?.session;
+    if (flow === OAuthFlow.Device ? !authorization.device : !browser)
       throw new OAuthError(
         "This provider does not support the selected authorization flow",
         400,
@@ -484,6 +494,7 @@ export class ProviderOAuthAccountCore {
         models_error: null,
         quota: emptyQuota(),
       });
+      authorization.validateStart?.(account, flow);
       account.authorization_generation++;
       account.session = session;
       account.antigravity_initialization = null;
@@ -497,6 +508,18 @@ export class ProviderOAuthAccountCore {
     )
       .bind(accountRef, connection.provider_id, providerType, Date.now())
       .run();
+    if (browser?.prepare) {
+      const generation = this.requireAccount().authorization_generation;
+      try {
+        await browser.prepare(
+          session,
+          requestConsent,
+          previousSession ?? undefined,
+        );
+      } catch (error) {
+        await this.failSession(generation, error);
+      }
+    }
     if (flow === OAuthFlow.Device)
       await this.requestDeviceCode(session.id, actor);
     return this.sessionView(session.id, actor);
@@ -543,7 +566,9 @@ export class ProviderOAuthAccountCore {
         "Authorization callback was already submitted; check the session status",
         409,
       );
-    const browser = this.provider().authorization.browser;
+    const protocols = this.provider().authorization;
+    const browser =
+      session.flow === OAuthFlow.Siwc ? protocols.siwc : protocols.browser;
     if (!browser)
       throw new OAuthError("Browser authorization is unavailable", 400);
     const { url, state: normalizedState } = browser.normalizeCallback(redirect);
@@ -576,7 +601,7 @@ export class ProviderOAuthAccountCore {
     });
     const operation = (async () => {
       try {
-        const tokens = await browser.exchange(code, session);
+        const tokens = await browser.exchange(code, session, url);
         await this.updateAuthorization(generation, async (account) => {
           const pending = this.ownedSession(account, id, actor);
           if (
@@ -738,6 +763,20 @@ export class ProviderOAuthAccountCore {
     );
   }
   private async disconnect(): Promise<void> {
+    const disconnect = this.provider().disconnect;
+    if (disconnect) {
+      const generation = this.requireAccount().generation;
+      await this.coordinateTokens(generation, async () => {
+        if (this.requireAccount().generation !== generation)
+          throw new OAuthError(
+            "Account changed during disconnect",
+            409,
+            "account_changed",
+          );
+        await disconnect();
+      });
+      return;
+    }
     await this.change((account) => {
       if (!account) throw new OAuthError("Account does not exist", 404);
       account.generation++;
@@ -772,6 +811,7 @@ export class ProviderOAuthAccountCore {
           command.connection,
           command.provider_type,
           command.flow,
+          command.request_consent,
         );
       case "complete":
         return this.complete(
@@ -825,17 +865,7 @@ export class ProviderOAuthAccountCore {
       case "view":
         return this.view();
       case "readiness":
-        try {
-          this.active();
-          return { ready: true };
-        } catch (error) {
-          if (
-            error instanceof OAuthError &&
-            error.code === "oauth_account_unavailable"
-          )
-            return { ready: false };
-          throw error;
-        }
+        return accountReadiness(this.requireAccount());
       case "retry_project": {
         const background = this.provider().background;
         if (!background)

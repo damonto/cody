@@ -44,6 +44,7 @@ export function Authorization({
   occupied: string[];
 }) {
   const { accountRef, connection } = options;
+  const [welcome, setWelcome] = useState(false);
   const [flow, setFlow] = useState<OAuthFlow>(OAuthFlow.Device);
   const {
     callback,
@@ -63,12 +64,40 @@ export function Authorization({
     view,
     active,
     error,
-  } = useAuthorization(options);
+  } = useAuthorization({
+    ...options,
+    onAuthorized: (account) => {
+      options.onAuthorized(account);
+      if (account.codex?.mode === "siwc" && account.codex.plan_usage_enabled) {
+        try {
+          if (!localStorage.getItem(`cody:siwc-welcome:${account.account_ref}`))
+            setWelcome(true);
+        } catch {
+          setWelcome(true);
+        }
+      }
+    },
+  });
   const failedAdoption = adopt.error ? adopt.variables : undefined;
   const reusable = available.data?.filter(
     (value) =>
       value.account_ref !== accountRef && !occupied.includes(value.account_ref),
   );
+  const siwc = view?.codex?.mode === "siwc";
+  let selectedFlow = flow;
+  if (accountRef && view?.codex) {
+    if (siwc) selectedFlow = OAuthFlow.Siwc;
+    else if (flow === OAuthFlow.Siwc) selectedFlow = OAuthFlow.Device;
+  }
+  const dismissWelcome = () => {
+    try {
+      if (view?.account_ref)
+        localStorage.setItem(`cody:siwc-welcome:${view.account_ref}`, "seen");
+    } catch {
+      /* Preferences may be unavailable in private browsing. */
+    }
+    setWelcome(false);
+  };
   const pending = authorization?.status === OAuthSessionStatus.Pending;
   return (
     <div className="space-y-3">
@@ -82,25 +111,37 @@ export function Authorization({
         )}
       </div>
       <Tabs
-        value={flow}
+        value={selectedFlow}
         onValueChange={(value) => {
-          if (value === OAuthFlow.Device || value === OAuthFlow.Pkce)
+          if (
+            value === OAuthFlow.Device ||
+            value === OAuthFlow.Pkce ||
+            value === OAuthFlow.Siwc
+          )
             setFlow(value);
         }}
       >
-        <TabsList>
-          <TabsTrigger value={OAuthFlow.Device} disabled={!!active}>
+        <TabsList className="grid h-auto w-full grid-cols-3">
+          <TabsTrigger value={OAuthFlow.Device} disabled={!!active || !!siwc}>
             Device code
           </TabsTrigger>
-          <TabsTrigger value={OAuthFlow.Pkce} disabled={!!active}>
+          <TabsTrigger value={OAuthFlow.Pkce} disabled={!!active || !!siwc}>
             Paste callback URL
+          </TabsTrigger>
+          <TabsTrigger
+            value={OAuthFlow.Siwc}
+            disabled={!!active || (!!accountRef && !!view?.codex && !siwc)}
+          >
+            SIWC
           </TabsTrigger>
         </TabsList>
       </Tabs>
       <p className="text-xs text-muted-foreground">
-        {flow === OAuthFlow.Device
-          ? "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first."
-          : "Sign in in this browser, then paste the localhost address the browser was sent to."}
+        {selectedFlow === OAuthFlow.Siwc
+          ? "Use your ChatGPT plan in Cody through Sign in with ChatGPT. After approval, paste the complete 127.0.0.1 callback URL."
+          : selectedFlow === OAuthFlow.Device
+            ? "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first."
+            : "Sign in in this browser, then paste the localhost address the browser was sent to."}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button
@@ -116,14 +157,16 @@ export function Authorization({
             submit.reset();
             retry.reset();
             cancel.reset();
-            start.mutate(flow);
+            start.mutate(selectedFlow);
           }}
         >
           {start.isPending
             ? "Creating authorization…"
-            : accountRef
-              ? "Reauthorize account"
-              : "Authorize with ChatGPT"}
+            : selectedFlow === OAuthFlow.Siwc
+              ? "Continue with ChatGPT"
+              : accountRef
+                ? "Reauthorize account"
+                : "Authorize with ChatGPT"}
         </Button>
         {accountRef && (
           <>
@@ -132,6 +175,7 @@ export function Authorization({
               variant="outline"
               disabled={
                 view?.status !== OAuthAccountViewStatus.Ready ||
+                (siwc && !view?.codex?.plan_usage_enabled) ||
                 refresh.isPending
               }
               onClick={() =>
@@ -145,6 +189,7 @@ export function Authorization({
               variant="outline"
               disabled={
                 view?.status !== OAuthAccountViewStatus.Ready ||
+                (siwc && !view?.codex?.plan_usage_enabled) ||
                 refresh.isPending
               }
               onClick={() => refresh.mutate({ ref: accountRef, kind: "quota" })}
@@ -235,7 +280,7 @@ export function Authorization({
             </>
           )}
           {pending &&
-            authorization.flow === OAuthFlow.Pkce &&
+            authorization.flow !== OAuthFlow.Device &&
             authorization.url && (
               <>
                 <Button asChild type="button" variant="outline">
@@ -254,7 +299,9 @@ export function Authorization({
                   below. This session lasts ten minutes.
                 </p>
                 <Label htmlFor={`callback-${rowId}`}>
-                  Localhost callback URL
+                  {authorization.flow === OAuthFlow.Siwc
+                    ? "127.0.0.1 callback URL"
+                    : "Localhost callback URL"}
                 </Label>
                 <Input
                   id={`callback-${rowId}`}
@@ -263,7 +310,11 @@ export function Authorization({
                   spellCheck={false}
                   value={callback}
                   onChange={(event) => setCallback(event.target.value)}
-                  placeholder="http://localhost:1455/auth/callback?code=…&state=…"
+                  placeholder={
+                    authorization.flow === OAuthFlow.Siwc
+                      ? "http://127.0.0.1:1455/auth/callback?code=…&state=…&client_id=…"
+                      : "http://localhost:1455/auth/callback?code=…&state=…"
+                  }
                 />
                 <Button
                   type="button"
@@ -304,6 +355,54 @@ export function Authorization({
           )}
         </div>
       )}
+      {siwc && (
+        <div className="space-y-2 text-xs text-muted-foreground">
+          <p>
+            {view?.codex?.plan_usage_enabled
+              ? "ChatGPT plan usage enabled"
+              : "ChatGPT plan usage disabled"}
+          </p>
+          <a
+            className="underline"
+            href="https://chatgpt.com/settings/usage"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Manage ChatGPT usage
+          </a>
+          {!view?.codex?.plan_usage_enabled && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!!active || start.isPending}
+              onClick={() =>
+                start.mutate({ flow: OAuthFlow.Siwc, requestConsent: true })
+              }
+            >
+              Enable ChatGPT plan usage
+            </Button>
+          )}
+        </div>
+      )}
+      <AlertDialog
+        open={welcome}
+        onOpenChange={(open) => {
+          if (!open) dismissWelcome();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>You’re using your ChatGPT plan</AlertDialogTitle>
+            <AlertDialogDescription>
+              Eligible requests in Cody use your ChatGPT plan. Manage usage and
+              app access in ChatGPT Settings.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction>Got it</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {error && (
         <ErrorNotice
           error={error}
@@ -346,8 +445,11 @@ export function Authorization({
             <AlertDialogTitle>Disconnect this account?</AlertDialogTitle>
             <AlertDialogDescription>
               This deletes its local tokens immediately, including for active
-              configurations. It does not sign the account out of ChatGPT. You
-              can reauthorize the same account later.
+              configurations.{" "}
+              {siwc
+                ? "Remote session revocation will be attempted. Unconfirmed revocation is reported here."
+                : "It does not sign the account out of ChatGPT."}{" "}
+              You can reauthorize the same account later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {refresh.error && <ErrorNotice error={refresh.error} />}

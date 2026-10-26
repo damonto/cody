@@ -28,6 +28,7 @@ export async function tableLayout(db: SqlDatabase): Promise<TableLayout> {
     "object_storage",
     "object_versions",
     "object_alarms",
+    "oauth_host_identity",
   ]);
   const existing = (
     await db

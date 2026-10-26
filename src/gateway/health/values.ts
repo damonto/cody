@@ -27,6 +27,7 @@ export const ProviderAvailabilityReason = {
   Cooling: "cooling",
   HealthReadFailed: "health_read_failed",
   AccountNotReady: "account_not_ready",
+  RequestUnsupported: "request_unsupported",
 } as const;
 
 export type ProviderAvailabilityReason =

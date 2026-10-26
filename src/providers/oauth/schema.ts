@@ -6,6 +6,7 @@ import {
   codexAccountSchema,
   codexCredentialSchema,
   resetCreditsSchema,
+  codexModeSchema,
 } from "../codex/account-schema.ts";
 import {
   claudeAccountSchema,
@@ -100,6 +101,7 @@ export const subscriptionSchema = z.object({
 export {
   resetCreditSchema,
   resetCreditsSchema,
+  codexModeSchema,
   type ResetCredit,
   type ResetCredits,
 } from "../codex/account-schema.ts";
@@ -147,7 +149,10 @@ export const accountViewSchema = z.object({
 });
 export type AccountView = z.output<typeof accountViewSchema>;
 /** Minimal credential readiness; never includes account metadata or tokens. */
-export const accountReadinessSchema = z.object({ ready: z.boolean() });
+export const accountReadinessSchema = z.object({
+  ready: z.boolean(),
+  codex_mode: codexModeSchema.optional(),
+});
 export const sessionStatusSchema = z.enum(OAuthSessionStatus);
 export const sessionViewSchema = z.object({
   id: z.string(),
