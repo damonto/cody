@@ -1020,9 +1020,11 @@ test("project timeout retains authorization and retries after the OAuth session 
 test("onboarding can take more than five polls without failing authorization", async () => {
   let onboards = 0;
   let finishOnboarding = false;
-  override = (request) => {
+  override = async (request) => {
     if (request.url.includes(":loadCodeAssist")) return Response.json({});
     if (request.url.includes(":onboardUser")) {
+      // Each poll fits waitFor's budget; six polls exceed its default timeout.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       onboards++;
       return Response.json(
         finishOnboarding
@@ -1035,16 +1037,19 @@ test("onboarding can take more than five polls without failing authorization", a
   const { stub, session } = await start();
   await complete(stub, session);
   expect((await settleSession(stub, session)).status).toBe("complete");
+  // Wait for each poll's commit instead of fitting all six into one waitFor.
   // Automatic alarms may add polls; keep onboarding pending until released.
-  await vi.waitFor(async () => {
-    await runDurableObjectAlarm(stub);
-    expect(onboards).toBeGreaterThan(5);
-    const project = storedObject.parse(
-      (await storage(stub)).antigravity_initialization,
-    );
-    // Wait for every poll to commit, including the initial project lookup.
-    expect(project.attempts).toBe(onboards + 1);
-  });
+  for (let polls = 1; polls <= 6; polls++) {
+    await vi.waitFor(async () => {
+      await runDurableObjectAlarm(stub);
+      expect(onboards).toBeGreaterThanOrEqual(polls);
+      const project = storedObject.parse(
+        (await storage(stub)).antigravity_initialization,
+      );
+      // Include the initial project lookup before the onboarding polls.
+      expect(project.attempts).toBe(onboards + 1);
+    });
+  }
   expect(
     await accountReply(stub.run({ action: "view" }), accountViewSchema),
   ).toMatchObject({
