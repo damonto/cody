@@ -527,7 +527,9 @@ test("SIWC signs in with a pasted callback and explains ChatGPT plan usage", asy
   await page.goto("/console/providers/codex");
   await page.getByRole("button", { name: "Add ChatGPT account" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("tab", { name: "SIWC", exact: true }).click();
+  await dialog
+    .getByRole("tab", { name: "Sign in with ChatGPT", exact: true })
+    .click();
   await dialog.getByRole("button", { name: "Continue with ChatGPT" }).click();
   await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
   await dialog

@@ -132,13 +132,13 @@ export function Authorization({
             value={OAuthFlow.Siwc}
             disabled={!!active || (!!accountRef && !!view?.codex && !siwc)}
           >
-            SIWC
+            Sign in with ChatGPT
           </TabsTrigger>
         </TabsList>
       </Tabs>
       <p className="text-xs text-muted-foreground">
         {selectedFlow === OAuthFlow.Siwc
-          ? "Use your ChatGPT plan in Cody through Sign in with ChatGPT. After approval, paste the complete 127.0.0.1 callback URL."
+          ? "Use your ChatGPT plan in Cody through Sign in with ChatGPT."
           : selectedFlow === OAuthFlow.Device
             ? "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first."
             : "Sign in in this browser, then paste the localhost address the browser was sent to."}
