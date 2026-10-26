@@ -116,12 +116,9 @@ export function parseUsage(
   ] as const) {
     const window = data[key];
     if (!window) continue;
-    const model =
-      key === "seven_day_opus"
-        ? "opus"
-        : key === "seven_day_sonnet"
-          ? "sonnet"
-          : null;
+    let model: string | null = null;
+    if (key === "seven_day_opus") model = "opus";
+    else if (key === "seven_day_sonnet") model = "sonnet";
     groups.push({
       id: key,
       label: key.replaceAll("_", " "),

@@ -83,12 +83,9 @@ export function xaiLimit(
   if (!subscription && !spending) return undefined;
   const raw =
     root.resets_at ?? error.resets_at ?? root.reset_at ?? error.reset_at;
-  let until =
-    typeof raw === "number"
-      ? raw < 1e12
-        ? raw * 1000
-        : raw
-      : Date.parse(text(raw));
+  let until: number;
+  if (typeof raw === "number") until = raw < 1e12 ? raw * 1000 : raw;
+  else until = Date.parse(text(raw));
   if (!Number.isFinite(until) || until <= now) {
     const retry = headers.get("retry-after");
     until =

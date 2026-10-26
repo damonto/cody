@@ -303,11 +303,10 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
   const item = detail.data;
   const observation = item.upstream_observation;
   const effort = observation?.request.reasoning?.effort;
-  const reasoningEffort = effort
-    ? effort.charAt(0).toUpperCase() + effort.slice(1)
-    : observation
-      ? "Not specified"
-      : "Not recorded";
+  let reasoningEffort = "Not recorded";
+  if (effort)
+    reasoningEffort = effort.charAt(0).toUpperCase() + effort.slice(1);
+  else if (observation) reasoningEffort = "Not specified";
   return (
     <div className="space-y-5 p-6">
       <div className="flex items-center justify-between">

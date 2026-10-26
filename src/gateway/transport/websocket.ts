@@ -197,7 +197,10 @@ export async function websocketOverConnection(
       if (ended) {
         return;
       }
-      driver.close(reason, code === 1005 ? 1000 : code === 1006 ? 1011 : code);
+      let closeCode = code;
+      if (code === 1005) closeCode = 1000;
+      else if (code === 1006) closeCode = 1011;
+      driver.close(reason, closeCode);
       closeTimer = setTimeout(
         () =>
           fail(

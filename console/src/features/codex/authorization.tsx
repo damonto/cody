@@ -35,6 +35,15 @@ import {
 } from "@/features/oauth-accounts/use-authorization";
 import { planLabel } from "./plan";
 
+const flowDescriptions = {
+  [OAuthFlow.Device]:
+    "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first.",
+  [OAuthFlow.Pkce]:
+    "Sign in in this browser, then paste the localhost address the browser was sent to.",
+  [OAuthFlow.Siwc]:
+    "Use your ChatGPT plan in Cody through Sign in with ChatGPT.",
+} satisfies Record<OAuthFlow, string>;
+
 export function Authorization({
   rowId,
   occupied,
@@ -99,6 +108,13 @@ export function Authorization({
     setWelcome(false);
   };
   const pending = authorization?.status === OAuthSessionStatus.Pending;
+  let authorizeLabel: string;
+  if (start.isPending) authorizeLabel = "Creating authorization…";
+  else if (selectedFlow === OAuthFlow.Siwc)
+    authorizeLabel = "Continue with ChatGPT";
+  else if (accountRef) authorizeLabel = "Reauthorize account";
+  else authorizeLabel = "Authorize with ChatGPT";
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -137,11 +153,7 @@ export function Authorization({
         </TabsList>
       </Tabs>
       <p className="text-xs text-muted-foreground">
-        {selectedFlow === OAuthFlow.Siwc
-          ? "Use your ChatGPT plan in Cody through Sign in with ChatGPT."
-          : selectedFlow === OAuthFlow.Device
-            ? "Sign in on any device and enter a one-time code. Enable device code authorization in ChatGPT security settings first."
-            : "Sign in in this browser, then paste the localhost address the browser was sent to."}
+        {flowDescriptions[selectedFlow]}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button
@@ -160,13 +172,7 @@ export function Authorization({
             start.mutate(selectedFlow);
           }}
         >
-          {start.isPending
-            ? "Creating authorization…"
-            : selectedFlow === OAuthFlow.Siwc
-              ? "Continue with ChatGPT"
-              : accountRef
-                ? "Reauthorize account"
-                : "Authorize with ChatGPT"}
+          {authorizeLabel}
         </Button>
         {accountRef && (
           <>

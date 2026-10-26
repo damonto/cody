@@ -85,11 +85,10 @@ function stubTool(name: string): JsonObject {
  * upstream checks, or `undefined` when the request already satisfies it.
  */
 function emulatedSystem(system: unknown): unknown[] | undefined {
-  const blocks: unknown[] = Array.isArray(system)
-    ? [...system]
-    : typeof system === "string"
-      ? [{ type: "text", text: system }]
-      : [];
+  let blocks: unknown[] = [];
+  if (Array.isArray(system)) blocks = [...system];
+  else if (typeof system === "string")
+    blocks = [{ type: "text", text: system }];
   const index = textOf(blocks[0])?.startsWith(ATTRIBUTION_PREFIX) ? 1 : 0;
   if (Array.isArray(system) && isPromptPrefix(textOf(blocks[index]))) {
     return undefined;

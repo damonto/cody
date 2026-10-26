@@ -282,20 +282,19 @@ export class ProviderOAuthAccountCore {
     const account = this.requireAccount();
     const device = session.flow === OAuthFlow.Device;
     const authorization = this.provider().authorization;
+    let url: string | null = null;
+    if (session.status === OAuthSessionStatus.Pending) {
+      if (device) url = authorization.device?.url(session) ?? null;
+      else if (session.flow === OAuthFlow.Siwc)
+        url = authorization.siwc?.url(session) ?? null;
+      else url = authorization.browser?.url(session) ?? null;
+    }
     return {
       id: `${account.account_ref}.${session.id}`,
       account_ref: account.account_ref,
       status: session.status,
       expires_at: session.expires_at,
-      url:
-        session.status !== OAuthSessionStatus.Pending
-          ? null
-          : device
-            ? (authorization.device?.url(session) ?? null)
-            : ((session.flow === OAuthFlow.Siwc
-                ? authorization.siwc
-                : authorization.browser
-              )?.url(session) ?? null),
+      url,
       flow: session.flow,
       user_code:
         device && session.status === OAuthSessionStatus.Pending
@@ -881,18 +880,16 @@ export class ProviderOAuthAccountCore {
       await this.expireSession();
       return { ok: true, data: await this.dispatch(command) };
     } catch (error) {
+      let status = 503;
+      if (error instanceof OAuthError) status = error.status;
+      else if (error instanceof z.ZodError) status = 400;
       return {
         ok: false,
         error:
           error instanceof z.ZodError
             ? "Invalid account data"
             : safeError(error),
-        status:
-          error instanceof OAuthError
-            ? error.status
-            : error instanceof z.ZodError
-              ? 400
-              : 503,
+        status,
         code:
           error instanceof OAuthError ? error.code : "oauth_operation_failed",
       };

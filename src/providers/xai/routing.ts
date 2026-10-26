@@ -81,11 +81,9 @@ export async function xaiQuotaRoute(
   );
   const allBlocked =
     checks.length > 0 && checks.every((check) => check.availability?.blocked);
-  const selected = subscription.length
-    ? subscription
-    : provider.allow_extra_usage && allBlocked
-      ? checks.filter((check) => check.availability?.extra)
-      : [];
+  let selected = subscription;
+  if (!subscription.length && provider.allow_extra_usage && allBlocked)
+    selected = checks.filter((check) => check.availability?.extra);
   const recoveryTimes = checks.flatMap((check) =>
     check.availability?.until === undefined ? [] : [check.availability.until],
   );

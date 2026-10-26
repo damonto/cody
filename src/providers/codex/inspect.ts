@@ -40,17 +40,14 @@ export async function inspectCodexResponse(
 
   let usageLimit: CodexUsageLimit | undefined;
   let observedUntil = 0;
+  let quotaCodes: readonly string[] = [];
+  if (quotaResponse)
+    quotaCodes =
+      options.mode === "siwc" ? [SIWC_QUOTA_CODE] : CODEX_QUOTA_CODES;
   const inspected = await inspectRetryError(
     response,
     options.signal,
-    [
-      ...(options.errorCodes ?? []),
-      ...(quotaResponse
-        ? options.mode === "siwc"
-          ? [SIWC_QUOTA_CODE]
-          : CODEX_QUOTA_CODES
-        : []),
-    ],
+    [...(options.errorCodes ?? []), ...quotaCodes],
     options.timeoutMs,
     {
       ...(format ? { format } : {}),

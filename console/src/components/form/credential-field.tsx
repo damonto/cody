@@ -34,6 +34,9 @@ export function CredentialField({
   const invalid = !!errors?.length;
   const loading = credential.status === "revealing";
   const hiding = credential.visible || loading;
+  let visibilityIcon = <Eye />;
+  if (loading) visibilityIcon = <Loader2 className="animate-spin" />;
+  else if (hiding) visibilityIcon = <EyeOff />;
   return (
     <Field data-invalid={invalid}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
@@ -73,13 +76,7 @@ export function CredentialField({
           onMouseDown={keepInputFocus}
           onClick={credential.toggle}
         >
-          {loading ? (
-            <Loader2 className="animate-spin" />
-          ) : hiding ? (
-            <EyeOff />
-          ) : (
-            <Eye />
-          )}
+          {visibilityIcon}
         </Button>
       </div>
       {generate && (

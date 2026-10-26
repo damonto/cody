@@ -172,12 +172,10 @@ export function AccountCard({
           </div>
         ))}
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {credits &&
-            (credits.unlimited ? (
-              <span>Credits: unlimited</span>
-            ) : credits.has_credits ? (
-              <span>Credits: {credits.balance ?? "available"}</span>
-            ) : null)}
+          {credits?.unlimited && <span>Credits: unlimited</span>}
+          {credits && !credits.unlimited && credits.has_credits && (
+            <span>Credits: {credits.balance ?? "available"}</span>
+          )}
           {((!siwc && quota?.stale) || staleError) && (
             <Badge variant="outline">Stale</Badge>
           )}

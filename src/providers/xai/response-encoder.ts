@@ -303,48 +303,37 @@ export class ResponseEncoder {
             ? { summary_index: item.partIndex ?? 0 }
             : { content_index: item.partIndex ?? 0 }),
         };
+        let textEvent = "response.output_text";
+        if (thinking) textEvent = "response.reasoning_summary_text";
+        else if (item.refusal) textEvent = "response.refusal";
         if (visible.length > sent.length)
           events.push(
-            this.event(
-              thinking
-                ? "response.reasoning_summary_text.delta"
-                : item.refusal
-                  ? "response.refusal.delta"
-                  : "response.output_text.delta",
-              { ...fields, delta: visible.slice(sent.length) },
-            ),
+            this.event(`${textEvent}.delta`, {
+              ...fields,
+              delta: visible.slice(sent.length),
+            }),
           );
         events.push(
-          this.event(
-            thinking
-              ? "response.reasoning_summary_text.done"
-              : item.refusal
-                ? "response.refusal.done"
-                : "response.output_text.done",
-            {
-              ...fields,
-              ...(item.refusal ? { refusal: visible } : { text: visible }),
-            },
-          ),
+          this.event(`${textEvent}.done`, {
+            ...fields,
+            ...(item.refusal ? { refusal: visible } : { text: visible }),
+          }),
         );
+        let part: Wire;
+        if (thinking) part = { type: "summary_text", text: visible };
+        else if (item.refusal) part = { type: "refusal", refusal: visible };
+        else
+          part = {
+            type: "output_text",
+            text: visible,
+            annotations: records(result.content)[0]?.annotations ?? [],
+          };
         events.push(
           this.event(
             thinking
               ? "response.reasoning_summary_part.done"
               : "response.content_part.done",
-            {
-              ...fields,
-              part: thinking
-                ? { type: "summary_text", text: visible }
-                : item.refusal
-                  ? { type: "refusal", refusal: visible }
-                  : {
-                      type: "output_text",
-                      text: visible,
-                      annotations:
-                        records(result.content)[0]?.annotations ?? [],
-                    },
-            },
+            { ...fields, part },
           ),
         );
       }
@@ -561,14 +550,14 @@ export class ResponseEncoder {
           ),
         );
       if (this.options.anthropic) {
-        const stop =
-          type === "response.incomplete"
-            ? object(response.incomplete_details).reason === "max_output_tokens"
+        let stop = "end_turn";
+        if (type === "response.incomplete")
+          stop =
+            object(response.incomplete_details).reason === "max_output_tokens"
               ? "max_tokens"
-              : "pause_turn"
-            : this.output.some((part) => part.type === "tool_use")
-              ? "tool_use"
-              : "end_turn";
+              : "pause_turn";
+        else if (this.output.some((part) => part.type === "tool_use"))
+          stop = "tool_use";
         this.result = {
           id: this.metadata.id,
           type: "message",
@@ -644,12 +633,13 @@ export class ResponseEncoder {
       return events;
     const index = this.outputIndex(event);
     const item = this.ensure(index);
-    item.partIndex ??=
-      typeof event.summary_index === "number"
-        ? event.summary_index
-        : typeof event.content_index === "number"
-          ? event.content_index
-          : 0;
+    if (item.partIndex === null || item.partIndex === undefined) {
+      if (typeof event.summary_index === "number")
+        item.partIndex = event.summary_index;
+      else if (typeof event.content_index === "number")
+        item.partIndex = event.content_index;
+      else item.partIndex = 0;
+    }
     if (
       type === "response.content_part.done" ||
       type === "response.reasoning_summary_part.done"

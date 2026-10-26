@@ -757,38 +757,40 @@ test("quota and model verification retain useful data and clear after successful
   );
   const challenge =
     "https://accounts.google.com/signin/continue?state=account-check";
-  override = (request) =>
-    [":retrieveUserQuotaSummary", ":fetchAvailableModels"].some((method) =>
-      request.url.includes(method),
+  override = (request) => {
+    if (
+      [":retrieveUserQuotaSummary", ":fetchAvailableModels"].some((method) =>
+        request.url.includes(method),
+      )
     )
-      ? Response.json(
-          {
-            error: {
-              code: 403,
-              message: "Verify your account to continue.",
-              details: [
-                {
-                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                  reason: "VALIDATION_REQUIRED",
-                  metadata: {
-                    validation_error_message:
-                      "Verify your account to continue.",
-                    validation_url: challenge,
-                  },
+      return Response.json(
+        {
+          error: {
+            code: 403,
+            message: "Verify your account to continue.",
+            details: [
+              {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                reason: "VALIDATION_REQUIRED",
+                metadata: {
+                  validation_error_message: "Verify your account to continue.",
+                  validation_url: challenge,
                 },
-              ],
-            },
+              },
+            ],
           },
-          { status: 403 },
-        )
-      : request.url.includes(":loadCodeAssist")
-        ? Response.json({
-            paidTier: {
-              id: "pro",
-              availableCredits: [{ creditType: "GOOGLE_ONE_AI" }],
-            },
-          })
-        : undefined;
+        },
+        { status: 403 },
+      );
+    if (request.url.includes(":loadCodeAssist"))
+      return Response.json({
+        paidTier: {
+          id: "pro",
+          availableCredits: [{ creditType: "GOOGLE_ONE_AI" }],
+        },
+      });
+    return undefined;
+  };
   const failed = await accountReply(
     stub.run({ action: "quota", force: true }),
     accountViewSchema,
@@ -1291,12 +1293,12 @@ test("pending projects use committed proxy changes instead of the authorization 
 
 test("project setup preserves a working account during reauthorization", async () => {
   const { stub, connection, ref } = await ready();
-  override = (request) =>
-    request.url.includes(":loadCodeAssist")
-      ? Response.json({})
-      : request.url.includes(":onboardUser")
-        ? Response.json({ done: false })
-        : undefined;
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) return Response.json({});
+    if (request.url.includes(":onboardUser"))
+      return Response.json({ done: false });
+    return undefined;
+  };
   const next = await start(connection, ref);
   await complete(stub, next.session, "replacement");
   expect((await settleSession(stub, next.session)).status).toBe("complete");
@@ -1358,16 +1360,17 @@ test.each([undefined, "refresh-token"])(
       ).refresh_token,
     ).toBeUndefined();
     await expireToken(stub);
-    override = (request) =>
-      request.url.includes("/token")
-        ? Response.json({
-            access_token: "rotated-access",
-            refresh_token: "rotated-refresh",
-            expires_in: 3600,
-          })
-        : request.url.includes(":loadCodeAssist")
-          ? new Response("temporary", { status: 503 })
-          : undefined;
+    override = (request) => {
+      if (request.url.includes("/token"))
+        return Response.json({
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+          expires_in: 3600,
+        });
+      if (request.url.includes(":loadCodeAssist"))
+        return new Response("temporary", { status: 503 });
+      return undefined;
+    };
     expect(await resolve(stub, connection)).toMatchObject({
       token: "rotated-access",
     });
@@ -2127,11 +2130,8 @@ for (const mode of ["inherit", "override", "direct"] as const) {
       provider_id: "antigravity",
       credential_id: "primary",
       provider_proxy_group: first.id,
-      ...(mode === "override"
-        ? { credential_proxy_group: second.id }
-        : mode === "direct"
-          ? { credential_proxy_group: null }
-          : {}),
+      ...(mode === "override" ? { credential_proxy_group: second.id } : {}),
+      ...(mode === "direct" ? { credential_proxy_group: null } : {}),
     };
     const ref = crypto.randomUUID();
     const config = settings(connection, ref, [first, second]);
@@ -2164,13 +2164,14 @@ for (const mode of ["inherit", "override", "direct"] as const) {
     ])
       expect(records.some((record) => record.url.includes(method))).toBe(true);
     expect(
-      records.every((record) =>
-        mode === "direct"
-          ? record.proxy === null
-          : mode === "override"
-            ? record.proxy?.includes("-override.test")
-            : record.proxy !== null && !record.proxy.includes("-override.test"),
-      ),
+      records.every((record) => {
+        if (mode === "direct") return record.proxy === null;
+        if (mode === "override")
+          return record.proxy?.includes("-override.test");
+        return (
+          record.proxy !== null && !record.proxy.includes("-override.test")
+        );
+      }),
     ).toBe(true);
     if (mode !== "direct") {
       const selected = mode === "override" ? second : first;
@@ -2808,12 +2809,12 @@ test("routing skips project setup accounts and uses the ready account without ch
   provider.account_selection = "session_affinity";
   const pending = accounts[0];
   await pending.stub.run({ action: "disconnect" });
-  override = (request) =>
-    request.url.includes(":loadCodeAssist")
-      ? Response.json({})
-      : request.url.includes(":onboardUser")
-        ? Response.json({ done: false })
-        : undefined;
+  override = (request) => {
+    if (request.url.includes(":loadCodeAssist")) return Response.json({});
+    if (request.url.includes(":onboardUser"))
+      return Response.json({ done: false });
+    return undefined;
+  };
   const next = await start(pending.connection, pending.ref);
   await complete(pending.stub, next.session, "pending-project");
   await settleSession(pending.stub, next.session);

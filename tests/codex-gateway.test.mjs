@@ -925,11 +925,10 @@ test("Codex recovers one 401 on the same account without spending configured ret
         account: req.headers.get("chatgpt-account-id"),
         body: await req.text(),
       });
-      return calls.length === 1
-        ? new Response("unauthorized", { status: 401 })
-        : calls.length === 2
-          ? new Response("busy", { status: 503 })
-          : Response.json({ ok: true });
+      if (calls.length === 1)
+        return new Response("unauthorized", { status: 401 });
+      if (calls.length === 2) return new Response("busy", { status: 503 });
+      return Response.json({ ok: true });
     },
     request(body),
   );
@@ -1044,25 +1043,26 @@ function withCodexModes(f, modes) {
         (credential) => credential.auth.account_ref === ref,
       );
       const mode = modes[index] ?? "native";
+      let data;
+      if (command.action === "readiness")
+        data = { ready: true, codex_mode: mode };
+      else if (command.action === "codex_usage") data = { observed: true };
+      else if (mode === "siwc")
+        data = {
+          mode,
+          token: `access-${index}`,
+          siwc_subject: `subject-${index}`,
+          generation: 1,
+        };
+      else
+        data = {
+          token: `access-${index}`,
+          account_id: `workspace-${index}`,
+          generation: 1,
+        };
       return {
         ok: true,
-        data:
-          command.action === "readiness"
-            ? { ready: true, codex_mode: mode }
-            : command.action === "codex_usage"
-              ? { observed: true }
-              : mode === "siwc"
-                ? {
-                    mode,
-                    token: `access-${index}`,
-                    siwc_subject: `subject-${index}`,
-                    generation: 1,
-                  }
-                : {
-                    token: `access-${index}`,
-                    account_id: `workspace-${index}`,
-                    generation: 1,
-                  },
+        data,
       };
     },
   });

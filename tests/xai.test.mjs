@@ -1371,11 +1371,13 @@ test("xAI unreported quota respects paid balances, access denial and request fai
         return Response.json({}, { status: 401 });
       if (scenario === "billing" && url.search)
         return Response.json({}, { status: 503 });
+      let onDemandCap = {};
+      if (scenario === "missing") onDemandCap = undefined;
+      else if (scenario === "paid") onDemandCap = 100;
       return Response.json({
         config: {
           currentPeriod: { type: "weekly" },
-          onDemandCap:
-            scenario === "missing" ? undefined : scenario === "paid" ? 100 : {},
+          onDemandCap,
           onDemandUsed: {},
           prepaidBalance: scenario === "prepaid" ? 100 : {},
         },

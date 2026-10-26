@@ -26,9 +26,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const apply = () => {
       const root = document.documentElement;
       root.classList.remove("light", "dark");
-      root.classList.add(
-        theme === "system" ? (media.matches ? "dark" : "light") : theme,
-      );
+      let resolvedTheme = theme;
+      if (theme === "system") resolvedTheme = media.matches ? "dark" : "light";
+      root.classList.add(resolvedTheme);
     };
     apply();
     media.addEventListener("change", apply);

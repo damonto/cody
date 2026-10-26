@@ -150,6 +150,9 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
         const view = accounts.get(ref) ?? account(ref, false);
         accounts.set(ref, view);
         const device = input.flow === "device";
+        let flow: SessionView["flow"] = "pkce";
+        if (input.flow === "siwc") flow = "siwc";
+        else if (device) flow = "device";
         const session: SessionView = {
           id: `${ref}.${crypto.randomUUID()}`,
           account_ref: ref,
@@ -158,7 +161,7 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
           url: device
             ? "https://auth.openai.com/codex/device"
             : "https://auth.openai.com/oauth/authorize?state=e2e-state",
-          flow: input.flow === "siwc" ? "siwc" : device ? "device" : "pkce",
+          flow,
           user_code: device ? "ABCD-1234" : null,
           verification_uri: device
             ? "https://auth.openai.com/codex/device"

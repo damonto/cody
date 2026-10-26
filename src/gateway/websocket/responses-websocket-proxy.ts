@@ -636,16 +636,15 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
             ApiProtocol.Openai,
             state.selected_provider_type,
           ) === HealthFailureScope.Credential);
+      let diagnostic = "upstream_error";
+      if (usageLimit) diagnostic = "usage_limit_reached";
+      else if (keyFailure) diagnostic = "key_cooling_down";
       await this.closeAll(
         1011,
         keyFailure
           ? "selected upstream key is cooling down"
           : "upstream returned an error",
-        usageLimit
-          ? "usage_limit_reached"
-          : keyFailure
-            ? "key_cooling_down"
-            : "upstream_error",
+        diagnostic,
       );
     }
   }
@@ -679,12 +678,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     if (upstreamFailed) {
       await this.health.fail();
     }
-    const outcome =
-      state?.phase === SessionPhase.Connecting && upstreamFailed
-        ? "upstream_closed_during_connect"
-        : upstreamFailed
-          ? "upstream_closed_during_response"
-          : "upstream_closed";
+    let outcome = "upstream_closed";
+    if (state?.phase === SessionPhase.Connecting && upstreamFailed)
+      outcome = "upstream_closed_during_connect";
+    else if (upstreamFailed) outcome = "upstream_closed_during_response";
     await this.closeAll(
       event.code,
       event.reason || "upstream websocket closed",
@@ -1086,13 +1083,12 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       status === SessionAffinityStatus.Failed
         ? undefined
         : codexQuotaResetsAt(route.targets, selection, attempt.excluded);
-    const exhausted =
-      attempt.exhausted ??
-      (resetsAt === undefined
-        ? undefined
-        : siwcOnlySelection(selection)
-          ? siwcUsageLimitEvent()
-          : codexUsageLimitEvent(resetsAt));
+    let exhausted = attempt.exhausted;
+    if (exhausted === undefined && resetsAt !== undefined) {
+      exhausted = siwcOnlySelection(selection)
+        ? siwcUsageLimitEvent()
+        : codexUsageLimitEvent(resetsAt);
+    }
     const requestError = selection.credentialChecks.every(
       (check) => check.reason === ProviderAvailabilityReason.RequestUnsupported,
     )
@@ -1486,14 +1482,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   ): Promise<void> {
     const role = this.socketRole(socket);
     this.clearClientMessages();
+    let diagnostic = "unknown_socket_closed";
+    if (role === "client")
+      diagnostic = code === 1000 ? "client_closed" : "client_closed_abnormally";
     await this.closeAll(
       code,
       reason || `${role ?? "unknown"} websocket closed`,
-      role === "client"
-        ? code === 1000
-          ? "client_closed"
-          : "client_closed_abnormally"
-        : "unknown_socket_closed",
+      diagnostic,
       { wasClean },
     );
   }

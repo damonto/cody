@@ -127,12 +127,9 @@ export async function translateRequest(
           call({ ...part, arguments: part.input });
         } else if (part.type === "tool_result") {
           flush();
-          let output =
-            part.content === undefined
-              ? ""
-              : typeof part.content === "string"
-                ? part.content
-                : content(part.content);
+          let output: string | Wire[] = "";
+          if (typeof part.content === "string") output = part.content;
+          else if (part.content !== undefined) output = content(part.content);
           // Responses has no is_error flag; carry the failure in the tool result.
           if (part.is_error === true)
             output =
@@ -270,10 +267,14 @@ export async function translateRequest(
     ) {
       const budget =
         typeof thinking.budget_tokens === "number" ? thinking.budget_tokens : 0;
+      let resolvedEffort = effort;
+      if (resolvedEffort === null || resolvedEffort === undefined) {
+        resolvedEffort = "low";
+        if (budget >= 16384) resolvedEffort = "high";
+        else if (budget >= 4096) resolvedEffort = "medium";
+      }
       body.reasoning = {
-        effort:
-          effort ??
-          (budget >= 16384 ? "high" : budget >= 4096 ? "medium" : "low"),
+        effort: resolvedEffort,
         summary: "auto",
       };
     }

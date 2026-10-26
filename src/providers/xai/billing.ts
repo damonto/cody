@@ -162,6 +162,9 @@ export function billingQuota({
   // Subscription availability and resets must come from the credits response alone.
   const usedPercent = credits?.usagePercent ?? null;
   const window = credits?.periodType ?? "subscription";
+  let utilization: number | null = null;
+  if (onDemandCap !== null && onDemandUsed !== null)
+    utilization = onDemandCap > 0 ? (onDemandUsed / onDemandCap) * 100 : 100;
   return {
     xai_billing: {
       monthly_limit: monthlyLimit,
@@ -207,12 +210,7 @@ export function billingQuota({
             is_enabled: onDemandCap > 0,
             monthly_limit: onDemandCap,
             used_credits: onDemandUsed,
-            utilization:
-              onDemandUsed === null
-                ? null
-                : onDemandCap > 0
-                  ? (onDemandUsed / onDemandCap) * 100
-                  : 100,
+            utilization,
             currency: "USD",
           }
         : null,

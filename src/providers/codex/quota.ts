@@ -111,12 +111,9 @@ export function parseCodexWindow(
   const name = windowName(seconds);
   const resetAt = finite(window.reset_at);
   const resetAfter = finite(window.reset_after_seconds);
-  const reset =
-    resetAt !== null
-      ? resetAt * 1000
-      : resetAfter !== null
-        ? now + resetAfter * 1000
-        : null;
+  let reset: number | null = null;
+  if (resetAt !== null) reset = resetAt * 1000;
+  else if (resetAfter !== null) reset = now + resetAfter * 1000;
   return {
     id,
     label:

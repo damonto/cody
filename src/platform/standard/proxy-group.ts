@@ -1,3 +1,4 @@
+import { compareStrings } from "../../shared/compare.ts";
 import {
   planProxyGroupSync,
   reconcileProxyNodes,
@@ -59,7 +60,7 @@ export class ProxyGroupCore implements ProxyGroupObject {
       ...(
         await transaction.list<ProxyNodeState>({ prefix: NODE_PREFIX })
       ).values(),
-    ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    ].sort((a, b) => compareStrings(a.id, b.id));
   }
 
   private async bindings(
@@ -206,19 +207,18 @@ export class ProxyGroupCore implements ProxyGroupObject {
       const proxies = [];
       for (const node of await this.nodes(transaction)) {
         const health = await this.refreshedHealth(transaction, node, now);
+        let status = "healthy";
+        if (node.disabled) status = "disabled";
+        else if (health.cooling_until !== null) status = "cooling";
         proxies.push({
           id: node.id,
-          status: node.disabled
-            ? "disabled"
-            : health.cooling_until !== null
-              ? "cooling"
-              : "healthy",
+          status,
           failures: health.failures.length,
           cooling_until: health.cooling_until,
         });
       }
       const bindings = [...(await this.bindings(transaction)).entries()]
-        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        .sort((a, b) => compareStrings(a[0], b[0]))
         .map(([, binding]) => ({
           provider_id: binding.provider_id,
           ...(binding.credential_id === null

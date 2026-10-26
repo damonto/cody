@@ -95,6 +95,9 @@ export function ResetCreditsDialog({
       onOpenChange(false);
     },
   });
+  let resetLabel = "Spend 1 reset";
+  if (consume.isPending) resetLabel = "Resetting…";
+  else if (attempt) resetLabel = "Retry reset";
   return (
     <AlertDialog
       open={open}
@@ -186,11 +189,7 @@ export function ResetCreditsDialog({
               consume.mutate(request);
             }}
           >
-            {consume.isPending
-              ? "Resetting…"
-              : attempt
-                ? "Retry reset"
-                : "Spend 1 reset"}
+            {resetLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

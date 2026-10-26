@@ -70,16 +70,15 @@ export function AccountCard({
           !group.buckets.length ||
           group.buckets.some((bucket) => bucket.used_percent == null),
       ));
-  const badge =
-    baseBadge.tone === "ok" && quota?.xai_billing?.allow_access === false
-      ? { text: "Access restricted", tone: "warn" as const }
-      : baseBadge.tone === "ok" && quotaUnknown
-        ? {
-            text: "Quota unknown",
-            tone: "muted" as const,
-            title: "Subscription quota must be known before routing",
-          }
-        : baseBadge;
+  let badge: HealthBadge = baseBadge;
+  if (baseBadge.tone === "ok" && quota?.xai_billing?.allow_access === false)
+    badge = { text: "Access restricted", tone: "warn" };
+  else if (baseBadge.tone === "ok" && quotaUnknown)
+    badge = {
+      text: "Quota unknown",
+      tone: "muted",
+      title: "Subscription quota must be known before routing",
+    };
   const plan =
     quota?.subscription?.tier_name ?? quota?.subscription?.tier_id ?? null;
   const days = daysUntil(quota?.subscription?.active_until ?? null, now);

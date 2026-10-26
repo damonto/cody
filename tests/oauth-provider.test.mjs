@@ -749,11 +749,7 @@ for (const transition of ["start", "cancel", "expire"]) {
     assert.equal(committed.generation, f.initial.generation);
     assert.equal(
       committed.session.status,
-      transition === "start"
-        ? "pending"
-        : transition === "cancel"
-          ? "cancelled"
-          : "expired",
+      { start: "pending", cancel: "cancelled", expire: "expired" }[transition],
     );
     await f.core.transferReload();
     assert.equal((await f.core.run(f.resolve)).data.token, "rotated-access");

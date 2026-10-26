@@ -87,11 +87,10 @@ export class ResponseObserver {
       );
       state.prefix += text.slice(0, size);
       const candidate = state.prefix.trimStart();
-      const format = candidate.startsWith("{")
-        ? "json"
-        : SSE_PREFIXES.some((prefix) => candidate.startsWith(prefix))
-          ? "sse"
-          : undefined;
+      let format: "json" | "sse" | undefined;
+      if (candidate.startsWith("{")) format = "json";
+      else if (SSE_PREFIXES.some((prefix) => candidate.startsWith(prefix)))
+        format = "sse";
       if (!format) {
         if (
           state.prefix.length === MAX_FORMAT_PREFIX_CHARS ||

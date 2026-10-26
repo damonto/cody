@@ -121,23 +121,27 @@ export function Efficiency({ data }: { data: Summary }) {
       className="grid grid-cols-2 gap-y-4 rounded-xl border bg-card py-4 xl:grid-cols-4"
       aria-label="Efficiency"
     >
-      {items.map((item, index) => (
-        <div
-          key={item.title}
-          className={
-            "min-w-0 px-4 lg:px-5 " +
-            (index % 2 ? "border-l" : index ? "xl:border-l" : "")
-          }
-        >
-          <p className="text-xs text-muted-foreground" title={item.detail}>
-            {item.title}
-          </p>
-          <p className="mt-1 text-xl font-medium tracking-tight tabular-nums">
-            {item.value}
-          </p>
-          <p className="mt-1 text-[11px] text-muted-foreground">{item.note}</p>
-        </div>
-      ))}
+      {items.map((item, index) => {
+        let borderClass = "";
+        if (index % 2) borderClass = "border-l";
+        else if (index) borderClass = "xl:border-l";
+        return (
+          <div
+            key={item.title}
+            className={"min-w-0 px-4 lg:px-5 " + borderClass}
+          >
+            <p className="text-xs text-muted-foreground" title={item.detail}>
+              {item.title}
+            </p>
+            <p className="mt-1 text-xl font-medium tracking-tight tabular-nums">
+              {item.value}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {item.note}
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }

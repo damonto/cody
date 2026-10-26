@@ -87,11 +87,9 @@ async function authenticateAccess(
       audience: env.ACCESS_AUD,
       algorithms: ["RS256"],
     });
-    return typeof payload.email === "string"
-      ? payload.email
-      : typeof payload.sub === "string"
-        ? payload.sub
-        : "access-service";
+    if (typeof payload.email === "string") return payload.email;
+    if (typeof payload.sub === "string") return payload.sub;
+    return "access-service";
   } catch {
     return null;
   }

@@ -26,16 +26,14 @@ export function assignIdentities(value: unknown, rows: EntityRows): unknown {
       const ref = typeof item.id === "string" ? item.id : crypto.randomUUID();
       if (ids.has(ref)) throw new Error("Entity references must be unique");
       const previous = table.find((row) => row.id === ref);
-      if (
-        previous &&
-        parentKey &&
-        (parentKey === "provider_id" && "provider_id" in previous
-          ? previous.provider_id
-          : "group_id" in previous
-            ? previous.group_id
-            : undefined) !== parent
-      )
-        throw new Error("An entity cannot move to another parent");
+      if (previous && parentKey) {
+        let previousParent: unknown;
+        if (parentKey === "provider_id" && "provider_id" in previous)
+          previousParent = previous.provider_id;
+        else if ("group_id" in previous) previousParent = previous.group_id;
+        if (previousParent !== parent)
+          throw new Error("An entity cannot move to another parent");
+      }
       const id = previous ? String(previous.id) : crypto.randomUUID();
       const name = item.name ?? previous?.name;
       item.name = z.string().trim().min(1).max(256).parse(name);
@@ -228,7 +226,10 @@ export function projectConfiguration(
         context_window: model_settings?.[model]?.context_window ?? null,
       });
     }
-    for (const [position, credential] of credentials.entries())
+    for (const [position, credential] of credentials.entries()) {
+      let proxyMode: "inherit" | "direct" | "group" = "group";
+      if (credential.proxy_group === undefined) proxyMode = "inherit";
+      else if (credential.proxy_group === null) proxyMode = "direct";
       rows.provider_credentials.push({
         ...metadata(credential.id, previous.provider_credentials),
         provider_id: id,
@@ -243,14 +244,10 @@ export function projectConfiguration(
         priority: credential.priority,
         disabled: credential.disabled ? 1 : 0,
         position,
-        proxy_mode:
-          credential.proxy_group === undefined
-            ? "inherit"
-            : credential.proxy_group === null
-              ? "direct"
-              : "group",
+        proxy_mode: proxyMode,
         proxy_group_id: credential.proxy_group ?? null,
       });
+    }
     addRoutes(model_routes ?? {}, "provider", id);
   }
   for (const [position, client] of config.api_keys.entries()) {

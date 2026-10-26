@@ -79,30 +79,28 @@ beforeEach(async () => {
         });
       }
       if (url.pathname === "/v1/settings") return Response.json(settings);
-      if (url.pathname === "/v1/billing")
-        return unknown
-          ? new Response("unavailable", { status: 503 })
-          : !url.search
-            ? Response.json({
-                config: {
-                  monthlyLimit: 100,
-                  used: 20,
-                  onDemandCap: 100,
-                  onDemandUsed: 1,
-                },
-              })
-            : Response.json({
-                credit_usage_percent: partial
-                  ? undefined
-                  : (usage.get(token) ?? 10),
-                current_period: {
-                  type: "weekly",
-                  end: new Date(Date.now() + 600000).toISOString(),
-                },
-                on_demand_cap: noExtra ? {} : 100,
-                on_demand_used: noExtra ? {} : 1,
-                prepaid_balance: noExtra ? {} : undefined,
-              });
+      if (url.pathname === "/v1/billing") {
+        if (unknown) return new Response("unavailable", { status: 503 });
+        if (!url.search)
+          return Response.json({
+            config: {
+              monthlyLimit: 100,
+              used: 20,
+              onDemandCap: 100,
+              onDemandUsed: 1,
+            },
+          });
+        return Response.json({
+          credit_usage_percent: partial ? undefined : (usage.get(token) ?? 10),
+          current_period: {
+            type: "weekly",
+            end: new Date(Date.now() + 600000).toISOString(),
+          },
+          on_demand_cap: noExtra ? {} : 100,
+          on_demand_used: noExtra ? {} : 1,
+          prepaid_balance: noExtra ? {} : undefined,
+        });
+      }
       if (url.pathname === "/v1/responses") {
         sent.push(token);
         expect(request.headers.get("x-xai-token-auth")).toBe("xai-grok-cli");

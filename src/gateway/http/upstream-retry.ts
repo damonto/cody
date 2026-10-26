@@ -214,24 +214,18 @@ export async function fetchWithConfiguredRetries(
         (response.status === 401 && options.recoverUnauthorized !== undefined);
       attempt.duration_ms = elapsedMs(startedAt);
       if (terminal || !retry || delayMs === undefined) {
-        attempt.retry_diagnostic = {
-          reason: terminal
-            ? "provider_terminal"
-            : !retry
-              ? "policy_disabled"
-              : "attempts_exhausted",
-        };
+        let reason: RetryDiagnostic["reason"] = "attempts_exhausted";
+        if (terminal) reason = "provider_terminal";
+        else if (!retry) reason = "policy_disabled";
+        attempt.retry_diagnostic = { reason };
         return { response, attempts };
       }
 
       shouldRetry = retry.status_codes.includes(response.status);
-      attempt.retry_diagnostic = {
-        reason: shouldRetry
-          ? "status_match"
-          : request.headers.has("upgrade")
-            ? "upgrade"
-            : "status_not_matched",
-      };
+      let reason: RetryDiagnostic["reason"] = "status_not_matched";
+      if (shouldRetry) reason = "status_match";
+      else if (request.headers.has("upgrade")) reason = "upgrade";
+      attempt.retry_diagnostic = { reason };
       if (
         !shouldRetry &&
         retry.error_codes?.length &&

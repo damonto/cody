@@ -75,13 +75,11 @@ export function healthFailureScope(
   protocol: ApiProtocol,
   providerType?: ProviderType,
 ): HealthFailureScope | undefined {
-  return (
-    providerType === ProviderType.Codex
-      ? CODEX_FAILURE_SCOPES
-      : isAnthropicProtocol(protocol)
-        ? ANTHROPIC_FAILURE_SCOPES
-        : OPENAI_FAILURE_SCOPES
-  ).get(status);
+  if (providerType === ProviderType.Codex)
+    return CODEX_FAILURE_SCOPES.get(status);
+  if (isAnthropicProtocol(protocol))
+    return ANTHROPIC_FAILURE_SCOPES.get(status);
+  return OPENAI_FAILURE_SCOPES.get(status);
 }
 
 export type { HealthScope } from "./values.ts";

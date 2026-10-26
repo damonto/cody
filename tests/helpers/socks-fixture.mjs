@@ -150,9 +150,10 @@ export async function tlsProxyFixture(handler, options = {}) {
         socket.write(Buffer.from([1, 0]));
       }
       const command = await read(4);
-      const address = await read(
-        command[3] === 3 ? (await read(1))[0] : command[3] === 1 ? 4 : 16,
-      );
+      let addressLength = 16;
+      if (command[3] === 3) addressLength = (await read(1))[0];
+      else if (command[3] === 1) addressLength = 4;
+      const address = await read(addressLength);
       const port = (await read(2)).readUInt16BE();
       destinations.push({ type: command[3], host: address.toString(), port });
       if (command[0] !== 5 || command[1] !== 1 || port !== upstreamPort) {

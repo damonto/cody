@@ -200,11 +200,9 @@ function parseUpstreamModels(value: unknown): UpstreamModel[] | undefined {
   if (!isObject(value)) {
     return undefined;
   }
-  const list = Array.isArray(value.data)
-    ? value.data
-    : Array.isArray(value.models)
-      ? value.models
-      : undefined;
+  let list: unknown[] | undefined;
+  if (Array.isArray(value.data)) list = value.data;
+  else if (Array.isArray(value.models)) list = value.models;
   if (!list) {
     return undefined;
   }
@@ -213,12 +211,9 @@ function parseUpstreamModels(value: unknown): UpstreamModel[] | undefined {
     if (!isObject(entry)) {
       continue;
     }
-    const id =
-      typeof entry.id === "string"
-        ? entry.id
-        : typeof entry.slug === "string"
-          ? entry.slug
-          : undefined;
+    let id: string | undefined;
+    if (typeof entry.id === "string") id = entry.id;
+    else if (typeof entry.slug === "string") id = entry.slug;
     if (id) {
       models.push({ id, raw: entry });
     }
@@ -646,13 +641,12 @@ function antigravityCodexModel(
   const catalogLevels = Array.isArray(catalog?.supported_reasoning_levels)
     ? catalog.supported_reasoning_levels.filter(isObject)
     : [];
-  const levels: readonly string[] = Array.isArray(model.thinking_levels)
-    ? model.thinking_levels.filter(
-        (level): level is string => typeof level === "string",
-      )
-    : model.supports_thinking === true
-      ? antigravityThinkingLevels
-      : [];
+  let levels: readonly string[] = [];
+  if (Array.isArray(model.thinking_levels))
+    levels = model.thinking_levels.filter(
+      (level): level is string => typeof level === "string",
+    );
+  else if (model.supports_thinking === true) levels = antigravityThinkingLevels;
   const defaultLevel = Array.isArray(model.thinking_levels)
     ? model.default_thinking_level
     : "medium";
@@ -783,53 +777,48 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     // value the upstream did provide. Claude Desktop Discovery needs it.
     return { name: id, ...model, id };
   }
-  const catalog = isObject(model.codex)
-    ? model.codex
-    : model.owned_by === "antigravity"
-      ? undefined
-      : codexModelBySlug.get(id);
-  const inputModalities = Array.isArray(model.input_modalities)
-    ? model.input_modalities
-    : Array.isArray(catalog?.input_modalities)
-      ? (catalog.input_modalities as unknown[])
-      : [];
+  let catalog: JsonObject | undefined;
+  if (isObject(model.codex)) catalog = model.codex;
+  else if (model.owned_by !== "antigravity") catalog = codexModelBySlug.get(id);
+  let inputModalities: unknown[] = [];
+  if (Array.isArray(model.input_modalities))
+    inputModalities = model.input_modalities;
+  else if (Array.isArray(catalog?.input_modalities))
+    inputModalities = catalog.input_modalities;
   const supportsImages = inputModalities.includes("image");
   const supportsPdf = inputModalities.includes("pdf");
   const supportsCodeExecution =
     catalog !== undefined &&
     typeof catalog.node_repl_disabled === "boolean" &&
     !catalog.node_repl_disabled;
-  const supportedEffortLevels = Array.isArray(model.thinking_levels)
-    ? model.thinking_levels.filter(
-        (level): level is string => typeof level === "string",
+  let supportedEffortLevels: string[] = [];
+  if (Array.isArray(model.thinking_levels))
+    supportedEffortLevels = model.thinking_levels.filter(
+      (level): level is string => typeof level === "string",
+    );
+  else if (model.supports_thinking === true)
+    supportedEffortLevels = ["low", "medium", "high"];
+  else if (Array.isArray(catalog?.supported_reasoning_levels))
+    supportedEffortLevels = (catalog.supported_reasoning_levels as unknown[])
+      .filter(
+        (entry): entry is { effort?: unknown } =>
+          typeof entry === "object" && entry !== null,
       )
-    : model.supports_thinking === true
-      ? ["low", "medium", "high"]
-      : Array.isArray(catalog?.supported_reasoning_levels)
-        ? (catalog.supported_reasoning_levels as unknown[])
-            .filter(
-              (entry): entry is { effort?: unknown } =>
-                typeof entry === "object" && entry !== null,
-            )
-            .map((entry) => entry.effort)
-            .filter((effort): effort is string => typeof effort === "string")
-        : [];
+      .map((entry) => entry.effort)
+      .filter((effort): effort is string => typeof effort === "string");
   const supportsEffort = supportedEffortLevels.length > 0;
-  const maxInputTokens =
-    typeof model.context_window === "number"
-      ? model.context_window
-      : typeof catalog?.max_context_window === "number"
-        ? catalog.max_context_window
-        : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+  let maxInputTokens = ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+  if (typeof model.context_window === "number")
+    maxInputTokens = model.context_window;
+  else if (typeof catalog?.max_context_window === "number")
+    maxInputTokens = catalog.max_context_window;
 
   const supports1mContext = maxInputTokens >= ANTHROPIC_1M_CONTEXT_TOKENS;
 
-  const displayName =
-    typeof model.display_name === "string"
-      ? model.display_name
-      : typeof catalog?.display_name === "string"
-        ? catalog.display_name
-        : id;
+  let displayName = id;
+  if (typeof model.display_name === "string") displayName = model.display_name;
+  else if (typeof catalog?.display_name === "string")
+    displayName = catalog.display_name;
   const effortCapability = {
     supported: supportsEffort,
     low: { supported: supportedEffortLevels.includes("low") },

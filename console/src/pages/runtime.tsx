@@ -132,17 +132,16 @@ export default function Runtime() {
           Refresh
         </Button>
       </PageHeading>
-      {clients.error ? (
-        <ErrorNotice error={clients.error} />
-      ) : clients.isPending ? (
-        <Loading />
-      ) : !clientId ? (
+      {clients.error && <ErrorNotice error={clients.error} />}
+      {!clients.error && clients.isPending && <Loading />}
+      {!clients.error && !clients.isPending && !clientId && (
         <Card>
           <Empty title="Create a client first">
             Runtime operations use the current providers and clients.
           </Empty>
         </Card>
-      ) : (
+      )}
+      {!clients.error && !clients.isPending && !!clientId && (
         <>
           <div className="flex gap-3">
             <Choice
@@ -186,85 +185,90 @@ export default function Runtime() {
             </TabsList>
             <TabsContent value="health" className="mt-4">
               <Card className="overflow-hidden py-0 shadow-none">
-                {health.error ? (
+                {health.error && (
                   <div className="p-4">
                     <ErrorNotice error={health.error} />
                   </div>
-                ) : health.isPending ? (
-                  <Loading />
-                ) : health.data.data.length ? (
-                  <DataTable
-                    data={health.data.data}
-                    columns={[
-                      {
-                        id: "provider",
-                        header: "Provider",
-                        cell: ({ row }) =>
-                          names[row.original.provider_id] ??
-                          row.original.provider_id,
-                      },
-                      {
-                        id: "credential",
-                        header: "Credential",
-                        cell: ({ row }) =>
-                          names[row.original.credential_id ?? ""] ??
-                          row.original.credential_id ??
-                          "Provider-wide",
-                      },
-                      {
-                        id: "failures",
-                        header: "Failure streak",
-                        cell: ({ row }) => row.original.failures,
-                      },
-                      {
-                        id: "until",
-                        header: "Cooling until",
-                        cell: ({ row }) =>
-                          date(row.original.cooling_until, timeZone),
-                      },
-                      {
-                        id: "clear",
-                        header: "Actions",
-                        meta: { variant: "actions" },
-                        cell: ({ row }) => (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              setConfirmation({
-                                action: {
-                                  kind: "health",
-                                  providerId: row.original.provider_id,
-                                  credentialId: row.original.credential_id,
-                                },
-                                title: "Clear this cooldown?",
-                                description:
-                                  "The selected provider or credential becomes eligible for traffic again. Its next requests will determine its health.",
-                              })
-                            }
-                          >
-                            Clear cooldown
-                          </Button>
-                        ),
-                      },
-                    ]}
-                  />
-                ) : (
-                  <Empty title="No active cooldowns">
-                    No {scope} cooldowns are visible to this client.
-                  </Empty>
                 )}
+                {!health.error && health.isPending && <Loading />}
+                {!health.error &&
+                  !health.isPending &&
+                  health.data.data.length > 0 && (
+                    <DataTable
+                      data={health.data.data}
+                      columns={[
+                        {
+                          id: "provider",
+                          header: "Provider",
+                          cell: ({ row }) =>
+                            names[row.original.provider_id] ??
+                            row.original.provider_id,
+                        },
+                        {
+                          id: "credential",
+                          header: "Credential",
+                          cell: ({ row }) =>
+                            names[row.original.credential_id ?? ""] ??
+                            row.original.credential_id ??
+                            "Provider-wide",
+                        },
+                        {
+                          id: "failures",
+                          header: "Failure streak",
+                          cell: ({ row }) => row.original.failures,
+                        },
+                        {
+                          id: "until",
+                          header: "Cooling until",
+                          cell: ({ row }) =>
+                            date(row.original.cooling_until, timeZone),
+                        },
+                        {
+                          id: "clear",
+                          header: "Actions",
+                          meta: { variant: "actions" },
+                          cell: ({ row }) => (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                setConfirmation({
+                                  action: {
+                                    kind: "health",
+                                    providerId: row.original.provider_id,
+                                    credentialId: row.original.credential_id,
+                                  },
+                                  title: "Clear this cooldown?",
+                                  description:
+                                    "The selected provider or credential becomes eligible for traffic again. Its next requests will determine its health.",
+                                })
+                              }
+                            >
+                              Clear cooldown
+                            </Button>
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
+                {!health.error &&
+                  !health.isPending &&
+                  health.data.data.length === 0 && (
+                    <Empty title="No active cooldowns">
+                      No {scope} cooldowns are visible to this client.
+                    </Empty>
+                  )}
               </Card>
             </TabsContent>
             <TabsContent value="sessions" className="mt-4 space-y-3">
               <Card className="overflow-hidden py-0 shadow-none">
-                {sessions.error ? (
+                {sessions.error && (
                   <div className="p-4">
                     <ErrorNotice error={sessions.error} />
                   </div>
-                ) : sessions.isPending ? (
-                  <Loading />
-                ) : (
+                )}
+                {!sessions.error && sessions.isPending && <Loading />}
+                {!sessions.error && !sessions.isPending && (
                   <DataTable
                     data={sessions.data.data}
                     columns={[

@@ -36,15 +36,15 @@ let currentLogLevel: LogLevel = "info";
 export function configureLogging(value: unknown): LogLevel {
   const normalized =
     typeof value === "string" ? value.trim().toLowerCase() : "";
-  currentLogLevel =
-    normalized === "none" || normalized === "silent"
-      ? "off"
-      : normalized === "info" ||
-          normalized === "warn" ||
-          normalized === "error" ||
-          normalized === "off"
-        ? normalized
-        : "info";
+  if (normalized === "none" || normalized === "silent") currentLogLevel = "off";
+  else if (
+    normalized === "info" ||
+    normalized === "warn" ||
+    normalized === "error" ||
+    normalized === "off"
+  )
+    currentLogLevel = normalized;
+  else currentLogLevel = "info";
   return currentLogLevel;
 }
 

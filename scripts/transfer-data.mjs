@@ -176,16 +176,21 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   } catch (error) {
     const id = journal?.state.id ?? values.resume ?? values.abort;
     const message = transferFailure(error, step).message;
-    const recovery = !id
-      ? "No transfer data was written. Fix the issue and rerun the command."
-      : journal?.state.phase === "aborted"
-        ? `Task ${id} was aborted. Discard its incomplete target.`
-        : journal?.state.phase === "activating" ||
-            journal?.state.phase === "completed"
-          ? `Keep the old source stopped. Target scheduling has begun; use --resume ${id} if activation is incomplete.`
-          : journal?.state.phase === "aborting" || values.abort
-            ? `Keep both deployments stopped. Preserve the state file and finish --abort ${id}.`
-            : `Keep both deployments stopped. Preserve the state file and use --resume ${id}; do not serve a partial target.`;
+    let recovery;
+    if (!id)
+      recovery =
+        "No transfer data was written. Fix the issue and rerun the command.";
+    else if (journal?.state.phase === "aborted")
+      recovery = `Task ${id} was aborted. Discard its incomplete target.`;
+    else if (
+      journal?.state.phase === "activating" ||
+      journal?.state.phase === "completed"
+    )
+      recovery = `Keep the old source stopped. Target scheduling has begun; use --resume ${id} if activation is incomplete.`;
+    else if (journal?.state.phase === "aborting" || values.abort)
+      recovery = `Keep both deployments stopped. Preserve the state file and finish --abort ${id}.`;
+    else
+      recovery = `Keep both deployments stopped. Preserve the state file and use --resume ${id}; do not serve a partial target.`;
     throw new TransferError(`${message}\n${recovery}`);
   } finally {
     try {

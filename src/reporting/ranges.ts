@@ -84,13 +84,12 @@ export function previousRange(range: ReportRange): ReportRange | null {
     const start = Temporal.Instant.fromEpochMilliseconds(
       range.from,
     ).toZonedDateTimeISO(range.time_zone);
-    from = start.subtract(
-      range.period === "day"
-        ? { days: 1 }
-        : range.period === "week"
-          ? { weeks: 1 }
-          : { months: 1 },
-    ).epochMilliseconds;
+    let period: { days?: number; weeks?: number; months?: number } = {
+      months: 1,
+    };
+    if (range.period === "day") period = { days: 1 };
+    else if (range.period === "week") period = { weeks: 1 };
+    from = start.subtract(period).epochMilliseconds;
   }
   // A shorter previous month or DST day cannot supply an equal window.
   if (from < 0 || elapsed <= 0 || from + elapsed > range.from) return null;

@@ -101,6 +101,9 @@ export function OutcomeTimeline({
       number(counts.incomplete_count) +
       " incomplete" +
       (bucket.partial ? ". Partial interval." : "");
+    let heightClass = "h-4";
+    if (compact) heightClass = "min-h-11";
+    else if (labeled) heightClass = "min-h-8";
     return (
       <button
         key={bucket.from}
@@ -110,7 +113,7 @@ export function OutcomeTimeline({
         aria-pressed={chosen?.from === bucket.from}
         className={
           "min-w-0 cursor-pointer rounded-sm outline-offset-2 aria-pressed:outline-2 aria-pressed:outline-foreground " +
-          (compact ? "min-h-11" : labeled ? "min-h-8" : "h-4")
+          heightClass
         }
         style={{ background: color(bucket) }}
         onClick={() => setSelected(bucket.from)}

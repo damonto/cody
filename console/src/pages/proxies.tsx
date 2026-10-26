@@ -129,13 +129,14 @@ export default function Proxies() {
           }
         />
       ))}
-      {dialog?.kind === "delete" ? (
+      {dialog?.kind === "delete" && (
         <DeleteProxyDialog
           snapshot={dialog.snapshot}
           target={dialog.target}
           close={closeDialog}
         />
-      ) : dialog?.kind === "node" ? (
+      )}
+      {dialog?.kind === "node" && (
         <ProxyNodeEditor
           key={JSON.stringify([dialog.groupId, dialog.proxyId ?? null])}
           snapshot={dialog.snapshot}
@@ -143,15 +144,14 @@ export default function Proxies() {
           {...(dialog.proxyId === undefined ? {} : { proxyId: dialog.proxyId })}
           close={closeDialog}
         />
-      ) : (
-        dialog && (
-          <ProxyGroupEditor
-            key={dialog.kind === "edit" ? `edit:${dialog.groupId}` : "create"}
-            snapshot={dialog.snapshot}
-            {...(dialog.kind === "edit" ? { groupId: dialog.groupId } : {})}
-            close={closeDialog}
-          />
-        )
+      )}
+      {dialog && (dialog.kind === "create" || dialog.kind === "edit") && (
+        <ProxyGroupEditor
+          key={dialog.kind === "edit" ? `edit:${dialog.groupId}` : "create"}
+          snapshot={dialog.snapshot}
+          {...(dialog.kind === "edit" ? { groupId: dialog.groupId } : {})}
+          close={closeDialog}
+        />
       )}
     </>
   );

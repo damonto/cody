@@ -139,6 +139,10 @@ export function NativeProviderPage<T extends NativeType>({
     if (!save.isPending) setEditor(null);
   };
   const failedSave = save.variables;
+  let dialogTitle = `Add ${accountLabel} account`;
+  if (editor?.kind === "settings") dialogTitle = `${title} settings`;
+  else if (editor?.kind === "account" && editor.credentialId)
+    dialogTitle = `Manage ${accountLabel} account`;
   return (
     <>
       <ResourceRefreshNotice resource={configuration} />
@@ -195,13 +199,7 @@ export function NativeProviderPage<T extends NativeType>({
       >
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>
-              {editor?.kind === "settings"
-                ? `${title} settings`
-                : editor?.kind === "account" && editor.credentialId
-                  ? `Manage ${accountLabel} account`
-                  : `Add ${accountLabel} account`}
-            </DialogTitle>
+            <DialogTitle>{dialogTitle}</DialogTitle>
             <DialogDescription>
               Saved changes apply to new requests immediately.
             </DialogDescription>

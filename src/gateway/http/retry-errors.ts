@@ -274,14 +274,12 @@ export async function inspectRetryError(
   const observer = new ResponseObserver({
     format,
     onEvent: inspect,
-    onIssue: (issue, format) =>
-      stop(
-        issue === "unsupported_response_format"
-          ? "unsupported_response"
-          : format === "sse"
-            ? "invalid_sse"
-            : "invalid_envelope",
-      ),
+    onIssue: (issue, format) => {
+      if (issue === "unsupported_response_format")
+        return stop("unsupported_response");
+      if (format === "sse") return stop("invalid_sse");
+      return stop("invalid_envelope");
+    },
     onDone: () => stop("stream_ended"),
     maxPayloadBytes: maxBytes,
   });
@@ -305,13 +303,10 @@ export async function inspectRetryError(
   });
   if (observer.format === "json" || !options.onEvent) observer.discard();
   // A timeout/size boundary commits the prefix. Later errors cannot trigger replay.
-  const final = stop(
-    prefix.stoppedBy === "size"
-      ? "inspection_limit"
-      : prefix.stoppedBy === "timeout"
-        ? "inspection_timeout"
-        : "stream_ended",
-  );
+  let reason: RetryDiagnostic["reason"] = "stream_ended";
+  if (prefix.stoppedBy === "size") reason = "inspection_limit";
+  else if (prefix.stoppedBy === "timeout") reason = "inspection_timeout";
+  const final = stop(reason);
   return {
     response: prefix.response,
     diagnostic: final.diagnostic,

@@ -109,12 +109,9 @@ export const antigravityAdapter: ProviderAdapter<AntigravityProviderConfig> = {
     const stream = payload.stream === true;
     const upstreamStream =
       stream || input.model.toLowerCase().includes("claude");
-    const method =
-      endpoint === "messages/count_tokens"
-        ? "countTokens"
-        : upstreamStream
-          ? "streamGenerateContent?alt=sse"
-          : "generateContent";
+    let method = "generateContent";
+    if (endpoint === "messages/count_tokens") method = "countTokens";
+    else if (upstreamStream) method = "streamGenerateContent?alt=sse";
     const body = JSON.stringify(
       endpoint === "messages/count_tokens"
         ? { request: translated.request }

@@ -113,6 +113,7 @@ export function Shell() {
   const reporting = useQuery({ ...reportingOptions, enabled: history });
   const [rollback, setRollback] = useState<number | null>(null);
   const { theme, setTheme } = useTheme();
+  const themeIcons = { system: <Monitor />, dark: <Moon />, light: <Sun /> };
   const revisions = useQuery({
     queryKey: ["revisions"],
     queryFn: ({ signal }) =>
@@ -255,13 +256,7 @@ export function Shell() {
                   size="icon-sm"
                   aria-label="Choose color theme"
                 >
-                  {theme === "system" ? (
-                    <Monitor />
-                  ) : theme === "dark" ? (
-                    <Moon />
-                  ) : (
-                    <Sun />
-                  )}
+                  {themeIcons[theme]}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
@@ -340,11 +335,11 @@ export function Shell() {
               applied as a new saved configuration.
             </DialogDescription>
           </DialogHeader>
-          {revisions.isPending ? (
-            <Loading />
-          ) : revisions.error ? (
+          {revisions.isPending && <Loading />}
+          {!revisions.isPending && revisions.error && (
             <ErrorNotice error={revisions.error} />
-          ) : (
+          )}
+          {!revisions.isPending && !revisions.error && (
             <DataTable
               data={revisions.data.items}
               columns={[

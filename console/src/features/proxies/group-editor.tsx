@@ -35,6 +35,15 @@ import {
 } from "./form-options";
 import { ProxyNodeFields } from "./node-fields";
 
+const strategyDescriptions = {
+  [ProxyStrategy.Random]:
+    "Choose any healthy node at random, ignoring Priority.",
+  [ProxyStrategy.Sticky]:
+    "Randomly assign a healthy node and keep it until it becomes unavailable.",
+  [ProxyStrategy.Priority]:
+    "Choose the highest Priority among healthy nodes; break ties randomly.",
+} satisfies Record<ProxyStrategy, string>;
+
 interface ProxyGroupEditorProps {
   readonly snapshot: ProxyResources;
   readonly groupId?: string;
@@ -146,11 +155,7 @@ export function ProxyGroupEditor({
                         </SelectContent>
                       </Select>
                       <FieldDescription>
-                        {field.state.value === ProxyStrategy.Random
-                          ? "Choose any healthy node at random, ignoring Priority."
-                          : field.state.value === ProxyStrategy.Sticky
-                            ? "Randomly assign a healthy node and keep it until it becomes unavailable."
-                            : "Choose the highest Priority among healthy nodes; break ties randomly."}
+                        {strategyDescriptions[field.state.value]}
                       </FieldDescription>
                       <FieldError errors={fieldErrors(field)} />
                     </Field>

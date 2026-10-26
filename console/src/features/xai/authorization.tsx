@@ -64,6 +64,9 @@ export function Authorization({
     (value) =>
       value.account_ref !== accountRef && !occupied.includes(value.account_ref),
   );
+  let authorizeLabel = "Authorize with SpaceXAI";
+  if (start.isPending) authorizeLabel = "Creating authorization…";
+  else if (accountRef) authorizeLabel = "Reauthorize account";
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -87,11 +90,7 @@ export function Authorization({
             start.mutate(OAuthFlow.Device);
           }}
         >
-          {start.isPending
-            ? "Creating authorization…"
-            : accountRef
-              ? "Reauthorize account"
-              : "Authorize with SpaceXAI"}
+          {authorizeLabel}
         </Button>
         {accountRef && (
           <>

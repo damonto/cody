@@ -42,14 +42,12 @@ export async function* xaiEvents(
     maxEventBytes: MAX_SSE_EVENT_BYTES,
     requireTerminator: true,
     onIssue(issue) {
-      throw new ProviderRequestError(
-        issue === "sse_event_too_large"
-          ? "xAI SSE event exceeds limit"
-          : issue === "truncated_sse_event"
-            ? "Truncated xAI SSE event"
-            : "Invalid xAI SSE event",
-        502,
-      );
+      let message = "Invalid xAI SSE event";
+      if (issue === "sse_event_too_large")
+        message = "xAI SSE event exceeds limit";
+      else if (issue === "truncated_sse_event")
+        message = "Truncated xAI SSE event";
+      throw new ProviderRequestError(message, 502);
     },
     onEvent(value) {
       const event = eventSchema.safeParse(value);

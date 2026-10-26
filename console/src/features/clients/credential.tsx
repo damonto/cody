@@ -28,6 +28,10 @@ export function ClientCredential({
     value,
     reveal: (signal) => revealClientKey(clientId, version, signal),
   });
+  let copyIcon = <Copy />;
+  if (credential.status === "copying")
+    copyIcon = <Loader2 className="animate-spin" />;
+  else if (credential.status === "copied") copyIcon = <Check />;
   return (
     <div className="flex items-center gap-1">
       <span className="mr-1 font-mono text-muted-foreground">
@@ -42,13 +46,7 @@ export function ClientCredential({
         disabled={!value || credential.status === "copying"}
         onClick={credential.copy}
       >
-        {credential.status === "copying" ? (
-          <Loader2 className="animate-spin" />
-        ) : credential.status === "copied" ? (
-          <Check />
-        ) : (
-          <Copy />
-        )}
+        {copyIcon}
       </Button>
     </div>
   );

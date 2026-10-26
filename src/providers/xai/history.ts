@@ -23,11 +23,10 @@ function turnKey(value: unknown): string {
   try {
     const metadata =
       typeof value === "string" ? object(JSON.parse(value)) : object(value);
-    return text(metadata.prompt_cache_key)
-      ? `cache:${text(metadata.prompt_cache_key)}`
-      : text(metadata.window_id)
-        ? `window:${text(metadata.window_id)}`
-        : "";
+    if (text(metadata.prompt_cache_key))
+      return `cache:${text(metadata.prompt_cache_key)}`;
+    if (text(metadata.window_id)) return `window:${text(metadata.window_id)}`;
+    return "";
   } catch {
     return "";
   }

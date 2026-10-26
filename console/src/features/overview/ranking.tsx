@@ -46,12 +46,12 @@ export function SourceRanking({
       ? [{ ...ranking.other, value: "Other", other: true }]
       : []),
   ];
-  const valueLabel =
-    metric === "requests"
-      ? "Requests"
-      : metric === "tokens"
-        ? "Tokens"
-        : currency || "Cost";
+  const valueLabels = {
+    requests: "Requests",
+    tokens: "Tokens",
+    cost: currency || "Cost",
+  };
+  const valueLabel = valueLabels[metric];
   return (
     <Card className="min-w-0 gap-4 shadow-none">
       <CardHeader className="gap-3">
@@ -115,6 +115,11 @@ export function SourceRanking({
             <TableBody>
               {rows.map((row) => {
                 const value = metricValue(row, metric, currency);
+                let formattedValue: string;
+                if (metric === "cost")
+                  formattedValue = money(knownCost(row, currency), currency);
+                else if (metric === "requests") formattedValue = number(value);
+                else formattedValue = compact(value);
                 const share =
                   denominator !== null && value !== null
                     ? ratio(value, denominator)
@@ -152,11 +157,7 @@ export function SourceRanking({
                       </div>
                     </TableCell>
                     <TableCell className="text-right text-xs tabular-nums">
-                      {metric === "cost"
-                        ? money(knownCost(row, currency), currency)
-                        : metric === "requests"
-                          ? number(value)
-                          : compact(value)}
+                      {formattedValue}
                     </TableCell>
                     <TableCell className="text-right text-xs tabular-nums">
                       {percentage(

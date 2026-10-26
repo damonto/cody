@@ -1,3 +1,4 @@
+import { compareStrings } from "../shared/compare.ts";
 import { z } from "zod";
 import { sqlDialect, type Bindings } from "../platform/bindings.ts";
 import { decryptConfig } from "../control/crypto.ts";
@@ -48,7 +49,7 @@ export class TransferService {
   private async snapshot(ref: ObjectRef) {
     const value = await this.objects.read(ref);
     await validateObject(this.db, this.env.CONFIG_ENCRYPTION_KEY, value);
-    value.entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    value.entries.sort(([a], [b]) => compareStrings(a, b));
     return value;
   }
   async execute<A extends TransferAction>(

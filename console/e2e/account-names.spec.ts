@@ -89,15 +89,13 @@ for (const create of [
           },
         }),
       );
-      await page.route("**/console/api/provider-accounts**", (route) =>
-        route.fulfill({
-          json: route.request().url().includes("/health")
-            ? { items: [] }
-            : route.request().url().includes(ref)
-              ? account
-              : { items: [account] },
-        }),
-      );
+      await page.route("**/console/api/provider-accounts**", (route) => {
+        let json: unknown;
+        if (route.request().url().includes("/health")) json = { items: [] };
+        else if (route.request().url().includes(ref)) json = account;
+        else json = { items: [account] };
+        return route.fulfill({ json });
+      });
       // The already-authorized path must carry the same identity as OAuth completion.
       await page.goto(`/console/providers/${provider.type}`);
       await page.getByRole("button", { name: /^Add .* account$/ }).click();
@@ -127,13 +125,12 @@ for (const create of [
         .config.providers.find((item) => item.id === provider.id)!;
       const expected =
         email ??
-        (provider.type === "antigravity"
-          ? `antigravity:${ref}`
-          : provider.type === "codex"
-            ? "chatgpt-id"
-            : provider.type === "claude"
-              ? "claude-id"
-              : "xai-id");
+        {
+          antigravity: `antigravity:${ref}`,
+          codex: "chatgpt-id",
+          claude: "claude-id",
+          xai: "xai-id",
+        }[provider.type];
       expect(saved.credentials[0]?.name).toBe(expected);
       // Old/user-chosen names survive refresh, editing, and reauthorization.
       saved.credentials[0]!.name = "Custom account name";

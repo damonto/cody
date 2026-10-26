@@ -1,3 +1,4 @@
+import { compareStrings } from "../shared/compare.ts";
 import { z } from "zod";
 import { decryptConfig } from "../control/crypto.ts";
 import { storedSchema } from "../providers/oauth/state.ts";
@@ -152,9 +153,9 @@ export async function writeObjectStorage(
     throw new TransferError("Object digest mismatch");
   await storage.transaction(async (tx) => {
     const entries = [...(await tx.list()).entries()];
-    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    entries.sort(([a], [b]) => compareStrings(a, b));
     const incoming = [...snapshot.entries].sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
+      compareStrings(a, b),
     );
     if (entries.length) {
       if ((await hash(entries)) !== (await hash(incoming)))

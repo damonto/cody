@@ -1,3 +1,4 @@
+import { compareStrings } from "../../shared/compare.ts";
 /**
  * Emulates the Durable Object execution model on the standard backend. Every
  * object call runs against a fresh instance while holding the object's lock
@@ -59,10 +60,6 @@ export interface ObjectBackend {
   dueAlarms(namespace: string, now: number, limit: number): Promise<string[]>;
 }
 
-function compareKeys(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /** Applies list options to unordered entries (Redis hashes, memory maps). */
 export function selectEntries(
   entries: Iterable<[string, string]>,
@@ -74,7 +71,7 @@ export function selectEntries(
         (options.prefix === undefined || key.startsWith(options.prefix)) &&
         (options.startAfter === undefined || key > options.startAfter),
     )
-    .sort((a, b) => compareKeys(a[0], b[0]));
+    .sort((a, b) => compareStrings(a[0], b[0]));
   return options.limit === undefined
     ? selected
     : selected.slice(0, options.limit);

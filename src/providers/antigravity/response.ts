@@ -97,6 +97,12 @@ interface ActivePart {
   custom: boolean;
 }
 
+function partKind(part: NativePart): ActivePart["kind"] {
+  if (part.functionCall) return "tool";
+  if (part.thought) return "thinking";
+  return "text";
+}
+
 /** Request-local encoder. Only bounded final output and the current SSE frame are retained. */
 class ResponseEncoder {
   private active: ActivePart | null = null;
@@ -130,22 +136,21 @@ class ResponseEncoder {
     return events;
   }
   result(status = "completed"): Wire {
-    if (this.options.protocol === ApiProtocol.Anthropic)
+    if (this.options.protocol === ApiProtocol.Anthropic) {
+      let stopReason = "end_turn";
+      if (this.finishReason === "MAX_TOKENS") stopReason = "max_tokens";
+      else if (this.hasTools) stopReason = "tool_use";
       return {
         id: this.id,
         type: "message",
         role: "assistant",
         model: this.options.model,
         content: this.output,
-        stop_reason:
-          this.finishReason === "MAX_TOKENS"
-            ? "max_tokens"
-            : this.hasTools
-              ? "tool_use"
-              : "end_turn",
+        stop_reason: stopReason,
         stop_sequence: null,
         ...(this.usage ? { usage: this.usage } : {}),
       };
+    }
     return {
       id: this.id,
       object: "response",
@@ -199,12 +204,9 @@ class ResponseEncoder {
         502,
       );
     const index = this.output.length;
-    const kind = part.functionCall
-      ? "tool"
-      : part.thought
-        ? "thinking"
-        : "text";
-    const id = `${kind === "tool" ? "fc" : kind === "thinking" ? "rs" : "msg"}_${crypto.randomUUID().replaceAll("-", "")}`;
+    const kind = partKind(part);
+    const prefixes = { tool: "fc", thinking: "rs", text: "msg" };
+    const id = `${prefixes[kind]}_${crypto.randomUUID().replaceAll("-", "")}`;
     const callId =
       part.functionCall?.id ||
       `call_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -213,43 +215,43 @@ class ResponseEncoder {
       : undefined;
     const custom = mapping?.custom ?? false;
     let wire: Wire;
-    if (this.options.protocol === ApiProtocol.Anthropic)
-      wire =
-        kind === "tool"
-          ? {
-              type: "tool_use",
-              id: callId,
-              name: mapping?.name ?? part.functionCall!.name,
-              input: {},
-            }
-          : kind === "thinking"
-            ? { type: "thinking", thinking: "", signature: "" }
-            : { type: "text", text: "" };
-    else
-      wire =
-        kind === "tool"
-          ? {
-              id,
-              type: custom ? "custom_tool_call" : "function_call",
-              status: "in_progress",
-              call_id: callId,
-              name: mapping?.name ?? part.functionCall!.name,
-              ...(mapping?.namespace ? { namespace: mapping.namespace } : {}),
-              ...(custom ? { input: "" } : { arguments: "" }),
-            }
-          : kind === "thinking"
-            ? {
-                id,
-                type: "reasoning",
-                summary: [{ type: "summary_text", text: "" }],
-              }
-            : {
-                id,
-                type: "message",
-                status: "in_progress",
-                role: "assistant",
-                content: [{ type: "output_text", text: "", annotations: [] }],
-              };
+    if (this.options.protocol === ApiProtocol.Anthropic) {
+      if (kind === "tool")
+        wire = {
+          type: "tool_use",
+          id: callId,
+          name: mapping?.name ?? part.functionCall!.name,
+          input: {},
+        };
+      else if (kind === "thinking")
+        wire = { type: "thinking", thinking: "", signature: "" };
+      else wire = { type: "text", text: "" };
+    } else {
+      if (kind === "tool")
+        wire = {
+          id,
+          type: custom ? "custom_tool_call" : "function_call",
+          status: "in_progress",
+          call_id: callId,
+          name: mapping?.name ?? part.functionCall!.name,
+          ...(mapping?.namespace ? { namespace: mapping.namespace } : {}),
+          ...(custom ? { input: "" } : { arguments: "" }),
+        };
+      else if (kind === "thinking")
+        wire = {
+          id,
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "" }],
+        };
+      else
+        wire = {
+          id,
+          type: "message",
+          status: "in_progress",
+          role: "assistant",
+          content: [{ type: "output_text", text: "", annotations: [] }],
+        };
+    }
     this.active = {
       part: { ...part, ...(part.text !== undefined ? { text: "" } : {}) },
       index,
@@ -500,11 +502,7 @@ class ResponseEncoder {
           );
         continue;
       }
-      const kind = part.functionCall
-        ? "tool"
-        : part.thought
-          ? "thinking"
-          : "text";
+      const kind = partKind(part);
       if (
         this.active &&
         (kind === "tool" ||
@@ -564,12 +562,13 @@ class ResponseEncoder {
         delta: { stop_reason: this.result().stop_reason, stop_sequence: null },
         usage: this.usage ?? { output_tokens: 0 },
       });
+    let terminalEvent = "response.completed";
+    if (this.options.protocol === ApiProtocol.Anthropic)
+      terminalEvent = "message_stop";
+    else if (this.finishReason === "MAX_TOKENS")
+      terminalEvent = "response.incomplete";
     this.event(
-      this.options.protocol === ApiProtocol.Anthropic
-        ? "message_stop"
-        : this.finishReason === "MAX_TOKENS"
-          ? "response.incomplete"
-          : "response.completed",
+      terminalEvent,
       this.options.protocol === ApiProtocol.Anthropic
         ? {}
         : {
@@ -667,22 +666,18 @@ export async function convertResponse(
 ): Promise<Response> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
+    let type = "invalid_request_error";
+    if (response.status === 429) type = "rate_limit_error";
+    else if (response.status === 401) type = "authentication_error";
+    else if (response.status === 403) type = "permission_error";
+    else if (response.status >= 500) type = "server_error";
     const error = apiError(
       options.protocol,
       response.status,
       `Antigravity request failed (HTTP ${response.status})`,
       {
         code: "upstream_error",
-        type:
-          response.status === 429
-            ? "rate_limit_error"
-            : response.status === 401
-              ? "authentication_error"
-              : response.status === 403
-                ? "permission_error"
-                : response.status >= 500
-                  ? "server_error"
-                  : "invalid_request_error",
+        type,
       },
     );
     for (const header of ["retry-after", "x-request-id"]) {

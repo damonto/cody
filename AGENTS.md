@@ -9,6 +9,7 @@ Cody is a TypeScript AI API gateway and React web console for OpenAI- and Anthro
 - Use Node.js **24+** and npm. Run commands from the repository root; install dependencies with `npm ci`.
 - Read the relevant guide below before changing that behavior, including its tests. These guides hold the detailed constraints; read only the sections needed for the task.
 - Keep changes focused. When changing behavior, update the corresponding schemas, services, adapters, console contracts and tests together as applicable.
+- Avoid nested ternary expressions. Use named values, lookup tables or explicit branches; `npm run lint` enforces this across source, scripts and tests.
 - Check nearby code and tests before adding abstractions or compatibility paths. Preserve explicit request/result interfaces and discriminated provider types; prefer narrow dependencies and runtime validation over double type assertions.
 
 ## Where to work

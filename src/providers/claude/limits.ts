@@ -37,11 +37,9 @@ export function mergeClaudeQuotaGroups(
 }
 
 export function modelFamily(model: string): string {
-  return /(?:^|[-_.])opus(?:[-_.]|$)/i.test(model)
-    ? "opus"
-    : /(?:^|[-_.])sonnet(?:[-_.]|$)/i.test(model)
-      ? "sonnet"
-      : model;
+  if (/(?:^|[-_.])opus(?:[-_.]|$)/i.test(model)) return "opus";
+  if (/(?:^|[-_.])sonnet(?:[-_.]|$)/i.test(model)) return "sonnet";
+  return model;
 }
 export function quotaBlocks(
   quota: QuotaSnapshot,

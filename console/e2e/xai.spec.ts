@@ -121,13 +121,11 @@ test("SpaceXAI cards show native quota and paid usage without reset controls", a
   await page.route("**/console/api/provider-accounts**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/quota")) await quotaReady;
-    await route.fulfill({
-      json: path.endsWith("/health")
-        ? { items: [] }
-        : path.endsWith("/quota")
-          ? account
-          : { items: [account] },
-    });
+    let json: unknown;
+    if (path.endsWith("/health")) json = { items: [] };
+    else if (path.endsWith("/quota")) json = account;
+    else json = { items: [account] };
+    await route.fulfill({ json });
   });
   await page.goto("/console/providers/xai");
   await expect(
@@ -299,13 +297,11 @@ test("SpaceXAI distinguishes first failures, partial billing and retained data",
   await mockApi(page, draft);
   await page.route("**/console/api/provider-accounts**", (route) => {
     const path = new URL(route.request().url()).pathname;
-    return route.fulfill({
-      json: path.endsWith("/health")
-        ? { items: [] }
-        : path.endsWith("/quota")
-          ? account
-          : { items: [account] },
-    });
+    let json: unknown;
+    if (path.endsWith("/health")) json = { items: [] };
+    else if (path.endsWith("/quota")) json = account;
+    else json = { items: [account] };
+    return route.fulfill({ json });
   });
   await page.goto("/console/providers/xai");
   await expect(page.getByRole("alert")).toContainText(

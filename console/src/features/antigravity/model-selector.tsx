@@ -26,17 +26,14 @@ export function AntigravityModelSelector({
       {[...antigravityModelGroups([...models.keys()])].map(([id, variants]) => {
         const family = !variants.includes(id);
         const selected = variants.filter((model) => selectedModels.has(model));
+        let checked: boolean | "indeterminate" = false;
+        if (selected.length === variants.length) checked = true;
+        else if (selected.length) checked = "indeterminate";
         return (
           <div key={id} className="space-y-2">
             <Label className="flex items-center gap-3 text-sm">
               <Checkbox
-                checked={
-                  selected.length === variants.length
-                    ? true
-                    : selected.length
-                      ? "indeterminate"
-                      : false
-                }
+                checked={checked}
                 onCheckedChange={(checked) =>
                   toggle(variants, checked === true)
                 }

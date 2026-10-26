@@ -170,6 +170,9 @@ async function writeCredential(
     ? credentialEntity(work, providerId, credentialId)
     : undefined;
   const metadata = work.metadata(old);
+  let proxyMode: "inherit" | "direct" | "group" = "group";
+  if (input.proxy_group === undefined) proxyMode = "inherit";
+  else if (input.proxy_group === null) proxyMode = "direct";
   const row = {
     ...metadata,
     provider_id: providerId,
@@ -188,12 +191,7 @@ async function writeCredential(
             old?.secret_id,
           )
         : null,
-    proxy_mode:
-      input.proxy_group === undefined
-        ? ("inherit" as const)
-        : input.proxy_group === null
-          ? ("direct" as const)
-          : ("group" as const),
+    proxy_mode: proxyMode,
     proxy_group_id: input.proxy_group ?? null,
   };
   put(work.rows.provider_credentials, row);

@@ -113,221 +113,212 @@ export default function Overview() {
           arrives.
         </p>
       )}
-      {invalid ? null : report.isPending ? (
-        <Loading />
-      ) : (
-        data &&
-        totals && (
-          <div
-            className="flex min-w-0 flex-col gap-5"
-            aria-busy={report.isFetching}
-            inert={report.isPlaceholderData}
-          >
-            {currencies.length > 1 && (
-              <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                <Choice
-                  label="Cost currency"
-                  value={currency}
-                  onChange={(value) => change("cost_currency", value)}
-                  options={currencies.map((value) => ({
-                    value,
-                    label: data.currencies[value]
-                      ? value
-                      : value + " · no data",
-                  }))}
-                  className="h-8 min-w-24"
-                />
-                <span>
-                  Costs shown in {currency}. Traffic includes all currencies.
-                </span>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-              <MetricCard
-                title="Requests"
-                value={number(totals.requests_count)}
-                comparison={comparisonLabel(
-                  totals.requests_count,
-                  previous?.totals.requests_count ?? null,
-                )}
-                icon={<Activity />}
-                sparkline={buckets.map(
-                  (bucket) => bucket.totals.requests_count,
-                )}
-              >
-                <Link
-                  className={logLink}
-                  to={href({ outcome: RequestOutcome.Pending })}
-                >
-                  {number(data.pending)} pending
-                </Link>
-                <p className="mt-1">
-                  {days
-                    ? compact(totals.requests_count / days) + " / day avg."
-                    : "Completed inference requests"}
-                </p>
-              </MetricCard>
-              <MetricCard
-                title="Success rate"
-                value={percentage(
-                  ratio(totals.success_count, totals.requests_count),
-                )}
-                comparison={comparisonLabel(
-                  ratio(totals.success_count, totals.requests_count),
-                  previous
-                    ? ratio(
-                        previous.totals.success_count,
-                        previous.totals.requests_count,
-                      )
-                    : null,
-                  true,
-                )}
-                icon={<CircleCheck />}
-                sparkline={buckets.map((bucket) =>
-                  ratio(
-                    bucket.totals.success_count,
-                    bucket.totals.requests_count,
-                  ),
-                )}
-              >
-                <Link
-                  className={logLink}
-                  to={href({ outcome: RequestOutcome.Failed })}
-                >
-                  {number(totals.failed_count)} failed
-                </Link>
-                <p className="mt-1">
-                  <Link
-                    className={logLink}
-                    to={href({ outcome: RequestOutcome.Cancelled })}
-                  >
-                    {number(totals.cancelled_count)} cancelled
-                  </Link>
-                  {" · "}
-                  <Link
-                    className={logLink}
-                    to={href({ outcome: RequestOutcome.Incomplete })}
-                  >
-                    {number(totals.incomplete_count)} incomplete
-                  </Link>
-                </p>
-              </MetricCard>
-              <MetricCard
-                title="Reported tokens"
-                value={compact(tokens)}
-                comparison={comparisonLabel(
-                  tokens,
-                  previous ? tokenTotal(previous.totals) : null,
-                )}
-                icon={<Layers />}
-                sparkline={
-                  tokens === null
-                    ? []
-                    : buckets.map((bucket) =>
-                        metricValue(bucket, "tokens", currency),
-                      )
-                }
-              >
-                <span>
-                  {compact(tokens === null ? null : totals.input_tokens)} input
-                  · {compact(tokens === null ? null : totals.output_tokens)}{" "}
-                  output
-                </span>
-                <p className="mt-1">
-                  {days && tokens !== null
-                    ? compact(tokens / days) + " / day avg."
-                    : "Input + output · known counters"}
-                </p>
-              </MetricCard>
-              <MetricCard
-                title="Known cost"
-                value={money(cost, currency)}
-                comparison={comparisonLabel(
-                  cost,
-                  previous ? knownCost(previous, currency) : null,
-                )}
-                icon={<Coins />}
-                sparkline={
-                  cost === null
-                    ? []
-                    : buckets.map((bucket) =>
-                        metricValue(bucket, "cost", currency),
-                      )
-                }
-              >
-                <span>
-                  {currency || "No priced usage"}
-                  {days && cost !== null
-                    ? " · " + money(cost / days, currency) + " / day avg."
-                    : ""}
-                </span>
-                <p className="mt-1">
-                  <Link
-                    className={logLink}
-                    to={href({ quality: "incomplete_pricing" })}
-                  >
-                    {number(totals.unpriced_count)} pricing gaps overall
-                  </Link>
-                </p>
-              </MetricCard>
-            </div>
-            <Efficiency data={data} />
-            {data.partial_history && (
-              <Alert>
-                <Info />
-                <AlertTitle>Some historical detail has expired</AlertTitle>
-                <AlertDescription>
-                  Partial hours outside the {data.retention.days}-day detail
-                  retention window may be incomplete. Use whole UTC hours for an
-                  exact historical range. Period comparison is unavailable for
-                  this selection.
-                </AlertDescription>
-              </Alert>
-            )}
-            <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-              <UsageTrend
-                data={data}
-                metric={metric}
-                setMetric={setMetric}
-                currency={currency}
+      {!invalid && report.isPending && <Loading />}
+      {!invalid && !report.isPending && data && totals && (
+        <div
+          className="flex min-w-0 flex-col gap-5"
+          aria-busy={report.isFetching}
+          inert={report.isPlaceholderData}
+        >
+          {currencies.length > 1 && (
+            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+              <Choice
+                label="Cost currency"
+                value={currency}
+                onChange={(value) => change("cost_currency", value)}
+                options={currencies.map((value) => ({
+                  value,
+                  label: data.currencies[value] ? value : value + " · no data",
+                }))}
+                className="h-8 min-w-24"
               />
-              <TokenComposition totals={totals} />
+              <span>
+                Costs shown in {currency}. Traffic includes all currencies.
+              </span>
             </div>
-            <div className="grid min-w-0 items-start gap-4 xl:grid-cols-2">
-              <OutcomeTimeline data={data} filters={query} />
-              <SourceRanking data={data} filters={query} change={change} />
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-              <Coverage data={data} />
-              <div className="flex flex-wrap gap-3">
-                {totals.missing_usage_count > 0 && (
-                  <Link
-                    className={logLink}
-                    to={href({ quality: "missing_usage" })}
-                  >
-                    {number(totals.missing_usage_count)} with incomplete usage
-                  </Link>
-                )}
-                {totals.unpriced_count > 0 && (
-                  <Link
-                    className={logLink}
-                    to={href({ quality: "incomplete_pricing" })}
-                  >
-                    {number(totals.unpriced_count)} with incomplete pricing
-                  </Link>
-                )}
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              {data.range.period === "total"
-                ? "All time through "
-                : date(data.range.from, data.range.time_zone) + " – "}
-              {date(data.range.to, data.range.time_zone)} · Report refreshed{" "}
-              {date(data.updated_at, data.range.time_zone)}. Usage arrives
-              asynchronously. Known cost is not an invoice total.
-            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <MetricCard
+              title="Requests"
+              value={number(totals.requests_count)}
+              comparison={comparisonLabel(
+                totals.requests_count,
+                previous?.totals.requests_count ?? null,
+              )}
+              icon={<Activity />}
+              sparkline={buckets.map((bucket) => bucket.totals.requests_count)}
+            >
+              <Link
+                className={logLink}
+                to={href({ outcome: RequestOutcome.Pending })}
+              >
+                {number(data.pending)} pending
+              </Link>
+              <p className="mt-1">
+                {days
+                  ? compact(totals.requests_count / days) + " / day avg."
+                  : "Completed inference requests"}
+              </p>
+            </MetricCard>
+            <MetricCard
+              title="Success rate"
+              value={percentage(
+                ratio(totals.success_count, totals.requests_count),
+              )}
+              comparison={comparisonLabel(
+                ratio(totals.success_count, totals.requests_count),
+                previous
+                  ? ratio(
+                      previous.totals.success_count,
+                      previous.totals.requests_count,
+                    )
+                  : null,
+                true,
+              )}
+              icon={<CircleCheck />}
+              sparkline={buckets.map((bucket) =>
+                ratio(
+                  bucket.totals.success_count,
+                  bucket.totals.requests_count,
+                ),
+              )}
+            >
+              <Link
+                className={logLink}
+                to={href({ outcome: RequestOutcome.Failed })}
+              >
+                {number(totals.failed_count)} failed
+              </Link>
+              <p className="mt-1">
+                <Link
+                  className={logLink}
+                  to={href({ outcome: RequestOutcome.Cancelled })}
+                >
+                  {number(totals.cancelled_count)} cancelled
+                </Link>
+                {" · "}
+                <Link
+                  className={logLink}
+                  to={href({ outcome: RequestOutcome.Incomplete })}
+                >
+                  {number(totals.incomplete_count)} incomplete
+                </Link>
+              </p>
+            </MetricCard>
+            <MetricCard
+              title="Reported tokens"
+              value={compact(tokens)}
+              comparison={comparisonLabel(
+                tokens,
+                previous ? tokenTotal(previous.totals) : null,
+              )}
+              icon={<Layers />}
+              sparkline={
+                tokens === null
+                  ? []
+                  : buckets.map((bucket) =>
+                      metricValue(bucket, "tokens", currency),
+                    )
+              }
+            >
+              <span>
+                {compact(tokens === null ? null : totals.input_tokens)} input ·{" "}
+                {compact(tokens === null ? null : totals.output_tokens)} output
+              </span>
+              <p className="mt-1">
+                {days && tokens !== null
+                  ? compact(tokens / days) + " / day avg."
+                  : "Input + output · known counters"}
+              </p>
+            </MetricCard>
+            <MetricCard
+              title="Known cost"
+              value={money(cost, currency)}
+              comparison={comparisonLabel(
+                cost,
+                previous ? knownCost(previous, currency) : null,
+              )}
+              icon={<Coins />}
+              sparkline={
+                cost === null
+                  ? []
+                  : buckets.map((bucket) =>
+                      metricValue(bucket, "cost", currency),
+                    )
+              }
+            >
+              <span>
+                {currency || "No priced usage"}
+                {days && cost !== null
+                  ? " · " + money(cost / days, currency) + " / day avg."
+                  : ""}
+              </span>
+              <p className="mt-1">
+                <Link
+                  className={logLink}
+                  to={href({ quality: "incomplete_pricing" })}
+                >
+                  {number(totals.unpriced_count)} pricing gaps overall
+                </Link>
+              </p>
+            </MetricCard>
           </div>
-        )
+          <Efficiency data={data} />
+          {data.partial_history && (
+            <Alert>
+              <Info />
+              <AlertTitle>Some historical detail has expired</AlertTitle>
+              <AlertDescription>
+                Partial hours outside the {data.retention.days}-day detail
+                retention window may be incomplete. Use whole UTC hours for an
+                exact historical range. Period comparison is unavailable for
+                this selection.
+              </AlertDescription>
+            </Alert>
+          )}
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
+            <UsageTrend
+              data={data}
+              metric={metric}
+              setMetric={setMetric}
+              currency={currency}
+            />
+            <TokenComposition totals={totals} />
+          </div>
+          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-2">
+            <OutcomeTimeline data={data} filters={query} />
+            <SourceRanking data={data} filters={query} change={change} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+            <Coverage data={data} />
+            <div className="flex flex-wrap gap-3">
+              {totals.missing_usage_count > 0 && (
+                <Link
+                  className={logLink}
+                  to={href({ quality: "missing_usage" })}
+                >
+                  {number(totals.missing_usage_count)} with incomplete usage
+                </Link>
+              )}
+              {totals.unpriced_count > 0 && (
+                <Link
+                  className={logLink}
+                  to={href({ quality: "incomplete_pricing" })}
+                >
+                  {number(totals.unpriced_count)} with incomplete pricing
+                </Link>
+              )}
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {data.range.period === "total"
+              ? "All time through "
+              : date(data.range.from, data.range.time_zone) + " – "}
+            {date(data.range.to, data.range.time_zone)} · Report refreshed{" "}
+            {date(data.updated_at, data.range.time_zone)}. Usage arrives
+            asynchronously. Known cost is not an invoice total.
+          </p>
+        </div>
       )}
     </div>
   );

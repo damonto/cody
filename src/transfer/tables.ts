@@ -76,13 +76,10 @@ export async function tableLayout(db: SqlDatabase): Promise<TableLayout> {
     result[table] = rows.map(({ name, type }) => {
       if (!identifier.test(name))
         throw new TransferError(`Unsupported column in ${table}`);
-      const kind = /int/i.test(type)
-        ? "integer"
-        : /real|double|float/i.test(type)
-          ? "real"
-          : /text|character/i.test(type)
-            ? "text"
-            : null;
+      let kind: Column["kind"] | null = null;
+      if (/int/i.test(type)) kind = "integer";
+      else if (/real|double|float/i.test(type)) kind = "real";
+      else if (/text|character/i.test(type)) kind = "text";
       if (!kind) throw new TransferError(`Unsupported column type in ${table}`);
       return { name, kind };
     });
@@ -164,14 +161,12 @@ export function validateRows(
     for (const { name, kind } of layout[table]) {
       const value = row[name];
       if (value === null) continue;
-      if (
-        kind === "integer"
-          ? typeof value !== "string" || !/^-?\d+$/.test(value)
-          : kind === "text"
-            ? typeof value !== "string"
-            : typeof value !== "number" || !Number.isFinite(value)
-      )
-        throw new TransferError(`Invalid ${table}.${name}`, 400);
+      let invalid: boolean;
+      if (kind === "integer")
+        invalid = typeof value !== "string" || !/^-?\d+$/.test(value);
+      else if (kind === "text") invalid = typeof value !== "string";
+      else invalid = typeof value !== "number" || !Number.isFinite(value);
+      if (invalid) throw new TransferError(`Invalid ${table}.${name}`, 400);
     }
   }
 }

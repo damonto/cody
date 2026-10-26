@@ -112,13 +112,11 @@ test("Claude cards show native quota and organization without reset controls", a
   await mockApi(page, draft);
   await page.route("**/console/api/provider-accounts**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    await route.fulfill({
-      json: path.endsWith("/health")
-        ? { items: [] }
-        : path.endsWith("/quota")
-          ? account
-          : { items: [account] },
-    });
+    let json: unknown;
+    if (path.endsWith("/health")) json = { items: [] };
+    else if (path.endsWith("/quota")) json = account;
+    else json = { items: [account] };
+    await route.fulfill({ json });
   });
   await page.goto("/console/providers/claude");
   await expect(

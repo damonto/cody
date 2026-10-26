@@ -252,22 +252,21 @@ for (const ending of ["eof", "cancel", "read_error"]) {
         response: { id: "resp_review", usage },
         ...(diagnostic && { error: { code: diagnostic } }),
       };
-      const payloads =
-        protocol === "anthropic"
-          ? [
-              {
-                type: "message_start",
-                message: {
-                  id: "msg_review",
-                  usage: { ...usage, output_tokens: 0 },
-                },
-              },
-              { type: "message_delta", usage: { output_tokens: 71 } },
-              { type },
-            ]
-          : type === "[DONE]"
-            ? [{ usage }, "[DONE]"]
-            : [payload];
+      let payloads;
+      if (protocol === "anthropic")
+        payloads = [
+          {
+            type: "message_start",
+            message: {
+              id: "msg_review",
+              usage: { ...usage, output_tokens: 0 },
+            },
+          },
+          { type: "message_delta", usage: { output_tokens: 71 } },
+          { type },
+        ];
+      else if (type === "[DONE]") payloads = [{ usage }, "[DONE]"];
+      else payloads = [payload];
       const frame = payloads
         .map(
           (value) =>

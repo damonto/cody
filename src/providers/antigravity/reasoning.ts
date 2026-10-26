@@ -105,11 +105,9 @@ function thinkingLevel(
     case "level":
       return configuration.level;
     case "budget":
-      return configuration.budget <= 1024
-        ? "low"
-        : configuration.budget <= 8192
-          ? "medium"
-          : "high";
+      if (configuration.budget <= 1024) return "low";
+      if (configuration.budget <= 8192) return "medium";
+      return "high";
     default:
       return "high";
   }

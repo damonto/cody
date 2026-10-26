@@ -195,10 +195,10 @@ export async function mockApi(
       ),
   );
   const search = draft.config.web_search;
-  let searchApiKey =
-    search.mode === "proxy"
-      ? undefined
-      : search.api_key === secret
+  let searchApiKey: string | undefined;
+  if (search.mode !== "proxy")
+    searchApiKey =
+      search.api_key === secret
         ? `test-search-key-${search.mode}`
         : search.api_key;
   function clientKey(id: string): string {
@@ -277,12 +277,9 @@ export async function mockApi(
           ),
       );
       const search = input.config.web_search;
-      searchApiKey =
-        search.mode === "proxy"
-          ? undefined
-          : search.api_key === secret
-            ? searchKey()
-            : search.api_key;
+      if (search.mode === "proxy") searchApiKey = undefined;
+      else if (search.api_key === secret) searchApiKey = searchKey();
+      else searchApiKey = search.api_key;
       draft = {
         ...draft,
         version: draft.version + 1,
@@ -371,22 +368,22 @@ export async function mockApi(
         });
         return;
       }
-      const api_key = clientReveal
-        ? clientKeys.get(decodeURIComponent(clientReveal[1]))
-        : providerReveal
-          ? providerKeys.get(
-              `${decodeURIComponent(providerReveal[1])}:${decodeURIComponent(providerReveal[2])}`,
-            )
-          : searchApiKey;
+      let api_key: string | undefined;
+      if (clientReveal)
+        api_key = clientKeys.get(decodeURIComponent(clientReveal[1]));
+      else if (providerReveal)
+        api_key = providerKeys.get(
+          `${decodeURIComponent(providerReveal[1])}:${decodeURIComponent(providerReveal[2])}`,
+        );
+      else api_key = searchApiKey;
       if (!api_key) {
+        let error = "No search provider key is configured";
+        if (clientReveal) error = "Client does not exist";
+        else if (providerReveal) error = "Provider key does not exist";
         await route.fulfill({
           status: 404,
           json: {
-            error: clientReveal
-              ? "Client does not exist"
-              : providerReveal
-                ? "Provider key does not exist"
-                : "No search provider key is configured",
+            error,
           },
         });
         return;

@@ -1,3 +1,4 @@
+import { compareStrings } from "../../../shared/compare.ts";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { SqlDatabase, SqlDialect } from "../../bindings.ts";
@@ -41,7 +42,7 @@ async function migrationFiles(
       files.set(entry.name, path.join(directory, entry.name));
     }
   }
-  return new Map([...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return new Map([...files].sort(([a], [b]) => compareStrings(a, b)));
 }
 
 /** Applies unapplied `*.sql` files in name order; returns the names applied. */

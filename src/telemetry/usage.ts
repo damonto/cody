@@ -282,14 +282,9 @@ export class UsageAccumulator {
       tokens.cache_read_tokens,
       tokens.cache_write_tokens,
     ].every((value) => value !== null);
-    return {
-      tokens,
-      raw,
-      status: invalid
-        ? UsageStatus.Invalid
-        : complete
-          ? UsageStatus.Reported
-          : UsageStatus.Partial,
-    };
+    let status: UsageStatus = UsageStatus.Partial;
+    if (invalid) status = UsageStatus.Invalid;
+    else if (complete) status = UsageStatus.Reported;
+    return { tokens, raw, status };
   }
 }

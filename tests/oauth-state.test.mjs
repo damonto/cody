@@ -46,9 +46,10 @@ test("persisted OAuth states keep their provider, identity and default fields ac
               credits_observed_at: 0,
             },
           }
-        : provider === "claude"
-          ? { claude_quota_sync: { windows: [], extra_usage: null } }
-          : {}),
+        : {}),
+      ...(provider === "claude"
+        ? { claude_quota_sync: { windows: [], extra_usage: null } }
+        : {}),
     });
     assert.deepEqual(
       storedSchema.parse(JSON.parse(JSON.stringify(parsed))),

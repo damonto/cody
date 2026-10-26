@@ -9,12 +9,11 @@ export const compact = (value: number | null | undefined) =>
         notation: "compact",
         maximumFractionDigits: 1,
       }).format(value);
-export const duration = (value: number | null | undefined) =>
-  value === null || value === undefined
-    ? "—"
-    : value < 1000
-      ? `${Math.round(value)} ms`
-      : `${(value / 1000).toFixed(2)} s`;
+export function duration(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(2)} s`;
+}
 export function money(
   nano: number | null | undefined,
   currency: string,

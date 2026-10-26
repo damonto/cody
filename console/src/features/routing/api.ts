@@ -9,12 +9,12 @@ export function useSaveModelRoutes() {
     scope: RouteScope;
     routes: Record<string, ModelRouteConfig>;
   }>(
-    (input) =>
-      input.scope.kind === "provider"
-        ? [resourceKeys.providers, resourceKeys.native]
-        : input.scope.kind === "client"
-          ? [resourceKeys.clients]
-          : [resourceKeys.routes],
+    (input) => {
+      if (input.scope.kind === "provider")
+        return [resourceKeys.providers, resourceKeys.native];
+      if (input.scope.kind === "client") return [resourceKeys.clients];
+      return [resourceKeys.routes];
+    },
     ({ version, operation_id, scope, routes }) => {
       const json = { version, operation_id, routes };
       if (scope.kind === "provider")

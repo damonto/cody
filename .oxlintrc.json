@@ -3,6 +3,7 @@
   "ignorePatterns": [".agents/**"],
   "plugins": ["unicorn", "typescript", "oxc", "react"],
   "rules": {
+    "eslint/no-nested-ternary": "error",
     "react/rules-of-hooks": "error",
     "react/exhaustive-deps": "error"
   }

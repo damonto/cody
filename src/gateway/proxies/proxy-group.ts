@@ -241,13 +241,12 @@ export class ProxyGroup extends DurableObject<Env> {
         group_id: group.id,
         proxies: this.rows().map((node) => {
           const health = this.health(node, now);
+          let status = "healthy";
+          if (node.disabled) status = "disabled";
+          else if (health.cooling_until !== null) status = "cooling";
           return {
             id: node.id,
-            status: node.disabled
-              ? "disabled"
-              : health.cooling_until !== null
-                ? "cooling"
-                : "healthy",
+            status,
             failures: health.failures.length,
             cooling_until: health.cooling_until,
           };

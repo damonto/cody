@@ -90,12 +90,15 @@ export function UsageTrend({
   const interval = trendInterval(data);
   const units =
     interval < DAY_MS ? interval / HOUR_MS + "h" : interval / DAY_MS + "d";
+  const metricLabels = { requests: "Requests", tokens: "Tokens", cost: "Cost" };
   const title =
-    metric === "requests"
-      ? "Requests"
-      : metric === "tokens"
-        ? "Tokens"
-        : "Known cost " + currency;
+    metric === "cost" ? "Known cost " + currency : metricLabels[metric];
+  let emptyTitle = "Your traffic will appear here";
+  if (data.series.length)
+    emptyTitle =
+      metric === "cost"
+        ? "No priced usage in this period"
+        : "Token usage was not reported";
   const available =
     metric === "cost"
       ? knownCost(data, currency) !== null
@@ -127,11 +130,7 @@ export function UsageTrend({
               aria-pressed={metric === name}
               onClick={() => setMetric(name)}
             >
-              {name === "requests"
-                ? "Requests"
-                : name === "tokens"
-                  ? "Tokens"
-                  : "Cost"}
+              {metricLabels[name]}
             </Button>
           ))}
         </div>
@@ -175,13 +174,12 @@ export function UsageTrend({
                   width={58}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(value: number) =>
-                    metric === "cost"
-                      ? value > 0 && value < 1e7
-                        ? (value / 1e9).toExponential(1)
-                        : compact(value / 1e9)
-                      : compact(value)
-                  }
+                  tickFormatter={(value: number) => {
+                    if (metric !== "cost") return compact(value);
+                    if (value > 0 && value < 1e7)
+                      return (value / 1e9).toExponential(1);
+                    return compact(value / 1e9);
+                  }}
                 />
                 <ChartTooltip
                   content={({ active, label }) => (
@@ -238,15 +236,7 @@ export function UsageTrend({
             </div>
           </>
         ) : (
-          <Empty
-            title={
-              data.series.length
-                ? metric === "cost"
-                  ? "No priced usage in this period"
-                  : "Token usage was not reported"
-                : "Your traffic will appear here"
-            }
-          >
+          <Empty title={emptyTitle}>
             Reported usage will appear as inference requests complete.
           </Empty>
         )}

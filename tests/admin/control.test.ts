@@ -1081,12 +1081,12 @@ test.each(["new", "retargeted", "renamed"] as const)(
     const view = await store().save(input, 0, "test");
     const provider = view.config.providers[0];
     const route = provider.model_routes!.alias;
-    const routes =
-      change === "new"
-        ? { alias: route, added: { model: "real-model" } }
-        : change === "retargeted"
-          ? { alias: { ...route, model: "real-model" } }
-          : { renamed: route };
+    let routes: Record<string, typeof route>;
+    if (change === "new")
+      routes = { alias: route, added: { model: "real-model" } };
+    else if (change === "retargeted")
+      routes = { alias: { ...route, model: "real-model" } };
+    else routes = { renamed: route };
     const before = await readEntities(env.CODY_DB);
     const response = await call(`/providers/${provider.id}`, "PUT", {
       version: view.version,

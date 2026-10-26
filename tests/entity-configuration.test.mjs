@@ -348,12 +348,11 @@ for (const kind of ["clients", "provider_credentials", "proxy_nodes"]) {
         },
       ];
       const first = await store.save(input, 0, "test");
-      const id =
-        kind === "clients"
-          ? first.config.api_keys[0].id
-          : kind === "provider_credentials"
-            ? first.config.providers[0].credentials[0].id
-            : first.config.proxy_groups[0].proxies[0].id;
+      let id;
+      if (kind === "clients") id = first.config.api_keys[0].id;
+      else if (kind === "provider_credentials")
+        id = first.config.providers[0].credentials[0].id;
+      else id = first.config.proxy_groups[0].proxies[0].id;
       const next = await store.current();
       if (kind === "clients") next.api_keys = [];
       else if (kind === "provider_credentials") {

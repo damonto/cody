@@ -211,12 +211,10 @@ function selectTools(
 ): ToolSelection {
   const automatic = claude ? "VALIDATED" : "AUTO";
   const selection = object(choice);
-  const type =
-    choice === undefined || choice === null
-      ? "auto"
-      : typeof choice === "string"
-        ? choice
-        : string(selection.type, "tool_choice.type");
+  let type: string;
+  if (choice === undefined || choice === null) type = "auto";
+  else if (typeof choice === "string") type = choice;
+  else type = string(selection.type, "tool_choice.type");
   const selectedTool = (
     selected: Record<string, unknown>,
   ): ToolMapping | undefined => {
@@ -294,12 +292,11 @@ function image(part: Record<string, unknown>): NativePart {
         data: string(source.data, "image data"),
       },
     };
-  const value =
-    source.type === "url"
-      ? source.url
-      : typeof part.image_url === "object"
-        ? object(part.image_url).url
-        : part.image_url;
+  let value: unknown;
+  if (source.type === "url") value = source.url;
+  else if (typeof part.image_url === "object")
+    value = object(part.image_url).url;
+  else value = part.image_url;
   const url = string(value, "image URL");
   const inline = /^data:([^;,]+);base64,([\s\S]+)$/.exec(url);
   if (inline) return { inlineData: { mimeType: inline[1], data: inline[2] } };

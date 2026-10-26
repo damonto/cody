@@ -23,7 +23,15 @@ type SourceRow = SeriesRow & {
   model: string;
 };
 function source(hour: number, alternate: boolean, previous = false): SourceRow {
-  const requests = previous ? (alternate ? 3 : 4) : alternate ? 5 : 7;
+  let requests: number;
+  let cost: number;
+  if (previous) {
+    requests = alternate ? 3 : 4;
+    cost = alternate ? 1e9 : 2e9;
+  } else {
+    requests = alternate ? 5 : 7;
+    cost = alternate ? 2e9 : 3.5e9;
+  }
   return {
     ...emptyAggregate(),
     hour,
@@ -52,7 +60,7 @@ function source(hour: number, alternate: boolean, previous = false): SourceRow {
     first_text_samples: requests,
     duration_sum: requests * 1000,
     duration_samples: requests,
-    cost_nano: previous ? (alternate ? 1e9 : 2e9) : alternate ? 2e9 : 3.5e9,
+    cost_nano: cost,
   };
 }
 const samples = [
@@ -120,12 +128,13 @@ async function overviewApi(page: Page, sourceRows: SourceRow[] = samples) {
       value,
       ...summarize(group),
     }));
-    const score = (row: (typeof items)[number]) =>
-      query.sort_by === "cost"
-        ? (row.currencies[currency]?.cost_nano ?? 0)
-        : query.sort_by === "tokens"
-          ? row.totals.input_tokens + row.totals.output_tokens
-          : row.totals.requests_count;
+    const score = (row: (typeof items)[number]) => {
+      if (query.sort_by === "cost")
+        return row.currencies[currency]?.cost_nano ?? 0;
+      if (query.sort_by === "tokens")
+        return row.totals.input_tokens + row.totals.output_tokens;
+      return row.totals.requests_count;
+    };
     items.sort((a, b) => score(b) - score(a));
     await route.fulfill({
       json: {

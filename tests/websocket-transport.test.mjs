@@ -22,11 +22,10 @@ function connectionFixture() {
   };
   const connection = {
     async read() {
-      const value = queued.length
-        ? queued.shift()
-        : closed
-          ? null
-          : await (pending = Promise.withResolvers()).promise;
+      let value;
+      if (queued.length) value = queued.shift();
+      else if (closed) value = null;
+      else value = await (pending = Promise.withResolvers()).promise;
       if (value instanceof Error) throw value;
       return value;
     },

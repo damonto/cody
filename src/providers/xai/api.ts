@@ -267,12 +267,11 @@ export class XaiClient {
         (result.reason.status === 401 ||
           (result === settings && result.reason.status === 403)),
     );
-    const errorMessage = (result: PromiseSettledResult<unknown>) =>
-      result.status === "fulfilled"
-        ? null
-        : result.reason instanceof OAuthError
-          ? result.reason.message
-          : "xAI billing request failed";
+    const errorMessage = (result: PromiseSettledResult<unknown>) => {
+      if (result.status === "fulfilled") return null;
+      if (result.reason instanceof OAuthError) return result.reason.message;
+      return "xAI billing request failed";
+    };
     return billingQuota({
       credits: credits.status === "fulfilled" ? credits.value : null,
       monthly: monthly.status === "fulfilled" ? monthly.value : null,

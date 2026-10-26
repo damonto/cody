@@ -201,11 +201,8 @@ export function calculateCost(
   if (!Number.isSafeInteger(total))
     throw new Error("Cost exceeds supported monetary precision");
   result.total_nano = known.length === 0 ? null : total;
-  result.status =
-    known.length === parts.length
-      ? BillingStatus.Complete
-      : known.length > 0
-        ? BillingStatus.Partial
-        : BillingStatus.Unknown;
+  if (known.length === parts.length) result.status = BillingStatus.Complete;
+  else if (known.length > 0) result.status = BillingStatus.Partial;
+  else result.status = BillingStatus.Unknown;
   return result;
 }

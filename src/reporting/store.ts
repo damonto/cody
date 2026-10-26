@@ -283,12 +283,12 @@ function rankQuery(
   const source = reportSource(range, filters);
   const dimension = presentation.group_by ?? "provider_id";
   const metric = presentation.sort_by ?? "requests";
-  const score =
-    metric === "cost"
-      ? "SUM(CASE WHEN currency = COALESCE(?, (SELECT currency FROM source WHERE currency <> '' GROUP BY currency ORDER BY currency = 'USD' DESC, currency LIMIT 1)) THEN cost_nano ELSE 0 END)"
-      : metric === "tokens"
-        ? "SUM(input_tokens + output_tokens)"
-        : "SUM(requests_count)";
+  const scores = {
+    cost: "SUM(CASE WHEN currency = COALESCE(?, (SELECT currency FROM source WHERE currency <> '' GROUP BY currency ORDER BY currency = 'USD' DESC, currency LIMIT 1)) THEN cost_nano ELSE 0 END)",
+    tokens: "SUM(input_tokens + output_tokens)",
+    requests: "SUM(requests_count)",
+  };
+  const score = scores[metric];
   const query = db.prepare(
     `WITH source AS (${source.sql}),
      grouped AS (SELECT ${dimension} AS value, currency, ${sumColumns} FROM source GROUP BY ${dimension}, currency),

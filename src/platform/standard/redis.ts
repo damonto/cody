@@ -1,3 +1,4 @@
+import { compareStrings } from "../../shared/compare.ts";
 /**
  * Minimal Redis command surface used by the standard backend. `ioredis`
  * satisfies it through the adapter in `./ioredis.ts`; `MemoryRedis` is a
@@ -179,7 +180,7 @@ export class MemoryRedis implements RedisClient {
     if (!set) return [];
     return [...set.entries()]
       .filter(([, score]) => score <= max)
-      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .sort((a, b) => a[1] - b[1] || compareStrings(a[0], b[0]))
       .slice(0, limit)
       .map(([member]) => member);
   }
