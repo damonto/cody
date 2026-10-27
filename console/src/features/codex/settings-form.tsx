@@ -1,18 +1,11 @@
 import { CodexAccountSelection } from "../../../../src/config/values.ts";
 
-import { OAuthAccountViewStatus } from "../../../../src/providers/oauth/values.ts";
-
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import type {
   CodexProviderConfig,
   ProxyGroupConfig,
 } from "../../../../src/config/types";
-import {
-  mapWithConcurrency,
-  PROVIDER_FAN_OUT_CONCURRENCY,
-} from "../../../../src/shared/concurrency";
 import { useAppForm } from "@/lib/form";
 import { fieldErrors } from "@/lib/form-errors";
 import { Choice, ErrorNotice } from "@/components/common";
@@ -21,11 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { FieldError } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  accountsOptions,
-  cacheAccounts,
-  refreshModels,
-} from "@/features/oauth-accounts/api";
+import { useModelDiscovery } from "@/features/oauth-accounts/use-model-discovery";
 import {
   applySettings,
   settingsEditorSchema,
@@ -45,8 +34,8 @@ export function CodexSettingsForm({
   onSave: (provider: CodexProviderConfig) => Promise<void>;
   close: () => void;
 }) {
-  const cache = useQueryClient();
-  const accounts = useQuery(accountsOptions(provider.id));
+  const { accounts, discover, models, canDiscover } =
+    useModelDiscovery(provider);
   const [initial] = useState(() => settingsFormValues(provider));
   const form = useAppForm({
     defaultValues: initial,
@@ -59,22 +48,6 @@ export function CodexSettingsForm({
       }
     },
   });
-  const ready =
-    accounts.data?.filter(
-      (account) => account.status === OAuthAccountViewStatus.Ready,
-    ) ?? [];
-  const discover = useMutation({
-    mutationFn: () =>
-      mapWithConcurrency(ready, PROVIDER_FAN_OUT_CONCURRENCY, (account) =>
-        refreshModels(account.account_ref),
-      ),
-    onSuccess: (values) => cacheAccounts(cache, values),
-  });
-  const models = new Map(provider.models.map((id) => [id, id]));
-  for (const account of accounts.data ?? []) {
-    for (const model of account.models)
-      models.set(model.id, model.display_name);
-  }
   return (
     <form
       className="space-y-5"
@@ -178,7 +151,7 @@ export function CodexSettingsForm({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!ready.length || discover.isPending}
+                disabled={!canDiscover || discover.isPending}
                 onClick={() => discover.mutate()}
               >
                 <RefreshCw /> Discover models
