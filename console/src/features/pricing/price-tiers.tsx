@@ -6,10 +6,18 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FieldError } from "@/components/ui/field";
 import { priceFormOptions } from "./form-options";
+import { CACHE_WRITE_DURATION_GROUPS } from "../../../../src/shared/cache-durations.ts";
+import { pricingDurationFormats } from "./cache-durations";
+import type { ProviderType } from "../../../../src/config/values.ts";
+
+const durationProps: { providerType: ProviderType } = {
+  providerType: "ai_gateway",
+};
 
 export const PriceTiers = withForm({
   ...priceFormOptions,
-  render: function PriceTiers({ form }) {
+  props: durationProps,
+  render: function PriceTiers({ form, providerType }) {
     return (
       <form.AppField name="pricing.tiers" mode="array">
         {(tiers) => (
@@ -112,43 +120,38 @@ export const PriceTiers = withForm({
                     the standard write cost unknown.
                   </p>
                 </details>
-                <details className="text-xs">
-                  <summary className="cursor-pointer text-muted-foreground">
-                    Optional cache duration prices
-                  </summary>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <form.AppField
-                      name={`pricing.tiers[${index}].cache_write_5m`}
-                    >
-                      {(field) => (
-                        <field.TextField
-                          label="Cache write · 5 minutes"
-                          emptyAsUndefined
-                          placeholder={
-                            tier.cache_write || "Use cache write rate"
-                          }
-                        />
+                {pricingDurationFormats(providerType, [tier]).map((format) => (
+                  <details key={format} className="text-xs">
+                    <summary className="cursor-pointer text-muted-foreground">
+                      Optional {CACHE_WRITE_DURATION_GROUPS[format].label} cache
+                      duration prices
+                    </summary>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      {CACHE_WRITE_DURATION_GROUPS[format].durations.map(
+                        ({ price, label }) => (
+                          <form.AppField
+                            key={price}
+                            name={`pricing.tiers[${index}].${price}`}
+                          >
+                            {(field) => (
+                              <field.TextField
+                                label={label}
+                                emptyAsUndefined
+                                placeholder={
+                                  tier.cache_write || "Use cache write rate"
+                                }
+                              />
+                            )}
+                          </form.AppField>
+                        ),
                       )}
-                    </form.AppField>
-                    <form.AppField
-                      name={`pricing.tiers[${index}].cache_write_1h`}
-                    >
-                      {(field) => (
-                        <field.TextField
-                          label="Cache write · 1 hour"
-                          emptyAsUndefined
-                          placeholder={
-                            tier.cache_write || "Use cache write rate"
-                          }
-                        />
-                      )}
-                    </form.AppField>
-                  </div>
-                  <p className="mt-3 text-muted-foreground">
-                    Separate rates require the upstream to report cache duration
-                    counters.
-                  </p>
-                </details>
+                    </div>
+                    <p className="mt-3 text-muted-foreground">
+                      Separate rates require the upstream to report cache
+                      duration counters.
+                    </p>
+                  </details>
+                ))}
               </div>
             ))}
             <FieldError errors={fieldErrors(tiers)} />

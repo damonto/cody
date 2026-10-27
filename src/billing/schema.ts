@@ -45,6 +45,8 @@ export const priceTierSchema = z.strictObject({
   cache_read: rateSchema,
   cache_write_5m: rateSchema.optional(),
   cache_write_1h: rateSchema.optional(),
+  cache_write_30m: rateSchema.optional(),
+  cache_write_12h: rateSchema.optional(),
 });
 
 const pricingSchema = z.strictObject({

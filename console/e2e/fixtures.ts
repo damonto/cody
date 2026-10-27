@@ -426,6 +426,8 @@ export async function mockApi(
           cache_write_tokens: 0,
           cache_write_5m_tokens: 0,
           cache_write_1h_tokens: 0,
+          cache_write_30m_tokens: 0,
+          cache_write_12h_tokens: 0,
           reasoning_tokens: 0,
           reasoning_samples: 0,
           cost_nano: 0,

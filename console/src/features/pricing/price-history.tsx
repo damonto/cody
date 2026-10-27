@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { PriceTier } from "../../../../src/billing/types";
+import { CACHE_WRITE_DURATIONS } from "../../../../src/shared/cache-durations.ts";
 import { read, rpc } from "@/lib/api";
 import { date, number } from "@/lib/format";
 import { DataTable, Empty, ErrorNotice, Loading } from "@/components/common";
@@ -66,6 +67,16 @@ export function PriceHistory({
                     header: title,
                     cell: ({ row }: { row: { original: PriceTier } }) =>
                       row.original[key],
+                  })),
+                  ...CACHE_WRITE_DURATIONS.filter(({ price }) =>
+                    item.price.pricing?.tiers.some(
+                      (tier) => tier[price] !== undefined,
+                    ),
+                  ).map(({ price, label }) => ({
+                    id: price,
+                    header: label,
+                    cell: ({ row }: { row: { original: PriceTier } }) =>
+                      row.original[price] ?? "Use cache write rate",
                   })),
                 ]}
                 empty="No pricing in this revision"

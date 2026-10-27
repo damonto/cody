@@ -1,3 +1,4 @@
+import { CACHE_WRITE_DURATIONS } from "../../../src/shared/cache-durations.ts";
 import { antigravityVariant } from "../../../src/shared/antigravity-models.ts";
 import { UpstreamMismatchIndicator } from "@/features/requests/upstream-observation";
 import { RetryDecision } from "@/features/requests/retry-diagnostic";
@@ -386,14 +387,12 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
               ],
               ["Cache read", number(item.usage.tokens.cache_read_tokens)],
               ["Cache write", number(item.usage.tokens.cache_write_tokens)],
-              [
-                "Cache write · 5 minutes",
-                number(item.usage.tokens.cache_write_5m_tokens),
-              ],
-              [
-                "Cache write · 1 hour",
-                number(item.usage.tokens.cache_write_1h_tokens),
-              ],
+              ...CACHE_WRITE_DURATIONS.map(
+                ({ tokens, label }): [string, string] => [
+                  label,
+                  number(item.usage.tokens[tokens]),
+                ],
+              ),
               ["Reasoning", number(item.usage.tokens.reasoning_tokens)],
               ["Context size", compact(item.context_tokens)],
               ["Context window", compact(item.context_window)],
@@ -576,6 +575,27 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                     row.original.billing?.currency ?? "",
                   ),
               },
+              {
+                id: "cache-durations",
+                header: "Cache writes",
+                cell: ({ row }) =>
+                  row.original.usage ? (
+                    <details>
+                      <summary className="cursor-pointer">
+                        {number(row.original.usage.tokens.cache_write_tokens)}{" "}
+                        tokens
+                      </summary>
+                      <Details
+                        rows={CACHE_WRITE_DURATIONS.map(({ tokens, label }) => [
+                          label,
+                          number(row.original.usage?.tokens[tokens]),
+                        ])}
+                      />
+                    </details>
+                  ) : (
+                    "—"
+                  ),
+              },
             ]}
             empty="No upstream attempt recorded"
           />
@@ -619,22 +639,10 @@ function AppliedRates({
           ["Output", tier.output],
           ["Cache write", tier.cache_write],
           ["Cache read", tier.cache_read],
-          ...(tier.cache_write_5m
-            ? [
-                ["Cache write · 5 minutes", tier.cache_write_5m] as [
-                  string,
-                  string,
-                ],
-              ]
-            : []),
-          ...(tier.cache_write_1h
-            ? [
-                ["Cache write · 1 hour", tier.cache_write_1h] as [
-                  string,
-                  string,
-                ],
-              ]
-            : []),
+          ...CACHE_WRITE_DURATIONS.flatMap(
+            ({ price, label }): [string, string][] =>
+              tier[price] === undefined ? [] : [[label, tier[price]]],
+          ),
         ]}
       />
     </div>

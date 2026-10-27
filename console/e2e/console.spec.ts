@@ -294,8 +294,10 @@ for (const protocol of ["openai", "anthropic"] as const) {
       output_tokens: 4000,
       cache_read_tokens: 140000,
       cache_write_tokens: 20000,
-      cache_write_5m_tokens: null,
-      cache_write_1h_tokens: null,
+      cache_write_5m_tokens: protocol === "anthropic" ? 15000 : null,
+      cache_write_1h_tokens: protocol === "anthropic" ? 5000 : null,
+      cache_write_30m_tokens: protocol === "openai" ? 15000 : null,
+      cache_write_12h_tokens: protocol === "openai" ? 5000 : null,
       reasoning_tokens: null,
     };
     const event: UsageEvent = {
@@ -469,6 +471,16 @@ for (const protocol of ["openai", "anthropic"] as const) {
         .getByText("220K", { exact: true }),
     ).toBeVisible();
     await expect(dialog.getByText("1M", { exact: true })).toBeVisible();
+    const durationLabel =
+      protocol === "openai"
+        ? "Cache write · 30 minutes"
+        : "Cache write · 5 minutes";
+    await expect(
+      dialog
+        .getByText(durationLabel, { exact: true })
+        .locator("..")
+        .getByText("15,000", { exact: true }),
+    ).toBeVisible();
     await dialog
       .getByRole("tab", { name: "Routing & attempts", exact: true })
       .click();
@@ -625,8 +637,8 @@ test("image prices save, clear and drive separate calculator charges", async ({
     ["Output (including reasoning)", "50"],
     ["Cache read", "30"],
     ["Cache write", "20"],
-    ["Cache write · 5 minutes", "20"],
-    ["Cache write · 1 hour", "0"],
+    ["Cache write · 30 minutes", "20"],
+    ["Cache write · 12 hours", "0"],
     ["Reasoning", "0"],
     ["Image input (including cached images)", "80"],
     ["Image output", "30"],

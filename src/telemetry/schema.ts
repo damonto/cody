@@ -50,6 +50,8 @@ const usageSchema = z.object({
     cache_write_tokens: nullableNumber,
     cache_write_5m_tokens: nullableNumber,
     cache_write_1h_tokens: nullableNumber,
+    cache_write_30m_tokens: tokenCountSchema.nullable().default(null),
+    cache_write_12h_tokens: tokenCountSchema.nullable().default(null),
     reasoning_tokens: nullableNumber,
   }),
   status: z.enum(UsageStatus),

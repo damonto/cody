@@ -93,10 +93,16 @@ async function seed(source) {
 }
 async function seedUsage(source) {
   const historic = usage("retained-aggregate", 1_700_000_000_000);
+  historic.usage.tokens.cache_write_30m_tokens = 40;
+  historic.usage.tokens.cache_write_12h_tokens = 60;
   await ingestUsage(source.db, historic);
   await cleanupRequests(source.db, 0);
-  for (let i = 0; i < 55; i++)
-    await ingestUsage(source.db, usage(`current-${i}`, Date.now()));
+  for (let i = 0; i < 55; i++) {
+    const event = usage(`current-${i}`, Date.now());
+    event.usage.tokens.cache_write_30m_tokens = 70;
+    event.usage.tokens.cache_write_12h_tokens = 30;
+    await ingestUsage(source.db, event);
+  }
   await source.db
     .prepare(
       "UPDATE usage_hourly SET input_tokens = CAST(? AS BIGINT) WHERE hour < ?",
@@ -143,7 +149,7 @@ for (const [from, to] of [
       ]) {
         const cols =
           table === "usage_hourly"
-            ? "hour, CAST(input_tokens AS TEXT) AS input_tokens, requests_count"
+            ? "hour, CAST(input_tokens AS TEXT) AS input_tokens, requests_count, cache_write_30m_tokens, cache_write_12h_tokens"
             : "*";
         assert.deepEqual(
           (

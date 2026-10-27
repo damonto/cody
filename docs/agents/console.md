@@ -17,6 +17,7 @@ Read this guide for `console/` changes. Start with `console/src/App.tsx`, `conso
 - Preserve editor baselines across background refreshes. Keep loaded forms visible on refresh failure, and keep conflicts/failed mutations open and retryable. Resource fingerprints must detect masked secret changes; unchanged masked credentials retain their saved value.
 - Give editable rows stable identities independent of array index and editable names. The server generates durable IDs; strip form-only metadata before saving and keep IDs out of the UI.
 - Pricing defaults to a provider with configured models; an explicitly selected provider without models keeps the provider switcher and a link to its settings. Empty native defaults must not hide pricing for other providers.
+- Cache duration prices use OpenAI 30m/12h for Codex and Claude 5m/1h for Claude; AI Gateway exposes both explicitly named groups. Other native providers retain configured values without advertising new caching capabilities. The calculator uses one format at a time and leaves inactive counters unknown; native providers select their own format, while AI Gateway prefers configured duration prices before defaulting to OpenAI. Price/request history renders stored fields without reinterpreting them using current provider settings.
 - Save settings and account edits independently, taking effect immediately. Unsaved incomplete forms must not prune committed proxy bindings.
 
 ## Native provider pages

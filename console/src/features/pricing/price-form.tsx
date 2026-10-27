@@ -213,7 +213,7 @@ export function PriceForm({
                           upper bound is inclusive. Reasoning is already
                           included in the Output charge.
                         </div>
-                        <PriceTiers form={form} />
+                        <PriceTiers form={form} providerType={provider.type} />
                         <FieldError errors={fieldErrors(pricing)} />
                       </>
                     )}
@@ -270,7 +270,7 @@ export function PriceForm({
                 context including cache tokens.
               </DialogDescription>
             </DialogHeader>
-            {trial && <PriceTrial price={trial} />}
+            {trial && <PriceTrial price={trial} providerType={provider.type} />}
           </DialogContent>
         </Dialog>
       </CardContent>

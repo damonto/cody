@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { compact, number } from "@/lib/format";
 import type { Aggregate } from "@/lib/api";
 import { tokenTotal } from "./data";
+import { CACHE_WRITE_DURATIONS } from "../../../../src/shared/cache-durations.ts";
 
 export function TokenComposition({ totals }: { totals: Aggregate }) {
   const total = tokenTotal(totals);
@@ -96,6 +97,23 @@ export function TokenComposition({ totals }: { totals: Aggregate }) {
             </div>
           ))}
         </div>
+        <details className="mt-4 text-xs text-muted-foreground">
+          <summary className="cursor-pointer">
+            Reported cache write durations
+          </summary>
+          <div className="mt-2 space-y-2">
+            {CACHE_WRITE_DURATIONS.map(({ tokens, label }) => (
+              <div key={tokens} className="flex justify-between gap-3">
+                <span>{label}</span>
+                <span>{number(totals[tokens])}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2">
+            Subsets of cache writes. Unreported durations are excluded from
+            these counts.
+          </p>
+        </details>
         <div className="mt-5 flex justify-between gap-3 border-t pt-3 text-xs text-muted-foreground">
           <span>Of output: reasoning</span>
           <span className="tabular-nums">

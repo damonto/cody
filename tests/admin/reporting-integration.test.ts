@@ -683,6 +683,28 @@ test("model API calls on the console hostname require only gateway client creden
   }
 });
 
+test("OpenAI cache durations survive D1 ingestion, attempts and hourly reports", async () => {
+  const now = Date.now();
+  const event = usage("openai-duration-details", now - 5000);
+  event.usage.tokens.cache_write_30m_tokens = 40;
+  event.usage.tokens.cache_write_12h_tokens = 60;
+  event.attempts[0]!.usage = structuredClone(event.usage);
+  await ingestUsage(bindings.CODY_DB, event);
+  await ingestUsage(bindings.CODY_DB, event);
+  const detail = await requestDetail(bindings.CODY_DB, event.request_id);
+  expect(detail).toEqual(event);
+  const from = Math.floor((now - 5000) / 3_600_000) * 3_600_000;
+  const report = await summary(
+    bindings.CODY_DB,
+    range(from, from + 3_600_000),
+    {},
+  );
+  expect(report.totals.requests_count).toBe(1);
+  expect(report.totals.cache_write_tokens).toBe(100);
+  expect(report.totals.cache_write_30m_tokens).toBe(40);
+  expect(report.totals.cache_write_12h_tokens).toBe(60);
+});
+
 test("image request details survive ingestion and replay without new rollup columns", async () => {
   const event = usage("image-details", Date.now() - 5000);
   event.endpoint = "images/edits";

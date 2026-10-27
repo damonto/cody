@@ -30,6 +30,7 @@ import { ResponseObserver } from "./response-observer.ts";
 import { responseFormat } from "../gateway/http/response-format.ts";
 import type { AttemptRecord, UsageEvent } from "./types.ts";
 import { record, UsageAccumulator } from "./usage.ts";
+import { CACHE_WRITE_DURATION_FIELDS } from "../shared/cache-durations.ts";
 import {
   REASONING_METADATA_FIELDS,
   type InferenceMetadata,
@@ -85,7 +86,10 @@ interface WebSocketMeterOptions extends MeterOptionsBase {
 export type MeterOptions = HttpMeterOptions | WebSocketMeterOptions;
 type ObservationSource = "upstream" | "downstream";
 
-const imageUsageFields: ReadonlySet<string> = new Set(IMAGE_USAGE_FIELDS);
+const detailUsageFields: ReadonlySet<(typeof USAGE_FIELDS)[number]> = new Set([
+  ...IMAGE_USAGE_FIELDS,
+  ...CACHE_WRITE_DURATION_FIELDS,
+]);
 const imageCostFields: ReadonlySet<string> = new Set(IMAGE_COST_FIELDS);
 
 const TYPE_PREFIX = /^\{\s*"type"\s*:\s*"([^"\\]{0,160})"/;
@@ -440,7 +444,7 @@ export class RequestMeter {
       }
       for (const attempt of this.data.attempts.slice(0, -1)) {
         if (!attempt.usage) {
-          for (const field of IMAGE_USAGE_FIELDS)
+          for (const field of detailUsageFields)
             this.data.usage.tokens[field] = null;
           for (const field of IMAGE_COST_FIELDS)
             this.data.billing[field] = null;
@@ -465,7 +469,7 @@ export class RequestMeter {
         for (const field of USAGE_FIELDS) {
           const previous = attempt.usage.tokens[field];
           if (
-            imageUsageFields.has(field) &&
+            detailUsageFields.has(field) &&
             (previous === null || this.data.usage.tokens[field] === null)
           ) {
             this.data.usage.tokens[field] = null;

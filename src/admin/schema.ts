@@ -1,4 +1,5 @@
 import { validImageUsage } from "../billing/image-usage.ts";
+import { validCacheWriteUsage } from "../billing/cache-usage.ts";
 import { HealthScope } from "../gateway/health/values.ts";
 
 import { z } from "zod";
@@ -76,6 +77,8 @@ export const previewSchema = z.strictObject({
       cache_write_tokens: nullableCounter,
       cache_write_5m_tokens: nullableCounter,
       cache_write_1h_tokens: nullableCounter,
+      cache_write_30m_tokens: nullableCounter,
+      cache_write_12h_tokens: nullableCounter,
       reasoning_tokens: nullableCounter,
     })
     .superRefine((usage, context) => {
@@ -112,16 +115,12 @@ export const previewSchema = z.strictObject({
           message: "Reasoning tokens cannot exceed output",
         });
       }
-      if (
-        usage.cache_write_5m_tokens !== null &&
-        usage.cache_write_1h_tokens !== null &&
-        write !== null &&
-        usage.cache_write_5m_tokens + usage.cache_write_1h_tokens !== write
-      ) {
+      if (!validCacheWriteUsage(usage)) {
         context.addIssue({
           code: "custom",
           path: ["cache_write_tokens"],
-          message: "Cache duration counters must equal total cache writes",
+          message:
+            "Use one cache duration format; its counters must fit and, when complete, equal total cache writes",
         });
       }
     })

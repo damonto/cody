@@ -202,6 +202,7 @@ for (const [dialect, create] of Object.entries(factories)) {
       "0015_native_provider_defaults.sql",
       "0016_remove_history_notes.sql",
       "0017_siwc_host.sql",
+      "0018_cache_write_durations.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(

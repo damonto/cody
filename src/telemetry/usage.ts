@@ -2,6 +2,11 @@ import type { MeteredInferencePath } from "../gateway/protocol.ts";
 import { validImageUsage } from "../billing/image-usage.ts";
 import { UsageStatus } from "../billing/values.ts";
 import { ApiProtocol } from "../gateway/protocol-values.ts";
+import {
+  CACHE_WRITE_DURATIONS,
+  CACHE_WRITE_DURATION_GROUPS,
+} from "../shared/cache-durations.ts";
+import { validCacheWriteUsage } from "../billing/cache-usage.ts";
 
 import {
   USAGE_FIELDS,
@@ -80,7 +85,14 @@ export class UsageAccumulator {
           const sourceDetails = record(source[detail]);
           if (!sourceDetails) continue;
           const counters = { ...record(destination[detail]) };
-          for (const field of ["image_tokens", "text_tokens"]) {
+          const fields = ["image_tokens", "text_tokens"];
+          if (detail === "cache_write_tokens_details")
+            fields.push(
+              ...CACHE_WRITE_DURATION_GROUPS.openai.durations.map(
+                ({ wire }) => wire,
+              ),
+            );
+          for (const field of fields) {
             if (Object.hasOwn(sourceDetails, field))
               counters[field] = count(sourceDetails[field]);
           }
@@ -107,6 +119,18 @@ export class UsageAccumulator {
       const cache = record(raw.cache_creation);
       tokens.cache_write_5m_tokens = count(cache?.ephemeral_5m_input_tokens);
       tokens.cache_write_1h_tokens = count(cache?.ephemeral_1h_input_tokens);
+      for (const { wire } of CACHE_WRITE_DURATION_GROUPS.anthropic.durations)
+        if (cache && Object.hasOwn(cache, wire) && count(cache[wire]) === null)
+          invalid = true;
+      if (
+        !Object.hasOwn(raw, "cache_creation_input_tokens") &&
+        tokens.cache_write_5m_tokens !== null &&
+        tokens.cache_write_1h_tokens !== null
+      ) {
+        const sum = tokens.cache_write_5m_tokens + tokens.cache_write_1h_tokens;
+        if (Number.isSafeInteger(sum)) tokens.cache_write_tokens = sum;
+        else invalid = true;
+      }
       if (
         tokens.uncached_input_tokens !== null &&
         tokens.cache_read_tokens !== null &&
@@ -129,6 +153,13 @@ export class UsageAccumulator {
       const output = record(
         raw.output_tokens_details ?? raw.completion_tokens_details,
       );
+      const writes = record(input?.cache_write_tokens_details);
+      for (const { tokens: field, wire } of CACHE_WRITE_DURATION_GROUPS.openai
+        .durations) {
+        tokens[field] = count(writes?.[wire]);
+        if (writes && Object.hasOwn(writes, wire) && tokens[field] === null)
+          invalid = true;
+      }
       for (const [field, counter, detailsKey] of [
         ["cache_read_tokens", "cached_tokens", "cached_tokens_details"],
         [
@@ -147,6 +178,22 @@ export class UsageAccumulator {
           const sum = image + text;
           if (Number.isSafeInteger(sum)) tokens[field] = sum;
           else invalid = true;
+        }
+      }
+      // Only an absent parent can be derived. An explicit invalid total stays unknown.
+      if (input && !Object.hasOwn(input, "cache_write_tokens")) {
+        const values = CACHE_WRITE_DURATION_GROUPS.openai.durations.map(
+          ({ tokens: field }) => tokens[field],
+        );
+        if (values.every((value) => value !== null)) {
+          const sum = values.reduce((total, value) => total + value, 0);
+          if (
+            !Number.isSafeInteger(sum) ||
+            (tokens.cache_write_tokens !== null &&
+              tokens.cache_write_tokens !== sum)
+          )
+            invalid = true;
+          else tokens.cache_write_tokens = sum;
         }
       }
       const inputTokens = tokens.input_tokens;
@@ -169,8 +216,9 @@ export class UsageAccumulator {
           [
             tier.cache_write,
             tier.image_cache_write ?? tier.cache_write,
-            tier.cache_write_5m ?? tier.cache_write,
-            tier.cache_write_1h ?? tier.cache_write,
+            ...CACHE_WRITE_DURATIONS.map(
+              ({ price: field }) => tier[field] ?? tier.cache_write,
+            ),
           ].every((rate) => Number(rate) === 0)
         )
           tokens.cache_write_tokens = 0;
@@ -267,14 +315,7 @@ export class UsageAccumulator {
       tokens.reasoning_tokens = null;
       invalid = true;
     }
-    if (
-      tokens.cache_write_5m_tokens !== null &&
-      tokens.cache_write_1h_tokens !== null &&
-      tokens.cache_write_tokens !== null &&
-      tokens.cache_write_5m_tokens + tokens.cache_write_1h_tokens !==
-        tokens.cache_write_tokens
-    )
-      invalid = true;
+    if (!validCacheWriteUsage(tokens)) invalid = true;
     const complete = [
       tokens.input_tokens,
       tokens.output_tokens,

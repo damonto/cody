@@ -1,5 +1,7 @@
 import { validImageUsage, uncachedImageTokens } from "./image-usage.ts";
 import { BillingStatus } from "./values.ts";
+import { CACHE_WRITE_DURATIONS } from "../shared/cache-durations.ts";
+import { observedCacheDurations, validCacheWriteUsage } from "./cache-usage.ts";
 
 import { parseRate } from "./config.ts";
 import type {
@@ -11,6 +13,8 @@ import type {
 
 // Prices are decimal currency units per million tokens. Monetary results are
 // integer nanounits, rounded half-up once per charge, never binary float sums.
+export function tokenCost(tokens: number, rate: string): number;
+export function tokenCost(tokens: number | null, rate: string): number | null;
 export function tokenCost(tokens: number | null, rate: string): number | null {
   if (tokens === null) return null;
   if (!Number.isSafeInteger(tokens) || tokens < 0)
@@ -49,61 +53,78 @@ function splitTokenCost(
   };
 }
 
-function ordinaryCacheWriteCost(
+interface CacheWriteCharge {
+  tokens: number | null;
+  rate: string;
+}
+
+function cacheWriteDurationCharges(
   usage: TokenUsage,
   tier: PriceTier,
+): CacheWriteCharge[] | undefined {
+  const durations =
+    observedCacheDurations(usage)[0]?.durations ?? CACHE_WRITE_DURATIONS;
+  if (durations.every(({ price }) => tier[price] === undefined))
+    return undefined;
+  return durations.map(({ price, tokens }) => ({
+    tokens: usage[tokens] ?? null,
+    rate: tier[price] ?? tier.cache_write,
+  }));
+}
+
+/** Called after duration validation; complete buckets already match the total. */
+function ordinaryCacheWriteCost(
+  total: number | null,
+  rate: string,
+  charges: readonly CacheWriteCharge[] | undefined,
 ): number | null {
-  if (usage.cache_write_tokens === 0) return 0;
-  if (tier.cache_write_5m === undefined && tier.cache_write_1h === undefined)
-    return tokenCost(usage.cache_write_tokens, tier.cache_write);
-  const short = usage.cache_write_5m_tokens;
-  const long = usage.cache_write_1h_tokens;
-  if (
-    short === null ||
-    long === null ||
-    short + long !== usage.cache_write_tokens
-  )
-    return null;
-  return (
-    (tokenCost(short, tier.cache_write_5m ?? tier.cache_write) ?? 0) +
-    (tokenCost(long, tier.cache_write_1h ?? tier.cache_write) ?? 0)
-  );
+  if (total === 0) return 0;
+  if (!charges) return tokenCost(total, rate);
+  if (total === null) return null;
+  let cost = 0;
+  for (const charge of charges) {
+    if (charge.tokens === null) return null;
+    cost += tokenCost(charge.tokens, charge.rate);
+  }
+  return cost;
 }
 
 function cacheWriteCost(usage: TokenUsage, tier: PriceTier): TokenCharge {
-  if (tier.image_cache_write === undefined)
-    return { standard: ordinaryCacheWriteCost(usage, tier), image: 0 };
   const total = usage.cache_write_tokens;
+  const charges = cacheWriteDurationCharges(usage, tier);
   const image =
     usage.image_cache_write_tokens ??
     (total === 0 || usage.image_input_tokens === 0 ? 0 : null);
-  if (image === 0)
-    return { standard: ordinaryCacheWriteCost(usage, tier), image: 0 };
+  if (tier.image_cache_write === undefined || image === 0)
+    return {
+      standard: ordinaryCacheWriteCost(total, tier.cache_write, charges),
+      image: 0,
+    };
   if (total !== null && image === total)
     return { standard: 0, image: tokenCost(image, tier.image_cache_write) };
-  if (tier.cache_write_5m === undefined && tier.cache_write_1h === undefined)
+  if (!charges)
     return splitTokenCost(
       total,
       image,
       tier.cache_write,
       tier.image_cache_write,
     );
-  const rate5m = tier.cache_write_5m ?? tier.cache_write;
-  const rate1h = tier.cache_write_1h ?? tier.cache_write;
-  if (Number(rate5m) === Number(rate1h))
-    return splitTokenCost(total, image, rate5m, tier.image_cache_write);
-  const short = usage.cache_write_5m_tokens;
-  const long = usage.cache_write_1h_tokens;
+  const [first, ...remaining] = charges;
   if (
-    short !== null &&
-    long !== null &&
-    total !== null &&
-    short + long === total
-  ) {
-    if (short === 0)
-      return splitTokenCost(total, image, rate1h, tier.image_cache_write);
-    if (long === 0)
-      return splitTokenCost(total, image, rate5m, tier.image_cache_write);
+    first &&
+    remaining.every(({ rate }) => Number(rate) === Number(first.rate))
+  )
+    return splitTokenCost(total, image, first.rate, tier.image_cache_write);
+  if (total !== null && charges.every(({ tokens }) => tokens !== null)) {
+    const nonzero = charges.filter(({ tokens }) => tokens !== 0);
+    const duration = nonzero.length === 1 ? nonzero[0] : undefined;
+    if (duration)
+      return splitTokenCost(
+        total,
+        image,
+        duration.rate,
+        tier.image_cache_write,
+      );
   }
   // A mixed-duration write total does not reveal the duration of its text tokens.
   return { standard: null, image: tokenCost(image, tier.image_cache_write) };
@@ -136,6 +157,8 @@ export function calculateCost(
   version: string | null = null,
 ): CostBreakdown {
   if (!validImageUsage(usage)) throw new Error("Invalid image token counts");
+  if (!validCacheWriteUsage(usage))
+    throw new Error("Invalid cache duration token counts");
   const result = emptyCost(
     price?.pricing ? BillingStatus.Unknown : BillingStatus.Unpriced,
   );

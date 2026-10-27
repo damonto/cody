@@ -62,6 +62,8 @@ export const AGGREGATE_EXPRESSIONS = {
   cache_write_tokens: "COALESCE(NEW.cache_write_tokens, 0)",
   cache_write_5m_tokens: "COALESCE(NEW.cache_write_5m_tokens, 0)",
   cache_write_1h_tokens: "COALESCE(NEW.cache_write_1h_tokens, 0)",
+  cache_write_30m_tokens: "COALESCE(NEW.cache_write_30m_tokens, 0)",
+  cache_write_12h_tokens: "COALESCE(NEW.cache_write_12h_tokens, 0)",
   reasoning_tokens: "COALESCE(NEW.reasoning_tokens, 0)",
   reasoning_samples: "CASE WHEN NEW.reasoning_tokens IS NULL THEN 0 ELSE 1 END",
   cost_nano: "COALESCE(NEW.cost_nano, 0)",

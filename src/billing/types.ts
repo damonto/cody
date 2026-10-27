@@ -19,6 +19,8 @@ export const SQL_USAGE_FIELDS = [
   "cache_write_tokens",
   "cache_write_5m_tokens",
   "cache_write_1h_tokens",
+  "cache_write_30m_tokens",
+  "cache_write_12h_tokens",
   "reasoning_tokens",
 ] as const;
 
