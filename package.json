@@ -38,7 +38,7 @@
     "@cloudflare/vitest-plugin": "^1.4.9",
     "@cloudflare/workers-types": "^5.20261028.1",
     "@electric-sql/pglite": "^0.5.12",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.5",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "concurrently": "^10.0.6",
