@@ -1,3 +1,4 @@
+import "reflect-metadata";
 import { createServer as createTcpServer, connect } from "node:net";
 import { createServer as createHttpsServer } from "node:https";
 import { Duplex } from "node:stream";
@@ -14,8 +15,17 @@ import {
 export async function certificates(
   hostname = "upstream.test",
   sanHostname = hostname,
+  keyAlgorithm = "ECDSA",
 ) {
-  const algorithm = { name: "ECDSA", namedCurve: "P-256" };
+  const algorithm =
+    keyAlgorithm === "RSA"
+      ? {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256",
+        }
+      : { name: "ECDSA", namedCurve: "P-256" };
   const rootKeys = await crypto.subtle.generateKey(algorithm, true, [
     "sign",
     "verify",
@@ -28,7 +38,7 @@ export async function certificates(
     notBefore: new Date(Date.now() - 60_000),
     notAfter: new Date(Date.now() + 86_400_000),
   };
-  const signingAlgorithm = { name: "ECDSA", hash: "SHA-256" };
+  const signingAlgorithm = { name: algorithm.name, hash: "SHA-256" };
   const root = await X509CertificateGenerator.createSelfSigned({
     name: "CN=Cody test root",
     keys: rootKeys,
@@ -92,7 +102,11 @@ function nodeDial({ hostname, port }) {
 
 export async function tlsProxyFixture(handler, options = {}) {
   const credentials = options.credentials;
-  const certificate = await certificates(options.hostname, options.sanHostname);
+  const certificate = await certificates(
+    options.hostname,
+    options.sanHostname,
+    options.keyAlgorithm,
+  );
   const sockets = new Set();
   const track = (socket) => {
     sockets.add(socket);

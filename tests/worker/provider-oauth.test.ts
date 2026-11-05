@@ -2140,13 +2140,23 @@ for (const mode of ["inherit", "override", "direct"] as const) {
       "gateway-config",
       JSON.stringify(config),
     );
-    override = (request) =>
-      request.url.includes(":loadCodeAssist")
-        ? Response.json({
-            allowedTiers: [{ id: "free-tier", isDefault: true }],
-          })
-        : undefined;
-    const { stub } = await ready(connection, ref);
+    let finishOnboarding = false;
+    override = (request) => {
+      if (request.url.includes(":loadCodeAssist"))
+        return Response.json({
+          allowedTiers: [{ id: "free-tier", isDefault: true }],
+        });
+      if (request.url.includes(":onboardUser") && !finishOnboarding)
+        return Response.json({ done: false });
+      return;
+    };
+    const { stub, session } = await start(connection, ref);
+    await complete(stub, session);
+    expect((await settleSession(stub, session)).status).toBe("complete");
+    // Let authorization and project lookup commit before finishing onboarding.
+    await retryingProject(stub);
+    finishOnboarding = true;
+    await initialize(stub);
     override = undefined;
     await stub.run({ action: "models" });
     await stub.run({ action: "quota", force: true });

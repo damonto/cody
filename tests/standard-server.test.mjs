@@ -177,6 +177,19 @@ test(
     assert.equal(asset.status, 200);
     assert.match(asset.headers.get("content-type"), /text\/javascript/);
     assert.equal(await asset.text(), consoleScript);
+    const head = await fetch(`${url}/console/assets/fixture.js`, {
+      method: "HEAD",
+    });
+    assert.equal(head.status, 200);
+    assert.equal(
+      head.headers.get("content-length"),
+      String(consoleScript.length),
+    );
+    assert.equal(await head.text(), "");
+    const unchanged = await fetch(`${url}/console/assets/fixture.js`, {
+      headers: { "if-none-match": asset.headers.get("etag") },
+    });
+    assert.equal(unchanged.status, 304);
     assert.equal((await fetch(`${url}/console/assets/missing.js`)).status, 404);
     assert.equal((await fetch(`${url}/console/api/config`)).status, 401);
     // Browsers send bodyless DELETEs without Content-Length; node-server still

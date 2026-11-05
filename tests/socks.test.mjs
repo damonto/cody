@@ -455,9 +455,14 @@ test("only the provider's configured HTTP retry policy opens another SOCKS conne
   );
 });
 
-for (const tlsVersion of ["TLSv1.2", "TLSv1.3"]) {
+for (const [tlsVersion, keyAlgorithm] of [
+  ["TLSv1.2", "ECDSA"],
+  ["TLSv1.3", "ECDSA"],
+  ["TLSv1.2", "RSA"],
+  ["TLSv1.3", "RSA"],
+]) {
   test(
-    `SOCKS5 tunnels ${tlsVersion}, verifies the origin certificate and preserves request bytes`,
+    `SOCKS5 tunnels ${tlsVersion} with ${keyAlgorithm}, verifies the origin certificate and preserves request bytes`,
     { timeout: 10_000 },
     async (t) => {
       const received = [];
@@ -477,6 +482,7 @@ for (const tlsVersion of ["TLSv1.2", "TLSv1.3"]) {
         },
         {
           tlsVersion,
+          keyAlgorithm,
           credentials: { username: "user", password: "proxy-password" },
         },
       );

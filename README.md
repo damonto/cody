@@ -196,6 +196,7 @@ model_provider = "gateway"
 [model_providers.gateway]
 name = "Gateway"
 base_url = "https://cody.example.com/v1"
+model_catalog_url = "https://cody.example.com/v1/models"
 wire_api = "responses"
 http_headers = { "x-openai-actor-authorization" = "cody" }
 

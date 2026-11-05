@@ -8,9 +8,14 @@ export async function serveConsoleAsset(
   const url = new URL(request.url);
   // Vite emits public URLs under /console/, while files live at the asset root.
   url.pathname = url.pathname.slice(CONSOLE_PATH.length) || "/";
-  const response = await assets.fetch(new Request(url, request), {
-    redirect: "manual",
-  });
+  const response = await assets.fetch(
+    new Request(url, {
+      method: request.method,
+      headers: request.headers,
+      signal: request.signal,
+    }),
+    { redirect: "manual" },
+  );
   const location = response.headers.get("location");
   if (!location) return response;
 
