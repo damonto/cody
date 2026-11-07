@@ -60,7 +60,7 @@
     "@reclaimprotocol/tls": "0.1.5",
     "@vercel/functions": "^3.10.4",
     "gpt-tokenizer": "^4.1.0",
-    "hono": "^4.13.14",
+    "hono": "^4.13.16",
     "ioredis": "^6.0.0",
     "jose": "^6.2.13",
     "pg": "^8.23.1",
