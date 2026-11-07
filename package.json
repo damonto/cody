@@ -52,7 +52,7 @@
     "wrangler": "^4.154.0"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.5",
+    "@hono/node-server": "^2.1.6",
     "@hono/zod-validator": "^0.9.1",
     "@js-temporal/polyfill": "^0.5.1",
     "@libsql/client": "^0.18.0",
