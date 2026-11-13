@@ -22,6 +22,8 @@ const SESSION_LIST_DEFAULT_LIMIT = 100;
 const SESSION_LIST_MAX_LIMIT = SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE;
 
 interface SessionBindingView {
+  client_class?: "codex" | "other";
+  codex_mode?: "native" | "siwc";
   session_id: string;
   model: string | null;
   provider_id: string;
@@ -141,6 +143,8 @@ function sessionView(
   }
   return {
     session_id: entry.session_id,
+    ...(status.client_class ? { client_class: status.client_class } : {}),
+    ...(status.codex_mode ? { codex_mode: status.codex_mode } : {}),
     model: status.model ?? null,
     provider_id: status.provider_id,
     credential_id: status.credential_id,

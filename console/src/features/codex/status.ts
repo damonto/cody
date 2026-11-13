@@ -11,7 +11,7 @@ import type {
 import { date, label as humanize } from "../../lib/format";
 import { relative, type Tone } from "./plan";
 
-type Credential = CodexProviderConfig["credentials"][number];
+type Credential = Pick<CodexProviderConfig["credentials"][number], "disabled">;
 export interface HealthBadge {
   text: string;
   tone: Tone | "muted";
@@ -50,16 +50,11 @@ export function healthBadge(
     return { text: "Reauthorize", tone: "bad" };
   if (account.status !== OAuthAccountViewStatus.Ready)
     return { text: humanize(account.status), tone: "warn" };
-  if (account.codex?.mode === "siwc" && !account.codex.plan_usage_enabled)
-    return { text: "Plan usage disabled", tone: "warn" };
   if (health && !health.available && health.cooling_until !== null) {
     const title = date(health.cooling_until);
     return health.cooldown_reason === HealthCooldownReason.Quota
       ? {
-          text:
-            account.codex?.mode === "siwc"
-              ? `Limited · retry ${relative(health.cooling_until, now)}`
-              : `Exhausted · back ${relative(health.cooling_until, now)}`,
+          text: "Exhausted",
           tone: "bad",
           title,
         }

@@ -1,3 +1,5 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
+import { codexModeSchema } from "../../providers/codex/account-schema.ts";
 import { quotaBlocks } from "../../providers/claude/limits.ts";
 import { ConsumeResetCode, OAuthFlow } from "../../providers/oauth/values.ts";
 import { ProviderType } from "../../config/values.ts";
@@ -48,6 +50,10 @@ const startSchema = connectionSchema
         : input.flow === OAuthFlow.Pkce ||
           input.provider_type === ProviderType.Codex,
     "xAI requires device authorization; device and SIWC authorization are only available for Codex",
+  )
+  .refine(
+    (input) => input.flow !== OAuthFlow.Siwc || !!input.account_ref,
+    "SIWC must bind to an existing Codex account",
   )
   .refine(
     (input) => !input.request_consent || input.flow === OAuthFlow.Siwc,
@@ -298,7 +304,24 @@ export const oauthRoutes = new Hono<AdminContext>()
                   accountViewSchema,
                 )
               : undefined;
+          const siwcHealth =
+            provider?.type === ProviderType.Codex
+              ? await getCredentialAvailability(
+                  c.env,
+                  codexHealthProviderId(provider.id, "siwc"),
+                  credential.id,
+                )
+              : undefined;
           return accountHealthSchema.parse({
+            ...(siwcHealth
+              ? {
+                  siwc: {
+                    available: siwcHealth.available,
+                    cooling_until: siwcHealth.cooling_until ?? null,
+                    cooldown_reason: siwcHealth.cooldown_reason ?? null,
+                  },
+                }
+              : {}),
             ...(provider?.type === ProviderType.Antigravity
               ? {
                   model_cooldowns: (
@@ -410,12 +433,13 @@ export const oauthRoutes = new Hono<AdminContext>()
   .post(
     "/provider-accounts/:ref/models",
     validate("param", accountParam),
-    validate("json", z.strictObject({})),
+    validate("json", z.strictObject({ mode: codexModeSchema.optional() })),
     async (c) =>
       c.json(
         await reply(
           (await checkedAccount(c.env, c.req.valid("param").ref)).run({
             action: "models",
+            ...c.req.valid("json"),
           }),
           accountViewSchema,
         ),
@@ -424,13 +448,19 @@ export const oauthRoutes = new Hono<AdminContext>()
   .post(
     "/provider-accounts/:ref/quota",
     validate("param", accountParam),
-    validate("json", z.object({ force: z.boolean().default(false) })),
+    validate(
+      "json",
+      z.object({
+        force: z.boolean().default(false),
+        mode: codexModeSchema.optional(),
+      }),
+    ),
     async (c) =>
       c.json(
         await reply(
           (await checkedAccount(c.env, c.req.valid("param").ref)).run({
             action: "quota",
-            force: c.req.valid("json").force,
+            ...c.req.valid("json"),
           }),
           accountViewSchema,
         ),
@@ -502,6 +532,39 @@ export const oauthRoutes = new Hono<AdminContext>()
         accountViewSchema,
       );
       await audit(c.env, c.get("actor"), `antigravity_project_retry:${ref}`);
+      return c.json(result);
+    },
+  )
+  .delete(
+    "/provider-accounts/:ref/siwc",
+    validate("param", accountParam),
+    validate("json", z.strictObject({})),
+    async (c) => {
+      const ref = c.req.valid("param").ref;
+      const account = await checkedAccount(
+        c.env,
+        ref,
+        undefined,
+        ProviderType.Codex,
+      );
+      const config = await controlStore(c.env).committed();
+      const enabled = config.providers.some(
+        (provider) =>
+          provider.type === ProviderType.Codex &&
+          provider.use_siwc &&
+          provider.credentials.some(
+            (credential) => credential.auth.account_ref === ref,
+          ),
+      );
+      if (enabled)
+        throw new HTTPException(409, {
+          message: "Turn off Use SIWC in Codex settings before unlinking",
+        });
+      const result = await reply(
+        account.run({ action: "siwc_disconnect" }),
+        accountViewSchema,
+      );
+      await audit(c.env, c.get("actor"), `siwc_disconnect:${ref}`);
       return c.json(result);
     },
   )

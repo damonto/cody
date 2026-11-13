@@ -39,6 +39,7 @@ type Editor<T extends NativeType> = {
 } & EditorAction;
 interface AccountsProps<T extends NativeType> {
   provider: Provider<T>;
+  version: number;
   pending: boolean;
   onAdd: () => void;
   onConfigure: (id: string) => void;
@@ -168,6 +169,7 @@ export function NativeProviderPage<T extends NativeType>({
       )}
       <Accounts
         provider={provider}
+        version={configuration.data.version}
         pending={save.isPending}
         onAdd={() => open({ kind: "account" })}
         onConfigure={(credentialId) => open({ kind: "account", credentialId })}

@@ -1,3 +1,5 @@
+import { ProviderType } from "../config/values.ts";
+import { codexRequestMode } from "../shared/codex-client.ts";
 import { Hono } from "hono";
 import { handleModels } from "./catalog/models.ts";
 import {
@@ -119,7 +121,10 @@ function shouldUseConfiguredWebSearch(r: GatewayRequest): boolean {
   return (
     !search.prefer_native ||
     !allowedProviderCandidates(r.config, r.client).some(
-      ({ provider }) => provider.supports_web_search,
+      ({ provider }) =>
+        provider.supports_web_search &&
+        (provider.type !== ProviderType.Codex ||
+          codexRequestMode(r.request, provider.use_siwc) === "native"),
     )
   );
 }

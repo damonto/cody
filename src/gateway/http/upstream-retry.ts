@@ -41,6 +41,7 @@ export interface UpstreamRetryOptions {
 }
 
 export interface UpstreamAttemptLog {
+  codex_auth_mode?: "native" | "siwc" | undefined;
   attempt: number;
   status?: number;
   duration_ms: number;

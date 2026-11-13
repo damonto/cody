@@ -9,6 +9,7 @@ export function requestDetails(event: UsageEvent): string {
     connection_id: event.connection_id,
     response_id: event.response_id,
     upstream_model: event.upstream_model,
+    codex_auth_mode: event.codex_auth_mode,
     reported_model: event.reported_model,
     upstream_observation: event.upstream_observation,
     method: event.method,
@@ -39,6 +40,7 @@ export function attemptDetails(attempt: AttemptRecord): string {
   return JSON.stringify({
     retry_delay_ms: attempt.retry_delay_ms,
     retry_diagnostic: attempt.retry_diagnostic,
+    codex_auth_mode: attempt.codex_auth_mode,
     usage: attempt.usage,
     billing: attempt.billing,
   });
@@ -68,6 +70,9 @@ export function hydrateRequest(
     ...(details.upstream_model === undefined
       ? {}
       : { upstream_model: details.upstream_model }),
+    ...(details.codex_auth_mode === undefined
+      ? {}
+      : { codex_auth_mode: details.codex_auth_mode }),
     requested_model: row.requested_model,
     reported_model: details.reported_model ?? "",
     ...(details.upstream_observation === undefined

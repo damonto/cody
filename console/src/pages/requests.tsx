@@ -492,6 +492,14 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
                 "Credential",
                 names[item.credential_id] ?? (item.credential_id || "—"),
               ],
+              ...(item.codex_auth_mode
+                ? [
+                    ["Codex authorization", item.codex_auth_mode] satisfies [
+                      string,
+                      string,
+                    ],
+                  ]
+                : []),
               ["Requested model", item.requested_model || "—"],
               [
                 "Routed model",

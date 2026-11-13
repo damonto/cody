@@ -95,9 +95,12 @@ function indexEntry(record: SessionAffinityRecord) {
 }
 
 function storageKey(
-  record: Pick<SessionAffinityRecord, "model" | "session_digest">,
+  record: Pick<
+    SessionAffinityRecord,
+    "model" | "session_digest" | "client_class"
+  >,
 ): string {
-  return record.model == null
+  return record.model == null && !record.client_class
     ? AFFINITY_STORAGE_KEY
     : `${AFFINITY_STORAGE_KEY}:${record.session_digest}`;
 }
@@ -245,6 +248,9 @@ export class SessionAffinityCore {
           preferred = {
             provider_id: provider.provider_id,
             credential_id: credentialId,
+            codex_mode: provider.credentials.find(
+              (credential) => credential.credential_id === credentialId,
+            )?.codex_mode,
           };
       }
       return this.resolveBinding(candidates, preferred, registration);
@@ -260,6 +266,9 @@ export class SessionAffinityCore {
       registry_name: registration.registry_name,
       session_id: registration.session_id,
       model: registration.model,
+      ...(registration.client_class
+        ? { client_class: registration.client_class }
+        : {}),
       session_digest: registration.session_digest,
     };
     const result =
@@ -527,9 +536,7 @@ export class SessionAffinityCore {
     const snapshots = (await records(this.ctx.storage)).filter(
       (record) =>
         matchesSession(record, registration) &&
-        (allModels ||
-          (record.session_digest === registration.session_digest &&
-            (record.model ?? null) === registration.model)),
+        (allModels || (record.model ?? null) === registration.model),
     );
     // Read the index before entering the storage transaction. Fence deletions
     // against its observed version, or the record snapshot when unindexed.

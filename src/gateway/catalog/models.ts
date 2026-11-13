@@ -1,3 +1,12 @@
+import {
+  accountReply,
+  accountReadinessSchema,
+} from "../../providers/oauth/schema.ts";
+import {
+  codexRequestMode,
+  isCodexClientRequest,
+} from "../../shared/codex-client.ts";
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import { MAX_MODEL_CATALOG_BODY_BYTES } from "../../shared/payload-limits.ts";
 import {
   fetchWithConfiguredRetries,
@@ -383,7 +392,10 @@ async function fetchProviderModels(
           context,
           recordProviderFailure(
             env,
-            provider.id,
+            codexHealthProviderId(
+              provider.id,
+              prepared?.kind === "upstream" ? prepared.codexMode : undefined,
+            ),
             requestId,
             HealthScope.Catalog,
           ),
@@ -393,7 +405,10 @@ async function fetchProviderModels(
           context,
           recordCredentialFailure(
             env,
-            provider.id,
+            codexHealthProviderId(
+              provider.id,
+              prepared?.kind === "upstream" ? prepared.codexMode : undefined,
+            ),
             key.id,
             requestId,
             HealthScope.Catalog,
@@ -421,7 +436,15 @@ async function fetchProviderModels(
       };
       await scheduleHealthUpdate(
         context,
-        recordProviderFailure(env, provider.id, requestId, HealthScope.Catalog),
+        recordProviderFailure(
+          env,
+          codexHealthProviderId(
+            provider.id,
+            prepared?.kind === "upstream" ? prepared.codexMode : undefined,
+          ),
+          requestId,
+          HealthScope.Catalog,
+        ),
       );
       return { provider, success: false, models: [], upstream };
     }
@@ -430,7 +453,15 @@ async function fetchProviderModels(
     );
     await scheduleHealthUpdate(
       context,
-      recordProviderSuccess(env, provider.id, requestId, HealthScope.Catalog),
+      recordProviderSuccess(
+        env,
+        codexHealthProviderId(
+          provider.id,
+          prepared?.kind === "upstream" ? prepared.codexMode : undefined,
+        ),
+        requestId,
+        HealthScope.Catalog,
+      ),
     );
     return {
       provider,
@@ -455,7 +486,15 @@ async function fetchProviderModels(
     ) {
       await scheduleHealthUpdate(
         context,
-        recordProviderFailure(env, provider.id, requestId, HealthScope.Catalog),
+        recordProviderFailure(
+          env,
+          codexHealthProviderId(
+            provider.id,
+            prepared?.kind === "upstream" ? prepared.codexMode : undefined,
+          ),
+          requestId,
+          HealthScope.Catalog,
+        ),
       );
     }
     return { provider, success: false, models: [], upstream, proxyError };
@@ -746,19 +785,13 @@ export function aggregateCodexModels(
   ];
 }
 
-function isCodexUserAgent(request: Request): boolean {
-  return (
-    request.headers.get("user-agent")?.toLowerCase().includes("codex") ?? false
-  );
-}
-
 export function modelsFormatFor(request: Request): ModelsFormat {
   // `models` is dialect-neutral, so requestProtocol resolves it from the
   // client's own identity. The Claude user-agent rule lives there, not here.
   if (requestProtocol(request, "models") === ApiProtocol.Anthropic) {
     return "anthropic";
   }
-  return isCodexUserAgent(request) ? "codex" : "openai";
+  return isCodexClientRequest(request) ? "codex" : "openai";
 }
 
 /**
@@ -916,6 +949,7 @@ async function modelsCacheKey(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   format: ModelsFormat,
+  oauthIdentity: string,
 ): Promise<string> {
   const url = new URL(request.url);
   const providerIds = [...client.providers].sort().join(",");
@@ -929,6 +963,7 @@ async function modelsCacheKey(
     providerIds,
     client.id,
     requestHeaderVary(request),
+    oauthIdentity,
   ].join("\u0000");
   return hashText(vary);
 }
@@ -951,6 +986,11 @@ async function collectModels(
   const selection = await selectAvailableCatalogTargetsWithDetails(
     env,
     configuredTargets,
+    {
+      client: isCodexClientRequest(request) ? "codex" : "other",
+      endpoint: "models",
+      transport: ProviderTransport.Http,
+    },
   );
   const available = selection.targets;
   const routing = {
@@ -1127,6 +1167,47 @@ function isCachedModelsPayload(
   return true;
 }
 
+/** Null explicitly disables caching when coordinated authorization state is unavailable. */
+async function codexCacheIdentity(
+  request: Request,
+  env: Bindings,
+  targets: RoutedProvider[],
+): Promise<string | null> {
+  const accounts = targets.flatMap(({ provider, credentials }) =>
+    provider.type === ProviderType.Codex
+      ? credentials.flatMap((credential) =>
+          credential.auth.type === "oauth"
+            ? [{ provider, ref: credential.auth.account_ref }]
+            : [],
+        )
+      : [],
+  );
+  const identities = await mapWithConcurrency(
+    accounts,
+    PROVIDER_FAN_OUT_CONCURRENCY,
+    async ({ provider, ref }) => {
+      const mode = codexRequestMode(request, provider.use_siwc);
+      try {
+        const readiness = await accountReply(
+          env.PROVIDER_OAUTH_ACCOUNT.getByName(ref).run({
+            action: "readiness",
+            mode,
+          }),
+          accountReadinessSchema,
+        );
+        if (readiness.codex_mode !== mode || readiness.generation === undefined)
+          return null;
+        return [ref, mode, readiness.generation, readiness.ready];
+      } catch {
+        // A failed coordinated read must never be hidden by a previous cache hit.
+        return null;
+      }
+    },
+  );
+  if (identities.some((identity) => identity === null)) return null;
+  return JSON.stringify(identities);
+}
+
 export async function handleModels(
   request: Request,
   env: Bindings,
@@ -1145,6 +1226,11 @@ export async function handleModels(
   ]);
   const format = modelsFormatFor(request);
   const ttlMs = cacheTtlMs(env);
+  const oauthIdentity =
+    ttlMs > 0
+      ? await codexCacheIdentity(request, env, configuredTargets)
+      : null;
+  const cacheEnabled = oauthIdentity !== null;
   requestLog?.set({
     routing: {
       candidate_providers: configuredTargets.map(({ provider }) => provider.id),
@@ -1152,17 +1238,23 @@ export async function handleModels(
   });
   requestLog?.mergeSection("catalog", {
     response_format: format,
-    cache_enabled: ttlMs > 0,
+    cache_enabled: cacheEnabled,
   });
-  const cacheKey = await modelsCacheKey(request, config, client, format);
+  const cacheKey = await modelsCacheKey(
+    request,
+    config,
+    client,
+    format,
+    oauthIdentity ?? "",
+  );
 
-  const cachedPayload = ttlMs > 0 ? modelsCache.read(cacheKey) : undefined;
+  const cachedPayload = cacheEnabled ? modelsCache.read(cacheKey) : undefined;
   if (cachedPayload) {
     requestLog?.mergeSection("catalog", { cache: "hit" });
     return jsonResponse(cachedPayload);
   }
 
-  if (ttlMs > 0 && env.MODELS_CACHE) {
+  if (cacheEnabled && env.MODELS_CACHE) {
     try {
       const raw = await env.MODELS_CACHE.get(cacheKey);
       const cached: unknown = raw === null ? null : JSON.parse(raw);
@@ -1191,7 +1283,9 @@ export async function handleModels(
     }
   }
 
-  requestLog?.mergeSection("catalog", { cache: "miss" });
+  requestLog?.mergeSection("catalog", {
+    cache: cacheEnabled ? "miss" : "bypass",
+  });
 
   try {
     const result = await collectModels(
@@ -1209,8 +1303,8 @@ export async function handleModels(
       requestLog?.warn({ outcome: "partial_success" });
     }
     const now = Date.now();
-    modelsCache.write(cacheKey, result.payload, ttlMs, now);
-    if (ttlMs > 0 && env.MODELS_CACHE) {
+    if (cacheEnabled) modelsCache.write(cacheKey, result.payload, ttlMs, now);
+    if (cacheEnabled && env.MODELS_CACHE) {
       try {
         await env.MODELS_CACHE.put(
           cacheKey,

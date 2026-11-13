@@ -42,6 +42,7 @@ export function newCodexProvider(): CodexProviderConfig {
     emulate_claude_code: false,
     account_selection: CodexAccountSelection.RoundRobin,
     auto_consume_resets: false,
+    use_siwc: false,
   };
 }
 

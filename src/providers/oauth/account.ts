@@ -1,9 +1,17 @@
+import {
+  siwcState,
+  accountPartition,
+  credentialGeneration,
+} from "../codex/partition.ts";
+import type { CodexMode } from "../codex/account-schema.ts";
 import { siwcHostId } from "../codex/siwc-host.ts";
 import { accountProvider } from "./registry.ts";
 import {
   authorizationTokens,
   TOKEN_REFRESH_MARGIN_MS,
   type AccountProvider,
+  type AccountState,
+  providerState,
 } from "./provider.ts";
 import {
   storedSchema,
@@ -23,7 +31,7 @@ import { accountView } from "./presentation.ts";
 import { activeAccount, accountReadiness } from "./reads.ts";
 import { ControlStore } from "../../control/store.ts";
 import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
-import { CredentialAuthType } from "../../config/values.ts";
+import { ProviderType, CredentialAuthType } from "../../config/values.ts";
 
 import { z } from "zod";
 import { decryptConfig, encryptConfig } from "../../control/crypto.ts";
@@ -72,8 +80,8 @@ export class ProviderOAuthAccountCore {
   private account: Stored | null = null;
   private readonly inventory: AccountInventory;
   private mutations: Promise<unknown> = Promise.resolve();
-  private readonly refreshes = new Map<RefreshKind, PendingRefresh>();
-  private readonly tokenOperations = new Map<number, Promise<void>>();
+  private readonly refreshes = new Map<string, PendingRefresh>();
+  private readonly tokenOperations = new Map<string, Promise<void>>();
   constructor(
     protected readonly ctx: ObjectContext,
     protected readonly env: AccountEnv,
@@ -123,6 +131,7 @@ export class ProviderOAuthAccountCore {
       const next = storedSchema.parse(
         await update(this.account ? structuredClone(this.account) : null),
       );
+      next.revision = (this.account?.revision ?? 0) + 1;
       const encrypted = await encryptConfig(
         next,
         this.env.CONFIG_ENCRYPTION_KEY,
@@ -141,22 +150,31 @@ export class ProviderOAuthAccountCore {
   private updateGeneration(
     generation: number,
     update: (account: Stored) => void | Promise<void>,
+    mode: CodexMode = "native",
   ): Promise<void> {
-    return this.updateVersion("generation", generation, update);
+    return this.updateVersion(
+      (account) => credentialGeneration(account, mode),
+      generation,
+      update,
+    );
   }
   private updateAuthorization(
     generation: number,
     update: (account: Stored) => void | Promise<void>,
   ): Promise<void> {
-    return this.updateVersion("authorization_generation", generation, update);
+    return this.updateVersion(
+      (account) => account.authorization_generation,
+      generation,
+      update,
+    );
   }
   private async updateVersion(
-    field: "generation" | "authorization_generation",
+    version: (account: Stored) => number,
     generation: number,
     update: (account: Stored) => void | Promise<void>,
   ): Promise<void> {
     await this.change(async (account) => {
-      if (!account || account[field] !== generation)
+      if (!account || version(account) !== generation)
         throw new OAuthError(
           "Account changed during the operation; try again",
           409,
@@ -169,66 +187,73 @@ export class ProviderOAuthAccountCore {
   private coordinateTokens(
     generation: number,
     run: () => Promise<void>,
+    mode: CodexMode = "native",
   ): Promise<void> {
-    const previous = this.tokenOperations.get(generation) ?? Promise.resolve();
+    const key = `${mode}:${generation}`;
+    const previous = this.tokenOperations.get(key) ?? Promise.resolve();
     const result = previous
       .catch(() => {})
       .then(run)
       .finally(() => {
-        if (this.tokenOperations.get(generation) === result)
-          this.tokenOperations.delete(generation);
+        if (this.tokenOperations.get(key) === result)
+          this.tokenOperations.delete(key);
       });
-    this.tokenOperations.set(generation, result);
+    this.tokenOperations.set(key, result);
     return result;
   }
   private replaceCredentials(
     authorizationGeneration: number,
     inheritRefreshToken: boolean,
     update: (account: Stored) => void | Promise<void>,
+    mode: CodexMode = "native",
   ): Promise<void> {
     if (!inheritRefreshToken)
       return this.updateAuthorization(authorizationGeneration, update);
-    const generation = this.requireAccount().generation;
-    const refreshing = this.refreshes.get("token");
-    return this.coordinateTokens(generation, async () => {
-      // Do not inherit a token from an unsuccessful in-flight rotation. Waiting
-      // outside the mutation queue lets that rotation finish its durable write.
-      if (refreshing?.generation === generation) await refreshing.result;
-      await this.updateAuthorization(
-        authorizationGeneration,
-        async (account) => {
-          if (
-            account.status !== OAuthAccountStatus.Ready ||
-            !account.tokens?.refresh_token
-          )
-            throw new OAuthError(
-              "The previous refresh token is unavailable; authorize again",
-              401,
-              "invalid_grant",
-            );
-          await update(account);
-        },
-      );
-    });
+    const generation = credentialGeneration(this.requireAccount(), mode);
+    const refreshing = this.refreshes.get(`token:${mode}`);
+    return this.coordinateTokens(
+      generation,
+      async () => {
+        if (refreshing?.generation === generation) await refreshing.result;
+        await this.updateAuthorization(
+          authorizationGeneration,
+          async (account) => {
+            const active = accountPartition(account, mode);
+            if (
+              active.generation !== generation ||
+              active.status !== OAuthAccountStatus.Ready ||
+              !active.tokens?.refresh_token
+            )
+              throw new OAuthError(
+                "The previous refresh token is unavailable; authorize again",
+                401,
+                "invalid_grant",
+              );
+            await update(account);
+          },
+        );
+      },
+      mode,
+    );
   }
   private shareRefresh(
     kind: RefreshKind,
     generation: number,
     run: () => Promise<void>,
+    mode: CodexMode = "native",
   ): Promise<void> {
-    const pending = this.refreshes.get(kind);
+    const key = `${kind}:${mode}`;
+    const pending = this.refreshes.get(key);
     if (pending?.generation === generation) return pending.result;
     const operation =
       kind === "token"
-        ? this.coordinateTokens(generation, run)
+        ? this.coordinateTokens(generation, run, mode)
         : Promise.resolve().then(run);
     const result = operation.finally(() => {
-      // A late operation must not clear the replacement generation's flight.
-      if (this.refreshes.get(kind)?.result === result)
-        this.refreshes.delete(kind);
+      if (this.refreshes.get(key)?.result === result)
+        this.refreshes.delete(key);
     });
-    this.refreshes.set(kind, { generation, result });
-    // The caller reports errors; persistence must finish even if it disconnects.
+    this.refreshes.set(key, { generation, result });
     this.ctx.waitUntil(result.catch(() => {}));
     return result;
   }
@@ -311,21 +336,39 @@ export class ProviderOAuthAccountCore {
       account: this.view(),
     };
   }
+  private state(): AccountState {
+    return {
+      current: () => this.requireAccount(),
+      update: (generation, update, mode) =>
+        this.updateGeneration(generation, update, mode),
+      updateAuthorization: (generation, update) =>
+        this.updateAuthorization(generation, update),
+      replaceCredentials: (generation, inherit, update, mode) =>
+        this.replaceCredentials(generation, inherit, update, mode),
+      resolve: (rejected, mode) =>
+        this.resolve(undefined, undefined, rejected, mode),
+    };
+  }
+  private inventoryFor(mode: CodexMode = "native"): AccountInventory {
+    if (mode === "native") return this.inventory;
+    const state = siwcState(providerState(this.state(), ProviderType.Codex));
+    return new AccountInventory(
+      {
+        current: () => state.current(),
+        update: (generation, update) => state.update(generation, update),
+        refresh: (kind, generation, run) =>
+          this.shareRefresh(kind, generation, run, mode),
+      },
+      () => this.provider(undefined, mode).inventory,
+    );
+  }
   private provider(
     type = this.requireAccount().provider_type,
+    mode: CodexMode = "native",
   ): AccountProvider {
     return accountProvider(
       type,
-      {
-        current: () => this.requireAccount(),
-        update: (generation, update) =>
-          this.updateGeneration(generation, update),
-        updateAuthorization: (generation, update) =>
-          this.updateAuthorization(generation, update),
-        replaceCredentials: (generation, inheritRefreshToken, update) =>
-          this.replaceCredentials(generation, inheritRefreshToken, update),
-        resolve: (rejected) => this.resolve(undefined, undefined, rejected),
-      },
+      this.state(),
       {
         outbound: (connection, config) => this.outbound(connection, config),
         configuredConnection: (fallback) => this.configuredConnection(fallback),
@@ -333,6 +376,7 @@ export class ProviderOAuthAccountCore {
         hostId: () => siwcHostId(this.env.CODY_DB),
         context: this.ctx,
       },
+      mode,
     );
   }
   private async configuredConnection(fallback: ProviderConnection): Promise<{
@@ -494,6 +538,7 @@ export class ProviderOAuthAccountCore {
         quota: emptyQuota(),
       });
       authorization.validateStart?.(account, flow);
+      session.target_generation = account.generation;
       account.authorization_generation++;
       account.session = session;
       account.antigravity_initialization = null;
@@ -545,7 +590,8 @@ export class ProviderOAuthAccountCore {
   ): Promise<ReadonlyData<SessionView>> {
     const session = this.session(id, actor);
     const generation = this.requireAccount().authorization_generation;
-    const activeTokens = this.requireAccount().tokens;
+    const mode = session.flow === OAuthFlow.Siwc ? "siwc" : "native";
+    const activeTokens = accountPartition(this.requireAccount(), mode).tokens;
     if (
       session.status === OAuthSessionStatus.Expired ||
       session.status === OAuthSessionStatus.Cancelled ||
@@ -614,7 +660,7 @@ export class ProviderOAuthAccountCore {
           pending.tokens = await authorizationTokens(
             tokens,
             activeTokens,
-            account.tokens,
+            accountPartition(account, mode).tokens,
           );
           pending.verifier = "";
           pending.status = OAuthSessionStatus.Initializing;
@@ -661,18 +707,19 @@ export class ProviderOAuthAccountCore {
       return account;
     });
   }
-  private active() {
-    return activeAccount(this.requireAccount());
+  private active(mode: CodexMode = "native") {
+    return activeAccount(this.requireAccount(), mode);
   }
   private async resolve(
     connection?: ProviderConnection,
     config?: ProxyConfiguration,
     rejected?: { generation: number; token: string },
+    mode: CodexMode = "native",
   ) {
-    const snapshot = this.active();
+    const snapshot = this.active(mode);
     if (
       rejected &&
-      (!this.provider().recoverUnauthorized ||
+      (!this.provider(undefined, mode).recoverUnauthorized ||
         snapshot.generation !== rejected.generation)
     )
       throw new OAuthError(
@@ -694,47 +741,67 @@ export class ProviderOAuthAccountCore {
       (!rejected &&
         snapshot.tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS)
     ) {
-      await this.shareRefresh("token", snapshot.generation, async () => {
-        const current = this.active();
-        if (current.generation !== snapshot.generation)
-          throw new OAuthError(
-            "Account changed during token refresh",
-            409,
-            "account_changed",
-          );
-        if (
-          !(await equalSecret(
-            current.tokens.access_token,
-            snapshot.tokens.access_token,
-          ))
-        )
-          return;
-        try {
-          const refreshToken = snapshot.tokens.refresh_token;
-          if (!refreshToken)
+      await this.shareRefresh(
+        "token",
+        snapshot.generation,
+        async () => {
+          const current = this.active(mode);
+          if (current.generation !== snapshot.generation)
             throw new OAuthError(
-              "Reconnect this account to obtain a refresh token",
-              503,
-              "invalid_grant",
+              "Account changed during token refresh",
+              409,
+              "account_changed",
             );
-          await this.provider().refresh(
-            snapshot.generation,
-            { ...snapshot.tokens, refresh_token: refreshToken },
-            connection,
-            config,
-          );
-        } catch (error) {
-          if (this.account?.generation === snapshot.generation)
-            await this.updateGeneration(snapshot.generation, (account) => {
-              account.error = safeError(error);
-              if (error instanceof OAuthError && error.code === "invalid_grant")
-                account.status = OAuthAccountStatus.NeedsReauthorization;
-            });
-          throw error;
-        }
-      });
+          if (
+            !(await equalSecret(
+              current.tokens.access_token,
+              snapshot.tokens.access_token,
+            ))
+          )
+            return;
+          try {
+            const refreshToken = snapshot.tokens.refresh_token;
+            if (!refreshToken)
+              throw new OAuthError(
+                "Reconnect this account to obtain a refresh token",
+                503,
+                "invalid_grant",
+              );
+            await this.provider(undefined, mode).refresh(
+              snapshot.generation,
+              { ...snapshot.tokens, refresh_token: refreshToken },
+              connection,
+              config,
+            );
+          } catch (error) {
+            if (
+              this.account &&
+              credentialGeneration(this.account, mode) === snapshot.generation
+            )
+              await this.updateGeneration(
+                snapshot.generation,
+                (account) => {
+                  const target =
+                    mode === "siwc" && account.provider_type === "codex"
+                      ? account.siwc
+                      : account;
+                  if (!target) return;
+                  target.error = safeError(error);
+                  if (
+                    error instanceof OAuthError &&
+                    error.code === "invalid_grant"
+                  )
+                    target.status = OAuthAccountStatus.NeedsReauthorization;
+                },
+                mode,
+              );
+            throw error;
+          }
+        },
+        mode,
+      );
     }
-    const current = this.active();
+    const current = this.active(mode);
     if (current.generation !== snapshot.generation)
       throw new OAuthError(
         "Account changed during token resolution",
@@ -764,16 +831,7 @@ export class ProviderOAuthAccountCore {
   private async disconnect(): Promise<void> {
     const disconnect = this.provider().disconnect;
     if (disconnect) {
-      const generation = this.requireAccount().generation;
-      await this.coordinateTokens(generation, async () => {
-        if (this.requireAccount().generation !== generation)
-          throw new OAuthError(
-            "Account changed during disconnect",
-            409,
-            "account_changed",
-          );
-        await disconnect();
-      });
+      await disconnect();
       return;
     }
     await this.change((account) => {
@@ -831,15 +889,43 @@ export class ProviderOAuthAccountCore {
           command.connection,
           command.proxy_configuration,
           command,
+          command.mode,
         );
       case "resolve":
-        return this.resolve(command.connection, command.proxy_configuration);
+        return this.resolve(
+          command.connection,
+          command.proxy_configuration,
+          undefined,
+          command.mode,
+        );
       case "models":
-        await this.inventory.refreshModels();
+        await this.inventoryFor(command.mode).refreshModels();
         return this.view();
       case "quota":
-        await this.inventory.refreshQuota(command.force);
+        await this.inventoryFor(command.mode).refreshQuota(command.force);
         return this.view();
+      case "siwc_disconnect": {
+        const account = this.requireAccount();
+        if (account.provider_type !== ProviderType.Codex)
+          throw new OAuthError("SIWC is only available for Codex", 400);
+        const generation = account.siwc_generation;
+        await this.coordinateTokens(
+          generation,
+          async () => {
+            if (
+              credentialGeneration(this.requireAccount(), "siwc") !== generation
+            )
+              throw new OAuthError(
+                "SIWC binding changed during unlink",
+                409,
+                "account_changed",
+              );
+            await this.provider(undefined, "siwc").disconnect?.();
+          },
+          "siwc",
+        );
+        return this.view();
+      }
       case "disconnect":
         await this.disconnect();
         return this.view();
@@ -864,7 +950,7 @@ export class ProviderOAuthAccountCore {
       case "view":
         return this.view();
       case "readiness":
-        return accountReadiness(this.requireAccount());
+        return accountReadiness(this.requireAccount(), command.mode);
       case "retry_project": {
         const background = this.provider().background;
         if (!background)

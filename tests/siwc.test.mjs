@@ -10,6 +10,7 @@ import {
 } from "../src/providers/codex/siwc.ts";
 import { validateSiwcRequest } from "../src/providers/codex/siwc-policy.ts";
 import { codexAdapter } from "../src/providers/codex/index.ts";
+import { siwcState } from "../src/providers/codex/partition.ts";
 import { siwcAccount } from "../src/providers/codex/siwc-account.ts";
 import { storedSchema, emptyQuota } from "../src/providers/oauth/state.ts";
 import { readAccountSnapshot } from "../src/providers/oauth/reads.ts";
@@ -54,6 +55,7 @@ const pending = () => ({
   challenge: "challenge",
   siwc: {
     authorization_generation: 1,
+    native_generation: 0,
     nonce: "nonce",
     host_id: "urn:uuid:test-host",
     client_id: null,
@@ -386,7 +388,8 @@ function accountFixture(options = {}) {
     tokens: null,
     identity: null,
     next_at: Date.now(),
-    flow: "siwc",
+    flow: "siwc_bind",
+    target_generation: 0,
     device_auth_id: null,
     user_code: null,
     poll_interval_ms: 5000,
@@ -397,12 +400,25 @@ function accountFixture(options = {}) {
     provider_type: "codex",
     generation: 0,
     authorization_generation: 1,
-    status: "disconnected",
+    status: "ready",
     connection: session.connection,
-    tokens: null,
-    identity: null,
+    tokens: {
+      access_token: "native-access",
+      refresh_token: "native-refresh",
+      expires_at: Date.now() + 3600000,
+    },
+    identity: {
+      id: "native-workspace:native-user",
+      email: "operator@example.test",
+    },
     project_id: null,
-    codex: null,
+    codex: {
+      mode: "native",
+      account_id: "native-workspace",
+      user_id: "native-user",
+      plan_type: "plus",
+      subscription_active_until: null,
+    },
     session,
     error: null,
     models: [],
@@ -417,20 +433,36 @@ function accountFixture(options = {}) {
     account = storedSchema.parse(next);
   };
   const network = transport(options);
-  const state = {
+  const rawState = {
     current: () => account,
-    update: (generation, run) => update("generation", generation, run),
+    update: (generation, run, mode) =>
+      update(
+        mode === "siwc" ? "siwc_generation" : "generation",
+        generation,
+        run,
+      ),
     updateAuthorization: (generation, run) =>
       update("authorization_generation", generation, run),
     replaceCredentials: (generation, _inherit, run) =>
       update("authorization_generation", generation, run),
   };
+  const state = siwcState(rawState);
   const provider = siwcAccount(state, {
     outbound: async () => [network.send, new AbortController().signal],
     hostId: async () => "urn:uuid:stable-host",
   });
 
-  return { state, provider, network, update };
+  return {
+    state,
+    provider,
+    network,
+    native: rawState,
+    raw: () => account,
+    update: (field, generation, run) =>
+      field === "generation"
+        ? state.update(generation, run)
+        : state.updateAuthorization(generation, run),
+  };
 }
 
 test("registration state excludes other identities and direct permission gates readiness", async () => {
@@ -464,8 +496,8 @@ test("registration state excludes other identities and direct permission gates r
     assert.equal(current.codex.account_id, null);
     assert.equal(current.codex.plan_usage_enabled, enabled);
     assert.deepEqual(
-      readAccountSnapshot(current, { action: "readiness" }).data,
-      { ready: enabled, codex_mode: "siwc" },
+      readAccountSnapshot(f.raw(), { action: "readiness", mode: "siwc" }).data,
+      { ready: enabled, codex_mode: "siwc", generation: current.generation },
     );
     assert.equal(
       JSON.stringify(readAccountSnapshot(current, { action: "view" })).includes(
@@ -718,4 +750,103 @@ test("SIWC code exchange requires the pending nonce before any network I/O", asy
     (error) => error.status === 409,
   );
   assert.equal(f.requests.length, 0);
+});
+
+async function initializeBinding(f) {
+  await f.provider.authorization.siwc.prepare(f.state.current().session, false);
+  await f.state.updateAuthorization(
+    f.raw().authorization_generation,
+    (account) => {
+      account.session.status = "initializing";
+      account.session.siwc.registration = {
+        issuer,
+        subject: "subject",
+        client_id: "oaiapp_test",
+        scopes: SIWC_SCOPE.split(" "),
+      };
+      account.session.tokens = {
+        access_token: "siwc-access",
+        refresh_token: "siwc-refresh",
+        expires_at: Date.now() + 3600000,
+      };
+    },
+  );
+  await f.provider.authorization.initialize();
+}
+
+test("SIWC binding preserves native tokens and quota committed during authorization", async () => {
+  const f = accountFixture();
+  await f.native.update(f.raw().generation, (account) => {
+    account.tokens.refresh_token = "latest-native-refresh";
+    account.quota.last_error = "native quota retained";
+    account.models = [
+      {
+        id: "native-model",
+        display_name: "Native",
+        input_token_limit: null,
+        output_token_limit: null,
+        supports_images: null,
+        supports_thinking: null,
+      },
+    ];
+  });
+  await initializeBinding(f);
+  assert.equal(f.raw().tokens.access_token, "native-access");
+  assert.equal(f.raw().tokens.refresh_token, "latest-native-refresh");
+  assert.equal(f.raw().quota.last_error, "native quota retained");
+  assert.equal(f.raw().models[0].id, "native-model");
+  assert.equal(f.raw().codex.account_id, "native-workspace");
+  assert.equal(f.raw().siwc.tokens.access_token, "siwc-access");
+  assert.equal(f.raw().generation, 0);
+  assert.equal(f.raw().siwc_generation, 1);
+});
+
+test("a revoked SIWC grant leaves native credentials ready and cannot inherit native tokens", async () => {
+  const f = accountFixture({ status: 400, tokens: { error: "invalid_grant" } });
+  await initializeBinding(f);
+  const active = f.state.current();
+  await assert.rejects(
+    f.provider.refresh(active.generation, active.tokens),
+    /expired or was revoked/,
+  );
+  assert.equal(f.raw().siwc.status, "needs_reauthorization");
+  assert.equal(f.raw().siwc.tokens, null);
+  assert.equal(f.raw().status, "ready");
+  assert.equal(f.raw().tokens.access_token, "native-access");
+  assert.equal(f.raw().tokens.refresh_token, "native-refresh");
+});
+
+test("SIWC disconnect clears its tokens before waiting for remote revocation", async (t) => {
+  const f = accountFixture();
+  await initializeBinding(f);
+  const before = structuredClone(f.raw());
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const send = f.network.send;
+  t.mock.method(f.network, "send", async (request) => {
+    if (request.url.endsWith("/revoke")) {
+      started.resolve();
+      await release.promise;
+    }
+    return send(request);
+  });
+  const disconnect = f.provider.disconnect();
+  await started.promise;
+  try {
+    assert.equal(f.raw().siwc.tokens, null);
+    assert.equal(f.raw().siwc.status, "disconnected");
+    assert.equal(f.raw().siwc_generation, before.siwc_generation + 1);
+    assert.deepEqual(f.raw().tokens, before.tokens);
+    assert.deepEqual(f.raw().quota, before.quota);
+    assert.equal(f.raw().generation, before.generation);
+    assert.equal(f.raw().status, "ready");
+    assert.equal(
+      readAccountSnapshot(f.raw(), { action: "readiness", mode: "siwc" }).data
+        .ready,
+      false,
+    );
+  } finally {
+    release.resolve();
+    await disconnect;
+  }
 });

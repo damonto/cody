@@ -30,7 +30,7 @@ export interface ResolvedAntigravityOAuth {
   readonly account_ref: string;
 }
 export interface ResolvedNativeCodexOAuth {
-  readonly mode?: "native";
+  readonly mode: "native";
   readonly generation: number;
   readonly type: typeof CredentialAuthType.OAuth;
   readonly provider: typeof ProviderType.Codex;
@@ -91,6 +91,7 @@ export function credentialMatchesProvider<Type extends ProviderType>(
 }
 
 export interface CredentialContext extends ProviderRuntimeContext {
+  readonly codexMode?: "native" | "siwc";
   readonly provider: ProviderConfig;
   readonly credential: ProviderCredentialConfig;
 }
@@ -129,6 +130,9 @@ const oauthResolver: CredentialResolver<
     const token = await accountReply(
       context.env.PROVIDER_OAUTH_ACCOUNT.getByName(auth.account_ref).run({
         action: "resolve",
+        ...(provider === ProviderType.Codex
+          ? { mode: context.codexMode ?? "native" }
+          : {}),
         connection: providerConnection(context.provider, context.credential),
         proxy_configuration: proxyConfigurationSchema.parse(context.config),
       }),
@@ -170,6 +174,7 @@ const oauthResolver: CredentialResolver<
       return {
         type: CredentialAuthType.OAuth,
         provider,
+        mode: "native",
         token: token.token,
         account_id,
         generation,

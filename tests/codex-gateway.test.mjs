@@ -5,7 +5,10 @@ import { parseConfig } from "../src/config/store.ts";
 import { configureLogging } from "../src/shared/log.ts";
 import { ProviderHealthState } from "../src/gateway/health/health.ts";
 import { handleInference } from "../src/gateway/http/proxy.ts";
-import { handleModels } from "../src/gateway/catalog/models.ts";
+import {
+  clearModelsCacheForTests,
+  handleModels,
+} from "../src/gateway/catalog/models.ts";
 import { decodeRequestBody } from "../src/gateway/http/content-encoding.ts";
 import { BodyTooLargeError } from "../src/gateway/http/body.ts";
 import { upstreamErrorEvent } from "../src/gateway/websocket/websocket-protocol.ts";
@@ -1037,15 +1040,20 @@ test("HTTP quota observations retain bytes and never wait for account storage", 
 });
 
 function withCodexModes(f, modes) {
+  f.config.providers[0].use_siwc = modes.includes("siwc");
   f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
     run: async (command) => {
       const index = f.config.providers[0].credentials.findIndex(
         (credential) => credential.auth.account_ref === ref,
       );
-      const mode = modes[index] ?? "native";
+      const mode =
+        command.mode ?? (f.config.providers[0].use_siwc ? "siwc" : "native");
       let data;
       if (command.action === "readiness")
-        data = { ready: true, codex_mode: mode };
+        data = {
+          ready: mode === "native" || modes[index] === "siwc",
+          codex_mode: mode,
+        };
       else if (command.action === "codex_usage") data = { observed: true };
       else if (mode === "siwc")
         data = {
@@ -1083,15 +1091,15 @@ const siwcQuota = () =>
     { status: 429 },
   );
 
-test("a mixed Codex pool selects a compatible native account for a non-streaming body", async () => {
+test("global SIWC never falls back to native authorization for an incompatible request", async () => {
   const f = withCodexModes(fixture(), ["siwc", "native"]);
   const sent = [];
   const response = await infer(f, async (request) => {
     sent.push(request.url);
     return Response.json({ id: "native" });
   });
-  assert.deepEqual(sent, ["https://chatgpt.com/backend-api/codex/responses"]);
-  assert.equal((await response.json()).id, "native");
+  assert.deepEqual(sent, []);
+  assert.equal(response.status, 400);
 });
 
 test("SIWC switches quota accounts within its mode and preserves request bytes", async () => {
@@ -1213,3 +1221,200 @@ test("a SIWC limit after output is forwarded and cannot replay", async () => {
   assert.equal(await response.text(), body);
   assert.equal(sent, 1);
 });
+
+for (const userAgent of [
+  "codex-desktop/1.0",
+  "codex_cli_rs/1.0",
+  "Codex CLI",
+  "codex-tui/1.0",
+]) {
+  test(`${userAgent} always uses native OAuth with SIWC enabled`, async () => {
+    const f = withCodexModes(fixture({ accounts: 1 }), ["siwc"]);
+    const incoming = siwcRequest();
+    incoming.headers.set("user-agent", userAgent);
+    let upstream;
+    const response = await infer(
+      f,
+      async (request) => {
+        upstream = request;
+        return Response.json({ id: "native" });
+      },
+      incoming,
+    );
+    assert.equal(response.status, 200);
+    assert.match(
+      upstream.url,
+      /^https:\/\/chatgpt.com\/backend-api\/codex\/responses/,
+    );
+    assert.equal(upstream.headers.get("chatgpt-account-id"), "workspace-0");
+  });
+}
+
+test("ordinary clients follow each credential's SIWC switch", async () => {
+  for (const enabled of [false, true]) {
+    const f = withCodexModes(fixture({ accounts: 1 }), [
+      enabled ? "siwc" : "native",
+    ]);
+    const incoming = siwcRequest();
+    incoming.headers.set("user-agent", "OpenAI-SDK");
+    let upstream;
+    const response = await infer(
+      f,
+      async (request) => {
+        upstream = request;
+        return Response.json({ id: "ok" });
+      },
+      incoming,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(
+      new URL(upstream.url).origin,
+      enabled ? "https://api.openai.com" : "https://chatgpt.com",
+    );
+    assert.equal(upstream.headers.has("chatgpt-account-id"), !enabled);
+  }
+});
+
+test("SIWC quota cooldown does not block native requests on the same account", async () => {
+  const f = withCodexModes(fixture({ accounts: 1 }), ["siwc"]);
+  const first = await infer(f, async () => siwcQuota(), siwcRequest());
+  assert.equal(first.status, 429);
+  const incoming = siwcRequest();
+  incoming.headers.set("user-agent", "codex-desktop");
+  let calls = 0;
+  const native = await infer(
+    f,
+    async (request) => {
+      calls++;
+      assert.equal(new URL(request.url).origin, "https://chatgpt.com");
+      return Response.json({ id: "native" });
+    },
+    incoming,
+  );
+  assert.equal(native.status, 200);
+  assert.equal(calls, 1);
+  const stillCooling = await infer(
+    f,
+    async () => {
+      throw new Error("SIWC cooldown was cleared by native success");
+    },
+    siwcRequest(),
+  );
+  assert.equal(stillCooling.status, 429);
+});
+
+test("SIWC backend failures cannot cool the native backend on the same provider", async () => {
+  const f = withCodexModes(fixture({ accounts: 1 }), ["siwc"]);
+  for (let index = 0; index < 10; index++) {
+    const response = await infer(
+      f,
+      async () => new Response("unavailable", { status: 503 }),
+      siwcRequest(),
+    );
+    assert.equal(response.status, 503);
+  }
+  const nativeRequest = siwcRequest();
+  nativeRequest.headers.set("user-agent", "codex-desktop");
+  const native = await infer(
+    f,
+    async (request) => {
+      assert.equal(new URL(request.url).origin, "https://chatgpt.com");
+      return Response.json({ id: "native" });
+    },
+    nativeRequest,
+  );
+  assert.equal(native.status, 200);
+  let calls = 0;
+  const siwc = await infer(
+    f,
+    async () => {
+      calls++;
+      return new Response("unexpected");
+    },
+    siwcRequest(),
+  );
+  assert.equal(siwc.status, 503);
+  assert.equal(calls, 0);
+});
+
+for (const mode of ["native", "siwc"]) {
+  test(`${mode} catalog caching bypasses failed readiness reads and tracks credential replacement`, async (t) => {
+    clearModelsCacheForTests();
+    t.after(clearModelsCacheForTests);
+    const f = withCodexModes(fixture({ accounts: 1 }), [mode]);
+    f.env.MODELS_CACHE_TTL_SECONDS = "30";
+    let reads = 0;
+    let writes = 0;
+    let fetches = 0;
+    const cached = new Map();
+    f.env.MODELS_CACHE = {
+      get: async (key) => {
+        reads++;
+        return cached.get(key) ?? null;
+      },
+      put: async (key, value) => {
+        writes++;
+        cached.set(key, value);
+      },
+    };
+    let generation = 1;
+    let failures = 0;
+    let incompleteReadiness = false;
+    const account = f.env.PROVIDER_OAUTH_ACCOUNT.getByName;
+    f.env.PROVIDER_OAUTH_ACCOUNT.getByName = (ref) => ({
+      async run(command) {
+        if (command.action === "readiness") {
+          if (failures > 0) {
+            failures--;
+            throw new Error("account coordination unavailable");
+          }
+          return {
+            ok: true,
+            data: {
+              ready: true,
+              codex_mode: mode,
+              ...(!incompleteReadiness ? { generation } : {}),
+            },
+          };
+        }
+        return account(ref).run(command);
+      },
+    });
+    t.mock.method(globalThis, "fetch", async () => {
+      fetches++;
+      return Response.json({ models: [{ slug: MODEL, display_name: MODEL }] });
+    });
+    const models = () =>
+      handleModels(
+        new Request("https://gateway.example/v1/models"),
+        f.env,
+        f.config,
+        f.client,
+      );
+
+    assert.equal((await models()).status, 200);
+    assert.deepEqual([reads, writes, fetches], [1, 1, 1]);
+    assert.equal((await models()).status, 200);
+    assert.deepEqual([reads, writes, fetches], [1, 1, 1]);
+
+    // The fingerprint read fails but routing recovers. Rebuild without reading or
+    // writing either cache, rather than creating an unreachable random cache key.
+    failures = 1;
+    assert.equal((await models()).status, 200);
+    assert.deepEqual([reads, writes, fetches], [1, 1, 2]);
+
+    failures = Infinity;
+    assert.equal((await models()).status, 503);
+    assert.deepEqual([reads, writes, fetches], [1, 1, 2]);
+
+    failures = 0;
+    incompleteReadiness = true;
+    assert.equal((await models()).status, 200);
+    assert.deepEqual([reads, writes, fetches], [1, 1, 3]);
+
+    incompleteReadiness = false;
+    generation++;
+    assert.equal((await models()).status, 200);
+    assert.deepEqual([reads, writes, fetches], [2, 2, 4]);
+  });
+}

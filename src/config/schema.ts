@@ -201,22 +201,26 @@ export const oauthCredentialSchema = credentialSchema.extend({
     account_ref: z.uuid(),
   }),
 });
+function validateOAuthCredentials(
+  credentials: readonly z.output<typeof oauthCredentialSchema>[],
+  context: z.RefinementCtx,
+): void {
+  if (!unique(credentials.map((credential) => credential.id)))
+    context.addIssue({
+      code: "custom",
+      path: ["id"],
+      message: "values must be unique",
+    });
+  if (!unique(credentials.map((credential) => credential.auth.account_ref)))
+    context.addIssue({
+      code: "custom",
+      path: ["auth", "account_ref"],
+      message: "an account may only be attached once",
+    });
+}
 const oauthCredentials = z
   .array(oauthCredentialSchema)
-  .superRefine((credentials, context) => {
-    if (!unique(credentials.map((credential) => credential.id)))
-      context.addIssue({
-        code: "custom",
-        path: ["id"],
-        message: "values must be unique",
-      });
-    if (!unique(credentials.map((credential) => credential.auth.account_ref)))
-      context.addIssue({
-        code: "custom",
-        path: ["auth", "account_ref"],
-        message: "an account may only be attached once",
-      });
-  });
+  .superRefine(validateOAuthCredentials);
 export const aiGatewayProviderSchema = z.strictObject({
   type: z.literal(ProviderType.AiGateway),
   id: identifierSchema,
@@ -308,6 +312,7 @@ export const codexProviderFormSchema = aiGatewayProviderSchema
     id: identifierSchema,
     models: nameList,
     credentials: oauthCredentials,
+    use_siwc: boolean.default(false),
     supports_websocket: boolean.default(true),
     supports_web_search: boolean.default(true),
     anthropic_1m_context: z.literal(false).default(false),

@@ -71,6 +71,7 @@ export const codexAdapter: ProviderAdapter<CodexProviderConfig> = {
     if (!siwc && credential.is_fedramp) headers.set("x-openai-fedramp", "true");
     const account = {
       codexMode: siwc ? ("siwc" as const) : ("native" as const),
+      codexGeneration: credential.generation,
       ...(siwc
         ? {
             validateWebSocketRequest: (

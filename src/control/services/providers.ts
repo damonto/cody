@@ -166,6 +166,7 @@ async function writeCredential(
   position: number,
   credentialId?: string,
 ) {
+  providerEntity(work, providerId);
   const old = credentialId
     ? credentialEntity(work, providerId, credentialId)
     : undefined;

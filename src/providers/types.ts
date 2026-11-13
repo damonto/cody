@@ -102,6 +102,7 @@ export interface RecoveredUpstreamAuth {
 export interface PreparedUpstreamRequest {
   /** Codex-only recovery of the same OAuth account after an HTTP 401, before output. */
   readonly codexMode?: CodexMode;
+  readonly codexGeneration?: number;
   readonly validateWebSocketRequest?: (
     payload: Readonly<Record<string, unknown>>,
   ) => void;

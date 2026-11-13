@@ -1,3 +1,5 @@
+import { accountPartition } from "../codex/partition.ts";
+import type { CodexMode } from "../codex/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import { antigravityAccountCredential } from "../antigravity/account-credential.ts";
 import { codexAccountCredential } from "../codex/account-credential.ts";
@@ -16,7 +18,11 @@ import {
 import { OAuthAccountStatus } from "./values.ts";
 
 /** Shared by the account runtime and coordinated, read-only snapshot access. */
-export function activeAccount(account: AccountSnapshot) {
+export function activeAccount(
+  snapshot: AccountSnapshot,
+  mode: CodexMode = "native",
+) {
+  const account = accountPartition(snapshot, mode);
   if (account.status !== OAuthAccountStatus.Ready || !account.tokens)
     throw new OAuthError(
       "Reconnect this account before sending requests",
@@ -62,15 +68,15 @@ export function readAccountSnapshot(
   if (
     command.action === "quota" &&
     !command.force &&
-    !quotaIsStale(account, now)
+    !quotaIsStale(accountPartition(account, command.mode), now)
   )
     return { ok: true, data: accountView(account) };
   if (command.action !== "resolve" && command.action !== "readiness") return;
   if (command.action === "readiness")
-    return { ok: true, data: accountReadiness(account) };
+    return { ok: true, data: accountReadiness(account, command.mode) };
   let active: ReturnType<typeof activeAccount>;
   try {
-    active = activeAccount(account);
+    active = activeAccount(account, command.mode);
   } catch {
     return;
   }
@@ -84,14 +90,15 @@ export function readAccountSnapshot(
 }
 
 /** Token-free projection shared by locked and coordinated snapshot reads. */
-export function accountReadiness(account: AccountSnapshot) {
+export function accountReadiness(
+  account: AccountSnapshot,
+  selectedMode: CodexMode = "native",
+) {
   const mode =
-    account.provider_type === ProviderType.Codex
-      ? (account.codex?.mode ?? "native")
-      : undefined;
+    account.provider_type === ProviderType.Codex ? selectedMode : undefined;
   let ready = false;
   try {
-    activeAccount(account);
+    activeAccount(account, selectedMode);
     ready = true;
   } catch (error) {
     if (
@@ -100,5 +107,13 @@ export function accountReadiness(account: AccountSnapshot) {
     )
       throw error;
   }
-  return { ready, ...(mode ? { codex_mode: mode } : {}) };
+  return {
+    ready,
+    ...(mode
+      ? {
+          codex_mode: mode,
+          generation: accountPartition(account, mode).generation,
+        }
+      : {}),
+  };
 }

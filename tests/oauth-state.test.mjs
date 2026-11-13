@@ -35,10 +35,14 @@ test("persisted OAuth states keep their provider, identity and default fields ac
     const parsed = storedSchema.parse(input);
     assert.deepEqual(parsed, {
       ...input,
+      revision: 0,
       authorization_generation: 0,
       claude_quota_revision: 0,
       ...(provider === "codex"
         ? {
+            siwc: null,
+            siwc_generation: 0,
+            siwc_revocation_error: null,
             codex_quota_sync: {
               full_observed_at: 0,
               windows: [],

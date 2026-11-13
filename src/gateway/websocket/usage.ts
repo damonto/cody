@@ -68,6 +68,7 @@ export class WebSocketUsage {
     meter: RequestMeter | undefined,
     context: CurrentRoutingContext,
     target?: ModelProviderTarget,
+    codexAuthMode?: "native" | "siwc",
   ): Promise<void> {
     if (!meter || !this.meters.has(meter)) return;
     meter.configure(context.config);
@@ -85,6 +86,7 @@ export class WebSocketUsage {
         providerId: target.provider.id,
         credentialId: target.credential.id,
         model: target.upstreamModel,
+        codexAuthMode,
       });
     }
     await this.storage.checkpoint(meter.checkpoint());

@@ -14,6 +14,7 @@ export type { RequestOutcome } from "./values.ts";
 
 export interface AttemptRecord {
   attempt: number;
+  codex_auth_mode?: "native" | "siwc" | undefined;
   status: number | null;
   duration_ms: number;
   retry_delay_ms: number | null;
@@ -39,6 +40,7 @@ export interface UsageEvent {
   model: string;
   /** Exact execution model; absent in events recorded before this metadata was added. */
   upstream_model?: string | undefined;
+  codex_auth_mode?: "native" | "siwc" | undefined;
   requested_model: string;
   reported_model: string;
   /** Final wire request and original upstream response; absent in historical events. */

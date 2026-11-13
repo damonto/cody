@@ -15,6 +15,7 @@ export const SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE = 1000;
 
 interface AffinityCredentialCandidate {
   credential_id: string;
+  codex_mode?: "native" | "siwc" | undefined;
   priority: number;
 }
 
@@ -27,6 +28,8 @@ export interface AffinityProviderCandidate {
 }
 
 export interface SessionAffinityRecord {
+  client_class?: "codex" | "other";
+  codex_mode?: "native" | "siwc" | undefined;
   /** Absent only in deployed records from before model-scoped affinity. */
   model?: string | null;
   provider_id: string;
@@ -46,11 +49,13 @@ export interface SessionAffinityResolution extends SessionAffinityRecord {
 }
 
 export interface AffinitySelection {
+  codex_mode?: "native" | "siwc" | undefined;
   provider_id: string;
   credential_id: string;
 }
 
 export interface SessionAffinityRegistration {
+  client_class?: "codex" | "other";
   /** null denotes a binding without a requested model. */
   model: string | null;
   registry_name: string;
@@ -99,6 +104,7 @@ export function chooseAffinityCandidate(
     ? {
         provider_id: provider.provider_id,
         credential_id: credential.credential_id,
+        ...(credential.codex_mode ? { codex_mode: credential.codex_mode } : {}),
       }
     : undefined;
 }
@@ -178,7 +184,7 @@ export function resolveStoredAffinity(
   const credential = provider?.credentials.find(
     (candidate) => candidate.credential_id === record.credential_id,
   );
-  if (!provider || !credential) {
+  if (!provider || !credential || record.codex_mode !== credential.codex_mode) {
     return { selection: fallback(), status: SessionAffinityStatus.Rebound };
   }
 
@@ -209,6 +215,7 @@ export function resolveStoredAffinity(
     selection: {
       provider_id: record.provider_id,
       credential_id: record.credential_id,
+      ...(credential.codex_mode ? { codex_mode: credential.codex_mode } : {}),
     },
     status: SessionAffinityStatus.Hit,
   };
@@ -243,17 +250,23 @@ export async function sessionAffinityIdentity(
   clientId: string,
   sessionId: string,
   model: string | null = null,
+  clientClass?: "codex" | "other",
 ): Promise<SessionAffinityIdentity> {
   const [registryName, sessionDigest] = await Promise.all([
     affinityRegistryName(clientId),
     affinitySessionDigest(sessionId),
   ]);
+  let bindingDigest = sessionDigest;
+  if (clientClass)
+    bindingDigest = await sha256Hex(
+      JSON.stringify([sessionId, model, clientClass]),
+    );
+  else if (model !== null)
+    bindingDigest = await sha256Hex(JSON.stringify([sessionId, model]));
   return {
     registry_name: registryName,
-    session_digest:
-      model === null
-        ? sessionDigest
-        : await sha256Hex(JSON.stringify([sessionId, model])),
+    ...(clientClass ? { client_class: clientClass } : {}),
+    session_digest: bindingDigest,
     session_id: sessionId,
     model,
     object_name: affinityObjectNameFromDigests(registryName, sessionDigest),

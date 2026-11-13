@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import { HealthFailureScope } from "../health/values.ts";
 
 import type { Bindings } from "../../platform/bindings.ts";
@@ -127,7 +128,7 @@ export async function executeInferenceAttempt({
             context,
             recordCredentialFailure(
               env,
-              provider.id,
+              codexHealthProviderId(provider.id, prepared.codexMode),
               selectedCredential.id,
               requestId,
             ),

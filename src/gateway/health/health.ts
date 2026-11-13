@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import {
   ProviderAvailabilityReason,
   HealthCooldownReason,
@@ -105,7 +106,9 @@ interface CoolingCredentialHealth extends ProviderHealthSnapshot {
   model?: string;
 }
 
-export type CoolingHealth = CoolingProviderHealth | CoolingCredentialHealth;
+export type CoolingHealth = (
+  CoolingProviderHealth | CoolingCredentialHealth
+) & { codex_mode?: "native" | "siwc" };
 
 export interface ProviderAvailability {
   codex_mode?: "native" | "siwc";
@@ -613,32 +616,50 @@ export async function listCoolingHealth(
   providers: ProviderConfig[],
   scope: HealthScope = HealthScope.Inference,
 ): Promise<CoolingHealth[]> {
-  const descriptors = providers.flatMap((provider) => [
-    { kind: HealthFailureScope.Provider, provider_id: provider.id },
-    ...provider.credentials.map((key) => ({
-      kind: HealthFailureScope.Credential,
-      provider_id: provider.id,
-      credential_id: key.id,
-    })),
-  ]);
+  const descriptors = providers.flatMap((provider) => {
+    const modes =
+      provider.type === ProviderType.Codex
+        ? (["native", "siwc"] as const)
+        : [undefined];
+    return modes.flatMap((mode) => [
+      {
+        kind: HealthFailureScope.Provider,
+        provider_id: provider.id,
+        health_id: codexHealthProviderId(provider.id, mode),
+        mode,
+      },
+      ...provider.credentials.map((key) => ({
+        kind: HealthFailureScope.Credential,
+        provider_id: provider.id,
+        health_id: codexHealthProviderId(provider.id, mode),
+        credential_id: key.id,
+        mode,
+      })),
+    ]);
+  });
   const statuses = await mapWithConcurrency(
     descriptors,
     PROVIDER_FAN_OUT_CONCURRENCY,
     async (descriptor): Promise<CoolingHealth> => {
       const snapshot =
         descriptor.kind === HealthFailureScope.Provider
-          ? await healthStub(env, descriptor.provider_id, scope).getStatus()
+          ? await healthStub(env, descriptor.health_id, scope).getStatus()
           : await credentialHealthStub(
               env,
-              descriptor.provider_id,
+              descriptor.health_id,
               descriptor.credential_id,
               scope,
             ).getStatus();
       return descriptor.kind === HealthFailureScope.Provider
-        ? { provider_id: descriptor.provider_id, ...snapshot }
+        ? {
+            provider_id: descriptor.provider_id,
+            ...(descriptor.mode ? { codex_mode: descriptor.mode } : {}),
+            ...snapshot,
+          }
         : {
             provider_id: descriptor.provider_id,
             credential_id: descriptor.credential_id,
+            ...(descriptor.mode ? { codex_mode: descriptor.mode } : {}),
             ...snapshot,
           };
     },

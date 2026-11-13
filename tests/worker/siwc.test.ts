@@ -83,6 +83,25 @@ beforeEach(() => {
             { ...(await exportJWK(pair.publicKey)), kid: "test", alg: "RS256" },
           ],
         });
+      if (url.pathname === "/oauth/token") {
+        const nativeId = await new SignJWT({
+          email: "operator@example.test",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "native-workspace",
+            chatgpt_user_id: "native-user",
+            chatgpt_plan_type: "plus",
+          },
+        })
+          .setProtectedHeader({ alg: "RS256", kid: "test" })
+          .setExpirationTime("1h")
+          .sign(pair.privateKey);
+        return Response.json({
+          access_token: "native-access",
+          refresh_token: "native-refresh",
+          id_token: nativeId,
+          expires_in: 3600,
+        });
+      }
       if (url.pathname.endsWith("/oauth/token")) {
         const form = new URLSearchParams(body);
         const refresh = form.get("grant_type") === "refresh_token";
@@ -117,7 +136,11 @@ beforeEach(() => {
       }
       if (url.pathname.endsWith("/oauth/revoke"))
         return new Response(null, { status: failRevoke ? 503 : 200 });
-      if (url.href === "https://api.openai.com/v1/responses") {
+      if (
+        url.href === "https://api.openai.com/v1/responses" ||
+        (url.origin === "https://chatgpt.com" &&
+          url.pathname === "/backend-api/codex/responses")
+      ) {
         const token = request.headers.get("authorization")!;
         upgrades.push(token);
         if (exhaustedTokens.has(token))
@@ -171,6 +194,35 @@ async function start(ref = crypto.randomUUID()) {
     provider_id: "codex",
     credential_id: `credential-${ref}`,
   };
+  const existing = await stub.run({ action: "view" });
+  if (!existing.ok) {
+    const native = await accountReply(
+      stub.run({
+        action: "start",
+        account_ref: ref,
+        actor,
+        connection,
+        provider_type: "codex",
+        flow: "pkce",
+      }),
+      sessionViewSchema,
+    );
+    const nativeUrl = new URL(native.url!);
+    await stub.run({
+      action: "complete",
+      session_id: native.id.split(".")[1]!,
+      actor,
+      redirect_url: `http://localhost:1455/auth/callback?state=${nativeUrl.searchParams.get("state")}&code=native`,
+    });
+    await expect
+      .poll(async () => {
+        await runDurableObjectAlarm(stub);
+        return (
+          await accountReply(stub.run({ action: "view" }), accountViewSchema)
+        ).status;
+      })
+      .toBe("ready");
+  }
   const session = await accountReply(
     stub.run({
       action: "start",
@@ -178,7 +230,7 @@ async function start(ref = crypto.randomUUID()) {
       actor,
       connection,
       provider_type: "codex",
-      flow: "siwc",
+      flow: "siwc_bind",
     }),
     sessionViewSchema,
   );
@@ -204,7 +256,7 @@ async function finish(f: Awaited<ReturnType<typeof start>>, code: string) {
       await runDurableObjectAlarm(f.stub);
       return (
         await accountReply(f.stub.run({ action: "view" }), accountViewSchema)
-      ).status;
+      ).siwc?.status;
     })
     .toBe("ready");
   return accountReply(f.stub.run({ action: "view" }), accountViewSchema);
@@ -212,6 +264,7 @@ async function finish(f: Awaited<ReturnType<typeof start>>, code: string) {
 async function configure(
   f: Awaited<ReturnType<typeof start>>,
   others: Awaited<ReturnType<typeof start>>[] = [],
+  useSiwc = true,
 ) {
   const config = parseConfig({
     providers: [
@@ -221,6 +274,7 @@ async function configure(
         disabled: false,
         priority: 100,
         account_selection: "session_affinity",
+        use_siwc: useSiwc,
         models: ["gpt-test"],
         credentials: [f, ...others].map((entry) => ({
           id: entry.connection.credential_id,
@@ -247,13 +301,16 @@ test("SIWC persists a validated registration, reuses it after eviction and keeps
     new URL(other.session.url!).searchParams.get("ext_agent_host_id"),
   );
   const view = await finish(f, "first");
-  expect(view.codex?.mode).toBe("siwc");
-  expect(view.codex?.account_id).toBeNull();
+  expect(view.codex?.mode).toBe("native");
+  expect(view.siwc?.status).toBe("ready");
+  expect(view.codex?.account_id).toBe("native-workspace");
   expect(JSON.stringify(view)).not.toContain("access-first");
-  expect(await f.stub.run({ action: "readiness" })).toMatchObject({
-    ok: true,
-    data: { ready: true, codex_mode: "siwc" },
-  });
+  expect(await f.stub.run({ action: "readiness", mode: "siwc" })).toMatchObject(
+    {
+      ok: true,
+      data: { ready: true, codex_mode: "siwc" },
+    },
+  );
   await evictDurableObject(f.stub);
   const again = await start(f.ref);
   expect(new URL(again.session.url!).searchParams.get("client_id")).toBe(
@@ -299,11 +356,13 @@ test("declined plan permission retains sign-in and excludes inference readiness"
   const f = await start();
   scopes.set("identity", "openid profile email offline_access");
   const view = await finish(f, "identity");
-  expect(view.codex?.plan_usage_enabled).toBe(false);
-  expect(await f.stub.run({ action: "readiness" })).toMatchObject({
-    ok: true,
-    data: { ready: false },
-  });
+  expect(view.siwc?.plan_usage_enabled).toBe(false);
+  expect(await f.stub.run({ action: "readiness", mode: "siwc" })).toMatchObject(
+    {
+      ok: true,
+      data: { ready: false },
+    },
+  );
 });
 
 test("a cancelled code exchange cannot commit late SIWC credentials", async () => {
@@ -334,14 +393,19 @@ test("a cancelled code exchange cannot commit late SIWC credentials", async () =
   });
   release.resolve();
   await completing;
-  expect(await f.stub.run({ action: "readiness" })).toMatchObject({
-    ok: true,
-    data: { ready: false },
-  });
+  expect(await f.stub.run({ action: "readiness", mode: "siwc" })).toMatchObject(
+    {
+      ok: true,
+      data: { ready: false },
+    },
+  );
   expect(
     (await accountReply(f.stub.run({ action: "view" }), accountViewSchema))
-      .codex,
+      .siwc,
   ).toBeNull();
+  expect(
+    await f.stub.run({ action: "readiness", mode: "native" }),
+  ).toMatchObject({ ok: true, data: { ready: true } });
 });
 
 test("SIWC model inventory and recovery use the public token partition only", async () => {
@@ -349,15 +413,16 @@ test("SIWC model inventory and recovery use the public token partition only", as
   await finish(f, "inventory");
   await configure(f);
   const view = await accountReply(
-    f.stub.run({ action: "models" }),
+    f.stub.run({ action: "models", mode: "siwc" }),
     accountViewSchema,
   );
-  expect(view.models.map((model) => model.id)).toEqual(["gpt-test"]);
-  const generation = view.generation!;
+  expect(view.siwc?.models.map((model) => model.id)).toEqual(["gpt-test"]);
+  const generation = view.siwc!.generation;
   const recover = () =>
     accountReply(
       f.stub.run({
         action: "codex_refresh",
+        mode: "siwc",
         generation,
         token: "access-inventory",
         connection: f.connection,
@@ -381,10 +446,6 @@ test("SIWC model inventory and recovery use the public token partition only", as
   expect(new URLSearchParams(refreshes.at(-1)!.body).get("client_id")).toBe(
     "oaiapp_test",
   );
-  expect(await f.stub.run({ action: "reset_credits" })).toMatchObject({
-    ok: false,
-    status: 400,
-  });
   expect(requests.some((request) => request.url.includes("backend-api"))).toBe(
     false,
   );
@@ -392,12 +453,31 @@ test("SIWC model inventory and recovery use the public token partition only", as
   expect(
     await f.stub.run({
       action: "codex_refresh",
+      mode: "siwc",
       generation,
       token: "access-refreshed",
       connection: f.connection,
       proxy_configuration: { proxy_groups: [] },
     }),
   ).toMatchObject({ ok: false, code: "invalid_grant" });
+  expect(
+    await f.stub.run({ action: "readiness", mode: "native" }),
+  ).toMatchObject({ ok: true, data: { ready: true } });
+  expect(
+    await accountReply(
+      f.stub.run({
+        action: "resolve",
+        mode: "native",
+        connection: f.connection,
+        proxy_configuration: { proxy_groups: [] },
+      }),
+      resolvedOAuthSchema,
+    ),
+  ).toMatchObject({
+    mode: "native",
+    token: "native-access",
+    account_id: "native-workspace",
+  });
   const again = await start(f.ref);
   expect(new URL(again.session.url!).searchParams.get("client_id")).toBe(
     "oaiapp_test",
@@ -415,20 +495,31 @@ test("SIWC disconnect clears tokens and reports unconfirmed remote revocation", 
   );
   expect(view.status).toBe("disconnected");
   expect(view.error).toContain("remote revocation was not confirmed");
-  expect(await f.stub.run({ action: "readiness" })).toMatchObject({
-    ok: true,
-    data: { ready: false },
-  });
+  expect(await f.stub.run({ action: "readiness", mode: "siwc" })).toMatchObject(
+    {
+      ok: true,
+      data: { ready: false },
+    },
+  );
+  expect(view.siwc).toBeNull();
   expect(
-    new URL((await start(f.ref)).session.url!).searchParams.get("client_id"),
-  ).toBe("oaiapp_test");
+    await f.stub.run({
+      action: "start",
+      account_ref: f.ref,
+      actor,
+      connection: f.connection,
+      provider_type: "codex",
+      flow: "siwc_bind",
+    }),
+  ).toMatchObject({ ok: false, status: 400 });
 });
 
-async function openSocket() {
+async function openSocket(userAgent?: string) {
   const response = await gatewayApp.fetch(
     new Request("https://gateway.test/v1/responses", {
       headers: {
         authorization: "Bearer siwc-client",
+        ...(userAgent ? { "user-agent": userAgent } : {}),
         connection: "Upgrade",
         upgrade: "websocket",
       },
@@ -553,7 +644,7 @@ test.each([1, 2])(
     await configure(f);
     rejectModels = rejections;
     const view = await accountReply(
-      f.stub.run({ action: "models" }),
+      f.stub.run({ action: "models", mode: "siwc" }),
       accountViewSchema,
     );
     expect(
@@ -570,7 +661,79 @@ test.each([1, 2])(
       ),
     ).toHaveLength(1);
     if (rejections === 1)
-      expect(view.models.map((model) => model.id)).toEqual(["gpt-test"]);
-    else expect(view.models_error).toContain("401");
+      expect(view.siwc?.models.map((model) => model.id)).toEqual(["gpt-test"]);
+    else expect(view.siwc?.models_error).toContain("401");
+  },
+);
+
+test("Codex WebSocket clients use native authorization while SIWC is enabled", async () => {
+  const f = await start();
+  await finish(f, "bound-native-ws");
+  await configure(f);
+  const client = await openSocket("codex_cli_rs/1.0");
+  client.socket.send(frame);
+  await expect.poll(() => upgrades.length).toBe(1);
+  expect(upgrades).toEqual(["Bearer native-access"]);
+  expect(
+    requests.some((request) =>
+      request.url.startsWith("https://chatgpt.com/backend-api/codex/responses"),
+    ),
+  ).toBe(true);
+  client.socket.close();
+});
+
+test("changing an ordinary WebSocket's authorization mode requires reconnection without replay", async () => {
+  const f = await start();
+  await finish(f, "mode-change");
+  await configure(f);
+  const client = await openSocket();
+  client.socket.send(frame);
+  await expect.poll(() => upgrades.length).toBe(1);
+  const id = connections.get("Bearer access-mode-change")!;
+  await testUpstream().fetch(
+    new Request(control(id, "/__test/send"), {
+      method: "POST",
+      body: JSON.stringify({
+        type: "response.completed",
+        response: { id: "first", status: "completed", output: [] },
+      }),
+    }),
+  );
+  await expect.poll(() => client.messages.length).toBe(1);
+  await configure(f, [], false);
+  client.socket.send(frame);
+  expect((await client.close).code).toBe(1012);
+  expect(upgrades).toHaveLength(1);
+});
+
+test.each([false, true])(
+  "unlinking SIWC preserves native authorization (revocation failure: %s)",
+  async (failure) => {
+    const f = await start();
+    await finish(f, "unlink");
+    await configure(f, [], false);
+    failRevoke = failure;
+    const before = await accountReply(
+      f.stub.run({ action: "view" }),
+      accountViewSchema,
+    );
+    const after = await accountReply(
+      f.stub.run({ action: "siwc_disconnect" }),
+      accountViewSchema,
+    );
+    expect(after.siwc).toBeNull();
+    expect(after.status).toBe("ready");
+    expect(after.generation).toBe(before.generation);
+    expect(after.codex?.account_id).toBe("native-workspace");
+    expect(after.siwc_revocation_error === null).toBe(!failure);
+    expect(
+      await f.stub.run({ action: "readiness", mode: "native" }),
+    ).toMatchObject({ ok: true, data: { ready: true } });
+    expect(
+      await f.stub.run({ action: "readiness", mode: "siwc" }),
+    ).toMatchObject({ ok: true, data: { ready: false } });
+    expect(
+      new URL((await start(f.ref)).session.url!).searchParams.get("client_id"),
+    ).toBe("dynamic_agent_client");
   },
 );

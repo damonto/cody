@@ -1,3 +1,5 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
+import { isCodexClientRequest } from "../../shared/codex-client.ts";
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
@@ -162,6 +164,7 @@ function replayableQuotaError(
 interface FirstFrameAttempt {
   lockedMode?: "native" | "siwc";
   readonly requestId: string;
+  readonly client: "codex" | "other";
   readonly message: string;
   readonly frame: ResponseCreateFrame;
   readonly route: ModelRoute;
@@ -549,7 +552,10 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     ) {
       const cooled = await recordCredentialQuotaCooldown(
         this.env,
-        state.selected_provider_id,
+        codexHealthProviderId(
+          state.selected_provider_id,
+          this.upstream.codexMode,
+        ),
         state.selected_credential_id,
         usageLimit.resets_at,
         state.request_id,
@@ -729,6 +735,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       attempt.routingContext.config,
     );
 
+    await this.storage.transition([SessionPhase.Connecting], (state) => ({
+      ...state,
+      codex_auth_mode: this.upstream.codexMode,
+      codex_generation: this.upstream.codexGeneration,
+    }));
     const current = await this.storage.loadSession();
     if (current?.phase !== SessionPhase.Connecting) {
       const socket = result.response?.webSocket;
@@ -975,6 +986,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
 
     const attempt: FirstFrameAttempt = {
       requestId: claimed.next.request_id,
+      client: isCodexClientRequest({
+        headers: new Headers(claimed.next.forwarded_headers),
+      })
+        ? "codex"
+        : "other",
       message,
       frame,
       route,
@@ -1014,6 +1030,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         {
           excludedCredentials: attempt.excluded,
           codexRequest: {
+            client: attempt.client,
             endpoint: "responses",
             transport: ProviderTransport.Websocket,
             payload: frame.payload,
@@ -1126,7 +1143,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     // Awaited: the next selection must already see this account cooling.
     const persisted = await recordCredentialQuotaCooldown(
       this.env,
-      target.provider.id,
+      codexHealthProviderId(target.provider.id, this.upstream.codexMode),
       target.credential.id,
       limit.resets_at,
       attempt.requestId,
@@ -1199,6 +1216,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         attempt.meter,
         attempt.routingContext,
         attempt.target,
+        this.upstream.codexMode,
       );
   }
 
@@ -1326,7 +1344,12 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           return;
         }
         const selectedTarget = resolution.target;
-        await this.usage.select(meter, routingContext, selectedTarget);
+        await this.usage.select(
+          meter,
+          routingContext,
+          selectedTarget,
+          this.upstream.codexMode,
+        );
         const activated = await this.storage.transition(
           [SessionPhase.Open],
           (latest) => ({

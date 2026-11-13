@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "./health-scope.ts";
 import type { CodexProviderConfig } from "../../config/types.ts";
 import {
   recordCredentialQuotaCooldown,
@@ -22,7 +23,7 @@ export function codexResponsePolicy(
     return health
       ? recordCredentialQuotaCooldown(
           { HEALTH: health },
-          provider.id,
+          codexHealthProviderId(provider.id, mode),
           credentialId,
           limit.resets_at,
           context.requestId,

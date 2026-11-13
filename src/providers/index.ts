@@ -1,3 +1,4 @@
+import { codexRequestMode } from "../shared/codex-client.ts";
 import type {
   ProviderConfig,
   ProviderCredentialConfig,
@@ -44,7 +45,16 @@ function bindAdapter<Provider extends ProviderConfig>(
 
       const resolved = await resolveCredential(
         credential,
-        context && { ...context, provider, credential },
+        context && {
+          ...context,
+          provider,
+          credential,
+          ...(provider.type === ProviderType.Codex
+            ? {
+                codexMode: codexRequestMode(input.request, provider.use_siwc),
+              }
+            : {}),
+        },
       );
       if (!credentialMatchesProvider<Provider["type"]>(resolved, provider.type))
         throw new Error("Provider and credential authentication do not match");

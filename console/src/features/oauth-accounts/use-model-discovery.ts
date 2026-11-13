@@ -32,18 +32,33 @@ export function useModelDiscovery({
   });
   const ready =
     accounts.data?.filter(
-      (account) => account.status === OAuthAccountViewStatus.Ready,
+      (account) =>
+        account.status === OAuthAccountViewStatus.Ready ||
+        (account.siwc?.status === OAuthAccountViewStatus.Ready &&
+          account.siwc.plan_usage_enabled),
     ) ?? [];
   const discover = useMutation({
     mutationFn: () =>
-      mapWithConcurrency(ready, PROVIDER_FAN_OUT_CONCURRENCY, (account) =>
-        refreshModels(account.account_ref),
+      mapWithConcurrency(
+        ready,
+        PROVIDER_FAN_OUT_CONCURRENCY,
+        async (account) => {
+          let current = account;
+          if (account.status === OAuthAccountViewStatus.Ready)
+            current = await refreshModels(account.account_ref);
+          if (
+            current.siwc?.status === OAuthAccountViewStatus.Ready &&
+            current.siwc.plan_usage_enabled
+          )
+            current = await refreshModels(account.account_ref, "siwc");
+          return current;
+        },
       ),
     onSuccess: (values) => cacheAccounts(cache, values),
   });
   const models = new Map(savedModels.map((id) => [id, id]));
   for (const account of accounts.data ?? []) {
-    for (const model of account.models)
+    for (const model of [...account.models, ...(account.siwc?.models ?? [])])
       models.set(model.id, model.display_name);
   }
   return { accounts, discover, models, canDiscover: ready.length > 0 };

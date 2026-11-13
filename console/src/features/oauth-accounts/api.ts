@@ -55,12 +55,12 @@ export async function retryProjectInitialization(ref: string) {
     ),
   );
 }
-export async function refreshModels(ref: string) {
+export async function refreshModels(ref: string, mode?: "native" | "siwc") {
   return accountViewSchema.parse(
     await read(
       rpc["provider-accounts"][":ref"].models.$post({
         param: { ref },
-        json: {},
+        json: { ...(mode ? { mode } : {}) },
       }),
     ),
   );
@@ -86,16 +86,14 @@ export async function refreshAccountQuota(
   signal?: AbortSignal,
 ): Promise<AccountView> {
   signal?.throwIfAborted();
-  if (account.status !== OAuthAccountViewStatus.Ready) return account;
-  if (
-    account.codex?.mode === "siwc" &&
-    (!force || !account.codex.plan_usage_enabled)
-  )
-    return account;
   try {
-    return account.codex?.mode === "siwc"
-      ? await refreshModels(account.account_ref)
-      : await refreshQuota(account.account_ref, force, signal);
+    const native =
+      account.status === OAuthAccountViewStatus.Ready
+        ? await refreshQuota(account.account_ref, force, signal)
+        : account;
+    if (force && native.siwc?.plan_usage_enabled)
+      return refreshModels(account.account_ref, "siwc");
+    return native;
   } catch (error) {
     signal?.throwIfAborted();
     return {
@@ -110,6 +108,16 @@ export async function refreshAccountQuota(
   }
 }
 
+export async function disconnectSiwc(ref: string) {
+  return accountViewSchema.parse(
+    await read(
+      rpc["provider-accounts"][":ref"].siwc.$delete({
+        param: { ref },
+        json: {},
+      }),
+    ),
+  );
+}
 export async function disconnectAccount(ref: string) {
   return accountViewSchema.parse(
     await read(

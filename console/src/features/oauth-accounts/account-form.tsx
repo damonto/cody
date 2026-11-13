@@ -1,4 +1,4 @@
-import { type ComponentType, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useStore } from "@tanstack/react-form";
 import type {
   OAuthProviderConfig,
@@ -17,7 +17,7 @@ import {
 } from "./form-options";
 
 export function OAuthAccountForm({
-  authorization: Authorization,
+  renderAuthorization,
   provider,
   credentialId,
   groups,
@@ -27,9 +27,9 @@ export function OAuthAccountForm({
   onSave,
   close,
 }: {
-  authorization: ComponentType<
-    AuthorizationOptions & { rowId: string; occupied: string[] }
-  >;
+  renderAuthorization: (
+    options: AuthorizationOptions & { rowId: string; occupied: string[] },
+  ) => ReactNode;
   provider: OAuthProviderConfig;
   credentialId?: string;
   groups: ProxyGroupConfig[];
@@ -46,7 +46,16 @@ export function OAuthAccountForm({
     );
     if (!credential)
       throw new Error("Account is missing from the editing snapshot");
-    return { ...credential, rowId: crypto.randomUUID() };
+    const { id, name, auth, priority, disabled, proxy_group } = credential;
+    return {
+      id,
+      name,
+      auth,
+      priority,
+      disabled,
+      proxy_group,
+      rowId: crypto.randomUUID(),
+    };
   });
   const form = useAppForm({
     defaultValues: initial,
@@ -85,30 +94,30 @@ export function OAuthAccountForm({
           {(field) => (
             <>
               <field.ProxyGroupField inherit groups={groups} />
-              <Authorization
-                rowId={initial.rowId}
-                accountRef={accountRef}
-                connection={{
+              {renderAuthorization({
+                rowId: initial.rowId,
+                accountRef,
+                connection: {
                   provider_id: provider.id,
                   provider_type: provider.type,
                   credential_id: initial.id,
                   provider_proxy_group: provider.proxy_group,
                   credential_proxy_group: field.state.value,
-                }}
-                version={version}
-                configurationVersion={configurationVersion}
-                occupied={provider.credentials
+                },
+                version,
+                configurationVersion,
+                occupied: provider.credentials
                   .filter((entry) => entry.id !== initial.id)
-                  .map((entry) => entry.auth.account_ref)}
-                onAuthorized={(account) => {
+                  .map((entry) => entry.auth.account_ref),
+                onAuthorized: (account) => {
                   form.setFieldValue("auth.account_ref", account.account_ref);
                   if (!credentialId)
                     form.setFieldValue(
                       "name",
                       accountName(provider.type, account),
                     );
-                }}
-              />
+                },
+              })}
             </>
           )}
         </form.AppField>

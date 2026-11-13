@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import {
   MAX_WEBSOCKET_BUFFER_BYTES,
   MAX_WEBSOCKET_BUFFER_MESSAGES,
@@ -57,6 +58,7 @@ interface UpstreamHandlers {
 /** Owns the outgoing connection, cancellation, and ordered upstream events. */
 export class UpstreamWebSocket {
   codexMode: CodexMode | undefined;
+  codexGeneration: number | undefined;
   validateRequest:
     ((payload: Readonly<Record<string, unknown>>) => void) | undefined;
   private controller: AbortController | undefined;
@@ -110,6 +112,7 @@ export class UpstreamWebSocket {
       if (prepared.kind === "local")
         throw new Error("Unexpected local provider response");
       this.codexMode = prepared.codexMode;
+      this.codexGeneration = prepared.codexGeneration;
       this.validateRequest = prepared.validateWebSocketRequest;
       const result = await fetchWithConfiguredRetries(
         () =>
@@ -161,7 +164,7 @@ export class UpstreamWebSocket {
             ) {
               await recordCredentialFailure(
                 this.env,
-                target.provider.id,
+                codexHealthProviderId(target.provider.id, prepared.codexMode),
                 target.credential.id,
                 state.request_id,
               );
@@ -171,6 +174,9 @@ export class UpstreamWebSocket {
       );
       if (result.response?.status === 101)
         this.observeMessage = prepared.observeWebSocketEvent;
+      if (prepared.codexMode)
+        for (const attempt of result.attempts)
+          attempt.codex_auth_mode = prepared.codexMode;
       return {
         ...result,
         proxyError: result.response

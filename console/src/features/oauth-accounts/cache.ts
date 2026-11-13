@@ -15,6 +15,8 @@ function mergeAccount(
   previous: AccountView | undefined,
   update: AccountView,
 ): AccountView {
+  if (previous?.revision !== undefined && update.revision !== undefined)
+    return update.revision >= previous.revision ? update : previous;
   if (!previous || previous.generation === undefined) return update;
   if (update.generation === undefined) return previous;
   if (previous.generation > update.generation) return previous;

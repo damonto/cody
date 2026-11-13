@@ -50,6 +50,7 @@ export type OAuthProviderType = z.output<typeof oauthProviderTypeSchema>;
 export const proxyConfigurationSchema = z.object({
   proxy_groups: z.array(proxyGroupSchema).default([]),
   revision: z.number().int().nonnegative().optional(),
+  siwc_revocation_error: z.string().nullable().optional(),
 });
 export type ProxyConfiguration = z.output<typeof proxyConfigurationSchema>;
 export const tokenSchema = z.object({
@@ -130,6 +131,23 @@ export type QuotaSnapshot = z.output<typeof quotaSnapshotSchema>;
 export { claudeAccountSchema } from "../claude/account-schema.ts";
 export const accountViewSchema = z.object({
   generation: z.number().optional(),
+  revision: z.number().int().nonnegative().optional(),
+  siwc_revocation_error: z.string().nullable().optional(),
+  siwc: z
+    .object({
+      generation: z.number().int().nonnegative(),
+      status: z.enum(OAuthAccountViewStatus),
+      email: z.string().nullable(),
+      expires_at: z.number().nullable(),
+      plan_usage_enabled: z.boolean(),
+      error: z.string().nullable(),
+      models: z.array(modelSchema),
+      models_updated_at: z.number().nullable(),
+      models_error: z.string().nullable(),
+      quota: quotaSnapshotSchema,
+    })
+    .nullable()
+    .optional(),
   account_ref: z.uuid(),
   provider_id: identifierSchema,
   status: z.enum(OAuthAccountViewStatus),
@@ -152,6 +170,7 @@ export type AccountView = z.output<typeof accountViewSchema>;
 export const accountReadinessSchema = z.object({
   ready: z.boolean(),
   codex_mode: codexModeSchema.optional(),
+  generation: z.number().int().nonnegative().optional(),
 });
 export const sessionStatusSchema = z.enum(OAuthSessionStatus);
 export const sessionViewSchema = z.object({
@@ -186,6 +205,13 @@ export const consumeResetReplySchema = z.object({
 
 /** Inference availability of one configured OAuth credential, for account cards. */
 export const accountHealthSchema = z.object({
+  siwc: z
+    .object({
+      available: z.boolean(),
+      cooling_until: z.number().nullable(),
+      cooldown_reason: z.enum(HealthCooldownReason).nullable(),
+    })
+    .optional(),
   model_cooldowns: z
     .array(
       z.object({

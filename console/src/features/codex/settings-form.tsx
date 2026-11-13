@@ -1,6 +1,6 @@
 import { CodexAccountSelection } from "../../../../src/config/values.ts";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import type {
   CodexProviderConfig,
@@ -123,6 +123,14 @@ export function CodexSettingsForm({
                 />
               )}
             </form.AppField>
+            <form.AppField name="use_siwc">
+              {(field) => (
+                <field.ToggleField
+                  label="Use SIWC"
+                  hint="Use SIWC for other clients across all Codex accounts. Codex clients always use native authorization."
+                />
+              )}
+            </form.AppField>
             <form.AppField name="supports_websocket">
               {(field) => (
                 <field.ToggleField
@@ -169,17 +177,20 @@ export function CodexSettingsForm({
                 retry={() => discover.mutate()}
               />
             )}
-            {(accounts.data ?? [])
-              .filter((account) => account.models_error)
-              .map((account) => (
-                <p
-                  key={account.account_ref}
-                  role="alert"
-                  className="text-sm text-destructive"
-                >
-                  {account.models_error}
-                </p>
-              ))}
+            {(accounts.data ?? []).map((account) => (
+              <Fragment key={account.account_ref}>
+                {account.models_error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {account.models_error}
+                  </p>
+                )}
+                {account.siwc?.models_error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    SIWC: {account.siwc.models_error}
+                  </p>
+                )}
+              </Fragment>
+            ))}
             <form.AppField name="models">
               {(field) => (
                 <>

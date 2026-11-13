@@ -21,6 +21,7 @@ export function codexAccountCredential(
     };
   }
   return {
+    mode: "native",
     token: account.tokens.access_token,
     account_id: account.codex.account_id,
     generation: account.generation,

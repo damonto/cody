@@ -23,6 +23,7 @@ import { useNow } from "./status";
 
 export function CodexAccounts({
   provider,
+  version,
   pending,
   onAdd,
   onConfigure,
@@ -31,6 +32,7 @@ export function CodexAccounts({
   onToggle,
 }: {
   provider: CodexProviderConfig;
+  version: number;
   pending: boolean;
   onAdd: () => void;
   onConfigure: (id: string) => void;
@@ -66,9 +68,9 @@ export function CodexAccounts({
       mapWithConcurrency(
         (query.data ?? []).filter(
           (account) =>
-            account.status === OAuthAccountViewStatus.Ready &&
-            (account.codex?.mode !== "siwc" ||
-              account.codex.plan_usage_enabled) &&
+            (account.status === OAuthAccountViewStatus.Ready ||
+              (account.siwc?.status === OAuthAccountViewStatus.Ready &&
+                account.siwc.plan_usage_enabled)) &&
             (!ref || account.account_ref === ref),
         ),
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -95,9 +97,9 @@ export function CodexAccounts({
           disabled={
             !query.data?.some(
               (account) =>
-                account.status === OAuthAccountViewStatus.Ready &&
-                (account.codex?.mode !== "siwc" ||
-                  account.codex.plan_usage_enabled),
+                account.status === OAuthAccountViewStatus.Ready ||
+                (account.siwc?.status === OAuthAccountViewStatus.Ready &&
+                  account.siwc.plan_usage_enabled),
             ) || busy
           }
           onClick={() => refresh.mutate(undefined)}
@@ -134,6 +136,8 @@ export function CodexAccounts({
               provider.credentials.map((credential, index) => (
                 <AccountCard
                   key={credential.id}
+                  provider={provider}
+                  version={version}
                   credential={credential}
                   index={index}
                   count={provider.credentials.length}

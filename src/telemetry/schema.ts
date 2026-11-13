@@ -90,6 +90,7 @@ const usageEventSchema = z
     credential_id: z.string(),
     model: z.string(),
     upstream_model: z.string().optional(),
+    codex_auth_mode: z.enum(["native", "siwc"]).optional(),
     requested_model: z.string(),
     reported_model: z.string(),
     upstream_observation: z
@@ -120,6 +121,7 @@ const usageEventSchema = z
     attempts: z.array(
       z.object({
         attempt: z.number(),
+        codex_auth_mode: z.enum(["native", "siwc"]).optional(),
         status: nullableNumber,
         duration_ms: z.number(),
         retry_delay_ms: nullableNumber,

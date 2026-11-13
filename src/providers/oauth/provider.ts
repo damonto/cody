@@ -1,3 +1,4 @@
+import type { CodexMode } from "../codex/account-schema.ts";
 import type { OAuthFlow } from "./values.ts";
 import type { z } from "zod";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
@@ -56,6 +57,7 @@ export interface AccountState<
   update(
     generation: number,
     update: (account: StoredFor<Type>) => void | Promise<void>,
+    mode?: CodexMode,
   ): Promise<void>;
   updateAuthorization(
     generation: number,
@@ -66,11 +68,15 @@ export interface AccountState<
     authorizationGeneration: number,
     inheritRefreshToken: boolean,
     update: (account: StoredFor<Type>) => void | Promise<void>,
+    mode?: CodexMode,
   ): Promise<void>;
-  resolve(rejected?: {
-    generation: number;
-    token: string;
-  }): Promise<AccountCredential>;
+  resolve(
+    rejected?: {
+      generation: number;
+      token: string;
+    },
+    mode?: CodexMode,
+  ): Promise<AccountCredential>;
 }
 
 /** Transport/configuration selection stays outside provider account policy. */
@@ -148,6 +154,7 @@ export interface AccountProvider {
     retry(): Promise<void>;
   };
   recoverUnauthorized?: boolean;
+  /** Fence and clear credentials before remote cleanup; never wait on an in-flight refresh. */
   disconnect?: (() => Promise<void>) | undefined;
 }
 
@@ -174,17 +181,20 @@ export function providerState<Type extends OAuthProviderType>(
   };
   return {
     current: () => checked(state.current()),
-    update: (generation, update) =>
-      state.update(generation, (account) => update(checked(account))),
+    update: (generation, update, mode) =>
+      state.update(generation, (account) => update(checked(account)), mode),
     updateAuthorization: (generation, update) =>
       state.updateAuthorization(generation, (account) =>
         update(checked(account)),
       ),
-    replaceCredentials: (generation, inheritRefreshToken, update) =>
-      state.replaceCredentials(generation, inheritRefreshToken, (account) =>
-        update(checked(account)),
+    replaceCredentials: (generation, inheritRefreshToken, update, mode) =>
+      state.replaceCredentials(
+        generation,
+        inheritRefreshToken,
+        (account) => update(checked(account)),
+        mode,
       ),
-    resolve: (rejected) => state.resolve(rejected),
+    resolve: (rejected, mode) => state.resolve(rejected, mode),
   };
 }
 

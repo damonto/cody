@@ -119,3 +119,16 @@ test("undated responses cannot replace a cached credential generation", async (t
   await cacheAccounts(cache, [undated]);
   assert.equal(cache.getQueryData(detail).generation, initial.generation);
 });
+
+test("account revisions fence independent SIWC updates without changing native generation", async (t) => {
+  const { cache, detail, initial } = fixture(t);
+  await cacheAccounts(cache, [
+    { ...initial, revision: 2, siwc: { status: "needs_reauthorization" } },
+  ]);
+  await cacheAccounts(cache, [
+    { ...initial, revision: 1, siwc: { status: "ready" } },
+  ]);
+  assert.equal(cache.getQueryData(detail).generation, initial.generation);
+  assert.equal(cache.getQueryData(detail).status, "ready");
+  assert.equal(cache.getQueryData(detail).siwc.status, "needs_reauthorization");
+});

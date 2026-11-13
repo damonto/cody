@@ -311,6 +311,7 @@ test("PKCE authorization turns the ID token into a ChatGPT workspace credential"
     ),
   ).toEqual({
     token: "access-pkce",
+    mode: "native",
     account_id: "acct-pkce",
     generation: expect.any(Number),
   });
@@ -682,6 +683,7 @@ test("partial refresh survives eviction and rejects a changed workspace before s
     await accountReply(account.stub.run(command), resolvedOAuthSchema),
   ).toEqual({
     token: "access-refresh-partial",
+    mode: "native",
     generation: expect.any(Number),
     account_id: "acct-refresh-partial",
   });

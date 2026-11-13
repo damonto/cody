@@ -1,3 +1,14 @@
+import {
+  isCodexClientRequest,
+  codexRequestMode,
+} from "../../shared/codex-client.ts";
+import { ProviderType } from "../../config/values.ts";
+import { ProviderTransport } from "../../providers/transport-values.ts";
+import {
+  accountReply,
+  accountReadinessSchema,
+} from "../../providers/oauth/schema.ts";
+import { HealthScope } from "../health/values.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
@@ -53,13 +64,52 @@ export async function resolveCurrentTarget(
   if (!selectedTarget) {
     return { kind: "changed" };
   }
+  const request = { headers: new Headers(state.forwarded_headers) };
+  const policy = {
+    endpoint: "responses" as const,
+    transport: ProviderTransport.Websocket,
+    client: isCodexClientRequest(request)
+      ? ("codex" as const)
+      : ("other" as const),
+  };
+  if (
+    selectedTarget.provider.type === ProviderType.Codex &&
+    selectedTarget.credential.auth.type === "oauth"
+  ) {
+    const mode = codexRequestMode(request, selectedTarget.provider.use_siwc);
+    if (state.codex_auth_mode !== undefined && mode !== state.codex_auth_mode)
+      return { kind: "changed" };
+    try {
+      const readiness = await accountReply(
+        env.PROVIDER_OAUTH_ACCOUNT.getByName(
+          selectedTarget.credential.auth.account_ref,
+        ).run({ action: "readiness", mode }),
+        accountReadinessSchema,
+      );
+      if (
+        !readiness.ready ||
+        (state.codex_generation !== undefined &&
+          readiness.generation !== state.codex_generation)
+      )
+        return { kind: "changed" };
+    } catch {
+      return { kind: "affinity_unavailable" };
+    }
+  }
   if (!sessionId) {
-    return (await targetIsAvailableForRoute(env, route, selectedTarget))
+    return (await targetIsAvailableForRoute(
+      env,
+      route,
+      selectedTarget,
+      HealthScope.Inference,
+      policy,
+    ))
       ? { kind: "ready", target: selectedTarget }
       : { kind: "changed" };
   }
   const selection = await selectAvailableProviderWithDetails(env, route, {
     session: { clientId: client.id, sessionId },
+    codexRequest: policy,
   });
   if (selection.affinity?.status === SessionAffinityStatus.Failed) {
     logWarn("websocket.affinity.failed", {

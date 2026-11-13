@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import { HealthScope } from "./values.ts";
 import { ProviderType } from "../../config/values.ts";
 import { antigravityQuotaObjectName } from "../../providers/antigravity/availability.ts";
@@ -130,6 +131,12 @@ export async function handleHealthClear(
       },
     });
     return invalidHealthScope();
+  }
+  if (provider.type === ProviderType.Codex) {
+    const siwcId = codexHealthProviderId(providerId, "siwc");
+    if (credentialId === undefined)
+      await clearProviderHealth(env, siwcId, scope);
+    else await clearCredentialHealth(env, siwcId, credentialId, scope);
   }
   const snapshot =
     credentialId === undefined

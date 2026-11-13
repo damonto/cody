@@ -1,3 +1,4 @@
+import { codexModeSchema } from "../codex/account-schema.ts";
 import { codexQuotaObservationSchema } from "../codex/quota.ts";
 import { ProviderType } from "../../config/values.ts";
 import { OAuthFlow } from "./values.ts";
@@ -20,13 +21,24 @@ const sessionOwner = {
 /** Required fields are checked both at RPC call sites and at the runtime boundary. */
 export const accountCommandSchema = z.discriminatedUnion("action", [
   z.strictObject({
+    action: z.literal("readiness"),
+    mode: codexModeSchema.optional(),
+  }),
+  z.strictObject({ action: z.literal("siwc_disconnect") }),
+  z.strictObject({
+    action: z.literal("models"),
+    mode: codexModeSchema.optional(),
+  }),
+  z.strictObject({
     action: z.literal("codex_usage"),
+    mode: codexModeSchema.optional(),
     generation: z.number().int().nonnegative(),
     observed_at: z.number().int().nonnegative(),
     observation: codexQuotaObservationSchema,
   }),
   z.strictObject({
     action: z.literal("codex_refresh"),
+    mode: codexModeSchema.optional(),
     generation: z.number().int().nonnegative(),
     token: z.string().min(1),
     connection: connectionSchema,
@@ -77,18 +89,12 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("resolve"),
+    mode: codexModeSchema.optional(),
     connection: connectionSchema,
     proxy_configuration: proxyConfigurationSchema,
   }),
   z.strictObject({
-    action: z.enum([
-      "view",
-      "readiness",
-      "models",
-      "disconnect",
-      "reset_credits",
-      "retry_project",
-    ]),
+    action: z.enum(["view", "disconnect", "reset_credits", "retry_project"]),
   }),
   z.strictObject({
     action: z.literal("consume_reset"),
@@ -97,6 +103,7 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("quota"),
+    mode: codexModeSchema.optional(),
     force: z.boolean().default(false),
   }),
 ]);

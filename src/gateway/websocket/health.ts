@@ -1,3 +1,4 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import { SessionPhase } from "./values.ts";
 import { ApiProtocol } from "../protocol-values.ts";
 import { HealthFailureScope } from "../health/values.ts";
@@ -46,7 +47,10 @@ export class WebSocketHealth {
     ) {
       await recordCredentialFailure(
         this.env,
-        state.selected_provider_id,
+        codexHealthProviderId(
+          state.selected_provider_id,
+          state.codex_auth_mode,
+        ),
         state.selected_credential_id,
         state.request_id,
       );
@@ -72,7 +76,10 @@ export class WebSocketHealth {
     }
     await recordProviderFailure(
       this.env,
-      transition.next.selected_provider_id,
+      codexHealthProviderId(
+        transition.next.selected_provider_id,
+        transition.next.codex_auth_mode,
+      ),
       transition.next.request_id,
     );
   }
@@ -95,7 +102,10 @@ export class WebSocketHealth {
     }
     await recordProviderSuccess(
       this.env,
-      transition.next.selected_provider_id,
+      codexHealthProviderId(
+        transition.next.selected_provider_id,
+        transition.next.codex_auth_mode,
+      ),
       transition.next.request_id,
     );
   }

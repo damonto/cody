@@ -63,6 +63,7 @@ export function settingsFormValues(
     supports_web_search: provider.supports_web_search,
     account_selection: provider.account_selection,
     auto_consume_resets: provider.auto_consume_resets,
+    use_siwc: provider.use_siwc,
     routes: Object.entries(provider.model_routes ?? {}).map(
       ([alias, route]) => ({
         rowId: crypto.randomUUID(),

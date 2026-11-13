@@ -36,6 +36,7 @@ export function codexAccountHooks(
       .then(async () => {
         const reply = await account().run({
           action: "codex_usage",
+          mode: credential.mode,
           generation: credential.generation,
           observed_at: receivedAt,
           observation,
@@ -58,6 +59,7 @@ export function codexAccountHooks(
           accountReply(
             account().run({
               action: "codex_refresh",
+              mode: credential.mode,
               generation: credential.generation,
               token: credential.token,
               connection,

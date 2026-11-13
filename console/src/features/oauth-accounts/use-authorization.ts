@@ -46,12 +46,14 @@ export function useAuthorization({
   version,
   configurationVersion,
   onAuthorized,
-}: AuthorizationOptions) {
+  loadAccounts = true,
+}: AuthorizationOptions & { loadAccounts?: boolean }) {
   const cache = useQueryClient();
   const [id, setId] = useState("");
   const [callback, setCallback] = useState("");
   const [disconnect, setDisconnect] = useState(false);
   const completed = useRef("");
+  const currentSessionId = useRef("");
   const session = useQuery({
     ...sessionOptions(id),
     refetchInterval: (query) =>
@@ -59,11 +61,20 @@ export function useAuthorization({
         ? 2000
         : false,
   });
-  const account = useQuery(accountOptions(accountRef));
-  const available = useQuery(accountsOptions(connection.provider_id));
+  const account = useQuery({
+    ...accountOptions(accountRef),
+    enabled: loadAccounts && !!accountRef,
+  });
+  const availableOptions = accountsOptions(connection.provider_id);
+  const available = useQuery({
+    ...availableOptions,
+    enabled: loadAccounts && availableOptions.enabled,
+  });
   const putSession = (value: SessionView) => {
+    if (value.id !== currentSessionId.current) return false;
     cache.setQueryData(sessionOptions(value.id).queryKey, value);
     setId(value.id);
+    return true;
   };
   const start = useMutation({
     mutationFn: async (
@@ -96,6 +107,7 @@ export function useAuthorization({
       );
     },
     onSuccess: (value) => {
+      currentSessionId.current = value.id;
       putSession(value);
       setCallback("");
     },
@@ -111,8 +123,7 @@ export function useAuthorization({
         ),
       ),
     onSuccess: (value) => {
-      putSession(value);
-      setCallback("");
+      if (putSession(value)) setCallback("");
     },
   });
   const retry = useMutation({
@@ -132,25 +143,24 @@ export function useAuthorization({
         ),
       ),
     onSuccess: (value) => {
-      putSession(value);
-      setCallback("");
+      if (putSession(value)) setCallback("");
     },
   });
   const refresh = useMutation({
     mutationFn: ({
       ref,
       kind,
+      mode,
     }: {
       ref: string;
       kind: "models" | "quota" | "disconnect";
+      mode?: "native" | "siwc";
     }) => {
       switch (kind) {
         case "models":
-          return refreshModels(ref);
+          return refreshModels(ref, mode);
         case "quota":
-          return account.data?.codex?.mode === "siwc"
-            ? refreshModels(ref)
-            : refreshQuota(ref, true);
+          return refreshQuota(ref, true);
         case "disconnect":
           return disconnectAccount(ref);
       }
@@ -159,6 +169,13 @@ export function useAuthorization({
       await cacheAccounts(cache, [value]);
       if (kind === "disconnect") setDisconnect(false);
     },
+    onError: (_error, { ref }) => {
+      // The remote change may have committed before its response was lost.
+      void cache.invalidateQueries({ queryKey: accountOptions(ref).queryKey });
+      void cache.invalidateQueries({
+        queryKey: accountsOptions(connection.provider_id).queryKey,
+      });
+    },
   });
   const adopt = useMutation({
     mutationFn: async ({
@@ -166,16 +183,22 @@ export function useAuthorization({
     }: {
       account: AccountView;
       discover: boolean;
+      mode?: "native" | "siwc";
     }) => {
       await cacheAccounts(cache, [account]);
       return account;
     },
-    onSuccess: (value, { discover }) => {
+    onSuccess: (value, { discover, mode }) => {
       submit.reset();
       retry.reset();
       cancel.reset();
       onAuthorized(value);
-      if (discover) refresh.mutate({ ref: value.account_ref, kind: "models" });
+      if (discover)
+        refresh.mutate({
+          ref: value.account_ref,
+          kind: "models",
+          ...(mode ? { mode } : {}),
+        });
     },
   });
   // Completion arrives through polling, not necessarily through a local button click.
@@ -183,21 +206,26 @@ export function useAuthorization({
     adopt.mutate({
       account: value.account,
       discover:
-        value.account.status === OAuthAccountViewStatus.Ready &&
-        (value.account.codex?.mode !== "siwc" ||
-          value.account.codex.plan_usage_enabled),
+        value.flow === OAuthFlow.Siwc
+          ? !!value.account.siwc?.plan_usage_enabled
+          : value.account.status === OAuthAccountViewStatus.Ready,
+      mode: value.flow === OAuthFlow.Siwc ? "siwc" : "native",
     });
   });
   const authorization = session.data;
   useEffect(() => {
     if (
       authorization?.status !== OAuthSessionStatus.Complete ||
+      authorization.id !== currentSessionId.current ||
       completed.current === authorization.id
     )
       return;
     completed.current = authorization.id;
     onCompleted(authorization);
   }, [authorization]);
+
+  const authorizationError =
+    start.error ?? submit.error ?? retry.error ?? cancel.error ?? adopt.error;
 
   return {
     callback,
@@ -216,12 +244,7 @@ export function useAuthorization({
     authorization,
     view: account.data ?? authorization?.account,
     active: !!authorization && pendingStatuses.includes(authorization.status),
-    error:
-      start.error ??
-      submit.error ??
-      retry.error ??
-      cancel.error ??
-      refresh.error ??
-      adopt.error,
+    authorizationError,
+    error: authorizationError ?? refresh.error,
   };
 }

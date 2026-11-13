@@ -23,7 +23,7 @@ import { SiwcClient, SIWC_REDIRECT_URI, siwcAuthorizationUrl } from "./siwc.ts";
 export function siwcAccount(
   state: AccountState<typeof ProviderType.Codex>,
   services: AccountServices,
-): AccountProvider {
+): AccountProvider & { disconnect(): Promise<void> } {
   const client = async (
     connection?: ProviderConnection,
     config?: ProxyConfiguration,
@@ -48,6 +48,8 @@ export function siwcAccount(
                 throw new OAuthError("Authorization changed", 409);
               account.session.siwc = {
                 authorization_generation: snapshot.authorization_generation,
+                native_generation:
+                  session.target_generation ?? snapshot.generation,
                 nonce: base64url(crypto.getRandomValues(new Uint8Array(32))),
                 host_id: hostId,
                 client_id:
@@ -226,6 +228,7 @@ export function siwcAccount(
         account.generation++;
         account.authorization_generation++;
         account.status = OAuthAccountStatus.Disconnected;
+        account.tokens = null;
         account.session = null;
       });
       const generation = snapshot.generation + 1;

@@ -6,7 +6,7 @@ import { applyAccount } from "./form-options";
 
 type Props = Omit<
   ComponentProps<typeof OAuthAccountForm>,
-  "provider" | "onSave" | "authorization"
+  "provider" | "onSave" | "renderAuthorization"
 > & {
   provider: XaiProviderConfig;
   onSave: (provider: XaiProviderConfig) => Promise<void>;
@@ -16,7 +16,7 @@ export function AccountForm({ provider, onSave, ...props }: Props) {
     <OAuthAccountForm
       {...props}
       provider={provider}
-      authorization={Authorization}
+      renderAuthorization={(options) => <Authorization {...options} />}
       onSave={(value) => onSave(applyAccount(provider, value))}
     />
   );

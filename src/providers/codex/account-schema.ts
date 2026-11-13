@@ -20,6 +20,7 @@ export const siwcRegistrationSchema = z.object({
 });
 export const siwcSessionSchema = z.object({
   authorization_generation: z.number().int().nonnegative(),
+  native_generation: z.number().int().nonnegative(),
   nonce: z.string().min(1),
   host_id: z.string().min(1),
   client_id: z.string().nullable(),
@@ -55,7 +56,7 @@ export const codexAccountSchema = z
   .nullable()
   .default(null);
 export const nativeCodexCredentialSchema = z.object({
-  mode: z.literal("native").optional(),
+  mode: z.literal("native").default("native"),
   token: z.string().min(1),
   account_id: z.string().min(1),
   is_fedramp: z.boolean().optional(),

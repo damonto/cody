@@ -4,6 +4,7 @@ import { ProviderRequestError } from "../errors.ts";
 import type { CodexMode } from "./account-schema.ts";
 
 export interface CodexRequestPolicy {
+  client?: "codex" | "other";
   endpoint: ProviderEndpoint;
   transport: ProviderTransport;
   payload?: Readonly<Record<string, unknown>> | undefined;

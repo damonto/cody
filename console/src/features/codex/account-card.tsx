@@ -17,6 +17,7 @@ import { daysUntil, expiryTone, planLabel, relative, toneText } from "./plan";
 import { QuotaWindow } from "./quota-window";
 import { ResetCreditsDialog } from "./reset-credits";
 import { healthBadge, usableCredits, type HealthBadge } from "./status";
+import { SiwcAuthorization } from "./siwc-authorization";
 
 type Credential = CodexProviderConfig["credentials"][number];
 
@@ -28,6 +29,8 @@ const badgeTone: Readonly<Record<HealthBadge["tone"], string>> = {
 };
 
 export function AccountCard({
+  provider,
+  version,
   credential,
   index,
   count,
@@ -43,6 +46,8 @@ export function AccountCard({
   onRemove,
   onToggle,
 }: {
+  provider: CodexProviderConfig;
+  version: number;
   credential: Credential;
   index: number;
   count: number;
@@ -61,7 +66,10 @@ export function AccountCard({
   const [resetting, setResetting] = useState(false);
   const title = account?.email ?? `ChatGPT account ${index + 1}`;
   const badge = healthBadge(credential, account, health, now);
-  const siwc = account?.codex?.mode === "siwc";
+  const canRefresh =
+    account?.status === OAuthAccountViewStatus.Ready ||
+    (account?.siwc?.status === OAuthAccountViewStatus.Ready &&
+      account.siwc.plan_usage_enabled);
   const quota = account?.quota;
   const plan =
     quota?.subscription?.tier_id ?? account?.codex?.plan_type ?? null;
@@ -88,10 +96,7 @@ export function AccountCard({
           </p>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <Badge variant="secondary">{planLabel(plan)}</Badge>
-            <Badge variant="outline">{siwc ? "SIWC" : "Codex"}</Badge>
-            {siwc && !account?.codex?.plan_usage_enabled && (
-              <Badge variant="outline">Plan usage disabled</Badge>
-            )}
+            <Badge variant="outline">Codex</Badge>
             {days !== null && (
               <span className={toneText[expiryTone(days)]}>
                 {days > 0 ? `${days}d left` : "Expired"}
@@ -110,7 +115,7 @@ export function AccountCard({
             <span>Priority {credential.priority}</span>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Badge
             variant="outline"
             className={cn("font-normal", badgeTone[badge.tone])}
@@ -118,12 +123,22 @@ export function AccountCard({
           >
             {badge.text}
           </Badge>
-          <Switch
-            checked={!credential.disabled}
-            disabled={pending}
-            aria-label={`${credential.disabled ? "Enable" : "Disable"} ${title}`}
-            onCheckedChange={onToggle}
-          />
+          <div className="flex shrink-0 items-center gap-2">
+            <Switch
+              checked={!credential.disabled}
+              disabled={pending}
+              aria-label={`${credential.disabled ? "Enable" : "Disable"} ${title}`}
+              onCheckedChange={onToggle}
+            />
+            <SiwcAuthorization
+              key={credential.auth.account_ref}
+              provider={provider}
+              credential={credential}
+              account={account}
+              version={version}
+              pending={pending}
+            />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 space-y-3">
@@ -134,21 +149,7 @@ export function AccountCard({
         )}
         {quota && !quota.groups.length && (
           <p className="text-xs text-muted-foreground">
-            {siwc ? (
-              <>
-                Quota unknown.{" "}
-                <a
-                  className="underline"
-                  href="https://chatgpt.com/settings/usage"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Manage ChatGPT usage
-                </a>
-              </>
-            ) : (
-              "Quota unknown. Refresh after authorization is ready."
-            )}
+            Quota unknown. Refresh after authorization is ready.
           </p>
         )}
         {quota?.groups.map((group) => (
@@ -176,10 +177,10 @@ export function AccountCard({
           {credits && !credits.unlimited && credits.has_credits && (
             <span>Credits: {credits.balance ?? "available"}</span>
           )}
-          {((!siwc && quota?.stale) || staleError) && (
+          {(quota?.stale || staleError) && (
             <Badge variant="outline">Stale</Badge>
           )}
-          {quota && !siwc && (
+          {quota && (
             <span>
               Updated{" "}
               {quota.updated_at === null
@@ -200,29 +201,23 @@ export function AccountCard({
         index={index}
         count={count}
         pending={pending}
-        refreshDisabled={
-          account?.status !== OAuthAccountViewStatus.Ready ||
-          (siwc && !account?.codex?.plan_usage_enabled) ||
-          refreshing
-        }
+        refreshDisabled={!canRefresh || refreshing}
         onRefresh={onRefresh}
         onConfigure={onConfigure}
         onMove={onMove}
         onRemove={onRemove}
       >
-        {!siwc && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={account?.status !== OAuthAccountViewStatus.Ready}
-            onClick={() => setResetting(true)}
-          >
-            <RotateCcw />
-            Reset{resets ? ` (${resets})` : ""}
-          </Button>
-        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={account?.status !== OAuthAccountViewStatus.Ready}
+          onClick={() => setResetting(true)}
+        >
+          <RotateCcw />
+          Reset{resets ? ` (${resets})` : ""}
+        </Button>
       </AccountCardFooter>
-      {account && !siwc && (
+      {account && (
         <ResetCreditsDialog
           key={account.account_ref}
           account={account}

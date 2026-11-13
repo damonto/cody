@@ -242,12 +242,15 @@ async function refreshDuringAuthorizationFixture(send, options = {}) {
       },
       CODY_DB: {
         batch: async (statements) => statements.map(() => ({ results: [] })),
-        prepare: () => ({
+        prepare: (sql) => ({
           bind() {
             return this;
           },
           run: async () => ({ meta: { changes: 1 }, results: [] }),
-          first: async () => ({ version: 0, maintenance: 0, updated_at: 0 }),
+          first: async () =>
+            sql.includes("oauth_host_identity")
+              ? { host_id: initial.account_ref }
+              : { version: 0, maintenance: 0, updated_at: 0 },
         }),
       },
       UPSTREAM_HTTP: { direct: send, antigravity: send },
@@ -758,7 +761,7 @@ for (const transition of ["start", "cancel", "expire"]) {
   });
 }
 
-test("Codex mode validation runs in the fenced write after a concurrent authorization commits", async (t) => {
+test("SIWC binding captures the native generation committed while preparing PKCE", async (t) => {
   const initial = authorizationAccount("codex", "new-native-refresh");
   initial.status = "disconnected";
   initial.codex = null;
@@ -788,7 +791,7 @@ test("Codex mode validation runs in the fenced write after a concurrent authoriz
     actor: "admin",
     connection: initial.connection,
     provider_type: "codex",
-    flow: "siwc",
+    flow: "siwc_bind",
   });
   await started.promise;
   try {
@@ -797,10 +800,11 @@ test("Codex mode validation runs in the fenced write after a concurrent authoriz
     release.resolve();
   }
   const result = await starting;
-  assert.equal(result.ok, false);
-  assert.equal(result.status, 409);
+  assert.equal(result.ok, true);
   const committed = await f.stored();
   assert.equal(committed.codex.mode, "native");
   assert.equal(committed.tokens.access_token, "replacement-access");
-  assert.equal(committed.session.status, "complete");
+  assert.equal(committed.session.status, "pending");
+  assert.equal(committed.session.siwc.native_generation, committed.generation);
+  assert.equal(committed.siwc, null);
 });

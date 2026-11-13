@@ -11,6 +11,14 @@ import { draftFixture, mockApi } from "./fixtures";
 
 const hour = 3_600_000;
 
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((release) => {
+    resolve = release;
+  });
+  return { promise, resolve };
+}
+
 function account(ref: string = crypto.randomUUID(), ready = true): AccountView {
   return accountViewSchema.parse({
     account_ref: ref,
@@ -134,6 +142,13 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
     polls: 0,
     callbacks: new Array<Record<string, unknown>>(),
     planUsageEnabled: true,
+    modelRefreshes: new Array<Record<string, unknown>>(),
+    failCallback: false,
+    failStart: false,
+    failModels: false,
+    holdCallback: false,
+    callbackStarted: gate(),
+    callbackRelease: gate(),
   };
   await page.route(
     (url) => url.pathname.startsWith("/console/api/oauth/"),
@@ -143,6 +158,13 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
       if (path.endsWith("/sessions")) {
         const input: Record<string, unknown> = request.postDataJSON();
         controls.starts.push(input);
+        if (controls.failStart) {
+          await route.fulfill({
+            status: 503,
+            json: { error: "Authorization temporarily unavailable" },
+          });
+          return;
+        }
         const ref =
           typeof input.account_ref === "string"
             ? input.account_ref
@@ -151,7 +173,7 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
         accounts.set(ref, view);
         const device = input.flow === "device";
         let flow: SessionView["flow"] = "pkce";
-        if (input.flow === "siwc") flow = "siwc";
+        if (input.flow === "siwc_bind") flow = "siwc_bind";
         else if (device) flow = "device";
         const session: SessionView = {
           id: `${ref}.${crypto.randomUUID()}`,
@@ -185,16 +207,39 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
       if (
         request.method() === "POST" &&
         path.endsWith("/callback") &&
-        session.flow === "siwc"
+        session.flow === "siwc_bind"
       ) {
         controls.callbacks.push(request.postDataJSON());
-        const ready = siwcAccount(
-          session.account_ref,
-          controls.planUsageEnabled,
-        );
+        if (controls.failCallback) {
+          await route.fulfill({
+            status: 400,
+            json: { error: "Invalid callback state" },
+          });
+          return;
+        }
+        if (controls.holdCallback) {
+          const delayed = {
+            ...structuredClone(session),
+            status: "initializing",
+            url: null,
+          };
+          controls.callbackStarted.resolve();
+          await controls.callbackRelease.promise;
+          await route.fulfill({ json: delayed });
+          return;
+        }
+        const ready = {
+          ...session.account,
+          siwc: siwcAccount(session.account_ref, controls.planUsageEnabled)
+            .siwc,
+        };
         accounts.set(ready.account_ref, ready);
         session.account = ready;
         session.status = "complete";
+        session.url = null;
+      }
+      if (request.method() === "DELETE") {
+        session.status = "cancelled";
         session.url = null;
       }
       // The device grant completes on the first poll, as the alarm would after approval.
@@ -240,6 +285,19 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
           json: { error: "Unknown account" },
         });
         return;
+      }
+      if (url.pathname.endsWith("/models")) {
+        const input = request.postDataJSON();
+        controls.modelRefreshes.push(input);
+        if (controls.failModels && input.mode === "siwc") {
+          if (value.siwc)
+            value.siwc.models_error = "Public catalog unavailable";
+          await route.fulfill({
+            status: 503,
+            json: { error: "Model discovery unavailable" },
+          });
+          return;
+        }
       }
       if (url.pathname.endsWith("/reset-credits/consume")) {
         controls.consumes.push(request.postDataJSON());
@@ -314,7 +372,8 @@ test("account cards show plan, quota and cooldown, and spend a reset after confi
   await expect(card.getByText("12% left")).toBeVisible();
   await expect(card.getByText("80% left")).toBeVisible();
   await expect(card.getByText("2 resets")).toBeVisible();
-  await expect(card.getByText(/^Exhausted · back in/)).toBeVisible();
+  await expect(card.getByText("Exhausted", { exact: true })).toBeVisible();
+  await expect(card.getByText(/back in/)).toHaveCount(0);
 
   await card.getByRole("button", { name: "Reset (2)" }).click();
   const confirm = page.getByRole("alertdialog");
@@ -496,90 +555,275 @@ function siwcAccount(
   enabled = true,
 ): AccountView {
   const view = account(ref);
-  view.codex = {
-    mode: "siwc",
-    account_id: null,
-    user_id: null,
-    plan_type: null,
-    subscription_active_until: null,
-    siwc: {
-      issuer: "https://auth.openai.com",
-      subject: "operator-subject",
-      client_id: "oaiapp_test",
-      scopes: enabled
-        ? ["chatgpt.tokens.use.direct", "resource.invoke"]
-        : ["openid"],
-    },
+  view.siwc = {
+    generation: 1,
+    status: "ready",
+    email: view.email,
+    expires_at: Date.now() + 3600_000,
     plan_usage_enabled: enabled,
-  };
-  view.quota = {
-    groups: [],
-    subscription: null,
-    updated_at: null,
-    stale: true,
-    last_error: null,
+    error: null,
+    models: [],
+    models_updated_at: null,
+    models_error: null,
+    quota: {
+      groups: [],
+      subscription: null,
+      updated_at: null,
+      stale: true,
+      last_error: null,
+    },
   };
   return view;
 }
 
-test("SIWC signs in with a pasted callback and explains ChatGPT plan usage", async ({
+test("SIWC signs in beside the account switch and binds before any configuration save", async ({
   page,
 }) => {
-  await mockApi(page, configured([]));
-  const controls = await mockCodex(page);
+  const value = account();
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  const credentialWrites: string[] = [];
+  const accountReads: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && request.url().includes("/credentials"))
+      credentialWrites.push(request.url());
+    if (
+      request.method() === "GET" &&
+      new URL(request.url()).pathname ===
+        `/console/api/provider-accounts/${value.account_ref}`
+    )
+      accountReads.push(request.url());
+  });
   await page.goto("/console/providers/codex");
-  await page.getByRole("button", { name: "Add ChatGPT account" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("tab", { name: "Sign in with ChatGPT", exact: true })
+  const card = page.locator('[data-account-id="account-1"]');
+  const header = card.locator('[data-slot="card-header"]');
+  await header
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
     .click();
-  await dialog.getByRole("button", { name: "Continue with ChatGPT" }).click();
+  const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
+  expect(controls.starts).toHaveLength(1);
+  expect(accountReads).toHaveLength(0);
+  expect(controls.starts[0]).toMatchObject({
+    flow: "siwc_bind",
+    account_ref: value.account_ref,
+    credential_id: "account-1",
+    version: 1,
+  });
   await dialog
     .getByLabel("127.0.0.1 callback URL")
     .fill(
       "http://127.0.0.1:1455/auth/callback?code=test&state=e2e-state&client_id=oaiapp_test",
     );
-  await dialog.getByRole("button", { name: "Complete authorization" }).click();
+  await dialog
+    .getByRole("button", { name: "Complete authorization", exact: true })
+    .click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "You’re using your ChatGPT plan",
   );
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("alertdialog")).toBeHidden();
-  expect(controls.starts[0]).toMatchObject({ flow: "siwc" });
-  expect(controls.callbacks).toHaveLength(1);
+  await expect(dialog).toBeHidden();
+  await expect(header.getByText("SIWC", { exact: true })).toBeVisible();
   await expect(
-    dialog.getByText("ChatGPT plan usage enabled", { exact: true }),
+    header.getByRole("button", { name: "Sign in with ChatGPT", exact: true }),
+  ).toHaveCount(0);
+  expect(credentialWrites).toHaveLength(0);
+  await page.reload();
+  await expect(header.getByText("SIWC", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-account-id]")).toHaveCount(1);
+  expect(credentialWrites).toHaveLength(0);
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  await expect(dialog.getByRole("switch", { name: /Use SIWC/ })).toHaveCount(0);
+  await expect(
+    dialog.getByRole("tab", { name: "Device code", exact: true }),
+  ).toBeEnabled();
+});
+
+test("authorized cards show only the SIWC badge and Use SIWC is saved globally", async ({
+  page,
+}) => {
+  const values = [siwcAccount(), account()];
+  await mockApi(page, configured(values));
+  await mockCodex(page, values);
+  const credentials: string[] = [];
+  const settings: Record<string, unknown>[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET") return;
+    if (request.url().includes("/credentials")) credentials.push(request.url());
+    if (request.url().includes("/native-providers/codex"))
+      settings.push(request.postDataJSON());
+  });
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
+  await expect(
+    card.getByRole("button", {
+      name: /Reauthorize SIWC|Unlink SIWC|Discover SIWC|Enable ChatGPT plan usage/,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    card.getByText(
+      /Other clients:|Codex clients:|SIWC expires|Plan permission/,
+    ),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .locator('[data-account-id="account-2"]')
+      .getByRole("button", { name: "Sign in with ChatGPT", exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const toggle = dialog.getByRole("switch", { name: "Use SIWC", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
   await dialog
-    .getByRole("button", { name: "Save account", exact: true })
+    .getByRole("button", { name: "Save settings", exact: true })
     .click();
   await expect(dialog).toBeHidden();
-  const card = page.locator("[data-account-id]");
-  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
-  await expect(card.getByRole("button", { name: /^Reset/ })).toHaveCount(0);
+  expect(settings).toHaveLength(1);
+  expect(settings[0]).toMatchObject({ settings: { use_siwc: true } });
+  expect(credentials).toHaveLength(0);
+  await expect(page.locator("[data-account-id]")).toHaveCount(2);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(toggle).toBeChecked();
+});
+
+test("new accounts offer native authorization before card-based SIWC binding", async ({
+  page,
+}) => {
+  await mockApi(page, configured([]));
+  await mockCodex(page);
+  await page.goto("/console/providers/codex");
+  await page.getByRole("button", { name: "Add ChatGPT account" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("tab", { name: "Device code" })).toBeEnabled();
   await expect(
-    card.getByRole("link", { name: "Manage ChatGPT usage" }),
-  ).toBeVisible();
-  await card.getByRole("button", { name: "Manage", exact: true }).click();
-  await dialog
-    .getByRole("button", { name: "Continue with ChatGPT", exact: true })
+    dialog.getByRole("tab", { name: "Paste callback URL" }),
+  ).toBeEnabled();
+  await expect(
+    dialog.getByRole("tab", { name: "Sign in with ChatGPT" }),
+  ).toHaveCount(0);
+});
+
+test("SIWC remains refreshable when native authorization needs renewal", async ({
+  page,
+}) => {
+  const value = siwcAccount();
+  value.status = "needs_reauthorization";
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect
+    .poll(() => controls.modelRefreshes.at(-1))
+    .toEqual({ mode: "siwc" });
+  expect(controls.starts).toHaveLength(0);
+});
+
+test("closing and reopening SIWC sign-in resumes the same grant and cancellation preserves native access", async ({
+  page,
+}) => {
+  const value = account();
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
     .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await card
+    .getByRole("button", { name: "Continue SIWC sign-in", exact: true })
+    .click();
+  await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
+  expect(controls.starts).toHaveLength(1);
   await dialog
-    .getByLabel("127.0.0.1 callback URL")
-    .fill(
-      "http://127.0.0.1:1455/auth/callback?code=again&state=e2e-state&client_id=oaiapp_test",
-    );
+    .getByRole("button", { name: "Cancel authorization", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Authorization: cancelled", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(
+    card.getByRole("button", { name: "Sign in with ChatGPT", exact: true }),
+  ).toBeEnabled();
+  await expect(card.getByRole("button", { name: /^Reset/ })).toBeEnabled();
+  await expect(card.getByText("SIWC", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-account-id]")).toHaveCount(1);
+});
+
+test("a rejected SIWC callback keeps the card unbound and allows retrying the same grant", async ({
+  page,
+}) => {
+  const value = account();
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  controls.failCallback = true;
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  const callback = dialog.getByLabel("127.0.0.1 callback URL");
+  await callback.fill(
+    "http://127.0.0.1:1455/auth/callback?code=test&state=wrong&client_id=oaiapp_test",
+  );
   await dialog
     .getByRole("button", { name: "Complete authorization", exact: true })
     .click();
   await expect(
-    dialog.getByText("Authorization: complete", { exact: true }),
+    dialog.getByText("Invalid callback state", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  await expect(callback).not.toBeEmpty();
+  controls.failCallback = false;
+  await callback.fill(
+    "http://127.0.0.1:1455/auth/callback?code=test&state=e2e-state&client_id=oaiapp_test",
+  );
+  await dialog
+    .getByRole("button", { name: "Complete authorization", exact: true })
+    .click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
+  expect(controls.starts).toHaveLength(1);
+  expect(controls.callbacks).toHaveLength(2);
 });
 
-test("SIWC consent-disabled accounts can reauthorize without changing sign-in mode", async ({
+test("retrying a failed card sign-in retains the target account", async ({
+  page,
+}) => {
+  const value = account();
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  controls.failStart = true;
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("Authorization temporarily unavailable", { exact: true }),
+  ).toBeVisible();
+  controls.failStart = false;
+  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(dialog.getByLabel("127.0.0.1 callback URL")).toBeVisible();
+  expect(controls.starts).toHaveLength(2);
+  for (const start of controls.starts) {
+    expect(start).toMatchObject({
+      flow: "siwc_bind",
+      account_ref: value.account_ref,
+    });
+    expect(start.request_consent).toBeUndefined();
+  }
+});
+
+test("a SIWC grant missing plan permission keeps one sign-in action and requests consent on click", async ({
   page,
 }) => {
   const value = siwcAccount(undefined, false);
@@ -587,17 +831,109 @@ test("SIWC consent-disabled accounts can reauthorize without changing sign-in mo
   const controls = await mockCodex(page, [value]);
   await page.goto("/console/providers/codex");
   const card = page.locator('[data-account-id="account-1"]');
-  await expect(card.getByText("Plan usage disabled").first()).toBeVisible();
-  await expect(card.getByRole("button", { name: /^Reset/ })).toHaveCount(0);
-  await card.getByRole("button", { name: "Manage", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("tab", { name: "Device code" })).toBeDisabled();
-  await dialog
-    .getByRole("button", { name: "Enable ChatGPT plan usage" })
+  await expect(card.getByText("SIWC", { exact: true })).toHaveCount(0);
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
     .click();
+  await expect(
+    page.getByRole("dialog").getByLabel("127.0.0.1 callback URL"),
+  ).toBeVisible();
   expect(controls.starts[0]).toMatchObject({
-    flow: "siwc",
+    flow: "siwc_bind",
     account_ref: value.account_ref,
     request_consent: true,
   });
+});
+
+test("SIWC model discovery failures stay separate from successful authorization and preserve both catalog errors", async ({
+  page,
+}) => {
+  const value = account();
+  value.models_error = "Native catalog unavailable";
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  controls.failModels = true;
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByLabel("127.0.0.1 callback URL")
+    .fill(
+      "http://127.0.0.1:1455/auth/callback?code=test&state=e2e-state&client_id=oaiapp_test",
+    );
+  const discovery = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/models") &&
+      response.request().method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Complete authorization", exact: true })
+    .click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await (await discovery).finished();
+  await page.waitForLoadState("networkidle");
+  await expect(card.getByText("SIWC", { exact: true })).toBeVisible();
+  await expect(card.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await dialog.getByRole("tab", { name: "Models", exact: true }).click();
+  await expect(
+    dialog.getByText("Native catalog unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("SIWC: Public catalog unavailable", { exact: true }),
+  ).toBeVisible();
+});
+
+test("a delayed response from a cancelled SIWC grant cannot replace a new sign-in", async ({
+  page,
+}) => {
+  const value = account();
+  await mockApi(page, configured([value]));
+  const controls = await mockCodex(page, [value]);
+  controls.holdCallback = true;
+  await page.goto("/console/providers/codex");
+  const card = page.locator('[data-account-id="account-1"]');
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  const callback = dialog.getByLabel("127.0.0.1 callback URL");
+  await callback.fill(
+    "http://127.0.0.1:1455/auth/callback?code=old&state=e2e-state&client_id=oaiapp_test",
+  );
+  await dialog
+    .getByRole("button", { name: "Complete authorization", exact: true })
+    .click();
+  await controls.callbackStarted.promise;
+  await dialog
+    .getByRole("button", { name: "Cancel authorization", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Authorization: cancelled", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await card
+    .getByRole("button", { name: "Sign in with ChatGPT", exact: true })
+    .click();
+  await expect(callback).toBeVisible();
+  const next =
+    "http://127.0.0.1:1455/auth/callback?code=new&state=e2e-state&client_id=oaiapp_test";
+  await callback.fill(next);
+  const previous = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/callback") &&
+      response.request().method() === "POST",
+  );
+  controls.callbackRelease.resolve();
+  await (await previous).finished();
+  await page.waitForLoadState("networkidle");
+  await expect(
+    dialog.getByText("Authorization: pending", { exact: true }),
+  ).toBeVisible();
+  await expect(callback).toHaveValue(next);
+  expect(controls.starts).toHaveLength(2);
 });

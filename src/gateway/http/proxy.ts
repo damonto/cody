@@ -1,3 +1,5 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
+import { isCodexClientRequest } from "../../shared/codex-client.ts";
 import { executeInferenceAttempt } from "./inference-attempt.ts";
 import { inferenceMetadata } from "../../telemetry/inference-metadata.ts";
 import { unavailableInference } from "./inference-unavailable.ts";
@@ -127,6 +129,7 @@ export async function handleInference(
         skipClaudeQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
         codexRequest: {
+          client: isCodexClientRequest(request) ? "codex" : "other",
           endpoint: upstreamPath,
           transport: ProviderTransport.Http,
           payload,
@@ -261,12 +264,14 @@ export async function handleInference(
         provider_id: provider.id,
         credential_id: selectedCredential.id,
         model: upstreamModel,
+        codex_auth_mode: prepared.codexMode,
       },
     });
     const meterTarget = {
       providerId: provider.id,
       credentialId: selectedCredential.id,
       model: upstreamModel,
+      codexAuthMode: prepared.codexMode,
     };
     meter?.upstreamRequest(
       prepared.inferenceMetadata ??
@@ -308,7 +313,11 @@ export async function handleInference(
       meter,
     });
     for (const attempt of result.attempts) {
-      logicalAttempts.push({ ...attempt, attempt: ++attemptCount });
+      logicalAttempts.push({
+        ...attempt,
+        codex_auth_mode: prepared.codexMode,
+        attempt: ++attemptCount,
+      });
     }
     // Retain the final attempt even when a large account pool exceeds the log bound.
     if (logicalAttempts.length > 20)
@@ -367,7 +376,11 @@ export async function handleInference(
       if (!cancelled && !proxyFailure) {
         await scheduleHealthUpdate(
           context,
-          recordProviderFailure(env, provider.id, requestId),
+          recordProviderFailure(
+            env,
+            codexHealthProviderId(provider.id, prepared.codexMode),
+            requestId,
+          ),
         );
       }
       return apiError(
@@ -431,7 +444,11 @@ export async function handleInference(
     if (upstreamResponse.ok) {
       await scheduleHealthUpdate(
         context,
-        recordProviderSuccess(env, provider.id, requestId),
+        recordProviderSuccess(
+          env,
+          codexHealthProviderId(provider.id, prepared.codexMode),
+          requestId,
+        ),
       );
     } else if (
       healthFailureScope(upstreamResponse.status, protocol, provider.type) ===
@@ -439,7 +456,11 @@ export async function handleInference(
     ) {
       await scheduleHealthUpdate(
         context,
-        recordProviderFailure(env, provider.id, requestId),
+        recordProviderFailure(
+          env,
+          codexHealthProviderId(provider.id, prepared.codexMode),
+          requestId,
+        ),
       );
     }
     if (!prepared.transformResponse) {

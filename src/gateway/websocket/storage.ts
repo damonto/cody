@@ -40,6 +40,8 @@ export interface StoredWebSocketSession {
   selected_provider_id?: string;
   selected_provider_type?: ProviderType;
   selected_credential_id?: string;
+  codex_auth_mode?: "native" | "siwc" | undefined;
+  codex_generation?: number | undefined;
   active_response: boolean;
   response_outcome_recorded: boolean;
 }

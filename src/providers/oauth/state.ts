@@ -48,6 +48,7 @@ const sessionSchema = z.object({
   identity: identitySchema.nullable(),
   next_at: z.number(),
   flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
+  target_generation: z.number().int().nonnegative().optional(),
   siwc: siwcSessionSchema.optional(),
   // Device authorization polls the issuer from the alarm until approval.
   xai_device: xaiDeviceSchema.optional(),
@@ -55,11 +56,29 @@ const sessionSchema = z.object({
   user_code: z.string().nullable().default(null),
   poll_interval_ms: z.number().default(5000),
 });
+export const codexPartitionSchema = z
+  .object({
+    status: z.enum(OAuthAccountStatus),
+    tokens: tokenSchema.nullable(),
+    identity: identitySchema.nullable(),
+    codex: codexAccountSchema,
+    error: z.string().nullable(),
+    models: z.array(modelSchema),
+    models_updated_at: z.number().nullable(),
+    models_error: z.string().nullable(),
+    quota: quotaSnapshotSchema,
+    codex_quota_sync: codexQuotaSyncSchema.prefault({}),
+  })
+  .refine(
+    (partition) => partition.codex === null || partition.codex.mode === "siwc",
+    "The SIWC partition must contain SIWC identity metadata",
+  );
 const storedBase = z.object({
   account_ref: z.uuid(),
   provider_id: z.string(),
   provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
   generation: z.number(),
+  revision: z.number().int().nonnegative().default(0),
   // Pending authorization has its own fence; it must not revoke active refreshes.
   authorization_generation: z.number().int().nonnegative().default(0),
   status: z.enum(OAuthAccountStatus),
@@ -89,14 +108,22 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
     claude: z.null().optional(),
     xai: z.null().optional(),
   }),
-  storedBase.extend({
-    provider_type: z.literal(ProviderType.Codex),
-    codex_quota_sync: codexQuotaSyncSchema.prefault({}),
-    project_id: z.null(),
-    antigravity_initialization: z.null().optional(),
-    claude: z.null().optional(),
-    xai: z.null().optional(),
-  }),
+  storedBase
+    .extend({
+      provider_type: z.literal(ProviderType.Codex),
+      siwc_generation: z.number().int().nonnegative().default(0),
+      siwc_revocation_error: z.string().nullable().default(null),
+      siwc: codexPartitionSchema.nullable().default(null),
+      codex_quota_sync: codexQuotaSyncSchema.prefault({}),
+      project_id: z.null(),
+      antigravity_initialization: z.null().optional(),
+      claude: z.null().optional(),
+      xai: z.null().optional(),
+    })
+    .refine(
+      (account) => account.codex?.mode !== "siwc",
+      "SIWC must be bound to a native Codex account",
+    ),
   storedBase.extend({
     provider_type: z.literal(ProviderType.Claude),
     claude_quota_sync: claudeQuotaSyncSchema.prefault({}),
@@ -122,9 +149,12 @@ export type ReadonlyData<Value> = Value extends object
 export type AccountSnapshot = ReadonlyData<Stored>;
 
 /** Committed account data is immutable; transactions edit a detached copy. */
-export function freezeAccount(account: Stored): Stored {
+export function freezeAccount<Value extends Stored | AccountSnapshot>(
+  account: Value,
+): Value {
   const freeze = (value: unknown): void => {
-    if (value === null || typeof value !== "object") return;
+    if (value === null || typeof value !== "object" || Object.isFrozen(value))
+      return;
     for (const child of Object.values(value)) freeze(child);
     Object.freeze(value);
   };

@@ -6,6 +6,10 @@ import type {
   AccountState,
   AccountServices,
 } from "../oauth/provider.ts";
+import { siwcState } from "./partition.ts";
+import { SiwcClient } from "./siwc.ts";
+import type { CodexMode } from "./account-schema.ts";
+import { terminalSessionStatuses } from "../oauth/state.ts";
 import { nativeCodexAccount } from "./native-account.ts";
 import { siwcAccount } from "./siwc-account.ts";
 import { mergeCodexQuotaObservation } from "./quota.ts";
@@ -14,23 +18,51 @@ import { mergeCodexQuotaObservation } from "./quota.ts";
 export function codexAccount(
   state: AccountState<typeof ProviderType.Codex>,
   services: AccountServices,
+  mode: CodexMode = "native",
 ): AccountProvider {
+  const partition = siwcState(state);
+  const siwc = siwcAccount(partition, services);
+  if (mode === "siwc")
+    return {
+      ...siwc,
+      async disconnect() {
+        const generation = partition.current().generation;
+        await siwc.disconnect();
+        await state.update(
+          generation + 1,
+          (account) => {
+            account.siwc_revocation_error = account.siwc?.error ?? null;
+            account.siwc = null;
+          },
+          "siwc",
+        );
+      },
+    };
   const native = nativeCodexAccount(state, services);
-  const siwc = siwcAccount(state, services);
-  const active = () => (state.current().codex?.mode === "siwc" ? siwc : native);
   return {
-    recoverUnauthorized: true,
+    ...native,
     authorization: {
       ...native.authorization,
       ...siwc.authorization,
       validateStart(account, flow) {
         if (
-          account.codex &&
-          (account.codex.mode === "siwc") !== (flow === OAuthFlow.Siwc)
+          account.session &&
+          !terminalSessionStatuses.has(account.session.status) &&
+          account.session.status !== "error"
         )
           throw new OAuthError(
-            "Add a new account to use another Codex sign-in mode",
+            "An authorization is already pending; cancel it first",
             409,
+          );
+        if (
+          flow === OAuthFlow.Siwc &&
+          (!account.codex ||
+            !account.tokens ||
+            account.status !== OAuthAccountStatus.Ready)
+        )
+          throw new OAuthError(
+            "SIWC binding requires an existing authorized native Codex account",
+            400,
           );
       },
       initialize: () =>
@@ -39,21 +71,40 @@ export function codexAccount(
           : native
         ).authorization.initialize(),
     },
-    refresh: (...args) => active().refresh(...args),
-    inventory: {
-      models: () => active().inventory.models(),
-      quota: (generation) => active().inventory.quota(generation),
-    },
-    get resets() {
-      return active().resets;
-    },
-    get disconnect() {
-      return active().disconnect;
+    async disconnect() {
+      const snapshot = state.current();
+      const registration = snapshot.siwc?.codex?.siwc;
+      const refreshToken = snapshot.siwc?.tokens?.refresh_token;
+      await state.update(snapshot.generation, (account) => {
+        account.generation++;
+        account.authorization_generation++;
+        account.siwc_generation++;
+        account.tokens = null;
+        account.siwc = null;
+        account.session = null;
+        account.status = OAuthAccountStatus.Disconnected;
+        account.error = null;
+      });
+      if (registration && refreshToken) {
+        try {
+          const [send, signal] = await services.outbound();
+          await new SiwcClient(send, signal).revoke(
+            refreshToken,
+            registration.client_id,
+          );
+        } catch {
+          await state.update(snapshot.generation + 1, (account) => {
+            account.error =
+              "Local tokens cleared; remote revocation was not confirmed. Disconnect Cody in ChatGPT Settings.";
+          });
+        }
+      }
     },
     async observe(command) {
       if (command.action !== "codex_usage")
         throw new OAuthError("Unsupported account observation", 400);
-      await state.update(command.generation, (account) => {
+      const observations = command.mode === "siwc" ? partition : state;
+      await observations.update(command.generation, (account) => {
         if (
           account.provider_type !== ProviderType.Codex ||
           account.status !== OAuthAccountStatus.Ready

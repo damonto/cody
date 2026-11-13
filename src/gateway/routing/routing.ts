@@ -1,3 +1,5 @@
+import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
+import { codexModeForClient } from "../../shared/codex-client.ts";
 import type { CodexRequestPolicy } from "../../providers/codex/siwc-policy.ts";
 import { codexRequestAvailability } from "../../providers/codex/availability.ts";
 import { oauthAccountAvailability } from "../../providers/oauth/availability.ts";
@@ -343,6 +345,26 @@ async function evaluateAvailability<T extends RoutedProvider>(
     routedProviders,
     PROVIDER_FAN_OUT_CONCURRENCY,
     async ({ provider }): Promise<ProviderSelectionCheck> => {
+      if (provider.type === ProviderType.Codex) {
+        const mode = codexModeForClient(
+          codexRequest?.client,
+          provider.use_siwc,
+        );
+        const health = applyHealthReadPolicy(
+          provider,
+          await getProviderAvailability(
+            env,
+            codexHealthProviderId(provider.id, mode),
+            scope,
+          ),
+        );
+        return {
+          provider_id: provider.id,
+          ...health,
+          available: health.available,
+          reason: health.reason,
+        };
+      }
       const health = applyHealthReadPolicy(
         provider,
         await getProviderAvailability(env, provider.id, scope),
@@ -368,10 +390,22 @@ async function evaluateAvailability<T extends RoutedProvider>(
       provider,
       credential: key,
     }): Promise<CredentialSelectionCheck> => {
+      const mode =
+        provider.type === ProviderType.Codex
+          ? codexModeForClient(codexRequest?.client, provider.use_siwc)
+          : undefined;
+      const healthId = codexHealthProviderId(provider.id, mode);
       let health = applyHealthReadPolicy(
         provider,
-        await getCredentialAvailability(env, provider.id, key.id, scope),
+        await getCredentialAvailability(env, healthId, key.id, scope),
       );
+      if (provider.type === ProviderType.Codex) {
+        const backend = applyHealthReadPolicy(
+          provider,
+          await getProviderAvailability(env, healthId, scope),
+        );
+        if (!backend.available) health = backend;
+      }
       const model = upstreamModels?.get(provider.id);
       if (
         key.auth.type === "oauth" &&
@@ -381,6 +415,7 @@ async function evaluateAvailability<T extends RoutedProvider>(
         const readiness = await oauthAccountAvailability(
           env,
           key.auth.account_ref,
+          mode,
         );
         if (health.reason !== ProviderAvailabilityReason.HealthReadFailed) {
           health =
@@ -497,6 +532,7 @@ async function preferredCandidate(
 
 function affinityCandidates(
   candidates: RoutedProvider[],
+  client?: "codex" | "other",
 ): AffinityProviderCandidate[] {
   return candidates.map(({ provider, credentials }) => ({
     provider_id: provider.id,
@@ -508,6 +544,11 @@ function affinityCandidates(
       provider.type === ProviderType.Xai,
     credentials: credentials.map((credential) => ({
       credential_id: credential.id,
+      ...(provider.type === ProviderType.Codex
+        ? {
+            codex_mode: codexModeForClient(client, provider.use_siwc),
+          }
+        : {}),
       priority: credential.priority,
     })),
   }));
@@ -625,12 +666,18 @@ export async function selectAvailableTargetWithDetails(
   }
 
   if (options.session) {
-    const candidates = affinityCandidates(availability.candidates);
+    const candidates = affinityCandidates(
+      availability.candidates,
+      options.codexRequest?.client,
+    );
     try {
       const identity = await sessionAffinityIdentity(
         options.session.clientId,
         options.session.sessionId,
         options.requestedModel ?? null,
+        providers.some(({ provider }) => provider.type === ProviderType.Codex)
+          ? options.codexRequest?.client
+          : undefined,
       );
       const resolution = await env.SESSION_AFFINITY.getByName(
         identity.object_name,
@@ -690,11 +737,14 @@ export async function selectAvailableProvider(
 export async function selectAvailableCatalogTargetsWithDetails(
   env: Bindings,
   routedProviders: RoutedProvider[],
+  codexRequest?: CodexRequestPolicy,
 ): Promise<CatalogSelection> {
   const availability = await evaluateAvailability(
     env,
     routedProviders,
     HealthScope.Catalog,
+    undefined,
+    codexRequest,
   );
   const targets = availability.candidates.flatMap(
     ({ provider, credentials }) => {
@@ -714,6 +764,7 @@ export async function targetIsAvailableForRoute(
   route: ModelRoute,
   target: ModelProviderTarget,
   scope: HealthScope = HealthScope.Inference,
+  codexRequest?: CodexRequestPolicy,
 ): Promise<boolean> {
   const routed = route.targets.find(
     ({ provider }) => provider.id === target.provider.id,
@@ -733,6 +784,7 @@ export async function targetIsAvailableForRoute(
     ],
     scope,
     new Map([[routed.provider.id, routed.upstreamModel]]),
+    codexRequest,
   );
   return availability.candidates.length > 0;
 }

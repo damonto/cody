@@ -68,7 +68,10 @@ export const adminError: ErrorHandler<AdminContext> = (error, context) => {
     console.error({
       event: "admin.response.invalid",
       path: context.req.path,
-      issues: error.issues.map(({ path, code }) => ({ path, code })),
+      issues: error.issues.map(({ path, code }) => ({
+        path: JSON.stringify(path),
+        code,
+      })),
     });
     return context.json(
       { error: "The console received invalid data. Please try again." },

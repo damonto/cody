@@ -47,12 +47,14 @@ export interface UsageSink {
 }
 
 export interface MeterTarget {
+  codexAuthMode?: "native" | "siwc" | undefined;
   providerId: string;
   credentialId: string;
   model: string;
 }
 
 export interface MeterAttempt {
+  codex_auth_mode?: "native" | "siwc" | undefined;
   attempt: number;
   status?: number;
   duration_ms: number;
@@ -290,6 +292,8 @@ export class RequestMeter {
     this.data.provider_id = target.providerId;
     this.data.credential_id = target.credentialId;
     this.data.upstream_model = target.model;
+    if (target.codexAuthMode) this.data.codex_auth_mode = target.codexAuthMode;
+    else delete this.data.codex_auth_mode;
     const provider = this.config?.providers.find(
       (provider) => provider.id === target.providerId,
     );
@@ -306,6 +310,9 @@ export class RequestMeter {
       .slice(0, 20)
       .map((attempt): AttemptRecord => ({
         attempt: attempt.attempt,
+        ...(attempt.codex_auth_mode
+          ? { codex_auth_mode: attempt.codex_auth_mode }
+          : {}),
         status: attempt.status ?? null,
         duration_ms: attempt.duration_ms,
         retry_delay_ms: attempt.retry_delay_ms ?? null,

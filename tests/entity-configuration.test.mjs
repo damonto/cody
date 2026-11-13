@@ -474,3 +474,90 @@ test("historical restoration does not decrypt revoked historical keys", async ()
     await db.close();
   }
 });
+
+test("the global Codex SIWC switch persists through fenced settings without modifying credentials", async () => {
+  const { ProviderService } =
+    await import("../src/control/services/providers.ts");
+  const { nativeSettingsSchema, credentialInputSchema } =
+    await import("../src/control/resource-input.ts");
+  const db = await database();
+  try {
+    const store = new ControlStore(db, key);
+    const service = new ProviderService(store);
+    let provider = (await service.native("codex")).item;
+    let version = 0;
+    const operation = (version, request) => ({
+      version,
+      operation_id: crypto.randomUUID(),
+      actor: "test",
+      request,
+    });
+    for (const name of ["First", "Second"]) {
+      const ref = crypto.randomUUID();
+      await db
+        .prepare(
+          "INSERT INTO oauth_accounts(account_ref,provider_id,provider_type,created_at) VALUES (?,?,?,?)",
+        )
+        .bind(ref, provider.id, "codex", Date.now())
+        .run();
+      const input = {
+        name,
+        priority: 100,
+        disabled: false,
+        auth: { type: "oauth", account_ref: ref },
+      };
+      assert.equal(
+        credentialInputSchema.safeParse({ ...input, use_siwc: true }).success,
+        false,
+      );
+      const created = await service.createCredential(
+        operation(version, input),
+        provider.id,
+        input,
+      );
+      version = created.version;
+    }
+    provider = (await service.native("codex")).item;
+    const credentials = structuredClone(provider.credentials);
+    assert.equal(provider.use_siwc, false);
+    const { id: _id, credentials: _credentials, ...settings } = provider;
+    const input = nativeSettingsSchema.parse({ ...settings, use_siwc: true });
+    const enabled = await service.saveNative(
+      operation(version, input),
+      "codex",
+      input,
+    );
+    assert.equal(enabled.item.use_siwc, true);
+    assert.deepEqual(enabled.item.credentials, credentials);
+    assert(credentials.every((credential) => !("use_siwc" in credential)));
+    const row = await db
+      .prepare("SELECT settings_json FROM providers WHERE id = ?")
+      .bind(provider.id)
+      .first();
+    assert.equal(JSON.parse(row.settings_json).use_siwc, true);
+    assert.equal(
+      (await store.current()).providers.find(
+        (entry) => entry.id === provider.id,
+      ).use_siwc,
+      true,
+    );
+    const disabled = { ...input, use_siwc: false };
+    await service.saveNative(
+      operation(enabled.version, disabled),
+      "codex",
+      disabled,
+    );
+    assert.equal(
+      (await store.current()).providers.find(
+        (entry) => entry.id === provider.id,
+      ).use_siwc,
+      false,
+    );
+    await assert.rejects(
+      service.saveNative(operation(enabled.version, input), "codex", input),
+      /changed|version|stale/i,
+    );
+  } finally {
+    await db.close();
+  }
+});
