@@ -1,5 +1,9 @@
 import { MAX_ACCOUNT_METADATA_BYTES } from "../../shared/payload-limits.ts";
 import { z } from "zod";
+import {
+  CodexRefreshNotSentError,
+  sendCodexRefresh,
+} from "./refresh-errors.ts";
 import { readBodyWithinLimit } from "../../gateway/http/body.ts";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
 import { logWarn } from "../../shared/log.ts";
@@ -230,6 +234,7 @@ export class CodexClient {
     init: RequestInit,
     operation: string,
     pending: readonly number[] = [],
+    beforeSend?: () => Promise<void>,
   ): Promise<unknown> {
     const deadline = new AbortController();
     const timer = setTimeout(
@@ -238,9 +243,18 @@ export class CodexClient {
     );
     const signal = AbortSignal.any([this.signal, deadline.signal]);
     try {
-      const response = await this.send(
-        new Request(url, { ...init, signal, redirect: "manual" }),
-      );
+      const request = new Request(url, { ...init, signal, redirect: "manual" });
+      signal.throwIfAborted();
+      if (beforeSend) {
+        await beforeSend();
+        if (signal.aborted)
+          throw new CodexRefreshNotSentError(
+            "Codex refresh cancelled before sending",
+          );
+      }
+      const response = await (beforeSend
+        ? sendCodexRefresh(this.send, request)
+        : this.send(request));
       const bytes = await readBodyWithinLimit(
         response.body,
         MAX_ACCOUNT_METADATA_BYTES,
@@ -323,6 +337,7 @@ export class CodexClient {
   async refresh(
     refreshToken: string,
     previous?: z.output<typeof tokenResponse> & { expires_at: number },
+    beforeSend?: () => Promise<void>,
   ) {
     try {
       const data = refreshResponse.parse(
@@ -338,6 +353,8 @@ export class CodexClient {
             }),
           },
           "Token refresh",
+          [],
+          beforeSend,
         ),
       );
       const accessToken = data.access_token ?? previous?.access_token;

@@ -259,6 +259,7 @@ export class ClaudeClient {
     url: string,
     init: RequestInit = {},
     timeoutMs = 15000,
+    refresh = false,
   ): Promise<unknown> {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), timeoutMs);
@@ -279,18 +280,43 @@ export class ClaudeClient {
       );
       const text = new TextDecoder().decode(bytes);
       if (!response.ok) {
-        let invalid = false;
+        let code =
+          refresh && response.status === 401
+            ? "invalid_grant"
+            : "upstream_error";
         try {
-          invalid = z
-            .object({ error: z.literal("invalid_grant") })
-            .safeParse(JSON.parse(text)).success;
+          const error = z
+            .object({
+              error: z.string(),
+              error_description: z.string().optional(),
+            })
+            .parse(JSON.parse(text));
+          const description = error.error_description?.toLowerCase() ?? "";
+          const terminal =
+            [
+              "refresh_token_expired",
+              "refresh_token_reused",
+              "refresh_token_invalidated",
+              "invalid_refresh_token",
+              "token_revoked",
+            ].includes(error.error) ||
+            [
+              "refresh token expired",
+              "refresh token revoked",
+              "refresh token invalid",
+              "refresh token reused",
+            ].some((phrase) => description.includes(phrase));
+          if (refresh && (response.status === 401 || terminal))
+            code = "invalid_grant";
+          else if (error.error === "invalid_grant")
+            code = refresh ? "claude_refresh_retry" : "invalid_grant";
         } catch {
           /* No upstream text enters logs. */
         }
         throw new OAuthError(
           `Claude account request failed (HTTP ${response.status})`,
           response.status,
-          invalid ? "invalid_grant" : "upstream_error",
+          code,
         );
       }
       return JSON.parse(text);
@@ -301,13 +327,19 @@ export class ClaudeClient {
   private async grant(
     body: Record<string, string>,
     expected?: { account_id: string; organization_id: string },
+    refresh = false,
   ) {
     const data = tokenResponse.parse(
-      await this.json(TOKEN_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ client_id: CLAUDE_CLIENT_ID, ...body }),
-      }),
+      await this.json(
+        TOKEN_URL,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ client_id: CLAUDE_CLIENT_ID, ...body }),
+        },
+        15000,
+        refresh,
+      ),
     );
     if (
       expected &&
@@ -351,6 +383,7 @@ export class ClaudeClient {
         scope: SCOPES,
       },
       expected,
+      true,
     );
   }
   private get(path: string, token: string, timeoutMs = 10000) {

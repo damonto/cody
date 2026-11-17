@@ -5,11 +5,13 @@ import {
 import {
   claudeAccountSchema,
   claudeQuotaSyncSchema,
+  claudeRefreshSchema,
 } from "../claude/account-schema.ts";
 import { xaiAccountSchema } from "../xai/account-schema.ts";
 import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { xaiDeviceSchema } from "../xai/api.ts";
 import { codexQuotaSyncSchema } from "../codex/quota.ts";
+import { codexRefreshSchema } from "../codex/refresh-state.ts";
 
 import {
   OAuthAccountViewStatus,
@@ -68,6 +70,7 @@ export const codexPartitionSchema = z
     models_error: z.string().nullable(),
     quota: quotaSnapshotSchema,
     codex_quota_sync: codexQuotaSyncSchema.prefault({}),
+    codex_refresh: codexRefreshSchema,
   })
   .refine(
     (partition) => partition.codex === null || partition.codex.mode === "siwc",
@@ -115,6 +118,7 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
       siwc_revocation_error: z.string().nullable().default(null),
       siwc: codexPartitionSchema.nullable().default(null),
       codex_quota_sync: codexQuotaSyncSchema.prefault({}),
+      codex_refresh: codexRefreshSchema,
       project_id: z.null(),
       antigravity_initialization: z.null().optional(),
       claude: z.null().optional(),
@@ -127,6 +131,7 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
   storedBase.extend({
     provider_type: z.literal(ProviderType.Claude),
     claude_quota_sync: claudeQuotaSyncSchema.prefault({}),
+    claude_refresh: claudeRefreshSchema.prefault({}),
     project_id: z.null(),
     antigravity_initialization: z.null().optional(),
     codex: z.null().default(null),

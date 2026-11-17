@@ -11,6 +11,7 @@ import {
   type RetryErrorInspection,
 } from "./retry-errors.ts";
 import type { RetryDiagnostic } from "../../shared/retry-diagnostic.ts";
+import { upstreamRetryAt } from "../../shared/upstream-error.ts";
 
 export interface UpstreamResponseInspection {
   response: Response;
@@ -203,6 +204,7 @@ export async function fetchWithConfiguredRetries(
       await discardBody(response.body);
       throw error;
     }
+    let retryAfterAt: number | undefined;
     try {
       const inspection = await options.inspectResponse?.(
         response,
@@ -210,6 +212,9 @@ export async function fetchWithConfiguredRetries(
         remainingAttemptMs(attemptOptions, startedAt),
       );
       if (inspection) response = inspection.response;
+      retryAfterAt =
+        upstreamRetryAt(response.headers.get("retry-after")) ??
+        inspection?.retry?.retryAfterAt;
       const terminal =
         inspection?.terminal === true ||
         (response.status === 401 && options.recoverUnauthorized !== undefined);
@@ -246,6 +251,7 @@ export async function fetchWithConfiguredRetries(
         }
         attempt.retry_diagnostic = retryInspection.diagnostic;
         shouldRetry = retryInspection.errorCode !== undefined;
+        retryAfterAt ??= retryInspection.retryAfterAt;
         if (retryInspection.errorCode)
           attempt.error = retryInspection.errorCode;
         attempt.duration_ms = elapsedMs(startedAt);
@@ -270,10 +276,17 @@ export async function fetchWithConfiguredRetries(
     await discardBody(response.body);
     try {
       request.signal.throwIfAborted();
+      const requestedDelay = Math.max(
+        delayMs,
+        (retryAfterAt ?? 0) - Date.now(),
+      );
       const boundedDelay =
         options.deadline === undefined
-          ? delayMs
-          : Math.max(0, Math.min(delayMs, options.deadline - Date.now()));
+          ? requestedDelay
+          : Math.max(
+              0,
+              Math.min(requestedDelay, options.deadline - Date.now()),
+            );
       attempt.retry_delay_ms = boundedDelay;
       if (options.wait) await options.wait(boundedDelay);
       else await abortableDelay(boundedDelay, request.signal);

@@ -16,6 +16,26 @@ import {
   type AccountSnapshot,
 } from "./state.ts";
 import { OAuthAccountStatus } from "./values.ts";
+import { codexRefreshBlocked } from "../codex/refresh-state.ts";
+
+/** A blocked renewal must not discard an access token that is still valid. */
+export function accountRefreshAt(account: AccountSnapshot): number {
+  const tokens = account.tokens;
+  if (!tokens) return 0;
+  if (
+    account.provider_type === ProviderType.Codex &&
+    codexRefreshBlocked(account.codex_refresh)
+  )
+    return Infinity;
+  let retryAt = 0;
+  if (account.provider_type === ProviderType.Claude)
+    retryAt = account.claude_refresh.next_at;
+  return Math.max(
+    tokens.expires_at - TOKEN_REFRESH_MARGIN_MS,
+    tokens.earliest_refresh_at ?? 0,
+    retryAt,
+  );
+}
 
 /** Shared by the account runtime and coordinated, read-only snapshot access. */
 export function activeAccount(
@@ -73,7 +93,7 @@ export function readAccountSnapshot(
     return { ok: true, data: accountView(account) };
   if (command.action !== "resolve" && command.action !== "readiness") return;
   if (command.action === "readiness")
-    return { ok: true, data: accountReadiness(account, command.mode) };
+    return { ok: true, data: accountReadiness(account, command.mode, now) };
   let active: ReturnType<typeof activeAccount>;
   try {
     active = activeAccount(account, command.mode);
@@ -83,7 +103,8 @@ export function readAccountSnapshot(
   if (command.action !== "resolve") return;
   if (
     command.connection.provider_id !== account.provider_id ||
-    active.tokens.expires_at <= now + TOKEN_REFRESH_MARGIN_MS
+    active.tokens.expires_at <= now ||
+    accountRefreshAt(accountPartition(account, command.mode)) <= now
   )
     return;
   return { ok: true, data: active.credential };
@@ -93,12 +114,20 @@ export function readAccountSnapshot(
 export function accountReadiness(
   account: AccountSnapshot,
   selectedMode: CodexMode = "native",
+  now = Date.now(),
 ) {
   const mode =
     account.provider_type === ProviderType.Codex ? selectedMode : undefined;
   let ready = false;
   try {
-    activeAccount(account, selectedMode);
+    const active = activeAccount(account, selectedMode);
+    const partition = accountPartition(account, selectedMode);
+    if (active.tokens.expires_at <= now && accountRefreshAt(partition) > now)
+      throw new OAuthError(
+        "Token renewal is unavailable",
+        503,
+        "oauth_account_unavailable",
+      );
     ready = true;
   } catch (error) {
     if (

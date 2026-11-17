@@ -29,6 +29,7 @@ function emptySiwcPartition(): NonNullable<CodexStored["siwc"]> {
     models_error: null,
     quota: emptyQuota(),
     codex_quota_sync: codexQuotaSyncSchema.parse({}),
+    codex_refresh: null,
   };
 }
 
@@ -90,6 +91,7 @@ async function editSiwc(
     models_error: partition.models_error,
     quota: partition.quota,
     codex_quota_sync: partition.codex_quota_sync,
+    codex_refresh: partition.codex_refresh,
   };
 }
 

@@ -350,6 +350,9 @@ async function openGatewaySocket(
     context,
   );
   expect(response.status).toBe(101);
+  expect(response.headers.get("x-codex-websocket-max-message-bytes")).toBe(
+    String(32 * 1024 * 1024),
+  );
   expect(response.webSocket).toBeDefined();
   const socket = response.webSocket!;
   socket.binaryType = "arraybuffer";

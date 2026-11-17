@@ -17,6 +17,34 @@ import {
   responseQuotaObservation,
 } from "../src/providers/claude/limits.ts";
 const ref = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+test("Claude distinguishes explicit terminal refresh errors from generic invalid_grant", async () => {
+  for (const [body, status, code] of [
+    [
+      { error: "invalid_grant", error_description: "Refresh token expired" },
+      400,
+      "invalid_grant",
+    ],
+    [{ error: "refresh_token_reused" }, 400, "invalid_grant"],
+    [
+      { error: "invalid_grant", error_description: "Bad Request" },
+      400,
+      "claude_refresh_retry",
+    ],
+    [{ error: "invalid_grant" }, 400, "claude_refresh_retry"],
+    [{}, 401, "invalid_grant"],
+    [{ error: "temporarily_unavailable" }, 503, "upstream_error"],
+  ]) {
+    const client = new ClaudeClient(
+      async () => Response.json(body, { status }),
+      new AbortController().signal,
+    );
+    await assert.rejects(
+      client.refresh("mock-refresh"),
+      (error) => error.code === code,
+    );
+  }
+});
 function config(extra = {}) {
   return parseConfig({
     providers: [

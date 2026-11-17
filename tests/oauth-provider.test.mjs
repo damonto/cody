@@ -7,6 +7,12 @@ import { OAuthError } from "../src/providers/oauth/schema.ts";
 import { ProviderOAuthAccountCore } from "../src/providers/oauth/account.ts";
 import { decryptConfig, encryptConfig } from "../src/control/crypto.ts";
 import { setImmediate } from "node:timers/promises";
+import {
+  readAccountSnapshot,
+  accountReadiness,
+} from "../src/providers/oauth/reads.ts";
+import { SocksProxyError } from "../src/gateway/proxies/errors.ts";
+import { refreshCodexAccount } from "../src/providers/codex/refresh.ts";
 
 function fixture() {
   let account = storedSchema.parse({
@@ -350,6 +356,220 @@ function authorizationUpstream(account, token) {
   };
 }
 
+test("an uncertain Codex refresh survives reload without replaying the grant or discarding usable access", async () => {
+  const account = authorizationAccount("codex");
+  account.session = null;
+  account.tokens.expires_at = Date.now() + 60_000;
+  let calls = 0;
+  const send = async () => {
+    calls++;
+    throw new TypeError("mock response lost after sending");
+  };
+  const f = await refreshDuringAuthorizationFixture(send, { account });
+  assert.equal((await f.core.run(f.resolve)).ok, false);
+  const saved = await f.stored();
+  assert.equal(saved.codex_refresh.status, "pending");
+  assert.equal(saved.tokens.refresh_token, account.tokens.refresh_token);
+  assert.equal((await f.core.run(f.resolve)).ok, true);
+  assert.equal(readAccountSnapshot(saved, f.resolve).ok, true);
+  assert.equal(accountReadiness(saved).ready, true);
+  saved.tokens.expires_at = Date.now() - 1000;
+  const reloaded = await refreshDuringAuthorizationFixture(send, {
+    account: saved,
+  });
+  assert.equal(
+    (await reloaded.core.run(reloaded.resolve)).code,
+    "refresh_outcome_unknown",
+  );
+  assert.equal(accountReadiness(await reloaded.stored()).ready, false);
+  assert.equal(calls, 1);
+  await Promise.all([f.drain(), reloaded.drain()]);
+});
+
+test("Codex persists the claim before sending and does not replay when token persistence fails", async () => {
+  for (const failedState of ["pending", "completed"]) {
+    const account = authorizationAccount("codex");
+    account.session = null;
+    let calls = 0;
+    const send = authorizationUpstream(account, async (_request, grant) => {
+      calls++;
+      return Response.json(grant);
+    });
+    const f = await refreshDuringAuthorizationFixture(send, {
+      account,
+      beforeCommit(next) {
+        if (next.codex_refresh?.status === failedState)
+          throw new Error("mock storage fault");
+      },
+    });
+    assert.equal((await f.core.run(f.resolve)).ok, false);
+    assert.equal(calls, failedState === "pending" ? 0 : 1);
+    const saved = await f.stored();
+    assert.equal(saved.tokens.access_token, account.tokens.access_token);
+    if (failedState === "completed") {
+      assert.equal(saved.codex_refresh.status, "pending");
+      const reloaded = await refreshDuringAuthorizationFixture(send, {
+        account: saved,
+      });
+      assert.equal(
+        (await reloaded.core.run(reloaded.resolve)).code,
+        "refresh_outcome_unknown",
+      );
+      assert.equal(calls, 1);
+      await reloaded.drain();
+    }
+    await f.drain();
+  }
+});
+
+test("a proven Codex proxy setup failure releases its claim for a later request", async () => {
+  const account = authorizationAccount("codex");
+  account.session = null;
+  let calls = 0;
+  const f = await refreshDuringAuthorizationFixture(
+    async () => {
+      calls++;
+      throw new SocksProxyError("mock tunnel setup rejected");
+    },
+    { account },
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await f.core.run(f.resolve)).ok, false);
+    assert.equal((await f.stored()).codex_refresh, null);
+  }
+  assert.equal(calls, 2);
+  await f.drain();
+});
+
+test("a delayed Codex refresh rechecks its grant atomically before transport handoff", async () => {
+  let account = authorizationAccount("codex");
+  account.session = null;
+  const tokens = structuredClone(account.tokens);
+  const state = {
+    current: () => account,
+    async update(generation, apply) {
+      assert.equal(generation, account.generation);
+      const next = structuredClone(account);
+      await apply(next);
+      account = storedSchema.parse(next);
+    },
+  };
+  const waiting = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let calls = 0;
+  const commit = (account, tokens) => {
+    account.tokens = tokens;
+  };
+  const renewed = {
+    ...tokens,
+    refresh_token: "new-refresh",
+    expires_at: Date.now() + 3600_000,
+  };
+  const delayed = refreshCodexAccount(
+    state,
+    account.generation,
+    tokens,
+    "client",
+    async (beforeSend) => {
+      waiting.resolve();
+      await release.promise;
+      await beforeSend();
+      calls++;
+      return renewed;
+    },
+    commit,
+  );
+  await waiting.promise;
+  await refreshCodexAccount(
+    state,
+    account.generation,
+    tokens,
+    "client",
+    async (beforeSend) => {
+      await beforeSend();
+      calls++;
+      return renewed;
+    },
+    commit,
+  );
+  const rejected = assert.rejects(delayed, { code: "account_changed" });
+  release.resolve();
+  await rejected;
+  assert.equal(calls, 1);
+  assert.equal(account.tokens.refresh_token, "new-refresh");
+});
+
+test("a completed Codex grant without a replacement cannot be resubmitted after its receipt expires", async () => {
+  const account = authorizationAccount("codex");
+  account.session = null;
+  let calls = 0;
+  const send = authorizationUpstream(account, async (_request, grant) => {
+    calls++;
+    return Response.json({
+      ...grant,
+      refresh_token: account.tokens.refresh_token,
+    });
+  });
+  const f = await refreshDuringAuthorizationFixture(send, { account });
+  assert.equal((await f.core.run(f.resolve)).ok, true);
+  const saved = await f.stored();
+  assert.equal(saved.codex_refresh.status, "completed");
+  assert.equal(saved.codex_refresh.rotated, false);
+  saved.tokens.expires_at = Date.now() - 1;
+  const reloaded = await refreshDuringAuthorizationFixture(send, {
+    account: saved,
+  });
+  assert.equal(
+    (await reloaded.core.run(reloaded.resolve)).code,
+    "refresh_outcome_unknown",
+  );
+  assert.equal(calls, 1);
+  await Promise.all([f.drain(), reloaded.drain()]);
+});
+
+test("ordinary Claude invalid_grant backs off durably and a later successful refresh clears the hold", async () => {
+  const account = authorizationAccount("claude");
+  account.session = null;
+  let calls = 0;
+  let fail = true;
+  const send = authorizationUpstream(account, async (_request, grant) => {
+    calls++;
+    if (fail)
+      return Response.json(
+        { error: "invalid_grant", error_description: "Bad Request" },
+        { status: 400 },
+      );
+    return Response.json(grant);
+  });
+  const f = await refreshDuringAuthorizationFixture(send, { account });
+  assert.equal((await f.core.run(f.resolve)).code, "claude_refresh_retry");
+  const saved = await f.stored();
+  assert.equal(saved.status, "ready");
+  assert.equal(saved.claude_refresh.failures, 1);
+  assert.ok(saved.claude_refresh.next_at >= Date.now() + 50_000);
+  assert.equal(accountReadiness(saved).ready, false);
+  const reloaded = await refreshDuringAuthorizationFixture(send, {
+    account: saved,
+  });
+  assert.equal(
+    (await reloaded.core.run(reloaded.resolve)).code,
+    "claude_refresh_retry",
+  );
+  assert.equal(calls, 1);
+  fail = false;
+  saved.claude_refresh.next_at = 0;
+  const released = await refreshDuringAuthorizationFixture(send, {
+    account: saved,
+  });
+  assert.equal((await released.core.run(released.resolve)).ok, true);
+  assert.deepEqual((await released.stored()).claude_refresh, {
+    failures: 0,
+    next_at: 0,
+  });
+  assert.equal(calls, 2);
+  await Promise.all([f.drain(), reloaded.drain(), released.drain()]);
+});
+
 for (const type of ["claude", "codex", "xai"]) {
   for (const refreshToken of [undefined, "original-refresh"]) {
     test(`${type} authorization ${refreshToken ? "repeating" : "omitting"} a refresh token waits for its rotation`, async () => {
@@ -468,7 +688,13 @@ for (const action of ["disconnect", "invalid_grant"]) {
         started.resolve();
         await release.promise;
         return action === "invalid_grant"
-          ? Response.json({ error: "invalid_grant" }, { status: 400 })
+          ? Response.json(
+              {
+                error: "invalid_grant",
+                error_description: "Refresh token expired",
+              },
+              { status: 400 },
+            )
           : Response.json(grant);
       }),
       { account },

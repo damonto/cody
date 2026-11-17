@@ -662,6 +662,35 @@ async function expireAccessToken(stub: Account) {
   await evictDurableObject(stub);
 }
 
+test("an uncertain native refresh stays fenced after Durable Object eviction", async () => {
+  const account = await ready("lost-refresh");
+  await expireAccessToken(account.stub);
+  let refreshes = 0;
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (request.url.endsWith("/oauth/token")) {
+      refreshes++;
+      throw new TypeError("mock response lost after sending");
+    }
+    return send(request);
+  });
+  const command = {
+    action: "resolve" as const,
+    connection: account.connection,
+    proxy_configuration: { proxy_groups: [] },
+  };
+  expect(await account.stub.run(command)).toMatchObject({ ok: false });
+  await evictDurableObject(account.stub);
+  expect(await account.stub.run(command)).toMatchObject({
+    ok: false,
+    code: "refresh_outcome_unknown",
+  });
+  expect(await account.stub.run({ action: "readiness" })).toMatchObject({
+    ok: true,
+    data: { ready: false },
+  });
+  expect(refreshes).toBe(1);
+});
+
 test("partial refresh survives eviction and rejects a changed workspace before storing its token", async () => {
   const account = await ready("refresh-partial");
   await expireAccessToken(account.stub);

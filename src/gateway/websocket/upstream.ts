@@ -143,6 +143,10 @@ export class UpstreamWebSocket {
                   } = await inspectCodexResponse(response, {
                     signal,
                     timeoutMs,
+                    inspectErrorHeaders:
+                      target.provider.retry?.status_codes.includes(
+                        response.status,
+                      ) === true,
                     ...(prepared.codexMode ? { mode: prepared.codexMode } : {}),
                   });
                   usageLimit = limit;

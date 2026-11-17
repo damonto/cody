@@ -30,6 +30,7 @@ let stream = false;
 let usageFails = false;
 let tokenLifetime = 3600;
 let refreshFails = false;
+let refreshErrorDescription = "Refresh token expired";
 let partialRefresh = false;
 let countTokensRejected = false;
 let messageHeaders: Record<string, string> = {};
@@ -44,6 +45,7 @@ beforeEach(async () => {
   usageFails = false;
   tokenLifetime = 3600;
   refreshFails = false;
+  refreshErrorDescription = "Refresh token expired";
   partialRefresh = false;
   countTokensRejected = false;
   messageHeaders = {};
@@ -60,7 +62,13 @@ beforeEach(async () => {
           refresh_token?: string;
         };
         if (body.refresh_token && refreshFails)
-          return Response.json({ error: "invalid_grant" }, { status: 400 });
+          return Response.json(
+            {
+              error: "invalid_grant",
+              error_description: refreshErrorDescription,
+            },
+            { status: 400 },
+          );
         const id = body.code ?? body.refresh_token;
         return Response.json({
           access_token: id,
@@ -496,7 +504,7 @@ test("Concurrent requests establish one binding and quota lookups are coalesced"
   for (const reply of replies) expect(reply).toEqual(replies[0]);
 });
 
-test("Claude refresh preserves identity and invalid grants require reauthorization", async () => {
+test("Claude refresh preserves identity and expired grants require reauthorization", async () => {
   tokenLifetime = 30;
   const a = await ready();
   const command = {
@@ -511,6 +519,45 @@ test("Claude refresh preserves identity and invalid grants require reauthorizati
     (await accountReply(a.stub.run({ action: "view" }), accountViewSchema))
       .status,
   ).toBe("needs_reauthorization");
+});
+
+test("generic Claude refresh rejection survives eviction while valid access remains usable", async () => {
+  tokenLifetime = 60;
+  const account = await ready();
+  refreshFails = true;
+  refreshErrorDescription = "Bad Request";
+  const command = {
+    action: "resolve" as const,
+    connection: { provider_id: "claude", credential_id: account.id },
+    proxy_configuration: { proxy_groups: [] },
+  };
+  expect(await account.stub.run(command)).toMatchObject({
+    ok: false,
+    code: "claude_refresh_retry",
+  });
+  const fetchMock = vi.mocked(fetch);
+  const tokenCalls = () =>
+    fetchMock.mock.calls.filter(
+      ([request]) =>
+        request instanceof Request &&
+        new URL(request.url).pathname === "/v1/oauth/token",
+    ).length;
+  const before = tokenCalls();
+  await evictDurableObject(account.stub);
+  expect(await account.stub.run(command)).toMatchObject({ ok: true });
+  expect(await account.stub.run({ action: "readiness" })).toMatchObject({
+    ok: true,
+    data: { ready: true },
+  });
+  expect(tokenCalls()).toBe(before);
+  expect(
+    (
+      await accountReply(
+        account.stub.run({ action: "view" }),
+        accountViewSchema,
+      )
+    ).status,
+  ).toBe("ready");
 });
 
 test("Claude rejects mismatched OAuth state and device authorization", async () => {

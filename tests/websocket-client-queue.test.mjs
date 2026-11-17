@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ResponsesWebSocketProxyCore } from "../src/gateway/websocket/responses-websocket-proxy.ts";
 import { SessionPhase } from "../src/gateway/websocket/values.ts";
+import { MAX_WEBSOCKET_MESSAGE_BYTES } from "../src/shared/payload-limits.ts";
 import {
   AlarmState,
   BackedObjectStorage,
@@ -25,9 +26,11 @@ async function fixture() {
     response_outcome_recorded: false,
   });
   const closes = [];
+  const sent = [];
   const client = {
     readyState: 1,
     deserializeAttachment: () => ({ role: "client" }),
+    send: (message) => sent.push(message),
     close(code) {
       closes.push(code);
       this.readyState = 3;
@@ -42,8 +45,19 @@ async function fixture() {
     },
     { LOG_LEVEL: "off" },
   );
-  return { core, storage, client, closes, tasks };
+  return { core, storage, client, closes, tasks, sent };
 }
+
+test("an oversized first message closes with 1009 without text so Codex can fall back to HTTP", async () => {
+  const f = await fixture();
+  f.core.webSocketMessage(
+    f.client,
+    new ArrayBuffer(MAX_WEBSOCKET_MESSAGE_BYTES + 1),
+  );
+  await Promise.all(f.tasks);
+  assert.deepEqual(f.sent, []);
+  assert.deepEqual(f.closes, [1009]);
+});
 
 test("closing a client drops queued messages without waiting for the active read", async (t) => {
   const f = await fixture();

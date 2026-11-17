@@ -21,6 +21,7 @@ import {
 import { inspectCodexResponse } from "../src/providers/codex/inspect.ts";
 import { siwcHostId } from "../src/providers/codex/siwc-host.ts";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
+import { SocksProxyError } from "../src/gateway/proxies/errors.ts";
 
 const issuer = "https://auth.openai.com";
 const metadata = {
@@ -814,6 +815,106 @@ test("a revoked SIWC grant leaves native credentials ready and cannot inherit na
   assert.equal(f.raw().status, "ready");
   assert.equal(f.raw().tokens.access_token, "native-access");
   assert.equal(f.raw().tokens.refresh_token, "native-refresh");
+});
+
+test("SIWC retains server renewal windows and validates integral token lifetimes", async () => {
+  const earliest = Math.floor(Date.now() / 1000) + 3590;
+  for (const value of [
+    earliest,
+    String(earliest),
+    new Date(earliest * 1000).toISOString(),
+  ]) {
+    const f = transport({
+      tokens: { earliest_refresh_at: value, expires_in: "3600" },
+    });
+    const grant = await new SiwcClient(
+      f.send,
+      new AbortController().signal,
+    ).refresh("refresh", "oaiapp_test", "subject");
+    assert.equal(grant.tokens.earliest_refresh_at, earliest * 1000);
+  }
+  for (const expires_in of [3600.5, "Infinity", 1e20, true, null]) {
+    const f = transport({ tokens: { expires_in } });
+    await assert.rejects(
+      new SiwcClient(f.send, new AbortController().signal).refresh(
+        "refresh",
+        "oaiapp_test",
+        "subject",
+      ),
+    );
+  }
+});
+
+test("SIWC defers both proactive and forced renewal before the server window", async () => {
+  const f = accountFixture();
+  await initializeBinding(f);
+  const now = Date.now();
+  await f.state.update(f.state.current().generation, (account) => {
+    account.tokens.expires_at = now + 60_000;
+    account.tokens.earliest_refresh_at = now + 50_000;
+  });
+  const command = {
+    action: "resolve",
+    mode: "siwc",
+    connection: f.raw().connection,
+  };
+  const projected = readAccountSnapshot(f.raw(), command, now);
+  assert.equal(projected.ok, true);
+  assert.equal(projected.data.token, "siwc-access");
+  const active = f.state.current();
+  await assert.rejects(f.provider.refresh(active.generation, active.tokens), {
+    code: "refresh_not_ready",
+  });
+  assert.equal(
+    f.network.requests.filter((request) => request.url.endsWith("/token"))
+      .length,
+    0,
+  );
+  assert.equal(f.raw().siwc.codex_refresh, null);
+});
+
+test("an uncertain SIWC refresh cannot replay or alter the native partition", async () => {
+  const f = accountFixture({
+    status: 503,
+    tokens: { error: "temporarily_unavailable" },
+  });
+  await initializeBinding(f);
+  const native = structuredClone(f.raw().tokens);
+  const active = f.state.current();
+  await assert.rejects(f.provider.refresh(active.generation, active.tokens));
+  assert.equal(f.raw().siwc.codex_refresh.status, "pending");
+  await assert.rejects(f.provider.refresh(active.generation, active.tokens), {
+    code: "refresh_outcome_unknown",
+  });
+  assert.equal(
+    f.network.requests.filter((request) => request.url.endsWith("/token"))
+      .length,
+    1,
+  );
+  assert.deepEqual(f.raw().tokens, native);
+  assert.equal(f.raw().codex_refresh, null);
+});
+
+test("an ID-token verification connection failure cannot release an already consumed SIWC grant", async (t) => {
+  const f = accountFixture();
+  await initializeBinding(f);
+  const send = f.network.send;
+  t.mock.method(f.network, "send", async (request) => {
+    if (request.url.endsWith("/jwks.json"))
+      throw new SocksProxyError("mock JWKS connection failed");
+    return send(request);
+  });
+  const active = f.state.current();
+  await assert.rejects(f.provider.refresh(active.generation, active.tokens));
+  assert.equal(f.raw().siwc.codex_refresh.status, "pending");
+  await assert.rejects(f.provider.refresh(active.generation, active.tokens), {
+    code: "refresh_outcome_unknown",
+  });
+  assert.equal(
+    f.network.requests.filter((request) => request.url.endsWith("/token"))
+      .length,
+    1,
+  );
 });
 
 test("SIWC disconnect clears its tokens before waiting for remote revocation", async (t) => {

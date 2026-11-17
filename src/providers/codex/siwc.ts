@@ -7,6 +7,11 @@ import { OAuthError } from "../oauth/schema.ts";
 import type { AccountTokens } from "../oauth/provider.ts";
 import type { Session } from "../oauth/state.ts";
 import { CODEX_ISSUER } from "./api.ts";
+import { parseEarliestRefreshAt } from "./refresh-state.ts";
+import {
+  CodexRefreshNotSentError,
+  sendCodexRefresh,
+} from "./refresh-errors.ts";
 
 export const SIWC_RESOURCE = "https://api.openai.com/v1";
 export const SIWC_REDIRECT_URI = "http://127.0.0.1:1455/auth/callback";
@@ -25,7 +30,11 @@ const tokenSchema = z.object({
   refresh_token: z.string().min(1).nullish(),
   id_token: z.string().min(1).nullish(),
   token_type: z.string().refine((value) => value.toLowerCase() === "bearer"),
-  expires_in: z.number().positive(),
+  expires_in: z
+    .union([z.number(), z.string()])
+    .transform(Number)
+    .pipe(z.number().int().positive().max(2_147_483_647)),
+  earliest_refresh_at: z.unknown().optional(),
   scope: z.string().optional(),
 });
 const terminalRefreshCodes = new Set([
@@ -69,6 +78,7 @@ export class SiwcClient {
     url: string,
     init: RequestInit = {},
     refresh = false,
+    beforeSend?: () => Promise<void>,
   ): Promise<unknown> {
     const deadline = new AbortController();
     const timer = setTimeout(
@@ -77,9 +87,18 @@ export class SiwcClient {
     );
     const signal = AbortSignal.any([this.signal, deadline.signal]);
     try {
-      const response = await this.send(
-        new Request(url, { ...init, signal, redirect: "manual" }),
-      );
+      const request = new Request(url, { ...init, signal, redirect: "manual" });
+      signal.throwIfAborted();
+      if (beforeSend) {
+        await beforeSend();
+        if (signal.aborted)
+          throw new CodexRefreshNotSentError(
+            "SIWC refresh cancelled before sending",
+          );
+      }
+      const response = await (beforeSend
+        ? sendCodexRefresh(this.send, request)
+        : this.send(request));
       const bytes = await readBodyWithinLimit(
         response.body,
         MAX_ACCOUNT_METADATA_BYTES,
@@ -142,7 +161,11 @@ export class SiwcClient {
     }
     return metadata;
   }
-  private async grant(form: URLSearchParams, refresh = false) {
+  private async grant(
+    form: URLSearchParams,
+    refresh = false,
+    beforeSend?: () => Promise<void>,
+  ) {
     const metadata = await this.metadata();
     const data = tokenSchema.parse(
       await this.request(
@@ -156,13 +179,18 @@ export class SiwcClient {
           body: form,
         },
         refresh,
+        beforeSend,
       ),
     );
+    const earliestRefreshAt = parseEarliestRefreshAt(data.earliest_refresh_at);
     const tokens: AccountTokens = {
       access_token: data.access_token,
       ...(data.refresh_token ? { refresh_token: data.refresh_token } : {}),
       ...(data.id_token ? { id_token: data.id_token } : {}),
       expires_at: Date.now() + data.expires_in * 1000,
+      ...(earliestRefreshAt === undefined
+        ? {}
+        : { earliest_refresh_at: earliestRefreshAt }),
     };
     return { tokens, scope: data.scope, metadata };
   }
@@ -229,7 +257,12 @@ export class SiwcClient {
       scopes: result.scope.split(/\s+/).filter(Boolean),
     };
   }
-  async refresh(refreshToken: string, clientId: string, subject: string) {
+  async refresh(
+    refreshToken: string,
+    clientId: string,
+    subject: string,
+    beforeSend?: () => Promise<void>,
+  ) {
     const result = await this.grant(
       new URLSearchParams({
         grant_type: "refresh_token",
@@ -238,6 +271,7 @@ export class SiwcClient {
         resource: SIWC_RESOURCE,
       }),
       true,
+      beforeSend,
     );
     if (!result.tokens.refresh_token)
       throw new OAuthError(

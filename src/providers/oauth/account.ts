@@ -8,7 +8,6 @@ import { siwcHostId } from "../codex/siwc-host.ts";
 import { accountProvider } from "./registry.ts";
 import {
   authorizationTokens,
-  TOKEN_REFRESH_MARGIN_MS,
   type AccountProvider,
   type AccountState,
   providerState,
@@ -28,7 +27,7 @@ import {
 } from "./state.ts";
 import { AccountInventory } from "./inventory.ts";
 import { accountView } from "./presentation.ts";
-import { activeAccount, accountReadiness } from "./reads.ts";
+import { activeAccount, accountReadiness, accountRefreshAt } from "./reads.ts";
 import { ControlStore } from "../../control/store.ts";
 import { OAuthFlow, OAuthSessionStatus, OAuthAccountStatus } from "./values.ts";
 import { ProviderType, CredentialAuthType } from "../../config/values.ts";
@@ -739,7 +738,9 @@ export class ProviderOAuthAccountCore {
     if (
       force ||
       (!rejected &&
-        snapshot.tokens.expires_at <= Date.now() + TOKEN_REFRESH_MARGIN_MS)
+        (snapshot.tokens.expires_at <= Date.now() ||
+          accountRefreshAt(accountPartition(this.requireAccount(), mode)) <=
+            Date.now()))
     ) {
       await this.shareRefresh(
         "token",
@@ -756,6 +757,10 @@ export class ProviderOAuthAccountCore {
             !(await equalSecret(
               current.tokens.access_token,
               snapshot.tokens.access_token,
+            )) ||
+            !(await equalSecret(
+              current.tokens.refresh_token ?? "",
+              snapshot.tokens.refresh_token ?? "",
             ))
           )
             return;

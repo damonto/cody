@@ -17,6 +17,7 @@ interface CodexInspectionOptions {
   timeoutMs?: number | undefined;
   errorCodes?: readonly string[] | undefined;
   detectFormat?: boolean | undefined;
+  inspectErrorHeaders?: boolean;
   onStreamLimit?: (limit: CodexUsageLimit) => Promise<void>;
   now?: number;
 }
@@ -35,7 +36,11 @@ export async function inspectCodexResponse(
   const quotaResponse =
     response.status === 429 ||
     (response.ok && (format === "sse" || format === "auto"));
-  if (!quotaResponse && !options.errorCodes?.length)
+  if (
+    !quotaResponse &&
+    !options.errorCodes?.length &&
+    !options.inspectErrorHeaders
+  )
     return { response, diagnostic: { reason: "unsupported_response" } };
 
   let usageLimit: CodexUsageLimit | undefined;
@@ -54,13 +59,14 @@ export async function inspectCodexResponse(
       ...(response.status === 429
         ? { maxBytes: MAX_QUOTA_ERROR_BYTES, format: format ?? "json" }
         : {}),
-      async onEvent(value, _event, replayable) {
+      async onEvent(value, event, replayable) {
         if (!quotaResponse) return;
         const limit = codexUsageLimitFromError(
           value,
           (name) => response.headers.get(name),
           options.now,
           options.mode,
+          event,
         );
         if (!limit) return;
         if (replayable) usageLimit = limit;

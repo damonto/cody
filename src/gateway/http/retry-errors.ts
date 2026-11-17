@@ -1,4 +1,9 @@
-import { upstreamErrorCode } from "../../shared/upstream-error.ts";
+import {
+  upstreamErrorCode,
+  upstreamErrorHeader,
+  upstreamEventType,
+  upstreamRetryAt,
+} from "../../shared/upstream-error.ts";
 import { ResponseObserver } from "../../telemetry/response-observer.ts";
 import { z } from "zod";
 import {
@@ -55,18 +60,21 @@ const emptyOutputItem = z.discriminatedUnion("type", [
   }),
 ]);
 const responseSchema = z.object({
-  status: z.string().optional(),
+  status: z.union([z.string(), z.number().int().min(400).max(599)]).optional(),
   output: z.array(z.unknown()).nullish(),
   error: z.unknown().optional(),
   delta: z.unknown().optional(),
   choices: z.unknown().optional(),
   content: z.unknown().optional(),
+  item: z.unknown().optional(),
+  part: z.unknown().optional(),
 });
 const envelopeSchema = responseSchema.extend({
   type: z.string().optional(),
   response: responseSchema.optional(),
-  item: z.unknown().optional(),
-  part: z.unknown().optional(),
+  body: responseSchema
+    .extend({ response: responseSchema.optional() })
+    .optional(),
 });
 type RetryEnvelope = z.infer<typeof envelopeSchema>;
 type FinalRetryDecision =
@@ -81,6 +89,7 @@ export interface RetryErrorInspection {
   response: Response;
   errorCode?: string | undefined;
   diagnostic: RetryDiagnostic;
+  retryAfterAt?: number;
 }
 
 interface RetryErrorInspectionOptions {
@@ -118,6 +127,12 @@ function isEmptyPreamble(payload: RetryEnvelope, type: string): boolean {
 
 /** Known protocol events may start work even without visible text. */
 function commitsProtocolEvent(type: string): boolean {
+  if (
+    ["response.metadata", "response.created", "response.in_progress"].includes(
+      type,
+    )
+  )
+    return true;
   if (type === "response.completed" || type === "response.incomplete")
     return true;
   if (type.startsWith("response.") && type.includes("_call.")) return true;
@@ -139,7 +154,10 @@ function hasContent(payload: z.infer<typeof responseSchema>): boolean {
     hasOutput(payload.output) ||
     payload.delta !== undefined ||
     payload.choices !== undefined ||
-    payload.content !== undefined
+    payload.content !== undefined ||
+    (payload.item !== undefined &&
+      !emptyOutputItem.safeParse(payload.item).success) ||
+    (payload.part !== undefined && !emptyPart.safeParse(payload.part).success)
   );
 }
 
@@ -148,16 +166,15 @@ function replayGuard(payload: RetryEnvelope, event: string): ReplayGuard {
     kind: "forward",
     reason,
   });
-  const type = payload.type ?? event;
+  const type = upstreamEventType(payload, event);
   const response = payload.response;
   // Check content before accepting a lifecycle preamble. Otherwise an added
   // delta on response.created could be buffered and replayed after a later error.
   if (
     hasContent(payload) ||
     (response && hasContent(response)) ||
-    (payload.item !== undefined &&
-      !emptyOutputItem.safeParse(payload.item).success) ||
-    (payload.part !== undefined && !emptyPart.safeParse(payload.part).success)
+    (payload.body && hasContent(payload.body)) ||
+    (payload.body?.response && hasContent(payload.body.response))
   )
     return forward("output_observed");
   // An SSE event name and its JSON type must agree when both are present.
@@ -169,14 +186,23 @@ function replayGuard(payload: RetryEnvelope, event: string): ReplayGuard {
         status === undefined || status === "queued" || status === "in_progress",
     ) &&
     !response?.error &&
-    !payload.error;
+    !payload.error &&
+    !payload.body?.error;
   if (pending && isEmptyPreamble(payload, type)) return { kind: "inspect" };
   // Output and successful terminal events cannot authorize replay, even if
   // they carry an error field. Error envelopes otherwise need no event whitelist.
   if (commitsProtocolEvent(type)) return forward("terminal_event");
   if (
-    [payload.status, response?.status].some(
-      (status) => status !== undefined && status !== "failed",
+    [
+      payload.status,
+      response?.status,
+      payload.body?.status,
+      payload.body?.response?.status,
+    ].some(
+      (status) =>
+        status !== undefined &&
+        status !== "failed" &&
+        typeof status !== "number",
     )
   )
     return forward("non_failure_status");
@@ -200,7 +226,7 @@ function classifyPayload(
 ): RetryDecision {
   const parsed = envelopeSchema.safeParse(value);
   const code = upstreamErrorCode(value, event);
-  const eventType = parsed.success ? (parsed.data.type ?? event) : event;
+  const eventType = upstreamEventType(value, event);
   const diagnostic = (reason: RetryDiagnostic["reason"]): RetryDiagnostic => ({
     reason,
     // Keep protocol identifiers, never arbitrary event text or payloads.
@@ -255,11 +281,19 @@ export async function inspectRetryError(
 
   const state: { decision: RetryDecision } = { decision: { kind: "inspect" } };
   const events: { value: unknown; event: string; replayable: boolean }[] = [];
+  let retryAfterAt: number | undefined;
   const inspect = (value: unknown, event = "") => {
     let replayable = false;
     if (state.decision.kind === "inspect") {
       state.decision = classifyPayload(value, event, codes);
       replayable = state.decision.kind === "retry";
+      const errorWithoutConfiguredCode =
+        state.decision.kind === "forward" &&
+        state.decision.diagnostic.reason === "error_code_not_matched";
+      if (replayable || errorWithoutConfiguredCode)
+        retryAfterAt = upstreamRetryAt(
+          upstreamErrorHeader(value, "retry-after"),
+        );
     }
     if (options.onEvent) events.push({ value, event, replayable });
   };
@@ -311,5 +345,6 @@ export async function inspectRetryError(
     response: prefix.response,
     diagnostic: final.diagnostic,
     ...(final.kind === "retry" ? { errorCode: final.code } : {}),
+    ...(retryAfterAt === undefined ? {} : { retryAfterAt }),
   };
 }

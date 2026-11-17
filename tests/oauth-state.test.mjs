@@ -43,6 +43,7 @@ test("persisted OAuth states keep their provider, identity and default fields ac
             siwc: null,
             siwc_generation: 0,
             siwc_revocation_error: null,
+            codex_refresh: null,
             codex_quota_sync: {
               full_observed_at: 0,
               windows: [],
@@ -52,7 +53,10 @@ test("persisted OAuth states keep their provider, identity and default fields ac
           }
         : {}),
       ...(provider === "claude"
-        ? { claude_quota_sync: { windows: [], extra_usage: null } }
+        ? {
+            claude_quota_sync: { windows: [], extra_usage: null },
+            claude_refresh: { failures: 0, next_at: 0 },
+          }
         : {}),
     });
     assert.deepEqual(

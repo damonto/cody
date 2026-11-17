@@ -58,6 +58,7 @@ export const tokenSchema = z.object({
   refresh_token: z.string().optional(),
   id_token: z.string().optional(),
   expires_at: z.number(),
+  earliest_refresh_at: z.number().int().nonnegative().optional(),
 });
 export const identitySchema = z.object({
   id: z.string().min(1),

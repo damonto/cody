@@ -18,10 +18,12 @@ import {
   CODEX_REDIRECT_URI,
   CODEX_DEVICE_REDIRECT_URI,
   CodexClient,
+  CODEX_CLIENT_ID,
   authorizationUrl,
   parseIdToken,
 } from "./api.ts";
 import { initializeCodexAccount } from "./initialization.ts";
+import { refreshCodexAccount } from "./refresh.ts";
 import { CodexInventory } from "./inventory.ts";
 
 export function nativeCodexAccount(
@@ -181,37 +183,49 @@ export function nativeCodexAccount(
       },
     },
     async refresh(generation, tokens, connection, config) {
-      const result = await (
-        await client(connection, config)
-      ).refresh(tokens.refresh_token, tokens);
-      const claims = result.id_token ? parseIdToken(result.id_token) : null;
-      if (claims && claims.account_id !== state.current().codex?.account_id)
-        throw new OAuthError(
-          "Token refresh returned a different workspace; reconnect this account",
-          401,
-          "invalid_grant",
-        );
-      await state.update(generation, (account) => {
-        account.tokens = {
-          ...result,
-          refresh_token: result.refresh_token ?? tokens.refresh_token,
-        };
-        if (
-          claims &&
-          account.codex &&
-          account.codex.mode !== "siwc" &&
-          claims.account_id === account.codex.account_id
-        )
-          account.codex = {
-            ...account.codex,
-            is_fedramp: claims.is_fedramp ?? false,
-            plan_type: claims.plan_type ?? account.codex.plan_type,
-            subscription_active_until:
-              claims.subscription_active_until ??
-              account.codex.subscription_active_until,
+      const issuer = await client(connection, config);
+      await refreshCodexAccount(
+        state,
+        generation,
+        tokens,
+        CODEX_CLIENT_ID,
+        async (beforeSend) => {
+          const result = await issuer.refresh(
+            tokens.refresh_token,
+            tokens,
+            beforeSend,
+          );
+          const claims = result.id_token ? parseIdToken(result.id_token) : null;
+          if (claims && claims.account_id !== state.current().codex?.account_id)
+            throw new OAuthError(
+              "Token refresh returned a different workspace; reconnect this account",
+              401,
+              "invalid_grant",
+            );
+          return { result, claims };
+        },
+        (account, { result, claims }) => {
+          account.tokens = {
+            ...result,
+            refresh_token: result.refresh_token ?? tokens.refresh_token,
           };
-        account.error = null;
-      });
+          if (
+            claims &&
+            account.codex &&
+            account.codex.mode !== "siwc" &&
+            claims.account_id === account.codex.account_id
+          )
+            account.codex = {
+              ...account.codex,
+              is_fedramp: claims.is_fedramp ?? false,
+              plan_type: claims.plan_type ?? account.codex.plan_type,
+              subscription_active_until:
+                claims.subscription_active_until ??
+                account.codex.subscription_active_until,
+            };
+          account.error = null;
+        },
+      );
     },
     inventory,
     resets: {

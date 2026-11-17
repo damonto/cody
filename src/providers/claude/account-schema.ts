@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+export const claudeRefreshSchema = z.object({
+  failures: z.number().int().nonnegative().default(0),
+  next_at: z.number().int().nonnegative().default(0),
+});
+
 export const claudeAccountSchema = z.object({
   account_id: z.string(),
   organization_id: z.string(),

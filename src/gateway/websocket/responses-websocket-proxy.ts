@@ -88,6 +88,10 @@ import {
   type CodexUsageLimit,
 } from "../../providers/codex/limits.ts";
 import { retryErrorIsReplayable } from "../http/retry-errors.ts";
+import {
+  upstreamErrorHeader,
+  upstreamEventType,
+} from "../../shared/upstream-error.ts";
 import type { RequestMeter } from "../../telemetry/meter.ts";
 import type { Bindings } from "../../platform/bindings.ts";
 import type {
@@ -179,21 +183,6 @@ interface FirstFrameAttempt {
   /** The last exhausted account's error, returned when no account remains. */
   exhausted: string | undefined;
   target: ModelProviderTarget | undefined;
-}
-
-/** Looks up a header echoed in a Codex WebSocket error event. */
-function eventHeader(
-  payload: Record<string, unknown>,
-  name: string,
-): string | undefined {
-  const headers = payload.headers;
-  if (typeof headers !== "object" || headers === null) return undefined;
-  for (const [key, value] of Object.entries(headers))
-    if (key.toLowerCase() === name)
-      return typeof value === "string" || typeof value === "number"
-        ? String(value)
-        : undefined;
-  return undefined;
 }
 
 function requestOutcomeOnClose(code: number, outcome: string) {
@@ -326,7 +315,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       });
       throw error;
     }
-    return webSocketUpgradeResponse(pair[0]);
+    return webSocketUpgradeResponse(pair[0], {
+      "x-codex-websocket-max-message-bytes": String(
+        MAX_WEBSOCKET_MESSAGE_BYTES,
+      ),
+    });
   }
 
   async alarm(): Promise<void> {
@@ -507,6 +500,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     }
     const payload =
       typeof message === "string" ? parseObject(message) : undefined;
+    const eventType = upstreamEventType(payload);
     this.lastUpstreamMessageAt = receivedAt;
     this.lastUpstreamEventType = nonBlankString(payload?.type)?.slice(0, 160);
     const response = payload?.response;
@@ -521,11 +515,11 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
     const status = payload ? errorStatus(payload) : undefined;
     const usageLimit =
       payload &&
-      (payload.type === "error" || payload.type === "response.failed") &&
+      (eventType === "error" || eventType === "response.failed") &&
       state.selected_provider_type === ProviderType.Codex
         ? codexUsageLimitFromError(
             payload,
-            (name) => eventHeader(payload, name),
+            (name) => upstreamErrorHeader(payload, name),
             Date.now(),
             this.upstream.codexMode,
           )
@@ -581,9 +575,9 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
 
     if (
       this.turn.kind === "active" &&
-      (payload?.type === "response.completed" ||
-        payload?.type === "response.failed" ||
-        payload?.type === "response.incomplete")
+      (eventType === "response.completed" ||
+        eventType === "response.failed" ||
+        eventType === "response.incomplete")
     ) {
       this.turn = { kind: "idle" };
     }
@@ -599,7 +593,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
 
-    if (payload.type === "response.completed") {
+    if (eventType === "response.completed") {
       if (meter) {
         this.usage.finish(meter, RequestOutcome.Success);
       }
@@ -607,13 +601,13 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
       return;
     }
     if (
-      payload.type === "response.failed" ||
-      payload.type === "response.incomplete"
+      eventType === "response.failed" ||
+      eventType === "response.incomplete"
     ) {
       if (meter) {
         this.usage.finish(
           meter,
-          payload.type === "response.failed"
+          eventType === "response.failed"
             ? RequestOutcome.Failed
             : RequestOutcome.Incomplete,
           status ?? null,
@@ -628,7 +622,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
         );
       return;
     }
-    if (payload.type === "error") {
+    if (eventType === "error") {
       if (meter) {
         this.usage.finish(meter, RequestOutcome.Failed, status ?? null);
       }
@@ -681,7 +675,7 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
   private async handleUpstreamClose(event: CloseEvent): Promise<void> {
     const state = await this.storage.loadSession();
     const upstreamFailed = shouldRecordUpstreamFailure(state);
-    if (upstreamFailed) {
+    if (upstreamFailed && event.code !== 1009) {
       await this.health.fail();
     }
     let outcome = "upstream_closed";
@@ -1430,11 +1424,16 @@ export class ResponsesWebSocketProxyCore implements WebSocketHandler {
           "pending websocket messages too large",
           "client_queue_too_large",
           {
-            clientMessage: gatewayErrorEvent(
-              413,
-              `WebSocket messages exceed the ${formatByteLimit(MAX_WEBSOCKET_BUFFER_BYTES)} or ${MAX_WEBSOCKET_BUFFER_MESSAGES}-message buffer limit`,
-              "websocket_queue_too_large",
-            ),
+            ...(bytes > MAX_WEBSOCKET_MESSAGE_BYTES &&
+            this.receivedClientMessages === 0
+              ? {}
+              : {
+                  clientMessage: gatewayErrorEvent(
+                    413,
+                    `WebSocket messages exceed the ${formatByteLimit(MAX_WEBSOCKET_BUFFER_BYTES)} or ${MAX_WEBSOCKET_BUFFER_MESSAGES}-message buffer limit`,
+                    "websocket_queue_too_large",
+                  ),
+                }),
           },
         ),
       );

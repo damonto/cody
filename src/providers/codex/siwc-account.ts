@@ -19,6 +19,7 @@ import { browserCallback } from "../oauth/provider.ts";
 import { base64url } from "../oauth/state.ts";
 import { CODEX_ISSUER, parseModels } from "./api.ts";
 import { SiwcClient, SIWC_REDIRECT_URI, siwcAuthorizationUrl } from "./siwc.ts";
+import { refreshCodexAccount } from "./refresh.ts";
 
 export function siwcAccount(
   state: AccountState<typeof ProviderType.Codex>,
@@ -132,6 +133,11 @@ export function siwcAccount(
               Date.now() >= pending.expires_at
             )
               throw new OAuthError("Authorization expired or changed", 410);
+            if (
+              (tokens.refresh_token ?? account.tokens?.refresh_token) !==
+              account.tokens?.refresh_token
+            )
+              account.codex_refresh = null;
             account.tokens = {
               ...tokens,
               refresh_token:
@@ -164,24 +170,33 @@ export function siwcAccount(
       if (!registration)
         throw new OAuthError("SIWC registration is unavailable", 503);
       try {
-        const result = await (
-          await client(connection, config)
-        ).refresh(
-          tokens.refresh_token,
+        const issuer = await client(connection, config);
+        await refreshCodexAccount(
+          state,
+          generation,
+          tokens,
           registration.client_id,
-          registration.subject,
+          (beforeSend) =>
+            issuer.refresh(
+              tokens.refresh_token,
+              registration.client_id,
+              registration.subject,
+              beforeSend,
+            ),
+          (account, result) => {
+            account.tokens = {
+              ...result.tokens,
+              id_token: result.tokens.id_token ?? tokens.id_token,
+            };
+            if (account.codex?.siwc && result.scopes) {
+              account.codex.siwc.scopes = result.scopes;
+              account.codex.plan_usage_enabled = hasSiwcPlanUsage(
+                result.scopes,
+              );
+            }
+            account.error = null;
+          },
         );
-        await state.update(generation, (account) => {
-          account.tokens = {
-            ...result.tokens,
-            id_token: result.tokens.id_token ?? tokens.id_token,
-          };
-          if (account.codex?.siwc && result.scopes) {
-            account.codex.siwc.scopes = result.scopes;
-            account.codex.plan_usage_enabled = hasSiwcPlanUsage(result.scopes);
-          }
-          account.error = null;
-        });
       } catch (error) {
         if (error instanceof OAuthError && error.code === "invalid_grant")
           await state.update(generation, (account) => {

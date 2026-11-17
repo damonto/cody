@@ -2,6 +2,7 @@ import { MAX_WEBSOCKET_UPGRADE_ERROR_BYTES } from "../../shared/payload-limits.t
 import { Buffer } from "node:buffer";
 import { BodyTooLargeError, readBodyWithinLimit } from "../http/body.ts";
 import { codexTurnMetadata } from "../sessions/codex-metadata.ts";
+import { upstreamErrorStatus } from "../../shared/upstream-error.ts";
 const UPSTREAM_ERROR_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_REASON_BYTES = 123;
 
@@ -179,59 +180,7 @@ export function closeSocket(
 }
 
 export function errorStatus(value: JsonObject): number | undefined {
-  const numericStatus = (candidate: unknown): number | undefined => {
-    if (typeof candidate === "number" && Number.isInteger(candidate)) {
-      return candidate;
-    }
-    if (typeof candidate === "string" && /^\d{3}$/.test(candidate)) {
-      return Number(candidate);
-    }
-    return undefined;
-  };
-  const direct =
-    numericStatus(value.status) ?? numericStatus(value.status_code);
-  if (direct !== undefined) {
-    return direct;
-  }
-  const nested = value.error;
-  if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
-    const error = nested as JsonObject;
-    const status =
-      numericStatus(error.status) ??
-      numericStatus(error.status_code) ??
-      numericStatus(error.http_status);
-    if (status !== undefined) {
-      return status;
-    }
-  }
-  const response = value.response;
-  if (
-    typeof response === "object" &&
-    response !== null &&
-    !Array.isArray(response)
-  ) {
-    const responseObject = response as JsonObject;
-    const status =
-      numericStatus(responseObject.status_code) ??
-      numericStatus(responseObject.http_status);
-    if (status !== undefined) {
-      return status;
-    }
-    const responseError = responseObject.error;
-    if (
-      typeof responseError === "object" &&
-      responseError !== null &&
-      !Array.isArray(responseError)
-    ) {
-      const error = responseError as JsonObject;
-      return (
-        numericStatus(error.status) ??
-        numericStatus(error.status_code) ??
-        numericStatus(error.http_status)
-      );
-    }
-  }
-  return undefined;
+  return upstreamErrorStatus(value);
 }
 
 async function upstreamErrorText(

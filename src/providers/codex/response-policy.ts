@@ -44,6 +44,8 @@ export function codexResponsePolicy(
           mode,
           detectFormat,
           errorCodes: provider.retry?.error_codes,
+          inspectErrorHeaders:
+            provider.retry?.status_codes.includes(response.status) === true,
           onStreamLimit: (limit) =>
             scheduleHealthUpdate(context.context, persist(limit)),
         });

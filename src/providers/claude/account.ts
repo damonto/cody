@@ -82,16 +82,40 @@ export function claudeAccount(
     },
     async refresh(generation, tokens, connection, config) {
       const snapshot = state.current();
+      if (snapshot.claude_refresh.next_at > Date.now())
+        throw new OAuthError(
+          "Claude token refresh is temporarily deferred",
+          503,
+          "claude_refresh_retry",
+        );
       // Preserve rotated tokens without a fallible profile lookup after the grant.
-      const result = await (
-        await client(connection, config)
-      ).refresh(tokens.refresh_token, snapshot.claude ?? undefined);
+      let result;
+      try {
+        result = await (
+          await client(connection, config)
+        ).refresh(tokens.refresh_token, snapshot.claude ?? undefined);
+      } catch (error) {
+        if (
+          error instanceof OAuthError &&
+          error.code === "claude_refresh_retry"
+        )
+          await state.update(generation, (account) => {
+            const failures = Math.min(account.claude_refresh.failures + 1, 10);
+            account.claude_refresh = {
+              failures,
+              next_at:
+                Date.now() + Math.min(300_000, 60_000 * 2 ** (failures - 1)),
+            };
+          });
+        throw error;
+      }
       await state.update(generation, (account) => {
         account.tokens = {
           ...result,
           refresh_token: result.refresh_token ?? tokens.refresh_token,
         };
         account.error = null;
+        account.claude_refresh = { failures: 0, next_at: 0 };
       });
     },
     inventory: new ClaudeInventory(state, client),

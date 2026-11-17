@@ -30,6 +30,8 @@ export function initializeCodexAccount(
     throw new OAuthError(
       "ChatGPT did not return a refresh token; start authorization again",
     );
+  if (refreshToken !== account.tokens?.refresh_token)
+    account.codex_refresh = null;
   account.tokens = { ...tokens, refresh_token: refreshToken };
   account.identity = identity;
   account.codex = {

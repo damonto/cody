@@ -1,4 +1,9 @@
 /** Used when the upstream names no reset time. */
+import {
+  upstreamError,
+  upstreamErrorHeader,
+  upstreamEventType,
+} from "../../shared/upstream-error.ts";
 export const DEFAULT_QUOTA_COOLDOWN_MS = 15 * 60_000;
 export const SIWC_QUOTA_CODE = "subscription_sharing_usage_limit_exceeded";
 export const CODEX_QUOTA_CODES: readonly string[] = [
@@ -16,11 +21,6 @@ export interface CodexUsageLimit {
 
 type HeaderLookup = (name: string) => string | null | undefined;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
 function finite(value: unknown): number | undefined {
   const number = typeof value === "string" ? Number(value) : value;
   return typeof number === "number" && Number.isFinite(number)
@@ -60,13 +60,12 @@ export function codexUsageLimitFromError(
   header: HeaderLookup,
   now = Date.now(),
   mode: "native" | "siwc" = "native",
+  event = "",
 ): CodexUsageLimit | undefined {
-  const envelope = record(payload);
-  const error = record(
-    envelope?.type === "response.failed"
-      ? record(envelope.response)?.error
-      : envelope?.error,
-  );
+  const typeOfEvent = upstreamEventType(payload, event);
+  if (typeOfEvent.startsWith("response.") && typeOfEvent !== "response.failed")
+    return undefined;
+  const error = upstreamError(payload);
   if (!error) return undefined;
   const type = typeof error.type === "string" ? error.type : undefined;
   const code = typeof error.code === "string" ? error.code : undefined;
@@ -83,8 +82,22 @@ export function codexUsageLimitFromError(
   const candidates = [
     resetsAtSeconds === undefined ? undefined : resetsAtSeconds * 1000,
     resetsIn === undefined ? undefined : now + resetsIn * 1000,
-    ...(mode === "siwc" ? [] : [headerResetAt(header)]),
-    ...(mode === "siwc" ? [retryAfter(header("retry-after"), now)] : []),
+    ...(mode === "siwc"
+      ? []
+      : [
+          headerResetAt(
+            (name) => header(name) ?? upstreamErrorHeader(payload, name),
+          ),
+        ]),
+    ...(mode === "siwc"
+      ? [
+          retryAfter(
+            header("retry-after") ??
+              upstreamErrorHeader(payload, "retry-after"),
+            now,
+          ),
+        ]
+      : []),
   ];
   const resetsAt = candidates.find(
     (value): value is number => value !== undefined && value > now,

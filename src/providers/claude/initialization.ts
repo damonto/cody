@@ -33,6 +33,7 @@ export function initializeClaudeAccount(
   account.identity = profile.identity;
   account.claude = profile.claude;
   completeAuthorization(account, pending);
+  account.claude_refresh = { failures: 0, next_at: 0 };
   account.claude_quota_sync = claudeQuotaSyncSchema.parse({});
   account.models = [];
   account.models_updated_at = null;
