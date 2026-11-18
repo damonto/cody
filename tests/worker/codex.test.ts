@@ -610,6 +610,27 @@ test("OAuth commands reject missing and unrelated fields before changing account
   ).toEqual(before);
 });
 
+test("the console lists authorized accounts for the requested provider", async () => {
+  const { ref } = await ready("listed-account");
+  const list = await admin("/provider-accounts?provider_id=codex");
+  expect(list.status).toBe(200);
+  expect(await list.json()).toEqual({
+    items: expect.arrayContaining([
+      expect.objectContaining({
+        account_ref: ref,
+        provider_id: "codex",
+        status: "ready",
+      }),
+    ]),
+  });
+
+  const empty = await admin(
+    `/provider-accounts?provider_id=${crypto.randomUUID()}`,
+  );
+  expect(empty.status).toBe(200);
+  expect(await empty.json()).toEqual({ items: [] });
+});
+
 test("the console shows quota cooldowns and a manual reset clears them", async () => {
   const [only] = await accounts(1);
   const config = codexConfig([only]);

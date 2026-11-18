@@ -57,6 +57,9 @@ const startSchema = connectionSchema
     "Explicit consent is only available for SIWC",
   );
 const accountParam = z.object({ ref: z.uuid() });
+const oauthProviderTypeParameters = oauthProviderTypeSchema.options
+  .map(() => "?")
+  .join(", ");
 const sessionParam = z.object({
   id: z.string().transform((value, context) => {
     const [account_ref, session_id, extra] = value.split(".");
@@ -252,7 +255,7 @@ export const oauthRoutes = new Hono<AdminContext>()
     validate("query", z.object({ provider_id: identifierSchema })),
     async (c) => {
       const rows = await c.env.CODY_DB.prepare(
-        "SELECT account_ref FROM oauth_accounts WHERE provider_id = ? AND provider_type IN (?, ?, ?) ORDER BY created_at",
+        `SELECT account_ref FROM oauth_accounts WHERE provider_id = ? AND provider_type IN (${oauthProviderTypeParameters}) ORDER BY created_at`,
       )
         .bind(
           c.req.valid("query").provider_id,
