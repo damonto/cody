@@ -123,7 +123,6 @@ export function upstreamBody(
 
 export interface InferenceInput {
   rawBody: Uint8Array<ArrayBuffer>;
-  decodedBodyBytes: number;
   originalText: string;
   payload: InferencePayload;
   sessionId: string | undefined;
@@ -227,7 +226,6 @@ export async function prepareInferenceInput(
   }
   return {
     rawBody,
-    decodedBodyBytes: decodedBody.byteLength,
     originalText,
     payload,
     sessionId,

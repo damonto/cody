@@ -36,7 +36,7 @@ CREATE TABLE proxy_groups (
 CREATE TABLE providers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('ai_gateway','antigravity','codex','claude','xai')),
+  type TEXT NOT NULL CHECK (type IN ('ai_gateway', 'codex', 'claude')),
   priority INTEGER NOT NULL,
   disabled INTEGER NOT NULL CHECK (disabled IN (0,1)),
   position INTEGER NOT NULL,

@@ -198,7 +198,7 @@ export async function requireEmptyTarget(
   const providers = (
     await db.prepare("SELECT * FROM providers ORDER BY position").all()
   ).results;
-  const expected = ["codex", "claude", "xai"];
+  const expected = ["codex", "claude"];
   if (prepared && providers.length === 0) return;
   if (providers.length !== expected.length)
     throw new TransferError("Target is not a fresh instance");
@@ -211,12 +211,9 @@ export async function requireEmptyTarget(
       emulate_claude_code: false,
       account_selection: "round_robin",
       ...(type === "codex" ? { auto_consume_resets: false } : {}),
-      ...(["claude", "xai"].includes(type!)
-        ? { allow_extra_usage: false }
-        : {}),
-      ...(type === "xai" ? { inject_x_search: false } : {}),
+      ...(type === "claude" ? { allow_extra_usage: false } : {}),
     };
-    const names = ["Codex", "Claude", "Xai"];
+    const names = ["Codex", "Claude"];
     if (
       row.type !== type ||
       row.name !== names[index] ||

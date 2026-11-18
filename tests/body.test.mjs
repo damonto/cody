@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { zstdCompressSync } from "node:zlib";
-import { parseConfig } from "../src/config/store.ts";
 import {
   MAX_INFERENCE_BODY_BYTES,
-  MAX_NATIVE_REQUEST_BODY_BYTES,
   MAX_VERCEL_REQUEST_BODY_BYTES,
 } from "../src/shared/payload-limits.ts";
 
@@ -121,102 +119,4 @@ test("deployment upload limits also bound decompression", async () => {
   );
   assert.equal(response.status, 413);
   assert.match((await response.json()).error.message, /128 bytes/);
-});
-
-test("compressed native requests enforce the decoded upload budget before resolving credentials", async () => {
-  const config = parseConfig({
-    providers: [
-      {
-        type: "xai",
-        id: "native",
-        disabled: false,
-        priority: 100,
-        account_selection: "session_affinity",
-        models: ["native-model"],
-        credentials: [
-          {
-            id: "account",
-            disabled: false,
-            priority: 100,
-            auth: { type: "oauth", account_ref: crypto.randomUUID() },
-          },
-        ],
-      },
-    ],
-    api_keys: [{ id: "client", api_key: "client", providers: ["native"] }],
-  });
-  const response = await handleInference(
-    new Request("https://gateway.example/v1/responses", {
-      method: "POST",
-      headers: { "content-encoding": "zstd" },
-      body: zstdCompressSync(
-        encoder.encode(
-          JSON.stringify({
-            model: "native-model",
-            input: "x".repeat(MAX_NATIVE_REQUEST_BODY_BYTES),
-          }),
-        ),
-      ),
-    }),
-    {
-      LOG_LEVEL: "off",
-      HEALTH: {
-        getByName: () => ({
-          getStatus: async () => ({ failures: 0, cooling_until: null }),
-        }),
-      },
-      PROVIDER_OAUTH_ACCOUNT: {
-        getByName: () => ({
-          run: async (command) => {
-            assert.equal(command.action, "quota");
-            return {
-              ok: true,
-              data: {
-                account_ref: crypto.randomUUID(),
-                provider_id: "native",
-                status: "ready",
-                email: null,
-                expires_at: null,
-                error: null,
-                models: [],
-                models_updated_at: null,
-                models_error: null,
-                xai: { subject: "account" },
-                quota: {
-                  groups: [
-                    {
-                      id: "daily",
-                      label: "Daily",
-                      buckets: [
-                        {
-                          id: "window",
-                          label: "Daily",
-                          window: "daily",
-                          used_percent: 0,
-                          remaining_fraction: 1,
-                          reset_at: null,
-                        },
-                      ],
-                    },
-                  ],
-                  last_error: null,
-                  subscription: {
-                    tier_id: "plus",
-                    tier_name: "Plus",
-                  },
-                  updated_at: Date.now(),
-                  stale: false,
-                },
-              },
-            };
-          },
-        }),
-      },
-    },
-    config,
-    config.api_keys[0],
-    "responses",
-  );
-  assert.equal(response.status, 413);
-  assert.equal((await response.json()).error.code, "request_too_large");
 });

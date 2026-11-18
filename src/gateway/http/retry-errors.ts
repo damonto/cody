@@ -209,15 +209,6 @@ function replayGuard(payload: RetryEnvelope, event: string): ReplayGuard {
   return { kind: "eligible" };
 }
 
-/** Eligible events still require a provider-recognized error before replay. */
-export function responseReplaySafety(
-  value: unknown,
-  event: string,
-): ReplayGuard["kind"] {
-  const parsed = envelopeSchema.safeParse(value);
-  return parsed.success ? replayGuard(parsed.data, event).kind : "forward";
-}
-
 /** Recognize errors separately from the decision to commit upstream output. */
 function classifyPayload(
   value: unknown,

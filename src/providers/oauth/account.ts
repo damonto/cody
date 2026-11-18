@@ -292,7 +292,6 @@ export class ProviderOAuthAccountCore {
         account.authorization_generation++;
         current.status = OAuthSessionStatus.Expired;
         current.tokens = null;
-        current.xai_device = undefined;
         current.user_code = null;
         current.verifier = "";
         current.state = "";
@@ -688,7 +687,6 @@ export class ProviderOAuthAccountCore {
       account.authorization_generation++;
       session.status = OAuthSessionStatus.Cancelled;
       session.tokens = null;
-      session.xai_device = undefined;
       session.user_code = null;
       session.verifier = "";
       session.state = "";
@@ -842,8 +840,6 @@ export class ProviderOAuthAccountCore {
   private async dispatch(command: z.output<typeof accountCommandSchema>) {
     switch (command.action) {
       case "codex_usage":
-      case "xai_auth_invalid":
-      case "xai_limit":
       case "claude_limit":
       case "claude_usage": {
         const provider = this.provider();

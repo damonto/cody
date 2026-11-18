@@ -10,12 +10,6 @@ import {
   claudeExtraUsageSchema,
   claudeLimitsSchema,
 } from "../claude/account-schema.ts";
-import {
-  xaiAccountSchema,
-  xaiCredentialSchema,
-  xaiLimitSchema,
-  xaiBillingSchema,
-} from "../xai/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import {
   OAuthFlow,
@@ -38,7 +32,6 @@ export type ProviderConnection = z.output<typeof connectionSchema>;
 export const oauthProviderTypeSchema = z.enum([
   ProviderType.Codex,
   ProviderType.Claude,
-  ProviderType.Xai,
 ]);
 export type OAuthProviderType = z.output<typeof oauthProviderTypeSchema>;
 export const proxyConfigurationSchema = z.object({
@@ -95,7 +88,6 @@ export {
   type ResetCredit,
   type ResetCredits,
 } from "../codex/account-schema.ts";
-export { xaiLimitSchema } from "../xai/account-schema.ts";
 export const quotaCreditsBalanceSchema = z.object({
   has_credits: z.boolean(),
   unlimited: z.boolean(),
@@ -109,8 +101,6 @@ export const quotaSnapshotSchema = z.object({
   stale: z.boolean(),
   limit_reached: z.boolean().optional(),
   credits_balance: quotaCreditsBalanceSchema.nullable().optional(),
-  xai_limits: z.array(xaiLimitSchema).optional(),
-  xai_billing: xaiBillingSchema,
   claude_limits: claudeLimitsSchema,
   extra_usage: claudeExtraUsageSchema,
   reset_credits: resetCreditsSchema.nullable().optional(),
@@ -140,7 +130,6 @@ export const accountViewSchema = z.object({
   provider_id: identifierSchema,
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
-  xai: xaiAccountSchema,
   claude: claudeAccountSchema.nullable().optional(),
   codex: codexAccountSchema,
   expires_at: z.number().nullable(),
@@ -173,7 +162,6 @@ export const sessionViewSchema = z.object({
 });
 export type SessionView = z.output<typeof sessionViewSchema>;
 export const resolvedOAuthSchema = z.union([
-  xaiCredentialSchema,
   claudeCredentialSchema,
   codexCredentialSchema,
 ]);

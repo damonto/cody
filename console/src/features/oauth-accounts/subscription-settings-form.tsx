@@ -11,27 +11,27 @@ import { useAppForm } from "@/lib/form";
 import { fieldErrors } from "@/lib/form-errors";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import type { ProxyGroupConfig } from "../../../../src/config/types";
+import type {
+  ClaudeProviderConfig,
+  ProxyGroupConfig,
+} from "../../../../src/config/types";
 import {
   applySettings,
   settingsEditorSchema,
   settingsFormValues,
-  type SubscriptionProvider,
 } from "./subscription-settings";
 
-export function SubscriptionSettingsForm<
-  Provider extends SubscriptionProvider,
->({
+export function SubscriptionSettingsForm({
   provider,
   groups,
   pending,
   onSave,
   close,
 }: {
-  provider: Provider;
+  provider: ClaudeProviderConfig;
   groups: ProxyGroupConfig[];
   pending: boolean;
-  onSave: (provider: Provider) => Promise<void>;
+  onSave: (provider: ClaudeProviderConfig) => Promise<void>;
   close: () => void;
 }) {
   const { accounts, discover, models, canDiscover } =
@@ -123,16 +123,6 @@ export function SubscriptionSettingsForm<
                 />
               )}
             </form.AppField>
-            {provider.type === "xai" && (
-              <form.AppField name="inject_x_search">
-                {(field) => (
-                  <field.ToggleField
-                    label="Enable native X Search"
-                    hint="Allow Grok to search X using its hosted search tool. Disabled by default."
-                  />
-                )}
-              </form.AppField>
-            )}
           </TabsContent>
           <TabsContent
             value="models"

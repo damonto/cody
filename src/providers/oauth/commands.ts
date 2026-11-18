@@ -5,7 +5,6 @@ import { OAuthFlow } from "./values.ts";
 import { z } from "zod";
 import {
   connectionSchema,
-  xaiLimitSchema,
   quotaGroupSchema,
   quotaSnapshotSchema,
   oauthProviderTypeSchema,
@@ -42,15 +41,6 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     token: z.string().min(1),
     connection: connectionSchema,
     proxy_configuration: proxyConfigurationSchema,
-  }),
-  xaiLimitSchema.extend({
-    action: z.literal("xai_limit"),
-    generation: z.number(),
-  }),
-  z.strictObject({
-    action: z.literal("xai_auth_invalid"),
-    generation: z.number(),
-    token: z.string().min(1),
   }),
   z.strictObject({
     action: z.literal("claude_usage"),

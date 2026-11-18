@@ -2,9 +2,7 @@ import type { CodexMode } from "./codex/account-schema.ts";
 import { type ProviderTransport } from "./transport-values.ts";
 import { type ApiProtocol } from "../gateway/protocol-values.ts";
 
-import type { NormalizedUsage } from "../billing/types.ts";
 import type { InferenceMetadata } from "../shared/upstream-observation.ts";
-import type { UpstreamMetadataObserver } from "../telemetry/inference-metadata.ts";
 import type { ProviderConfig } from "../config/types.ts";
 import type { GatewayEndpoint } from "../gateway/protocol.ts";
 import type { ProxyTransportContext } from "../gateway/proxies/transport.ts";
@@ -21,11 +19,7 @@ export interface ProviderRuntimeContext extends Omit<
   readonly connection?: ProviderConnection;
   readonly env: Pick<
     Bindings,
-    | "PROXY_GROUP"
-    | "PROVIDER_OAUTH_ACCOUNT"
-    | "SESSION_AFFINITY"
-    | "CONFIG_ENCRYPTION_KEY"
-    | "UPSTREAM_HTTP"
+    "PROXY_GROUP" | "PROVIDER_OAUTH_ACCOUNT" | "UPSTREAM_HTTP"
   > &
     Partial<Pick<Bindings, "HEALTH">>;
 }
@@ -43,8 +37,6 @@ export interface ProviderRequest {
   readonly model?: string;
   readonly clientId?: string;
   readonly sessionId?: string | undefined;
-  /** UTF-8 bytes of the decoded client body, before native translation. */
-  readonly bodyBytes?: number;
 }
 
 export interface AccountLimit {
@@ -126,20 +118,8 @@ export interface PreparedUpstreamRequest {
   readonly inferenceMetadata?: InferenceMetadata;
   /** Detect JSON/SSE from a bounded body prefix when the media type is unknown. */
   readonly detectResponseFormat?: boolean;
-  readonly transformResponse?: (
-    response: Response,
-    observe?: UpstreamMetadataObserver,
-  ) => Promise<Response>;
   readonly parseModels?: (value: unknown) => unknown;
-  readonly retryUsage?: (response: Response) => Promise<NormalizedUsage | null>;
 }
-
-export interface PreparedLocalResponse {
-  readonly kind: "local";
-  readonly response: Response;
-}
-export type PreparedProviderResult =
-  PreparedProviderRequest | PreparedLocalResponse;
 
 export interface PreparedProviderRequest
   extends PreparedUpstreamRequest, UpstreamTransport {
@@ -156,12 +136,6 @@ export interface ProviderAdapter<
     endpoint: ProviderEndpoint,
     transport: ProviderTransport,
   ): boolean;
-  /** Reject invalid input before local handling or credential resolution. */
-  validate?(input: ProviderRequest): void;
-  local?(
-    provider: Provider,
-    input: ProviderRequest,
-  ): Promise<Response | undefined>;
   prepare(
     provider: Provider,
     credential: ResolvedCredentialForProvider<Provider["type"]>,

@@ -48,14 +48,14 @@ function gatewayConfig() {
         priority: 100,
         supports_websocket: true,
         supports_web_search: true,
-        models: ["grok-4.5", "review-model"],
+        models: ["upstream-chat", "review-model"],
       },
     ],
     api_keys: [
       { id: "gateway-client", api_key: "client-key", providers: ["primary"] },
     ],
     model_routes: {
-      "gpt-5.6-sol": { model: "grok-4.5" },
+      "gpt-5.6-sol": { model: "upstream-chat" },
       "codex-auto-review": { model: "review-model", providers: ["primary"] },
     },
   };
@@ -251,7 +251,7 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
       url: "https://primary.example/v1/responses?trace=yes",
       authorization: "Bearer upstream-key",
       contentMd5: null,
-      body: { model: "grok-4.5", stream: true, input: "hello" },
+      body: { model: "upstream-chat", stream: true, input: "hello" },
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -287,7 +287,7 @@ test("Worker forwards Claude Code messages with a bearer token", async () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "grok-4.5",
+          model: "upstream-chat",
           max_tokens: 1024,
           messages: [{ role: "user", content: "hello" }],
           stream: true,
@@ -305,7 +305,7 @@ test("Worker forwards Claude Code messages with a bearer token", async () => {
       authorization: "Bearer upstream-key",
       anthropicVersion: "2023-06-01",
       body: {
-        model: "grok-4.5",
+        model: "upstream-chat",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
         stream: true,
@@ -325,7 +325,7 @@ test("Worker returns Anthropic-shaped authentication errors to Claude clients", 
         "x-api-key": "wrong-key",
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({ model: "grok-4.5", messages: [] }),
+      body: JSON.stringify({ model: "upstream-chat", messages: [] }),
     }),
     testEnv(gatewayConfig()),
     {},
@@ -347,7 +347,7 @@ test("Worker keeps the OpenAI invalid_api_key code for bearer clients", async ()
     new Request("https://gateway.example/v1/responses", {
       method: "POST",
       headers: { authorization: "Bearer wrong-key" },
-      body: JSON.stringify({ model: "grok-4.5", input: "hello" }),
+      body: JSON.stringify({ model: "upstream-chat", input: "hello" }),
     }),
     testEnv(gatewayConfig()),
     {},
@@ -433,28 +433,28 @@ test("Worker forwards alpha search and responses compact aliases with response f
         search: "?trace=%2Falpha%2Fsearch",
         authorization: "Bearer upstream-key",
         tenant: "tenant-a",
-        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+        body: { model: "upstream-chat", id: "search-session", input: "hello" },
       },
       {
         url: "/v1/alpha/search",
         search: "?trace=%2Fv1%2Falpha%2Fsearch",
         authorization: "Bearer upstream-key",
         tenant: "tenant-a",
-        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+        body: { model: "upstream-chat", id: "search-session", input: "hello" },
       },
       {
         url: "/v1/responses/compact",
         search: "?trace=%2Fresponses%2Fcompact",
         authorization: "Bearer upstream-key",
         tenant: "tenant-a",
-        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+        body: { model: "upstream-chat", id: "search-session", input: "hello" },
       },
       {
         url: "/v1/responses/compact",
         search: "?trace=%2Fv1%2Fresponses%2Fcompact",
         authorization: "Bearer upstream-key",
         tenant: "tenant-a",
-        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+        body: { model: "upstream-chat", id: "search-session", input: "hello" },
       },
     ],
   );
@@ -480,7 +480,7 @@ test("alpha search skips higher-priority providers without web search support", 
     priority: 50,
     supports_websocket: false,
     supports_web_search: true,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   config.api_keys[0].providers.push("search");
   const originalFetch = globalThis.fetch;
@@ -679,7 +679,7 @@ for (const [reason, unreachable] of [
       priority: 50,
       supports_websocket: false,
       supports_web_search: true,
-      models: ["grok-4.5"],
+      models: ["upstream-chat"],
     });
     unreachable(config);
     const originalFetch = globalThis.fetch;
@@ -751,7 +751,7 @@ test("session-id header and client metadata share the same persistent binding", 
     ],
     disabled: false,
     priority: 100,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   config.api_keys[0].providers.push("peer");
   const originalFetch = globalThis.fetch;
@@ -829,7 +829,7 @@ test("upstream observations use the routed request and exclude configured retry 
           { status: 503 },
         )
       : Response.json({
-          model: "grok-4.5",
+          model: "upstream-chat",
           usage: { input_tokens: 10, output_tokens: 3 },
         });
   };
@@ -860,8 +860,8 @@ test("upstream observations use the routed request and exclude configured retry 
     assert.equal(event.attempts.length, 2);
     assert.equal(event.requested_model, "gpt-5.6-sol");
     assert.deepEqual(event.upstream_observation, {
-      request: { model: "grok-4.5", reasoning: { effort: "high" } },
-      response: { model: "grok-4.5" },
+      request: { model: "upstream-chat", reasoning: { effort: "high" } },
+      response: { model: "upstream-chat" },
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -1187,7 +1187,7 @@ test("gateway applies per-key model routes and keeps other credentials on global
     assert.equal(secondResponse.status, 200);
     assert.deepEqual(
       upstreamBodies.map((body) => body.model),
-      ["review-model", "grok-4.5"],
+      ["review-model", "upstream-chat"],
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1207,7 +1207,7 @@ test("gateway applies provider model routes over per-key and global routes", asy
     "gpt-5.6-sol": { model: "review-model" },
   };
   config.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5" },
+    "gpt-5.6-sol": { model: "upstream-chat" },
   };
 
   try {
@@ -1261,11 +1261,11 @@ test("gateway rewrites by the selected provider route when providers differ", as
     priority: 100,
     supports_websocket: true,
     supports_web_search: true,
-    models: ["grok-4.5", "review-model"],
+    models: ["upstream-chat", "review-model"],
   });
   config.api_keys[0].providers = ["primary", "secondary"];
   config.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
+    "gpt-5.6-sol": { model: "upstream-chat", providers: ["secondary"] },
   };
   config.providers[0].model_routes = {
     "gpt-5.6-sol": { model: "review-model" },
@@ -1349,7 +1349,7 @@ test("model endpoints preserve standard and Codex formats without usage records"
     Response.json({
       object: "list",
       data: [
-        { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        { id: "upstream-chat", object: "model", owned_by: "newapi" },
         { id: "review-model", object: "model", owned_by: "newapi" },
       ],
     });
@@ -1376,7 +1376,7 @@ test("model endpoints preserve standard and Codex formats without usage records"
     const standardBody = await standard.json();
     assert.deepEqual(
       standardBody.data.map((model) => model.id),
-      ["grok-4.5", "gpt-5.6-sol", "review-model"],
+      ["upstream-chat", "gpt-5.6-sol", "review-model"],
     );
 
     const codex = await worker.fetch(
@@ -1466,7 +1466,7 @@ test("model endpoint returns complete Anthropic ModelInfo entries to Claude clie
     Response.json({
       object: "list",
       data: [
-        { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        { id: "upstream-chat", object: "model", owned_by: "newapi" },
         { id: "review-model", object: "model", owned_by: "newapi" },
       ],
     });
@@ -1487,7 +1487,7 @@ test("model endpoint returns complete Anthropic ModelInfo entries to Claude clie
     const body = await response.json();
     assert.deepEqual(
       body.data.map((model) => model.id),
-      ["grok-4.5", "gpt-5.6-sol", "review-model"],
+      ["upstream-chat", "gpt-5.6-sol", "review-model"],
     );
     for (const entry of body.data) {
       assert.equal(entry.type, "model");
@@ -1497,7 +1497,7 @@ test("model endpoint returns complete Anthropic ModelInfo entries to Claude clie
       assert.equal(typeof entry.max_tokens, "number");
       assert.equal(typeof entry.capabilities, "object");
     }
-    assert.equal(body.data[0].display_name, "grok-4.5");
+    assert.equal(body.data[0].display_name, "upstream-chat");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1510,7 +1510,7 @@ test("model catalog fan-out is summarized in one request log", async () => {
   globalThis.fetch = async () =>
     Response.json({
       data: [
-        { id: "grok-4.5", object: "model" },
+        { id: "upstream-chat", object: "model" },
         { id: "review-model", object: "model" },
       ],
     });
@@ -1567,7 +1567,7 @@ test("partial model catalog failures remain visible at warn level", async () => 
     ],
     disabled: false,
     priority: 50,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   config.api_keys[0].providers.push("secondary");
 
@@ -1580,7 +1580,7 @@ test("partial model catalog failures remain visible at warn level", async () => 
         { status: 500 },
       );
     }
-    return Response.json({ data: [{ id: "grok-4.5", object: "model" }] });
+    return Response.json({ data: [{ id: "upstream-chat", object: "model" }] });
   };
 
   const execution = trackedExecutionContext();
@@ -1638,7 +1638,7 @@ test("model catalog logs JSON upstream errors within one request budget", async 
       ],
       disabled: false,
       priority: 100 - index,
-      models: ["grok-4.5"],
+      models: ["upstream-chat"],
     });
     config.api_keys[0].providers.push(`provider-${index}`);
   }
@@ -1703,7 +1703,7 @@ test("successful model catalogs are cached for repeated equivalent requests", as
   globalThis.fetch = async () => {
     calls += 1;
     return Response.json({
-      data: [{ id: "grok-4.5", object: "model" }],
+      data: [{ id: "upstream-chat", object: "model" }],
     });
   };
 
@@ -1761,7 +1761,7 @@ test("concurrent model catalog misses do not share request-scoped I/O", async ()
     }
     await upstreamGate;
     return Response.json({
-      data: [{ id: "grok-4.5", object: "model" }],
+      data: [{ id: "upstream-chat", object: "model" }],
     });
   };
 
@@ -1837,7 +1837,7 @@ test("disabled providers are skipped for inference and model aggregation", async
     ],
     disabled: false,
     priority: 50,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   config.api_keys[0].providers.push("secondary");
 
@@ -1848,7 +1848,7 @@ test("disabled providers are skipped for inference and model aggregation", async
     upstreamUrls.push(request.url);
     if (request.url.endsWith("/models")) {
       return Response.json({
-        data: [{ id: "grok-4.5", object: "model", owned_by: "newapi" }],
+        data: [{ id: "upstream-chat", object: "model", owned_by: "newapi" }],
       });
     }
     return new Response("ok", { status: 200 });
@@ -1883,7 +1883,7 @@ test("disabled providers are skipped for inference and model aggregation", async
     assert.equal(models.status, 200);
     assert.deepEqual(
       (await models.json()).data.map((model) => model.id),
-      ["grok-4.5", "gpt-5.6-sol"],
+      ["upstream-chat", "gpt-5.6-sol"],
     );
     assert.deepEqual(upstreamUrls, [
       "https://secondary.example/v1/responses",
@@ -1911,7 +1911,7 @@ test("an upstream error is returned without retrying another provider", async ()
     ],
     disabled: false,
     priority: 50,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   config.api_keys[0].providers.push("secondary");
 
@@ -2094,7 +2094,7 @@ test("an authenticated client can list and clear health only for allowed provide
     ],
     disabled: false,
     priority: 50,
-    models: ["grok-4.5"],
+    models: ["upstream-chat"],
   });
   const env = testEnv(config);
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {

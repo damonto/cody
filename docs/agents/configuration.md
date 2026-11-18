@@ -18,7 +18,7 @@ Start with `src/config/schema.ts`, `src/control/resource-input.ts`, `src/admin/r
 
 ## Current configuration shape
 
-- Use `providers` directly, without a schema-version field. Only `ai_gateway`, `codex`, `claude` and `xai` are implemented. Do not accept another native type before its adapter and credential resolver exist.
+- Use `providers` directly, without a schema-version field. Only `ai_gateway`, `codex` and `claude` are implemented. Do not accept another native type before its adapter and credential resolver exist.
 - AI Gateway permits multiple providers. Native providers are optional singletons by type, with editable names and server-generated IDs. `0015_native_provider_defaults.sql` seeds missing native providers disabled without replacing existing providers or immutable snapshots; the console does not create/delete native providers.
 - Deleting an AI Gateway provider atomically soft-deletes its credentials, models, prices and owned routes, and detaches client/route relations. Retain clients with an empty provider list (no upstream access). Soft-delete global/client routes that lose all explicitly allowed providers or whose target is no longer supported; never turn an empty restriction into unrestricted access. Preserve historical identities, snapshots and price versions.
 - `providers[].models` contains real upstream model names. AI Gateway always requires non-empty models and credentials. Enabled native providers require both; disabled native providers may save empty arrays so settings and OAuth setup can happen independently. Unsaved forms may be incomplete.
@@ -58,10 +58,10 @@ Tests: `tests/cache-durations.test.mjs`, `tests/cache-durations-sql.test.mjs` an
 
 Inspect the matching files in `migrations/d1/` and `migrations/postgres/`, plus `tests/configuration-cleanup.test.mjs`, `tests/entity-configuration.test.mjs` and `tests/native-provider-defaults.test.mjs` before editing the schema.
 
-- Keep `0001_control_and_usage.sql` stable: deployed databases record that filename as applied. Preserve OAuth migrations `0007` through `0010` and all subsequent applied records.
+- Keep `0001_control_and_usage.sql` stable. Fresh databases initialize the current OAuth account types in `0007_oauth_accounts.sql`. Existing databases retain their applied migration records.
 - `0012_entity_configuration.sql` initializes the final entity schema, including `settings` and UUID price versions, and removes old document stores without creating conversion tables.
 - The Provider conversion, entity cutover, manual `0013` cleanup and one-time `0014` price migration are retired. Do not recreate their files, parsers, converters or runtime compatibility upgrades.
 - Existing databases retain their migration history. Never rerun `0012` to repair an older schema. If a database still has the old `configuration_settings` name, reconcile that schema explicitly before running the updated application; do not add an automatic runtime rename or conversion.
-- `0019_remove_antigravity_seed.sql` removes the unused default from new databases and restricts subsequent writes to supported provider types. Clean existing installations with the operator SQL before starting the new runtime.
+- `0021_enforce_provider_types.sql` applies the current provider type constraints on new and existing databases.
 - New schema changes go in new migrations. Match D1/PostgreSQL behavior and retain atomicity; SQLite/libSQL reuse D1 migrations plus `migrations/sqlite/`.
 - Native history/notes configuration is removed. For existing PostgreSQL installations, run [the manual cleanup SQL](../../scripts/sql/remove-history-notes.postgres.sql) with traffic and configuration writers stopped before starting the new build. It removes `supports_context_management` from provider settings and compiled snapshots; runtime parsing does not normalize removed fields. Migration `0016` cleans provider entities, including defaults seeded by `0015`, without rewriting snapshots.

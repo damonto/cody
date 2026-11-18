@@ -119,14 +119,6 @@ export class IoRedisClient implements RedisClient {
     return this.run((redis) => redis.hget(key, field));
   }
 
-  hlen(key: string): Promise<number> {
-    return this.run((redis) => redis.hlen(key));
-  }
-
-  hgetall(key: string): Promise<Record<string, string>> {
-    return this.run((redis) => redis.hgetall(key));
-  }
-
   async hset(key: string, fields: Record<string, string>): Promise<void> {
     if (Object.keys(fields).length === 0) return;
     await this.run((redis) => redis.hset(key, fields));
@@ -135,29 +127,6 @@ export class IoRedisClient implements RedisClient {
   hdel(key: string, fields: readonly string[]): Promise<number> {
     if (fields.length === 0) return Promise.resolve(0);
     return this.run((redis) => redis.hdel(key, ...fields));
-  }
-
-  async zadd(key: string, score: number, member: string): Promise<void> {
-    await this.run((redis) => redis.zadd(key, score, member));
-  }
-
-  async zscore(key: string, member: string): Promise<number | null> {
-    const score = await this.run((redis) => redis.zscore(key, member));
-    return score === null ? null : Number(score);
-  }
-
-  zrem(key: string, member: string): Promise<number> {
-    return this.run((redis) => redis.zrem(key, member));
-  }
-
-  zrangebyscore(
-    key: string,
-    max: number,
-    limit: number,
-  ): Promise<readonly string[]> {
-    return this.run((redis) =>
-      redis.zrangebyscore(key, "-inf", max, "LIMIT", 0, limit),
-    );
   }
 
   async multi(commands: readonly RedisWriteCommand[]): Promise<void> {
@@ -178,12 +147,6 @@ export class IoRedisClient implements RedisClient {
             break;
           case "hdel":
             pipeline.hdel(command[1], command[2]);
-            break;
-          case "zadd":
-            pipeline.zadd(command[1], command[2], command[3]);
-            break;
-          case "zrem":
-            pipeline.zrem(command[1], command[2]);
             break;
           case "pexpire":
             pipeline.pexpire(command[1], command[2]);

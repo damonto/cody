@@ -1,5 +1,4 @@
 import { SessionAffinityStatus } from "../routing/values.ts";
-import { XaiReplayStore } from "../../providers/xai/replay-store.ts";
 
 import { nextRotationCredential } from "../health/health.ts";
 import { configureLogging, errorMessage, logWarn } from "../../shared/log.ts";
@@ -191,12 +190,6 @@ async function invalidateIndex(
 }
 
 export class SessionAffinityCore {
-  beginXaiReplay() {
-    return new XaiReplayStore(this.ctx.storage).begin();
-  }
-  commitXaiReplay(version: string, value: string | null) {
-    return new XaiReplayStore(this.ctx.storage).commit(version, value);
-  }
   constructor(
     protected readonly ctx: ObjectContext,
     protected readonly env: Bindings,
@@ -586,7 +579,6 @@ export class SessionAffinityCore {
   }
 
   async alarm(): Promise<void> {
-    if (await new XaiReplayStore(this.ctx.storage).alarm()) return;
     const expired = await this.ctx.storage.transaction(async (transaction) => {
       const now = Date.now();
       const expired = (await records(transaction)).filter(

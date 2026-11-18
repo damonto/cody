@@ -1,7 +1,6 @@
 import {
   newCodexProvider,
   newClaudeProvider,
-  newXaiProvider,
 } from "../../tests/helpers/native-provider-fixtures";
 import { resourceRequest } from "./configuration-resources";
 import { maskSecrets } from "../../src/control/secrets";
@@ -156,7 +155,7 @@ export async function mockApi(
   for (const group of initial.config.proxy_groups)
     for (const node of group.proxies) node.name ??= node.id;
   let draft = structuredClone(initial);
-  for (const make of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
+  for (const make of [newCodexProvider, newClaudeProvider]) {
     const provider = make();
     if (!draft.config.providers.some((item) => item.type === provider.type))
       draft.config.providers.push(provider);

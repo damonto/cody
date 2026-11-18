@@ -17,12 +17,12 @@ import {
 
 const results = [
   {
-    provider: { id: "primary", models: ["grok-4.5"] },
+    provider: { id: "primary", models: ["upstream-chat"] },
     success: true,
     models: [
       {
-        id: "grok-4.5",
-        raw: { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        id: "upstream-chat",
+        raw: { id: "upstream-chat", object: "model", owned_by: "newapi" },
       },
     ],
   },
@@ -31,11 +31,11 @@ const results = [
 test("standard aggregation adds a route without hiding the upstream model", () => {
   const models = aggregateStandardModels(
     results,
-    new Map([["primary", { "gpt-5.6-sol": { model: "grok-4.5" } }]]),
+    new Map([["primary", { "gpt-5.6-sol": { model: "upstream-chat" } }]]),
   );
   assert.deepEqual(
     models.map((model) => model.id),
-    ["grok-4.5", "gpt-5.6-sol"],
+    ["upstream-chat", "gpt-5.6-sol"],
   );
 });
 
@@ -45,19 +45,19 @@ test("standard aggregation honors route provider constraints", () => {
     new Map([
       [
         "primary",
-        { "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] } },
+        { "gpt-5.6-sol": { model: "upstream-chat", providers: ["secondary"] } },
       ],
     ]),
   );
   assert.deepEqual(
     models.map((model) => model.id),
-    ["grok-4.5"],
+    ["upstream-chat"],
   );
 });
 
 test("a self-route hides a model supplied only by disallowed providers", () => {
   const routes = {
-    "grok-4.5": { model: "grok-4.5", providers: ["secondary"] },
+    "upstream-chat": { model: "upstream-chat", providers: ["secondary"] },
   };
   assert.deepEqual(
     aggregateStandardModels(results, new Map([["primary", routes]])),
@@ -67,7 +67,7 @@ test("a self-route hides a model supplied only by disallowed providers", () => {
   const secondaryResults = [
     {
       ...results[0],
-      provider: { id: "secondary", models: ["grok-4.5"] },
+      provider: { id: "secondary", models: ["upstream-chat"] },
     },
   ];
   assert.deepEqual(
@@ -75,14 +75,14 @@ test("a self-route hides a model supplied only by disallowed providers", () => {
       secondaryResults,
       new Map([["secondary", routes]]),
     ).map((model) => model.id),
-    ["grok-4.5"],
+    ["upstream-chat"],
   );
 });
 
 test("standard aggregation resolves routes per provider", () => {
   const primaryResults = [
     {
-      provider: { id: "primary", models: ["review-model", "grok-4.5"] },
+      provider: { id: "primary", models: ["review-model", "upstream-chat"] },
       success: true,
       models: [
         {
@@ -90,18 +90,18 @@ test("standard aggregation resolves routes per provider", () => {
           raw: { id: "review-model", object: "model", owned_by: "primary" },
         },
         {
-          id: "grok-4.5",
-          raw: { id: "grok-4.5", object: "model", owned_by: "newapi" },
+          id: "upstream-chat",
+          raw: { id: "upstream-chat", object: "model", owned_by: "newapi" },
         },
       ],
     },
     {
-      provider: { id: "secondary", models: ["grok-4.5"] },
+      provider: { id: "secondary", models: ["upstream-chat"] },
       success: true,
       models: [
         {
-          id: "grok-4.5",
-          raw: { id: "grok-4.5", object: "model", owned_by: "newapi" },
+          id: "upstream-chat",
+          raw: { id: "upstream-chat", object: "model", owned_by: "newapi" },
         },
       ],
     },
@@ -110,18 +110,18 @@ test("standard aggregation resolves routes per provider", () => {
     primaryResults,
     new Map([
       ["primary", { "gpt-5.6-sol": { model: "review-model" } }],
-      ["secondary", { "gpt-5.6-sol": { model: "grok-4.5" } }],
+      ["secondary", { "gpt-5.6-sol": { model: "upstream-chat" } }],
     ]),
   );
   assert.deepEqual(
     models.map((model) => model.id),
-    ["review-model", "gpt-5.6-sol", "grok-4.5"],
+    ["review-model", "gpt-5.6-sol", "upstream-chat"],
   );
 });
 
 test("Codex aggregation only returns exact catalog matches", () => {
   const models = aggregateCodexModels(
-    new Set(["grok-4.5", "gpt-5.6-sol", "codex-auto-review"]),
+    new Set(["upstream-chat", "gpt-5.6-sol", "codex-auto-review"]),
   );
   assert.deepEqual(
     models.map((model) => model.slug),
@@ -169,13 +169,13 @@ test("Anthropic clients receive the Anthropic model-list shape", async () => {
 test("Anthropic model entries carry the ModelInfo fields Claude requires", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  config.providers[0].models = ["grok-4.7", "gpt-5.6-sol"];
+  config.providers[0].models = ["deepseek-v4.1-flash", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
-        { id: "grok-4.7", object: "model" },
+        { id: "deepseek-v4.1-flash", object: "model" },
         { id: "gpt-5.6-sol", object: "model" },
       ],
     });
@@ -199,28 +199,28 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
     const body = await response.json();
     assert.deepEqual(
       body.data.map((entry) => entry.id),
-      ["grok-4.7", "gpt-5.6-sol"],
+      ["deepseek-v4.1-flash", "gpt-5.6-sol"],
     );
-    const grok = body.data.find((entry) => entry.id === "grok-4.7");
-    assert.equal(grok.type, "model");
-    assert.equal(grok.display_name, "Grok 4.7");
-    assert.equal(typeof grok.created_at, "string");
-    assert.equal(grok.max_input_tokens, 1048576);
-    assert.equal(typeof grok.max_tokens, "number");
-    assert.equal(grok.capabilities.image_input.supported, true);
-    assert.equal(grok.capabilities.pdf_input.supported, false);
-    assert.equal(grok.capabilities.code_execution.supported, false);
-    assert.equal(grok.capabilities.effort.supported, true);
-    assert.deepEqual(grok.capabilities.effort, {
+    const flash = body.data.find((entry) => entry.id === "deepseek-v4.1-flash");
+    assert.equal(flash.type, "model");
+    assert.equal(flash.display_name, "DeepSeek-Flash");
+    assert.equal(typeof flash.created_at, "string");
+    assert.equal(flash.max_input_tokens, 1048576);
+    assert.equal(typeof flash.max_tokens, "number");
+    assert.equal(flash.capabilities.image_input.supported, true);
+    assert.equal(flash.capabilities.pdf_input.supported, false);
+    assert.equal(flash.capabilities.code_execution.supported, false);
+    assert.equal(flash.capabilities.effort.supported, true);
+    assert.deepEqual(flash.capabilities.effort, {
       supported: true,
       low: { supported: true },
-      medium: { supported: true },
+      medium: { supported: false },
       high: { supported: true },
-      max: { supported: false },
-      xhigh: { supported: true },
+      max: { supported: true },
+      xhigh: { supported: false },
     });
-    assert.equal(grok.capabilities.thinking.supported, true);
-    assert.deepEqual(grok.capabilities.thinking.types, {
+    assert.equal(flash.capabilities.thinking.supported, true);
+    assert.deepEqual(flash.capabilities.thinking.types, {
       adaptive: { supported: true },
       enabled: { supported: true },
     });
@@ -239,13 +239,13 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
 test("synthesized Anthropic entries carry client fields and do not guess context management", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  // grok-4.7 has supports_reasoning_summaries in the catalog, which used to be
+  // deepseek-v4.1-flash has supports_reasoning_summaries in the catalog, which used to be
   // misread as support for the three Anthropic context-management betas.
-  config.providers[0].models = ["grok-4.7"];
+  config.providers[0].models = ["deepseek-v4.1-flash"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    Response.json({ data: [{ id: "grok-4.7", object: "model" }] });
+    Response.json({ data: [{ id: "deepseek-v4.1-flash", object: "model" }] });
   const { env } = healthEnvironment();
 
   try {
@@ -264,8 +264,8 @@ test("synthesized Anthropic entries carry client fields and do not guess context
     const entry = (await response.json()).data[0];
     // Claude Desktop Discovery requires `name` even though the API reference
     // for api.anthropic.com does not list it.
-    assert.equal(entry.name, "grok-4.7");
-    assert.equal(entry.display_name, "Grok 4.7");
+    assert.equal(entry.name, "deepseek-v4.1-flash");
+    assert.equal(entry.display_name, "DeepSeek-Flash");
     assert.deepEqual(entry.capabilities.context_management, {
       supported: false,
       clear_thinking_20251015: { supported: false },
@@ -398,14 +398,14 @@ test("Anthropic model entries fall back conservatively outside the catalog", asy
 test("only models with a 1M context window advertise the 1M flags", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
-  // grok-4.7 has a 1M context window in the catalog; gpt-5.6-sol has 872k.
-  config.providers[0].models = ["grok-4.7", "gpt-5.6-sol"];
+  // deepseek-v4.1-flash has a 1M context window in the catalog; gpt-5.6-sol has 872k.
+  config.providers[0].models = ["deepseek-v4.1-flash", "gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json({
       data: [
-        { id: "grok-4.7", object: "model" },
+        { id: "deepseek-v4.1-flash", object: "model" },
         { id: "gpt-5.6-sol", object: "model" },
       ],
     });
@@ -426,11 +426,11 @@ test("only models with a 1M context window advertise the 1M flags", async () => 
       "test",
     );
     const body = await response.json();
-    const grok = body.data.find((entry) => entry.id === "grok-4.7");
+    const flash = body.data.find((entry) => entry.id === "deepseek-v4.1-flash");
     const gpt = body.data.find((entry) => entry.id === "gpt-5.6-sol");
-    assert.equal(grok.max_input_tokens, 1048576);
-    assert.equal(grok.supports1m, true);
-    assert.equal(grok.prefer1m, true);
+    assert.equal(flash.max_input_tokens, 1048576);
+    assert.equal(flash.supports1m, true);
+    assert.equal(flash.prefer1m, true);
     assert.equal(gpt.max_input_tokens, 872000);
     assert.equal(gpt.supports1m, false);
     assert.equal(gpt.prefer1m, false);

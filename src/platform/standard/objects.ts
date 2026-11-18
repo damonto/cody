@@ -18,7 +18,7 @@ import type {
   ObjectStorage,
   ObjectTransaction,
 } from "../object-context.ts";
-import type { RedisClient, RedisWriteCommand } from "./redis.ts";
+import type { RedisClient } from "./redis.ts";
 import type { BackgroundTasks } from "./tasks.ts";
 
 const LOCK_TTL_MS = 30_000;
@@ -60,7 +60,7 @@ export interface ObjectBackend {
   dueAlarms(namespace: string, now: number, limit: number): Promise<string[]>;
 }
 
-/** Applies list options to unordered entries (Redis hashes, memory maps). */
+/** Applies list options to unordered entries (memory maps). */
 export function selectEntries(
   entries: Iterable<[string, string]>,
   options: ObjectListOptions,
@@ -75,89 +75,6 @@ export function selectEntries(
   return options.limit === undefined
     ? selected
     : selected.slice(0, options.limit);
-}
-
-export class RedisObjectBackend implements ObjectBackend {
-  constructor(
-    private readonly redis: RedisClient,
-    private readonly prefix = "cody",
-    private readonly lock?: ObjectLock,
-  ) {}
-
-  async scope(
-    _namespace: string,
-    _name: string,
-    lock?: ObjectLock,
-  ): Promise<ObjectBackend> {
-    if (!lock?.condition)
-      throw new Error("Redis object storage requires a fenced lock");
-    return new RedisObjectBackend(this.redis, this.prefix, lock);
-  }
-
-  private hashKey(namespace: string, name: string): string {
-    return `${this.prefix}:o:${namespace}:${name}`;
-  }
-
-  private alarmKey(namespace: string): string {
-    return `${this.prefix}:a:${namespace}`;
-  }
-
-  get(namespace: string, name: string, key: string): Promise<string | null> {
-    return this.redis.hget(this.hashKey(namespace, name), key);
-  }
-
-  count(namespace: string, name: string): Promise<number> {
-    return this.redis.hlen(this.hashKey(namespace, name));
-  }
-
-  async list(
-    namespace: string,
-    name: string,
-    options: ObjectListOptions,
-  ): Promise<[string, string][]> {
-    return selectEntries(
-      Object.entries(await this.redis.hgetall(this.hashKey(namespace, name))),
-      options,
-    );
-  }
-
-  async commit(
-    namespace: string,
-    name: string,
-    change: ObjectChange,
-  ): Promise<void> {
-    const hash = this.hashKey(namespace, name);
-    const commands: RedisWriteCommand[] = [];
-    if (change.clear) commands.push(["del", hash]);
-    for (const key of change.deletes) commands.push(["hdel", hash, key]);
-    for (const [key, value] of change.puts)
-      commands.push(["hset", hash, key, value]);
-    if (change.alarm === null)
-      commands.push(["zrem", this.alarmKey(namespace), name]);
-    else if (change.alarm !== undefined)
-      commands.push(["zadd", this.alarmKey(namespace), change.alarm, name]);
-    if (change.alarm !== undefined && change.alarm !== null)
-      commands.push(["pexpire", hash, Math.max(1, change.alarm - Date.now())]);
-    if (
-      !this.lock?.condition ||
-      !(await this.redis.compareAndWrite([this.lock.condition], commands))
-    )
-      throw new Error("Object lock was lost");
-  }
-
-  getAlarm(namespace: string, name: string): Promise<number | null> {
-    return this.redis.zscore(this.alarmKey(namespace), name);
-  }
-
-  async dueAlarms(
-    namespace: string,
-    now: number,
-    limit: number,
-  ): Promise<string[]> {
-    return [
-      ...(await this.redis.zrangebyscore(this.alarmKey(namespace), now, limit)),
-    ];
-  }
 }
 
 /** Single-process storage for objects whose lifetime is one connection. */

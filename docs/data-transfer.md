@@ -8,7 +8,7 @@ The CLI copies all declared business tables: configuration entities and relation
 
 The four native providers' encrypted OAuth account records are copied unchanged, including tokens, account identity, generation and any state stored within that ciphertext. Import does not refresh tokens or call providers. Source OAuth alarms are paused and target schedules are enabled only after verification.
 
-Health/cooldown objects, proxy runtime state, reset execution leases, sessions, xAI continuation caches, WebSocket journals, usage outboxes and queue messages are not transferred. The CLI does not inspect queues, recover unrecorded usage or settle unfinished requests. Database records are copied as stored. Deployment domains, administrator authentication, platform credentials and Redis state must be configured separately.
+Health/cooldown objects, proxy runtime state, reset execution leases, sessions, WebSocket journals, usage outboxes and queue messages are not transferred. The CLI does not inspect queues, recover unrecorded usage or settle unfinished requests. Database records are copied as stored. Deployment domains, administrator authentication, platform credentials and Redis state must be configured separately.
 
 OAuth discovery includes disabled and soft-deleted resources. Extra objects outside the SQL/history inventory are skipped. An OAuth index whose provider no longer exists and whose account has no credential or historical reference is also skipped before accessing its object; the SQL row is preserved. Accounts retained in the inventory must pass decryption and identity checks.
 

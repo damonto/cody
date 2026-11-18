@@ -17,7 +17,7 @@ import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import { ProviderRequestError } from "../../providers/errors.ts";
 import { prepareProviderRequest } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
-import type { PreparedProviderResult } from "../../providers/types.ts";
+import type { PreparedProviderRequest } from "../../providers/types.ts";
 import {
   bounded,
   elapsedMs,
@@ -86,7 +86,6 @@ export async function handleInference(
   if (input instanceof Response) return input;
   const {
     rawBody,
-    decodedBodyBytes,
     originalText,
     payload,
     sessionId,
@@ -125,7 +124,6 @@ export async function handleInference(
       env,
       routeForSelection,
       {
-        skipXaiQuota: upstreamPath === "messages/count_tokens",
         skipClaudeQuota: upstreamPath === "messages/count_tokens",
         excludedCredentials,
         codexRequest: {
@@ -211,7 +209,7 @@ export async function handleInference(
       },
     });
 
-    let preparation: PreparedProviderResult;
+    let preparation: PreparedProviderRequest;
     try {
       preparation = await prepareProviderRequest(
         provider,
@@ -222,7 +220,6 @@ export async function handleInference(
           transport: ProviderTransport.Http,
           protocol,
           payload,
-          bodyBytes: decodedBodyBytes,
           model: upstreamModel,
           clientId: client.id,
           sessionId,
@@ -255,7 +252,6 @@ export async function handleInference(
         },
       );
     }
-    if (preparation.kind === "local") return preparation.response;
     const prepared = preparation;
     const { headers } = prepared;
     requestLog?.set({
@@ -462,31 +458,11 @@ export async function handleInference(
         ),
       );
     }
-    if (!prepared.transformResponse) {
-      return (
-        meter?.passthroughResponse(
-          upstreamResponse,
-          prepared.detectResponseFormat,
-        ) ?? upstreamResponse
-      );
-    }
-    try {
-      return await prepared.transformResponse(
+    return (
+      meter?.passthroughResponse(
         upstreamResponse,
-        meter
-          ? (metadata, terminal) => meter.observeUpstream(metadata, terminal)
-          : undefined,
-      );
-    } catch (error) {
-      meter?.diagnostic("invalid_upstream_response");
-      return apiError(
-        protocol,
-        502,
-        error instanceof ProviderRequestError
-          ? error.message
-          : "The selected provider returned an invalid response",
-        { code: "invalid_upstream_response", requestId },
-      );
-    }
+        prepared.detectResponseFormat,
+      ) ?? upstreamResponse
+    );
   }
 }

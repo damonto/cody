@@ -6,7 +6,6 @@ import type {
   clientSchema,
   codexProviderSchema,
   claudeProviderSchema,
-  xaiProviderSchema,
   configurationSchema,
   credentialSchema,
   oauthCredentialSchema,
@@ -30,13 +29,11 @@ export type ProviderCredentialConfig =
 
 export type ProviderConfig = z.output<typeof providerSchema>;
 export type AiGatewayProviderConfig = z.output<typeof aiGatewayProviderSchema>;
-export type XaiProviderConfig = z.output<typeof xaiProviderSchema>;
 export type ClaudeProviderConfig = z.output<typeof claudeProviderSchema>;
 export type CodexProviderConfig = z.output<typeof codexProviderSchema>;
 export type { CodexAccountSelection } from "./values.ts";
 /** Native providers whose credentials are OAuth accounts. */
-export type OAuthProviderConfig =
-  CodexProviderConfig | ClaudeProviderConfig | XaiProviderConfig;
+export type OAuthProviderConfig = CodexProviderConfig | ClaudeProviderConfig;
 export type { ProviderType } from "./values.ts";
 export type CredentialAuth = ProviderCredentialConfig["auth"];
 export type ClientApiKeyConfig = z.output<typeof clientSchema>;

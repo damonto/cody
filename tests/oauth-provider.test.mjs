@@ -275,16 +275,13 @@ function authorizationAccount(type, refreshToken) {
   account.provider_id = type;
   account.connection.provider_id = type;
   account.claude = type === "claude" ? account.claude : null;
-  account.identity.id = type === "xai" ? "subject" : "account:organization";
-  const claims =
-    type === "xai"
-      ? { sub: "subject", iss: "https://auth.x.ai" }
-      : {
-          "https://api.openai.com/auth": {
-            chatgpt_account_id: "account",
-            chatgpt_user_id: "organization",
-          },
-        };
+  account.identity.id = "account:organization";
+  const claims = {
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "account",
+      chatgpt_user_id: "organization",
+    },
+  };
   const idToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
   account.tokens = {
     ...account.tokens,
@@ -298,7 +295,6 @@ function authorizationAccount(type, refreshToken) {
       plan_type: null,
       subscription_active_until: null,
     };
-  if (type === "xai") account.xai = { subject: "subject" };
   account.session = {
     id: crypto.randomUUID(),
     actor: "admin",
@@ -324,11 +320,6 @@ function authorizationAccount(type, refreshToken) {
 
 function authorizationUpstream(account, token) {
   return async (request) => {
-    if (request.url.endsWith("/.well-known/openid-configuration"))
-      return Response.json({
-        device_authorization_endpoint: "https://auth.x.ai/device",
-        token_endpoint: "https://auth.x.ai/token",
-      });
     if (request.url.endsWith("/api/oauth/profile"))
       return Response.json({
         account: { uuid: "account" },
@@ -558,7 +549,7 @@ test("ordinary Claude invalid_grant backs off durably and a later successful ref
   await Promise.all([f.drain(), reloaded.drain(), released.drain()]);
 });
 
-for (const type of ["claude", "codex", "xai"]) {
+for (const type of ["claude", "codex"]) {
   for (const refreshToken of [undefined, "original-refresh"]) {
     test(`${type} authorization ${refreshToken ? "repeating" : "omitting"} a refresh token waits for its rotation`, async () => {
       const started = Promise.withResolvers();

@@ -61,7 +61,6 @@ export async function seedTransferAccounts(
             },
           }
         : {}),
-      ...(provider.type === "xai" ? { xai: { subject: "mock-subject" } } : {}),
       session: {
         id: crypto.randomUUID(),
         actor: "operator",

@@ -7,8 +7,6 @@ import {
   claudeQuotaSyncSchema,
   claudeRefreshSchema,
 } from "../claude/account-schema.ts";
-import { xaiAccountSchema } from "../xai/account-schema.ts";
-import { xaiDeviceSchema } from "../xai/api.ts";
 import { codexQuotaSyncSchema } from "../codex/quota.ts";
 import { codexRefreshSchema } from "../codex/refresh-state.ts";
 
@@ -50,7 +48,6 @@ const sessionSchema = z.object({
   target_generation: z.number().int().nonnegative().optional(),
   siwc: siwcSessionSchema.optional(),
   // Device authorization polls the issuer from the alarm until approval.
-  xai_device: xaiDeviceSchema.optional(),
   device_auth_id: z.string().nullable().default(null),
   user_code: z.string().nullable().default(null),
   poll_interval_ms: z.number().default(5000),
@@ -87,7 +84,6 @@ const storedBase = z.object({
   identity: identitySchema.nullable(),
   codex: codexAccountSchema,
   claude: claudeAccountSchema.nullable().optional(),
-  xai: xaiAccountSchema,
   claude_quota_revision: z.number().default(0),
   error: z.string().nullable(),
   session: sessionSchema.nullable(),
@@ -106,7 +102,6 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
       codex_quota_sync: codexQuotaSyncSchema.prefault({}),
       codex_refresh: codexRefreshSchema,
       claude: z.null().optional(),
-      xai: z.null().optional(),
     })
     .refine(
       (account) => account.codex?.mode !== "siwc",
@@ -117,12 +112,6 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
     claude_quota_sync: claudeQuotaSyncSchema.prefault({}),
     claude_refresh: claudeRefreshSchema.prefault({}),
     codex: z.null().default(null),
-    xai: z.null().optional(),
-  }),
-  storedBase.extend({
-    provider_type: z.literal(ProviderType.Xai),
-    codex: z.null().default(null),
-    claude: z.null().optional(),
   }),
 ]);
 export type Stored = z.output<typeof storedSchema>;

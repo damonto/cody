@@ -32,7 +32,7 @@ const config = parseConfig({
       ],
       disabled: false,
       priority: 10,
-      models: ["grok-4.5", "review-model"],
+      models: ["upstream-chat", "review-model"],
     },
     {
       type: "ai_gateway",
@@ -54,14 +54,14 @@ const config = parseConfig({
       ],
       disabled: false,
       priority: 100,
-      models: ["grok-4.5", "review-model"],
+      models: ["upstream-chat", "review-model"],
     },
   ],
   api_keys: [
     { id: "client", api_key: "client", providers: ["secondary", "primary"] },
   ],
   model_routes: {
-    "gpt-5.6-sol": { model: "grok-4.5" },
+    "gpt-5.6-sol": { model: "upstream-chat" },
     "codex-auto-review": { model: "review-model", providers: ["secondary"] },
   },
 });
@@ -74,7 +74,7 @@ test("clients with no provider associations have no inference or catalog candida
   });
   const detachedClient = detached.api_keys[0];
   assert.deepEqual(allowedProviderCandidates(detached, detachedClient), []);
-  for (const model of ["grok-4.5", "gpt-5.6-sol", "codex-auto-review"])
+  for (const model of ["upstream-chat", "gpt-5.6-sol", "codex-auto-review"])
     assert.deepEqual(
       resolveModelRoute(detached, detachedClient, model).targets,
       [],
@@ -176,8 +176,8 @@ test("unconstrained routes resolve globally and providers remain priority ordere
       ],
     ),
     [
-      ["primary", ["primary-backup", "primary-key"], "grok-4.5", true],
-      ["secondary", ["secondary-key"], "grok-4.5", true],
+      ["primary", ["primary-backup", "primary-key"], "upstream-chat", true],
+      ["secondary", ["secondary-key"], "upstream-chat", true],
     ],
   );
 });
@@ -293,18 +293,18 @@ test("a route can constrain a real upstream model name", () => {
       ...config,
       model_routes: {
         ...config.model_routes,
-        "grok-4.5": { model: "grok-4.5", providers: ["secondary"] },
+        "upstream-chat": { model: "upstream-chat", providers: ["secondary"] },
       },
     },
     client,
-    "grok-4.5",
+    "upstream-chat",
   );
   assert.deepEqual(
     route.targets.map(({ provider, upstreamModel }) => [
       provider.id,
       upstreamModel,
     ]),
-    [["secondary", "grok-4.5"]],
+    [["secondary", "upstream-chat"]],
   );
 });
 
@@ -358,8 +358,8 @@ test("per-key routes leave unconfigured models on the global routes", () => {
       upstreamModel,
     ]),
     [
-      ["primary", "grok-4.5"],
-      ["secondary", "grok-4.5"],
+      ["primary", "upstream-chat"],
+      ["secondary", "upstream-chat"],
     ],
   );
 });
@@ -377,8 +377,8 @@ test("per-key routes apply only to the configured client", () => {
       upstreamModel,
     ]),
     [
-      ["primary", "grok-4.5"],
-      ["secondary", "grok-4.5"],
+      ["primary", "upstream-chat"],
+      ["secondary", "upstream-chat"],
     ],
   );
 });
@@ -404,7 +404,7 @@ test("provider routes override per-key and global routes per provider", () => {
       model_routes:
         provider.id === "primary"
           ? { "gpt-5.6-sol": { model: "review-model" } }
-          : { "gpt-5.6-sol": { model: "grok-4.5" } },
+          : { "gpt-5.6-sol": { model: "upstream-chat" } },
     })),
   };
   const route = resolveModelRoute(providerRoutes, client, "gpt-5.6-sol");
@@ -415,7 +415,7 @@ test("provider routes override per-key and global routes per provider", () => {
     ]),
     [
       ["primary", "review-model"],
-      ["secondary", "grok-4.5"],
+      ["secondary", "upstream-chat"],
     ],
   );
 });
@@ -436,7 +436,7 @@ test("provider routes override lower layers even when the lower route constrains
     api_key: "client",
     providers: ["primary", "secondary"],
     model_routes: {
-      "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
+      "gpt-5.6-sol": { model: "upstream-chat", providers: ["secondary"] },
     },
   };
   const route = resolveModelRoute(providerRoutes, keyClient, "gpt-5.6-sol");
@@ -447,7 +447,7 @@ test("provider routes override lower layers even when the lower route constrains
     ]),
     [
       ["primary", "review-model"],
-      ["secondary", "grok-4.5"],
+      ["secondary", "upstream-chat"],
     ],
   );
 });
@@ -460,12 +460,12 @@ test("a provider route can hide a model from that provider only", () => {
         ...provider,
         model_routes:
           provider.id === "primary"
-            ? { "grok-4.5": { model: "review-model" } }
+            ? { "upstream-chat": { model: "review-model" } }
             : undefined,
       })),
     },
     client,
-    "grok-4.5",
+    "upstream-chat",
   );
   assert.deepEqual(
     route.targets.map(({ provider, upstreamModel }) => [
@@ -474,7 +474,7 @@ test("a provider route can hide a model from that provider only", () => {
     ]),
     [
       ["primary", "review-model"],
-      ["secondary", "grok-4.5"],
+      ["secondary", "upstream-chat"],
     ],
   );
 });
@@ -1223,7 +1223,7 @@ test("a model route requires the real upstream model in the provider list", () =
         },
       ],
       model_routes: {
-        "gpt-5.6-sol": { model: "grok-4.5" },
+        "gpt-5.6-sol": { model: "upstream-chat" },
         "codex-auto-review": {
           model: "review-model",
           providers: ["alias-only"],

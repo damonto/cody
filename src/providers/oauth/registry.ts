@@ -2,7 +2,6 @@ import type { CodexMode } from "../codex/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import { codexAccount } from "../codex/account.ts";
 import { claudeAccount } from "../claude/account.ts";
-import { xaiAccount } from "../xai/account.ts";
 import type { OAuthProviderType } from "./schema.ts";
 import {
   providerState,
@@ -23,7 +22,5 @@ export function accountProvider(
       return codexAccount(providerState(state, type), services, mode);
     case ProviderType.Claude:
       return claudeAccount(providerState(state, type), services);
-    case ProviderType.Xai:
-      return xaiAccount(providerState(state, type), services);
   }
 }

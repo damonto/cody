@@ -3,7 +3,6 @@ import {
   aiGatewayProviderSchema,
   codexProviderFormSchema,
   claudeProviderFormSchema,
-  xaiProviderFormSchema,
   clientSchema,
   proxyGroupSchema,
   proxyNodeSchema,
@@ -30,9 +29,8 @@ export const credentialInputSchema = z.union([
   credentialSchema.omit({ id: true }).extend({ name: nameSchema }),
   oauthCredentialSchema.omit({ id: true }).extend({ name: nameSchema }),
 ]);
-export const nativeTypeSchema = z.enum(["codex", "claude", "xai"]);
+export const nativeTypeSchema = z.enum(["codex", "claude"]);
 export const nativeSettingsSchema = z.discriminatedUnion("type", [
   codexProviderFormSchema.omit({ id: true, credentials: true }),
   claudeProviderFormSchema.omit({ id: true, credentials: true }),
-  xaiProviderFormSchema.omit({ id: true, credentials: true }),
 ]);

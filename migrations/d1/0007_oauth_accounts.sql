@@ -2,7 +2,7 @@
 CREATE TABLE oauth_accounts (
   account_ref TEXT PRIMARY KEY,
   provider_id TEXT NOT NULL,
-  provider_type TEXT NOT NULL CHECK (provider_type = 'antigravity'),
+  provider_type TEXT NOT NULL CHECK (provider_type IN ('codex', 'claude')),
   created_at INTEGER NOT NULL
 );
 CREATE INDEX oauth_accounts_provider ON oauth_accounts(provider_id, created_at);

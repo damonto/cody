@@ -109,8 +109,6 @@ export class UpstreamWebSocket {
           requestId: state.request_id,
         },
       );
-      if (prepared.kind === "local")
-        throw new Error("Unexpected local provider response");
       this.codexMode = prepared.codexMode;
       this.codexGeneration = prepared.codexGeneration;
       this.validateRequest = prepared.validateWebSocketRequest;

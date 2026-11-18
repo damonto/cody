@@ -2,7 +2,7 @@
 
 An AI API gateway with a web console, for Codex, Claude Code and other OpenAI- or Anthropic-compatible clients. It runs on Cloudflare Workers, as a Node.js server, or on Vercel.
 
-- Manage AI Gateway, Codex, Claude and xAI providers, credentials, client keys and model aliases in the console.
+- Manage AI Gateway, Codex and Claude providers, credentials, client keys and model aliases in the console.
 - Route traffic through SOCKS5 proxy groups.
 - Track usage, costs and request details, with custom pricing by provider and model.
 
@@ -28,7 +28,6 @@ libSQL works with [Turso](https://turso.tech/) or a self-hosted `sqld`.
 | HTTP inference on Node.js                                      | 64 MiB                   |
 | HTTP inference on Workers                                      | 16 MiB                   |
 | HTTP inference on Vercel                                       | 4.5 MB (4,500,000 bytes) |
-| xAI decoded and translated requests                            | 16 MiB                   |
 | WebSocket message                                              | 32 MiB                   |
 | Each WebSocket processing buffer, including the active message | 32 MiB / 1024 messages   |
 | Management API request                                         | 16 MiB                   |

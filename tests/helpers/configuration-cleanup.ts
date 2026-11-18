@@ -38,7 +38,7 @@ export async function checkConfigurationCleanup(
       "INSERT INTO pricing_versions (id, revision, provider_id, model, policy_json, created_at) VALUES ('retired-price', 1, 'retired-provider', 'model', '{}', 0)",
     ),
     db.prepare(
-      "INSERT INTO oauth_clients (provider_type, payload, version, updated_at) VALUES ('antigravity', 'retired-registration', 1, 0)",
+      "INSERT INTO oauth_clients (provider_type, payload, version, updated_at) VALUES ('codex', 'retired-registration', 1, 0)",
     ),
   ]);
   // A failed DROP must roll back the new schema and every preceding DROP together.
@@ -77,7 +77,7 @@ export async function checkConfigurationCleanup(
     ),
     db
       .prepare(
-        "INSERT INTO oauth_accounts (account_ref, provider_id, provider_type, created_at) VALUES (?, ?, 'antigravity', 0)",
+        "INSERT INTO oauth_accounts (account_ref, provider_id, provider_type, created_at) VALUES (?, ?, 'codex', 0)",
       )
       .bind(crypto.randomUUID(), crypto.randomUUID()),
   ]);

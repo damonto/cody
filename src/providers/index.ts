@@ -8,12 +8,11 @@ import { createUpstreamTransport } from "../gateway/transport/index.ts";
 import { aiGatewayAdapter } from "./ai-gateway.ts";
 import { claudeAdapter } from "./claude/index.ts";
 import { codexAdapter } from "./codex/index.ts";
-import { xaiAdapter } from "./xai/index.ts";
 import { credentialMatchesProvider, resolveCredential } from "./credentials.ts";
 import { providerConnection } from "./outbound.ts";
 import { ProviderTransport } from "./transport-values.ts";
 import type {
-  PreparedProviderResult,
+  PreparedProviderRequest,
   ProviderAdapter,
   ProviderEndpoint,
   ProviderRequest,
@@ -32,15 +31,11 @@ function bindAdapter<Provider extends ProviderConfig>(
       credential: ProviderCredentialConfig,
       input: ProviderRequest,
       context?: ProviderRuntimeContext,
-    ): Promise<PreparedProviderResult> {
+    ): Promise<PreparedProviderRequest> {
       if (!adapter.supports(provider, input.endpoint, input.transport))
         throw new Error(
           `Provider ${provider.id} does not support this endpoint and transport`,
         );
-      adapter.validate?.(input);
-      const local = await adapter.local?.(provider, input);
-      if (local) return { kind: "local", response: local };
-
       const resolved = await resolveCredential(
         credential,
         context && {
@@ -87,8 +82,6 @@ function providerAdapter(provider: ProviderConfig) {
       return bindAdapter(provider, codexAdapter);
     case ProviderType.Claude:
       return bindAdapter(provider, claudeAdapter);
-    case ProviderType.Xai:
-      return bindAdapter(provider, xaiAdapter);
   }
 }
 
@@ -106,6 +99,6 @@ export function prepareProviderRequest(
   credential: ProviderCredentialConfig,
   input: ProviderRequest,
   context?: ProviderRuntimeContext,
-): Promise<PreparedProviderResult> {
+): Promise<PreparedProviderRequest> {
   return providerAdapter(provider).prepare(credential, input, context);
 }

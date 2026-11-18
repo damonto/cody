@@ -13,7 +13,6 @@ export function accountName(
   const identifier = {
     codex: account.codex?.account_id,
     claude: account.claude?.account_id,
-    xai: account.xai?.subject,
   }[provider];
   return identifier?.trim() || `${provider}:${account.account_ref}`;
 }

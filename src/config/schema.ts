@@ -319,21 +319,10 @@ export const claudeProviderSchema = requireEnabledCredentials(
   claudeProviderFormSchema,
   "Claude",
 );
-export const xaiProviderFormSchema = claudeProviderFormSchema.extend({
-  type: z.literal(ProviderType.Xai),
-  id: identifierSchema,
-  disabled: boolean.default(true),
-  inject_x_search: boolean.default(false),
-});
-export const xaiProviderSchema = requireEnabledCredentials(
-  xaiProviderFormSchema,
-  "xAI",
-);
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
   codexProviderSchema,
   claudeProviderSchema,
-  xaiProviderSchema,
 ]);
 export const clientSchema = z.strictObject({
   id: identifierSchema,
@@ -386,7 +375,6 @@ const formShape = shape.extend({
       aiGatewayProviderSchema,
       codexProviderFormSchema,
       claudeProviderFormSchema,
-      xaiProviderFormSchema,
     ]),
   ),
 });
@@ -395,7 +383,6 @@ function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [type, label] of [
     [ProviderType.Codex, "Codex"],
     [ProviderType.Claude, "Claude"],
-    [ProviderType.Xai, "xAI"],
   ] as const) {
     if (
       config.providers.filter((provider) => provider.type === type).length > 1

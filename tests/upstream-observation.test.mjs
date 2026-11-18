@@ -8,18 +8,10 @@ import {
 import { RequestMeter } from "../src/telemetry/meter.ts";
 import { parseUsageEvent } from "../src/telemetry/schema.ts";
 import { WebSocketUsage } from "../src/gateway/websocket/usage.ts";
-import { convertResponse as xaiResponse } from "../src/providers/xai/response.ts";
 
-const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const target = {
   providerId: "provider",
   credentialId: "account",
-  model: "real-model",
-};
-const scope = {
-  provider_id: "provider",
-  account_ref: "account",
-  client_id: "client",
   model: "real-model",
 };
 const wireUsage = {
@@ -348,53 +340,6 @@ test("legacy events remain absent and new metadata is validated at the event bou
       parseUsageEvent({ ...result, upstream_observation: invalid }),
     );
 });
-
-for (const streaming of [false, true]) {
-  test(`xAI ${streaming ? "SSE" : "JSON"} observes original model and effort before conversion`, async () => {
-    const meter = fixture("anthropic");
-    const converted = await xaiResponse(
-      sse([
-        {
-          type: "response.created",
-          response: {
-            id: "resp-test",
-            model: "native-model",
-            reasoning: { effort: "high" },
-          },
-        },
-        {
-          type: "response.completed",
-          response: {
-            id: "resp-test",
-            model: "native-version",
-            reasoning: { effort: "low" },
-            status: "completed",
-            output: [],
-            usage: wireUsage,
-          },
-        },
-      ]),
-      {
-        anthropic: true,
-        stream: streaming,
-        model: "alias",
-        scope,
-        key,
-        tools: [],
-        observe: (metadata, terminal) =>
-          meter.observeUpstream(metadata, terminal),
-      },
-    );
-    assert.ok(
-      (await meter.response(converted).text()).includes('"model":"alias"'),
-    );
-    assert.deepEqual(meter.checkpoint().upstream_observation.response, {
-      model: "native-version",
-      reasoning: { effort: "low" },
-    });
-    await meter.drain();
-  });
-}
 
 test("WebSocket turns keep distinct reasoning and response identities", async () => {
   const usage = new WebSocketUsage(

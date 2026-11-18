@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { SqlDatabase } from "../bindings.ts";
 import type { ObjectListOptions } from "../object-context.ts";
 import {
-  RedisObjectBackend,
   selectEntries,
   type ObjectBackend,
   type ObjectChange,
@@ -23,10 +22,6 @@ export function objectCacheKey(
   return `${prefix}:cache:v1:${namespace}:${name}`;
 }
 
-export function isReplayObject(namespace: string, name: string): boolean {
-  return namespace === "affinity" && name.startsWith("xai-replay:");
-}
-
 /**
  * SQL remains durable; a clean Redis revision serves reads without querying SQL.
  * Mark the cache dirty BEFORE a SQL commit. A crash leaves it dirty; recovery
@@ -36,7 +31,6 @@ export function isReplayObject(namespace: string, name: string): boolean {
  */
 export class CachedSqlObjectBackend implements ObjectBackend {
   private readonly sql: SqlObjectBackend;
-  private readonly replay: RedisObjectBackend;
 
   constructor(
     private readonly db: SqlDatabase,
@@ -44,19 +38,6 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     private readonly prefix = "cody",
   ) {
     this.sql = new SqlObjectBackend(db);
-    this.replay = new RedisObjectBackend(redis, prefix);
-  }
-
-  async scope(
-    namespace: string,
-    name: string,
-    lock?: ObjectLock,
-  ): Promise<ObjectBackend> {
-    if (!lock?.condition)
-      throw new Error("Cached object storage requires a fenced lock");
-    if (isReplayObject(namespace, name))
-      return this.replay.scope(namespace, name, lock);
-    return this.durableScope(namespace, name, lock);
   }
 
   /**
@@ -90,12 +71,12 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     return { value: result };
   }
 
-  private async durableScope(
+  async scope(
     namespace: string,
     name: string,
-    lock: ObjectLock,
+    lock?: ObjectLock,
   ): Promise<CachedObjectScope> {
-    if (!lock.condition)
+    if (!lock?.condition)
       throw new Error("Cached object storage requires a fenced lock");
     const key = objectCacheKey(this.prefix, namespace, name);
     const previous = await this.redis.get(key);
@@ -147,16 +128,7 @@ export class CachedSqlObjectBackend implements ObjectBackend {
     now: number,
     limit: number,
   ): Promise<string[]> {
-    const durable = await this.sql.dueAlarms(
-      namespace,
-      now,
-      limit,
-      namespace === "affinity" ? "xai-replay:" : undefined,
-    );
-    if (namespace !== "affinity") return durable;
-    // Replay is disposable Redis state; SQL is never a replay recovery source.
-    const replay = await this.replay.dueAlarms(namespace, now, limit);
-    return [...new Set([...durable, ...replay])];
+    return this.sql.dueAlarms(namespace, now, limit);
   }
 }
 

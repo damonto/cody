@@ -4,7 +4,6 @@ import { mockApi } from "./fixtures";
 for (const [type, add] of [
   ["codex", "Add ChatGPT account"],
   ["claude", "Add Claude account"],
-  ["xai", "Add SpaceXAI account"],
 ]) {
   test(`${type}: add the first account without saving settings`, async ({
     page,

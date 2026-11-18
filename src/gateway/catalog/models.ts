@@ -33,7 +33,7 @@ import {
   providerSupportsEndpoint,
 } from "../../providers/index.ts";
 import { OAuthError } from "../../providers/oauth/schema.ts";
-import type { PreparedProviderResult } from "../../providers/types.ts";
+import type { PreparedProviderRequest } from "../../providers/types.ts";
 import {
   mapWithConcurrency,
   PROVIDER_FAN_OUT_CONCURRENCY,
@@ -290,9 +290,9 @@ async function fetchCatalogResponse(
 }
 
 async function prepareCatalogWithinDeadline(
-  operation: Promise<PreparedProviderResult>,
+  operation: Promise<PreparedProviderRequest>,
   signal: AbortSignal,
-): Promise<PreparedProviderResult> {
+): Promise<PreparedProviderRequest> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -324,7 +324,7 @@ async function fetchProviderModels(
   // A provider may serve either dialect, so it cannot declare one.
   const protocol = requestProtocol(request, "models");
   const startedAt = performance.now();
-  let prepared: PreparedProviderResult | undefined;
+  let prepared: PreparedProviderRequest | undefined;
   try {
     prepared = await prepareCatalogWithinDeadline(
       prepareProviderRequest(
@@ -340,10 +340,6 @@ async function fetchProviderModels(
       ),
       request.signal,
     );
-    if (prepared.kind === "local") {
-      const models = parseUpstreamModels(await prepared.response.json());
-      return { provider, success: models !== null, models: models ?? [] };
-    }
     const result = await fetchCatalogResponse(
       prepared.url,
       {
@@ -386,10 +382,7 @@ async function fetchProviderModels(
           context,
           recordProviderFailure(
             env,
-            codexHealthProviderId(
-              provider.id,
-              prepared?.kind === "upstream" ? prepared.codexMode : undefined,
-            ),
+            codexHealthProviderId(provider.id, prepared?.codexMode),
             requestId,
             HealthScope.Catalog,
           ),
@@ -399,10 +392,7 @@ async function fetchProviderModels(
           context,
           recordCredentialFailure(
             env,
-            codexHealthProviderId(
-              provider.id,
-              prepared?.kind === "upstream" ? prepared.codexMode : undefined,
-            ),
+            codexHealthProviderId(provider.id, prepared?.codexMode),
             key.id,
             requestId,
             HealthScope.Catalog,
@@ -432,10 +422,7 @@ async function fetchProviderModels(
         context,
         recordProviderFailure(
           env,
-          codexHealthProviderId(
-            provider.id,
-            prepared?.kind === "upstream" ? prepared.codexMode : undefined,
-          ),
+          codexHealthProviderId(provider.id, prepared?.codexMode),
           requestId,
           HealthScope.Catalog,
         ),
@@ -449,10 +436,7 @@ async function fetchProviderModels(
       context,
       recordProviderSuccess(
         env,
-        codexHealthProviderId(
-          provider.id,
-          prepared?.kind === "upstream" ? prepared.codexMode : undefined,
-        ),
+        codexHealthProviderId(provider.id, prepared?.codexMode),
         requestId,
         HealthScope.Catalog,
       ),
@@ -463,8 +447,7 @@ async function fetchProviderModels(
       models: filteredModels,
     };
   } catch (error) {
-    const proxyError =
-      prepared?.kind !== "local" ? prepared?.proxyFailure(error) : undefined;
+    const proxyError = prepared?.proxyFailure(error);
     const upstream = {
       provider_id: provider.id,
       credential_id: key.id,
@@ -482,10 +465,7 @@ async function fetchProviderModels(
         context,
         recordProviderFailure(
           env,
-          codexHealthProviderId(
-            provider.id,
-            prepared?.kind === "upstream" ? prepared.codexMode : undefined,
-          ),
+          codexHealthProviderId(provider.id, prepared?.codexMode),
           requestId,
           HealthScope.Catalog,
         ),

@@ -3,7 +3,6 @@ import { codexModeForClient } from "../../shared/codex-client.ts";
 import type { CodexRequestPolicy } from "../../providers/codex/siwc-policy.ts";
 import { codexRequestAvailability } from "../../providers/codex/availability.ts";
 import { oauthAccountAvailability } from "../../providers/oauth/availability.ts";
-import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
@@ -88,7 +87,6 @@ export interface TargetSelection {
 }
 
 export interface ProviderSelection extends TargetSelection {
-  xaiQuota?: { allBlocked: boolean; until: number | undefined };
   claudeQuota?: { allBlocked: boolean; until: number | undefined };
   target: ModelProviderTarget | undefined;
 }
@@ -96,7 +94,6 @@ export interface ProviderSelection extends TargetSelection {
 export interface ProviderSelectionOptions {
   codexRequest?: CodexRequestPolicy;
   scope?: HealthScope;
-  skipXaiQuota?: boolean;
   skipClaudeQuota?: boolean;
   /** Client-facing model, including aliases; omitted for model-less calls. */
   requestedModel?: string;
@@ -475,8 +472,7 @@ function affinityCandidates(
     priority: provider.priority,
     retain_available_account:
       provider.type === ProviderType.Codex ||
-      provider.type === ProviderType.Claude ||
-      provider.type === ProviderType.Xai,
+      provider.type === ProviderType.Claude,
     credentials: credentials.map((credential) => ({
       credential_id: credential.id,
       ...(provider.type === ProviderType.Codex
@@ -532,17 +528,9 @@ export async function selectAvailableProviderWithDetails(
           route,
           options.excludedCredentials ?? new Set(),
         );
-  const xai =
-    options.scope === HealthScope.Catalog || options.skipXaiQuota
-      ? { route: quota.route, allBlocked: false, until: undefined }
-      : await xaiQuotaRoute(
-          env,
-          quota.route,
-          options.excludedCredentials ?? new Set(),
-        );
   const selection = await selectAvailableTargetWithDetails(
     env,
-    xai.route.targets,
+    quota.route.targets,
     {
       ...options,
       requestedModel: route.requestedModel,
@@ -554,7 +542,6 @@ export async function selectAvailableProviderWithDetails(
     route.targets.find(({ provider }) => provider.id === target.provider.id);
   return {
     ...selection,
-    xaiQuota: { allBlocked: xai.allBlocked, until: xai.until },
     claudeQuota: { allBlocked: quota.allBlocked, until: quota.until },
     target:
       target && routed

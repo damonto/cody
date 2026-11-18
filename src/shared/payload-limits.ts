@@ -3,7 +3,6 @@ const MIB = 1024 * KIB;
 
 // Upload budgets apply independently to wire bytes and decoded request bodies.
 export const MAX_INFERENCE_BODY_BYTES = 64 * MIB;
-export const MAX_NATIVE_REQUEST_BODY_BYTES = 16 * MIB;
 export const MAX_ADMIN_BODY_BYTES = 16 * MIB;
 export const MAX_SEARCH_REQUEST_BODY_BYTES = MIB;
 /** Leave room for decoded text, parsed JSON and adapter copies in a 128 MB isolate. */
@@ -33,10 +32,6 @@ export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * MIB;
 export const MAX_WEBSOCKET_BUFFER_BYTES = 32 * MIB;
 export const MAX_WEBSOCKET_BUFFER_MESSAGES = 1024;
 
-// xAI retains separate cumulative output and signed-history budgets.
-export const MAX_XAI_OUTPUT_BYTES = 32 * MIB;
-export const MAX_XAI_REPLAY_CIPHERTEXT_BYTES = 8 * MIB;
-export const MAX_XAI_REPLAY_ENVELOPE_BYTES = 12 * MIB;
 export const MAX_COMPILED_CONFIG_BYTES = MIB;
 export const MAX_TRANSFER_BYTES = 8 * MIB;
 

@@ -7,7 +7,6 @@ import type {
 } from "../config/types.ts";
 import { codexCredentialSchema } from "./codex/account-schema.ts";
 import { claudeCredentialSchema } from "./claude/account-schema.ts";
-import { xaiCredentialSchema } from "./xai/account-schema.ts";
 import {
   accountReply,
   OAuthError,
@@ -48,16 +47,7 @@ export interface ResolvedClaudeOAuth {
   readonly token: string;
   readonly account_ref: string;
 }
-export interface ResolvedXaiOAuth {
-  readonly type: typeof CredentialAuthType.OAuth;
-  readonly provider: typeof ProviderType.Xai;
-  readonly token: string;
-  readonly subject: string;
-  readonly account_ref: string;
-  readonly generation: number;
-}
-export type ResolvedOAuth =
-  ResolvedCodexOAuth | ResolvedClaudeOAuth | ResolvedXaiOAuth;
+export type ResolvedOAuth = ResolvedCodexOAuth | ResolvedClaudeOAuth;
 export type ResolvedCredential = ResolvedApiKey | ResolvedOAuth;
 export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
   ResolvedCredential,
@@ -123,17 +113,6 @@ const oauthResolver: CredentialResolver<
     );
     context.requestLog?.registerSensitiveValues([token.token]);
     const account_ref = auth.account_ref;
-    if (provider === ProviderType.Xai) {
-      const value = xaiCredentialSchema.parse(token);
-      return {
-        type: CredentialAuthType.OAuth,
-        provider,
-        token: token.token,
-        account_ref,
-        subject: value.xai_subject,
-        generation: value.generation,
-      };
-    }
     if (provider === ProviderType.Claude) {
       const value = claudeCredentialSchema.parse(token);
       return {

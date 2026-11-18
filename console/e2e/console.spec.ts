@@ -231,7 +231,7 @@ test("failed provider deletion stays open with an error and can be retried", asy
   ).toHaveLength(0);
   expect(
     mock.current().config.providers.map((provider) => provider.type),
-  ).toEqual(["codex", "claude", "xai"]);
+  ).toEqual(["codex", "claude"]);
 });
 
 test("provider deletion detaches clients and refreshes cached routes", async ({

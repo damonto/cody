@@ -3,11 +3,10 @@ import { draftFixture, mockApi } from "./fixtures";
 import {
   newCodexProvider,
   newClaudeProvider,
-  newXaiProvider,
 } from "../../tests/helpers/native-provider-fixtures";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
 
-for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
+for (const create of [newCodexProvider, newClaudeProvider]) {
   for (const loseResponse of [false, true]) {
     test(`${create().type}: account toggle persists${loseResponse ? " after a lost response" : ""}`, async ({
       page,

@@ -3,7 +3,6 @@ import type { CodexMode } from "../codex/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
 import { codexAccountCredential } from "../codex/account-credential.ts";
 import { claudeAccountCredential } from "../claude/account-credential.ts";
-import { xaiAccountCredential } from "../xai/account-credential.ts";
 import type { AccountCommand } from "./commands.ts";
 import { accountView } from "./presentation.ts";
 import { TOKEN_REFRESH_MARGIN_MS, type AccountCredential } from "./provider.ts";
@@ -56,9 +55,6 @@ export function activeAccount(
       break;
     case ProviderType.Claude:
       credential = claudeAccountCredential(account);
-      break;
-    case ProviderType.Xai:
-      credential = xaiAccountCredential(account);
       break;
   }
   return { generation, tokens: account.tokens, credential };

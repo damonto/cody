@@ -706,53 +706,6 @@ test("cached bounded index pages are invalidated when deletion exposes the next 
   assert.equal((await index.listPage(null, 1)).data[0].binding_id, "2");
 });
 
-test("xAI replay lives entirely in Redis and fences superseded turns", async (t) => {
-  const f = await fixture(t);
-  const runtime = await f.open();
-  const replay = runtime.bindings.SESSION_AFFINITY.getByName("xai-replay:a");
-  f.queries.length = 0;
-  const first = await replay.beginXaiReplay();
-  assert.equal(
-    await replay.commitXaiReplay(first.version, "encrypted-history"),
-    true,
-  );
-  const second = await replay.beginXaiReplay();
-  assert.equal(second.value, "encrypted-history");
-  assert.equal(await replay.commitXaiReplay(first.version, "obsolete"), false);
-  assert.equal(
-    await replay.commitXaiReplay(second.version, "new-history"),
-    true,
-  );
-  await runtime.tasks.drain();
-  assert.equal(f.queries.length, 0);
-});
-
-test("Redis replay expires without SQL recovery and rejects expired turns", async (t) => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date"], now });
-  const f = await fixture(t);
-  const first = await f.open();
-  const second = await f.open();
-  const name = "xai-replay:expiring";
-  const replay = first.bindings.SESSION_AFFINITY.getByName(name);
-  f.queries.length = 0;
-  const turn = await replay.beginXaiReplay();
-  assert.equal(await replay.commitXaiReplay(turn.version, "ciphertext"), true);
-  await first.tasks.drain();
-  assert.ok(await f.redis.hlen(`cody:o:affinity:${name}`));
-  t.mock.timers.setTime(now + 3_600_001);
-  assert.equal(await f.redis.hlen(`cody:o:affinity:${name}`), 0);
-  assert.equal(await replay.commitXaiReplay(turn.version, "obsolete"), false);
-  const fresh =
-    await second.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay();
-  assert.equal(fresh.value, null);
-  assert.notEqual(fresh.version, turn.version);
-  await first.tasks.drain();
-  await second.tasks.drain();
-  assert.equal(f.queries.length, 0);
-  assert.deepEqual(await f.sql.list("affinity", name, {}), []);
-});
-
 for (const [dialect, openDatabase] of Object.entries({
   sqlite: () => createSqliteDatabase(":memory:"),
   libsql: () => libsqlDatabase(createClient({ url: ":memory:" })),
@@ -761,48 +714,6 @@ for (const [dialect, openDatabase] of Object.entries({
     return postgresDatabase(pgliteQueryable(pg), () => pg.close());
   },
 })) {
-  test(`${dialect}: Redis replay never restores SQL-only rows or schedules their alarms`, async (t) => {
-    const f = await fixture(t, new MemoryRedis(), openDatabase);
-    const name = "xai-replay:sql-only";
-    const sql = await f.sql.scope("affinity", name);
-    const entries = [
-      [
-        "xai_replay",
-        JSON.stringify({
-          version: crypto.randomUUID(),
-          expires: Date.now() + 600_000,
-          chunks: 1,
-        }),
-      ],
-      ["xai_replay:0", JSON.stringify("sql-only-ciphertext")],
-    ];
-    await sql.commit("affinity", name, {
-      puts: entries,
-      deletes: [],
-      alarm: Date.now() - 1000,
-    });
-    const durable = await f.sql.scope("affinity", "durable");
-    await durable.commit("affinity", "durable", {
-      puts: [],
-      deletes: [],
-      alarm: Date.now() - 1,
-    });
-    const runtime = await f.open();
-    f.queries.length = 0;
-    assert.equal(
-      (await runtime.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay())
-        .value,
-      null,
-    );
-    await runtime.tasks.drain();
-    assert.equal(f.queries.length, 0);
-    const backend = new CachedSqlObjectBackend(f.raw, f.redis);
-    assert.deepEqual(await backend.dueAlarms("affinity", Date.now(), 1), [
-      "durable",
-    ]);
-    assert.deepEqual(await f.sql.list("affinity", name, {}), entries);
-  });
-
   test(`${dialect}: Redis eviction preserves durable health and session bindings`, async (t) => {
     const f = await fixture(t, new MemoryRedis(), openDatabase);
     const first = await f.open();
@@ -897,7 +808,7 @@ test("account decode cache validates ciphertext and never shares mutable snapsho
 });
 
 test(
-  "real Redis executes guarded cache and replay operations",
+  "real Redis executes guarded cache operations",
   { skip: !process.env.CODY_TEST_REDIS_SOCKET },
   async (t) => {
     const redis = await connectRedis(process.env.CODY_TEST_REDIS_SOCKET);
@@ -913,20 +824,6 @@ test(
     assert.equal(f.queries.length, 0);
     await Promise.all(Array.from({ length: 9 }, () => health.recordFailure()));
     assert.ok((await health.getStatus()).cooling_until > Date.now());
-    const name = `xai-replay:${id}`;
-    const replay = runtime.bindings.SESSION_AFFINITY.getByName(name);
-    f.queries.length = 0;
-    const turn = await replay.beginXaiReplay();
-    assert.equal(
-      await replay.commitXaiReplay(turn.version, "ciphertext"),
-      true,
-    );
-    assert.equal(
-      (await runtime.bindings.SESSION_AFFINITY.getByName(name).beginXaiReplay())
-        .value,
-      "ciphertext",
-    );
-    assert.equal(f.queries.length, 0);
     assert.equal(
       await redis.compareAndWrite(
         [{ key: `missing:${id}`, value: "owner" }],

@@ -59,7 +59,6 @@
     "@peculiar/x509": "3.1.0",
     "@reclaimprotocol/tls": "0.1.5",
     "@vercel/functions": "^3.11.1",
-    "gpt-tokenizer": "^4.1.2",
     "hono": "^4.13.18",
     "ioredis": "^6.0.0",
     "jose": "^6.2.17",

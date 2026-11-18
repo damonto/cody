@@ -3,11 +3,8 @@ import {
   claudeProviderFormSchema,
   nameSchema,
 } from "../../../../src/config/schema";
-import type {
-  ClaudeProviderConfig,
-  XaiProviderConfig,
-} from "../../../../src/config/types";
-export type SubscriptionProvider = ClaudeProviderConfig | XaiProviderConfig;
+import type { ClaudeProviderConfig } from "../../../../src/config/types";
+
 export const settingsEditorSchema = claudeProviderFormSchema
   .omit({
     id: true,
@@ -18,7 +15,6 @@ export const settingsEditorSchema = claudeProviderFormSchema
     emulate_claude_code: true,
   })
   .extend({
-    inject_x_search: z.boolean().optional(),
     routes: z
       .array(
         z.strictObject({
@@ -44,12 +40,9 @@ export const settingsEditorSchema = claudeProviderFormSchema
 export type SettingsFormValues = z.input<typeof settingsEditorSchema>;
 
 export function settingsFormValues(
-  provider: SubscriptionProvider,
+  provider: ClaudeProviderConfig,
 ): SettingsFormValues {
   return {
-    ...(provider.type === "xai"
-      ? { inject_x_search: provider.inject_x_search }
-      : {}),
     priority: provider.priority,
     disabled: provider.disabled,
     proxy_group: provider.proxy_group,
@@ -69,18 +62,14 @@ export function settingsFormValues(
     ),
   };
 }
-export function applySettings<Provider extends SubscriptionProvider>(
-  provider: Provider,
+export function applySettings(
+  provider: ClaudeProviderConfig,
   value: SettingsFormValues,
-): Provider {
-  const { routes, inject_x_search, ...settings } =
-    settingsEditorSchema.parse(value);
+): ClaudeProviderConfig {
+  const { routes, ...settings } = settingsEditorSchema.parse(value);
   return {
     ...provider,
     ...settings,
-    ...(provider.type === "xai"
-      ? { inject_x_search: inject_x_search ?? false }
-      : {}),
     model_routes: Object.fromEntries(
       routes.map(({ id, alias, model }) => [
         alias,

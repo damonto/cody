@@ -194,16 +194,13 @@ for (const [dialect, create] of Object.entries(factories)) {
     assert.deepEqual(first, [
       "0001_control_and_usage.sql",
       "0007_oauth_accounts.sql",
-      "0008_codex_oauth_accounts.sql",
-      "0009_claude_oauth_accounts.sql",
-      "0010_xai_oauth_accounts.sql",
       "0011_correct_expired_usage.sql",
       "0012_entity_configuration.sql",
       "0015_native_provider_defaults.sql",
       "0016_remove_history_notes.sql",
       "0017_siwc_host.sql",
       "0018_cache_write_durations.sql",
-      "0019_remove_antigravity_seed.sql",
+      "0021_enforce_provider_types.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(

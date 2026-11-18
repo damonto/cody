@@ -97,11 +97,9 @@ export async function executeInferenceAttempt({
       ...(meter
         ? {
             observeDiscardedResponse: (response: Response) =>
-              prepared.retryUsage
-                ? prepared.retryUsage(response)
-                : retryResponseUsage(response, protocol, {
-                    detectFormat: prepared.detectResponseFormat,
-                  }),
+              retryResponseUsage(response, protocol, {
+                detectFormat: prepared.detectResponseFormat,
+              }),
           }
         : {}),
       inspectResponse: async (response, signal, timeoutMs) => {

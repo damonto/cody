@@ -44,11 +44,9 @@ const startSchema = connectionSchema
   })
   .refine(
     (input) =>
-      input.provider_type === ProviderType.Xai
-        ? input.flow === OAuthFlow.Device
-        : input.flow === OAuthFlow.Pkce ||
-          input.provider_type === ProviderType.Codex,
-    "xAI requires device authorization; device and SIWC authorization are only available for Codex",
+      input.flow === OAuthFlow.Pkce ||
+      input.provider_type === ProviderType.Codex,
+    "Device and SIWC authorization are only available for Codex",
   )
   .refine(
     (input) => input.flow !== OAuthFlow.Siwc || !!input.account_ref,
@@ -285,8 +283,7 @@ export const oauthRoutes = new Hono<AdminContext>()
       );
       const items = await mapWithConcurrency(
         provider?.type === ProviderType.Codex ||
-          provider?.type === ProviderType.Claude ||
-          provider?.type === ProviderType.Xai
+          provider?.type === ProviderType.Claude
           ? provider.credentials
           : [],
         PROVIDER_FAN_OUT_CONCURRENCY,
@@ -297,8 +294,7 @@ export const oauthRoutes = new Hono<AdminContext>()
             credential.id,
           );
           const quota =
-            provider?.type === ProviderType.Claude ||
-            provider?.type === ProviderType.Xai
+            provider?.type === ProviderType.Claude
               ? await reply(
                   c.env.PROVIDER_OAUTH_ACCOUNT.getByName(
                     credential.auth.account_ref,
@@ -326,12 +322,7 @@ export const oauthRoutes = new Hono<AdminContext>()
               : {}),
             ...(quota
               ? {
-                  quota_blocks:
-                    provider?.type === ProviderType.Xai
-                      ? (quota.quota.xai_limits ?? []).filter(
-                          (limit) => limit.until > Date.now(),
-                        )
-                      : quotaBlocks(quota.quota),
+                  quota_blocks: quotaBlocks(quota.quota),
                 }
               : {}),
             credential_id: credential.id,

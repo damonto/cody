@@ -1,5 +1,3 @@
-import { xaiQuotaResponse } from "../../providers/xai/availability.ts";
-
 import { ProviderAvailabilityReason } from "../health/values.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
@@ -104,8 +102,6 @@ export async function unavailableInference({
     meter?.diagnostic("usage_limit_reached");
     return exhausted;
   }
-  if (selection.xaiQuota?.allBlocked)
-    return xaiQuotaResponse(protocol, selection.xaiQuota.until, requestId);
   if (claude?.allBlocked) {
     const response = apiError(
       protocol,

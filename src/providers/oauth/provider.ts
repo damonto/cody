@@ -37,12 +37,7 @@ export type AccountSnapshotFor<Type extends OAuthProviderType> = Extract<
 export type AccountObservation = Extract<
   AccountCommand,
   {
-    action:
-      | "codex_usage"
-      | "xai_auth_invalid"
-      | "xai_limit"
-      | "claude_limit"
-      | "claude_usage";
+    action: "codex_usage" | "claude_limit" | "claude_usage";
   }
 >;
 

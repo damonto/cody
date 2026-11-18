@@ -125,9 +125,14 @@ function inferenceRequest() {
 }
 
 test("request bytes are forwarded untouched when nothing changed", () => {
-  const original = '{\n  "model": "grok-4.5",\n  "stream": true\n}';
+  const original = '{\n  "model": "upstream-chat",\n  "stream": true\n}';
   const rawBody = new TextEncoder().encode(original);
-  const body = upstreamBody(rawBody, JSON.parse(original), "grok-4.5", false);
+  const body = upstreamBody(
+    rawBody,
+    JSON.parse(original),
+    "upstream-chat",
+    false,
+  );
   // The same buffer is forwarded, so whitespace and key order survive exactly.
   assert.equal(body, rawBody);
   assert.equal(new TextDecoder().decode(body), original);
@@ -138,11 +143,11 @@ test("a rewritten body changes only the model value semantically", () => {
   const body = upstreamBody(
     new TextEncoder().encode(original),
     JSON.parse(original),
-    "grok-4.5",
+    "upstream-chat",
     true,
   );
   assert.deepEqual(JSON.parse(body), {
-    model: "grok-4.5",
+    model: "upstream-chat",
     stream: true,
     input: "hello",
   });
@@ -154,16 +159,16 @@ test("a rewritten body splices only the model string into the client bytes", () 
   const body = upstreamBody(
     new TextEncoder().encode(original),
     JSON.parse(original),
-    "grok-4.5",
+    "upstream-chat",
     true,
     original,
   );
-  assert.equal(body, original.replace('"gpt-5.6-sol"', '"grok-4.5"'));
-  assert.equal(JSON.parse(body).model, "grok-4.5");
+  assert.equal(body, original.replace('"gpt-5.6-sol"', '"upstream-chat"'));
+  assert.equal(JSON.parse(body).model, "upstream-chat");
 });
 
 test("a rewritten body falls back to serialization when the key is escaped", () => {
-  const original = '{"\\u006dodel":"grok-4.5","messages":[]}';
+  const original = '{"\\u006dodel":"upstream-chat","messages":[]}';
   const body = upstreamBody(
     new TextEncoder().encode(original),
     JSON.parse(original),

@@ -213,11 +213,6 @@ for (const [from, to] of [
         let refreshes = 0;
         core.outbound = async () => [
           async (request) => {
-            if (request.url.endsWith("/.well-known/openid-configuration"))
-              return Response.json({
-                device_authorization_endpoint: "https://auth.x.ai/device",
-                token_endpoint: "https://auth.x.ai/token",
-              });
             assert.equal(request.method, "POST");
             const grant = request.headers
               .get("content-type")
@@ -231,11 +226,6 @@ for (const [from, to] of [
               access_token: "mock-rotated",
               refresh_token: "mock-rotated-refresh",
               expires_in: 3600,
-              ...(fixture.account.provider_type === "xai"
-                ? {
-                    id_token: `e30.${Buffer.from(JSON.stringify({ sub: "mock-subject" })).toString("base64url")}.mock`,
-                  }
-                : {}),
             });
           },
           new AbortController().signal,

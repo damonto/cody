@@ -101,7 +101,6 @@ const providerNavigation = [
   { path: "/providers/ai-gateway", title: "AI Gateway" },
   { path: "/providers/codex", title: "Codex" },
   { path: "/providers/claude", title: "Claude" },
-  { path: "/providers/xai", title: "SpaceXAI" },
 ];
 
 export function Shell() {

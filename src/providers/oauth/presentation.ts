@@ -45,7 +45,6 @@ export function accountView(
     email: account.identity?.email ?? null,
     codex: account.codex,
     claude: account.claude,
-    xai: account.xai,
     expires_at: account.tokens?.expires_at ?? null,
     error: account.error,
     models: account.models,

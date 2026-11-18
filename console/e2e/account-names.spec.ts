@@ -3,11 +3,10 @@ import { draftFixture, mockApi } from "./fixtures";
 import {
   newCodexProvider,
   newClaudeProvider,
-  newXaiProvider,
 } from "../../tests/helpers/native-provider-fixtures";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
 
-for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
+for (const create of [newCodexProvider, newClaudeProvider]) {
   for (const email of ["person@example.test", null]) {
     test(`${create().type}: authorization ${email ? "email" : "identity"} names a new account and preserves edits`, async ({
       page,
@@ -43,7 +42,6 @@ for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
                 rate_limit_tier: null,
               }
             : null,
-        xai: provider.type === "xai" ? { subject: "xai-id" } : null,
         quota: {
           groups: [],
           subscription: null,
@@ -70,10 +68,7 @@ for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
             status: "complete",
             expires_at: Date.now() + 60_000,
             url: null,
-            flow:
-              provider.type === "codex" || provider.type === "xai"
-                ? "device"
-                : "pkce",
+            flow: provider.type === "codex" ? "device" : "pkce",
             user_code: null,
             verification_uri: null,
             error: null,
@@ -121,7 +116,6 @@ for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
         {
           codex: "chatgpt-id",
           claude: "claude-id",
-          xai: "xai-id",
         }[provider.type];
       expect(saved.credentials[0]?.name).toBe(expected);
       // Old/user-chosen names survive refresh, editing, and reauthorization.

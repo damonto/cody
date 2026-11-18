@@ -29,7 +29,7 @@ function stored(provider_type) {
 }
 
 test("persisted OAuth states keep their provider, identity and default fields across parsing", () => {
-  for (const provider of ["codex", "claude", "xai"]) {
+  for (const provider of ["codex", "claude"]) {
     const input = stored(provider);
     const parsed = storedSchema.parse(input);
     assert.deepEqual(parsed, {
@@ -113,7 +113,6 @@ test("persisted OAuth state rejects identity metadata from a different provider"
       plan_type: null,
       subscription_active_until: null,
     },
-    xai: { subject: "subject" },
     claude: {
       account_id: "account",
       organization_id: "org",
@@ -122,7 +121,7 @@ test("persisted OAuth state rejects identity metadata from a different provider"
       rate_limit_tier: null,
     },
   };
-  for (const provider of ["codex", "claude", "xai"]) {
+  for (const provider of ["codex", "claude"]) {
     for (const [field, value] of Object.entries(identities)) {
       const matches = provider === field;
       assert.equal(

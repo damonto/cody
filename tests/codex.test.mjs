@@ -185,7 +185,6 @@ test("the adapter forwards Codex requests with only the account token and worksp
   ])
     assert.equal(prepared.headers.get(name), request.headers.get(name), name);
   assert.equal(prepared.body, undefined);
-  assert.equal(prepared.transformResponse, undefined);
 });
 
 test("the adapter serves Codex endpoints and gates optional capabilities", () => {

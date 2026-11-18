@@ -89,21 +89,3 @@ export function isTerminalResponse(value: unknown, event = ""): boolean {
       payload.choices.some((choice) => record(choice)?.finish_reason))
   );
 }
-
-export type UpstreamMetadataObserver = (
-  metadata: InferenceMetadata,
-  terminal?: boolean,
-) => void;
-
-/** Metadata observation must never interrupt provider response conversion. */
-export function notifyUpstreamMetadata(
-  observer: UpstreamMetadataObserver | undefined,
-  metadata: InferenceMetadata,
-  terminal = false,
-): void {
-  try {
-    observer?.(metadata, terminal);
-  } catch {
-    // Observation is best effort; the wire response remains authoritative.
-  }
-}

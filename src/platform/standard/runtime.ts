@@ -188,9 +188,6 @@ export async function createRuntime(
       "affinity",
       (ctx) => new SessionAffinityCore(ctx, env),
       (call): SessionAffinityObject => ({
-        beginXaiReplay: () => call((core) => core.beginXaiReplay()),
-        commitXaiReplay: (...args) =>
-          call((core) => core.commitXaiReplay(...args)),
         resolve: (...args) => call((core) => core.resolve(...args)),
         getStatus: (...args) => call((core) => core.getStatus(...args)),
         clear: () => call((core) => core.clear()),

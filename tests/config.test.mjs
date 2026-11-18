@@ -26,12 +26,12 @@ function validConfig() {
         ],
         disabled: false,
         priority: 100,
-        models: ["grok-4.5", "review-model"],
+        models: ["upstream-chat", "review-model"],
       },
     ],
     api_keys: [{ id: "client", api_key: "client-key", providers: ["primary"] }],
     model_routes: {
-      "gpt-5.6-sol": { model: "grok-4.5" },
+      "gpt-5.6-sol": { model: "upstream-chat" },
       "codex-auto-review": { model: "review-model", providers: ["primary"] },
     },
   };
@@ -200,7 +200,9 @@ test("parseConfig normalizes and validates a complete configuration", () => {
     api_key: "client-key",
     providers: ["primary"],
   });
-  assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
+  assert.deepEqual(config.model_routes["gpt-5.6-sol"], {
+    model: "upstream-chat",
+  });
   assert.deepEqual(config.model_routes["codex-auto-review"], {
     model: "review-model",
     providers: ["primary"],
@@ -444,7 +446,7 @@ test("parseConfig rejects the removed inject_claude_code_identity field", () => 
 
 test("parseConfig allows codex-auto-review as the configured upstream model", () => {
   const input = validConfig();
-  input.providers[0].models = ["grok-4.5", "codex-auto-review"];
+  input.providers[0].models = ["upstream-chat", "codex-auto-review"];
   input.model_routes["codex-auto-review"].model = "codex-auto-review";
 
   const config = parseConfig(input);
@@ -580,7 +582,7 @@ test("parseConfig treats the optional model_routes field as an empty mapping", (
 
 test("parseConfig rejects the removed legacy routing fields", () => {
   const aliases = validConfig();
-  aliases.model_aliases = { "gpt-5.6-sol": "grok-4.5" };
+  aliases.model_aliases = { "gpt-5.6-sol": "upstream-chat" };
   assert.throws(
     () => parseConfig(aliases),
     (error) =>
@@ -619,7 +621,7 @@ test("parseConfig requires providers to list the real route target", () => {
 test("parseConfig allows a route to constrain a real model name", () => {
   const input = validConfig();
   input.model_routes = {
-    "grok-4.5": { model: "grok-4.5", providers: ["primary"] },
+    "upstream-chat": { model: "upstream-chat", providers: ["primary"] },
   };
   assert.doesNotThrow(() => parseConfig(input));
 });
@@ -635,7 +637,9 @@ test("parseConfig accepts per-key model routes alongside global routes", () => {
   assert.deepEqual(config.api_keys[0].model_routes, {
     "gpt-5.6-sol": { model: "review-model", providers: ["primary"] },
   });
-  assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
+  assert.deepEqual(config.model_routes["gpt-5.6-sol"], {
+    model: "upstream-chat",
+  });
 });
 
 test("parseConfig accepts provider model routes without a providers field", () => {
@@ -723,7 +727,7 @@ test("parseConfig omits the per-key model_routes field when absent or empty", ()
 test("parseConfig validates per-key route targets and providers", () => {
   const unknown = validConfig();
   unknown.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", providers: ["missing"] },
+    "gpt-5.6-sol": { model: "upstream-chat", providers: ["missing"] },
   };
   assert.throws(
     () => parseConfig(unknown),
@@ -751,14 +755,14 @@ test("parseConfig validates per-key route targets and providers", () => {
     models: ["review-model"],
   });
   unsupported.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", providers: ["secondary"] },
+    "gpt-5.6-sol": { model: "upstream-chat", providers: ["secondary"] },
   };
   assert.throws(
     () => parseConfig(unsupported),
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "api_keys[0].model_routes.gpt-5.6-sol.model grok-4.5 is not listed by provider secondary",
+        "api_keys[0].model_routes.gpt-5.6-sol.model upstream-chat is not listed by provider secondary",
   );
 });
 
@@ -779,7 +783,7 @@ test("parseConfig rejects per-key routes that no provider can run", () => {
 test("parseConfig rejects invalid per-key route fields and constraints", () => {
   const extra = validConfig();
   extra.api_keys[0].model_routes = {
-    "gpt-5.6-sol": { model: "grok-4.5", extra: true },
+    "gpt-5.6-sol": { model: "upstream-chat", extra: true },
   };
   assert.throws(
     () => parseConfig(extra),
@@ -792,7 +796,7 @@ test("parseConfig rejects invalid per-key route fields and constraints", () => {
   for (const providers of [[], ["primary", "primary"]]) {
     const input = validConfig();
     input.api_keys[0].model_routes = {
-      "gpt-5.6-sol": { model: "grok-4.5", providers },
+      "gpt-5.6-sol": { model: "upstream-chat", providers },
     };
     assert.throws(
       () => parseConfig(input),
@@ -802,8 +806,12 @@ test("parseConfig rejects invalid per-key route fields and constraints", () => {
 
   const duplicate = validConfig();
   duplicate.api_keys[0].model_routes = {};
-  duplicate.api_keys[0].model_routes["gpt-5.6-sol"] = { model: "grok-4.5" };
-  duplicate.api_keys[0].model_routes["gpt-5.6-sol "] = { model: "grok-4.5" };
+  duplicate.api_keys[0].model_routes["gpt-5.6-sol"] = {
+    model: "upstream-chat",
+  };
+  duplicate.api_keys[0].model_routes["gpt-5.6-sol "] = {
+    model: "upstream-chat",
+  };
   assert.throws(
     () => parseConfig(duplicate),
     (error) =>
@@ -847,7 +855,7 @@ test("parseConfig rejects unknown or incompatible route providers", () => {
     (error) =>
       error instanceof ConfigError &&
       error.message ===
-        "model_routes.gpt-5.6-sol.model grok-4.5 is not listed by provider secondary",
+        "model_routes.gpt-5.6-sol.model upstream-chat is not listed by provider secondary",
   );
 });
 
@@ -963,7 +971,7 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
       "api_keys[0].model_routes.gpt-5.6-sol.extra is not supported",
       (input) => {
         input.api_keys[0].model_routes = {
-          "gpt-5.6-sol": { model: "grok-4.5", extra: true },
+          "gpt-5.6-sol": { model: "upstream-chat", extra: true },
         };
       },
     ],
