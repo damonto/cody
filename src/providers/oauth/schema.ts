@@ -1,8 +1,4 @@
 import {
-  antigravityCredentialSchema,
-  projectInitializationViewSchema,
-} from "../antigravity/account-schema.ts";
-import {
   codexAccountSchema,
   codexCredentialSchema,
   resetCreditsSchema,
@@ -30,7 +26,6 @@ import {
 import { HealthCooldownReason } from "../../gateway/health/values.ts";
 
 import { z } from "zod";
-import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { identifierSchema, proxyGroupSchema } from "../../config/schema.ts";
 
 export const connectionSchema = z.object({
@@ -41,7 +36,6 @@ export const connectionSchema = z.object({
 });
 export type ProviderConnection = z.output<typeof connectionSchema>;
 export const oauthProviderTypeSchema = z.enum([
-  ProviderType.Antigravity,
   ProviderType.Codex,
   ProviderType.Claude,
   ProviderType.Xai,
@@ -89,15 +83,9 @@ export const quotaGroupSchema = z.object({
   limit_reached: z.boolean().optional(),
   model: z.string().nullable().optional(),
 });
-export const subscriptionSchema = z.object({
+const subscriptionSchema = z.object({
   tier_id: z.string().nullable(),
   tier_name: z.string().nullable(),
-  credits: z.array(
-    z.object({
-      type: z.string().nullable(),
-      amount: z.union([z.number(), z.string()]).nullable(),
-    }),
-  ),
   active_until: z.string().nullable().optional(),
 });
 export {
@@ -118,7 +106,6 @@ export const quotaSnapshotSchema = z.object({
   subscription: subscriptionSchema.nullable(),
   updated_at: z.number().nullable(),
   last_error: z.string().nullable(),
-  verification: z.array(antigravityVerificationSchema).optional(),
   stale: z.boolean(),
   limit_reached: z.boolean().optional(),
   credits_balance: quotaCreditsBalanceSchema.nullable().optional(),
@@ -153,8 +140,6 @@ export const accountViewSchema = z.object({
   provider_id: identifierSchema,
   status: z.enum(OAuthAccountViewStatus),
   email: z.string().nullable(),
-  project_id: z.string().nullable(),
-  project_initialization: projectInitializationViewSchema,
   xai: xaiAccountSchema,
   claude: claudeAccountSchema.nullable().optional(),
   codex: codexAccountSchema,
@@ -163,7 +148,6 @@ export const accountViewSchema = z.object({
   models: z.array(modelSchema),
   models_updated_at: z.number().nullable(),
   models_error: z.string().nullable(),
-  models_verification: z.array(antigravityVerificationSchema).optional(),
   quota: quotaSnapshotSchema,
 });
 export type AccountView = z.output<typeof accountViewSchema>;
@@ -191,7 +175,6 @@ export type SessionView = z.output<typeof sessionViewSchema>;
 export const resolvedOAuthSchema = z.union([
   xaiCredentialSchema,
   claudeCredentialSchema,
-  antigravityCredentialSchema,
   codexCredentialSchema,
 ]);
 export const consumeResetResultSchema = z.object({
@@ -212,15 +195,6 @@ export const accountHealthSchema = z.object({
       cooling_until: z.number().nullable(),
       cooldown_reason: z.enum(HealthCooldownReason).nullable(),
     })
-    .optional(),
-  model_cooldowns: z
-    .array(
-      z.object({
-        model: z.string(),
-        until: z.number().nullable(),
-        reason: z.enum(["quota", "unavailable"]),
-      }),
-    )
     .optional(),
   credential_id: identifierSchema,
   account_ref: z.uuid(),

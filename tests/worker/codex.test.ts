@@ -9,8 +9,28 @@ import {
   waitOnExecutionContext,
   type D1Migration,
 } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  expectTypeOf,
+  test,
+  vi,
+} from "vitest";
 import { z } from "zod";
+import type {
+  AiGatewayProviderConfig,
+  CodexProviderConfig,
+  CredentialAuth,
+} from "../../src/config/types.ts";
+import type {
+  CredentialResolver,
+  ResolvedApiKey,
+  ResolvedCodexOAuth,
+  ResolvedCredential,
+} from "../../src/providers/credentials.ts";
+import type { ProviderAdapter } from "../../src/providers/types.ts";
 import { zstdCompressSync } from "node:zlib";
 import { decryptConfig, encryptConfig } from "../../src/control/crypto.ts";
 import { app } from "../../src/worker.ts";
@@ -141,7 +161,6 @@ beforeEach(async () => {
   exhausted.clear();
   devicePolls = 0;
   resetCredits = [];
-  await env.CODY_CONFIG_KV.delete("gateway-config");
   vi.stubGlobal(
     "fetch",
     vi.fn((request: Request) => send(request)),
@@ -546,6 +565,50 @@ const admin = (path: string, method = "GET", json?: unknown) =>
     env,
     createExecutionContext(),
   );
+
+test("adapter and resolver credential types preserve their authentication discriminants", () => {
+  expectTypeOf<
+    Parameters<ProviderAdapter<AiGatewayProviderConfig>["prepare"]>[1]
+  >().toEqualTypeOf<ResolvedApiKey>();
+  expectTypeOf<
+    Parameters<ProviderAdapter<CodexProviderConfig>["prepare"]>[1]
+  >().toEqualTypeOf<ResolvedCodexOAuth>();
+  expectTypeOf<
+    Parameters<ProviderAdapter["prepare"]>[1]
+  >().toEqualTypeOf<ResolvedCredential>();
+  expectTypeOf<
+    Awaited<ReturnType<CredentialResolver<CredentialAuth>["resolve"]>>
+  >().toEqualTypeOf<ResolvedCredential>();
+});
+
+test("OAuth commands reject missing and unrelated fields before changing account state", async () => {
+  const { stub } = await ready("contracts");
+  const before = await runInDurableObject(stub, (_instance, state) =>
+    state.storage.get("account"),
+  );
+  const invalid: unknown[] = [
+    { action: "start" },
+    { action: "session", session_id: crypto.randomUUID() },
+    { action: "complete", session_id: crypto.randomUUID(), actor },
+    {
+      action: "resolve",
+      connection: { provider_id: "google", credential_id: "one" },
+    },
+    { action: "view", redirect_url: "must-not-be-accepted" },
+    { action: "disconnect", force: true },
+    { action: "quota", force: "true" },
+  ];
+  for (const command of invalid) {
+    // @ts-expect-error Deliberately bypass the typed RPC contract to test runtime validation.
+    const reply = await stub.run(command);
+    expect(reply).toMatchObject({ ok: false, status: 400 });
+  }
+  expect(
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.get("account"),
+    ),
+  ).toEqual(before);
+});
 
 test("the console shows quota cooldowns and a manual reset clears them", async () => {
   const [only] = await accounts(1);

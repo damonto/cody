@@ -127,7 +127,7 @@ test("compressed native requests enforce the decoded upload budget before resolv
   const config = parseConfig({
     providers: [
       {
-        type: "antigravity",
+        type: "xai",
         id: "native",
         disabled: false,
         priority: 100,
@@ -168,8 +168,47 @@ test("compressed native requests enforce the decoded upload budget before resolv
       PROVIDER_OAUTH_ACCOUNT: {
         getByName: () => ({
           run: async (command) => {
-            assert.equal(command.action, "readiness");
-            return { ok: true, data: { ready: true } };
+            assert.equal(command.action, "quota");
+            return {
+              ok: true,
+              data: {
+                account_ref: crypto.randomUUID(),
+                provider_id: "native",
+                status: "ready",
+                email: null,
+                expires_at: null,
+                error: null,
+                models: [],
+                models_updated_at: null,
+                models_error: null,
+                xai: { subject: "account" },
+                quota: {
+                  groups: [
+                    {
+                      id: "daily",
+                      label: "Daily",
+                      buckets: [
+                        {
+                          id: "window",
+                          label: "Daily",
+                          window: "daily",
+                          used_percent: 0,
+                          remaining_fraction: 1,
+                          reset_at: null,
+                        },
+                      ],
+                    },
+                  ],
+                  last_error: null,
+                  subscription: {
+                    tier_id: "plus",
+                    tier_name: "Plus",
+                  },
+                  updated_at: Date.now(),
+                  stale: false,
+                },
+              },
+            };
           },
         }),
       },

@@ -1,6 +1,4 @@
 import { sessionAffinityIdentity } from "../../src/gateway/routing/affinity.ts";
-import { antigravityProviderSchema } from "../../src/config/schema.ts";
-import { parseConfig } from "../../src/config/store.ts";
 import { z } from "zod";
 import { env } from "cloudflare:workers";
 import {
@@ -10,7 +8,7 @@ import {
 } from "cloudflare:test";
 import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { checkIncrementalConfiguration } from "../helpers/entity-configuration.ts";
-import { newAntigravityProvider } from "../helpers/native-provider-fixtures.ts";
+import { newCodexProvider } from "../helpers/native-provider-fixtures.ts";
 import { app } from "../../src/worker.ts";
 import { ControlStore, SECRET_PLACEHOLDER } from "../../src/control/store.ts";
 import { configurationViewSchema } from "../../src/control/schema.ts";
@@ -930,15 +928,15 @@ test("deleting the last provider is atomic and retains a client without upstream
   expect((await call(`/clients/${current.api_keys[0].id}`)).status).toBe(200);
 });
 
-test("provider deletion keeps native family routes and ignores archived model support", async () => {
+test("provider deletion keeps shared native model routes and ignores archived model support", async () => {
   const input = config();
-  const family = "gemini-3.8-flash";
-  const native = newAntigravityProvider();
-  native.models = [`${family}-low`];
+  const sharedModel = "shared-model";
+  const native = newCodexProvider();
+  native.models = [sharedModel];
   const provider = input.providers[0];
-  provider.models.push(family);
+  provider.models.push(sharedModel);
   input.model_routes = {
-    family: { model: family },
+    shared: { model: sharedModel },
     orphan: { model: "real-model" },
   };
   const view = await store().save(
@@ -973,7 +971,7 @@ test("provider deletion keeps native family routes and ignores archived model su
   ).toBe(200);
   const current = await loadConfig(env);
   expect(current.model_routes).toEqual({
-    family: view.config.model_routes.family,
+    shared: view.config.model_routes.shared,
   });
   expect(current.providers.map((row) => row.id)).toEqual([
     view.config.providers[1].id,
@@ -1191,128 +1189,6 @@ test("model removal preserves shared routes and retires empty restrictions in bo
   ]);
 });
 
-test.each([
-  { scope: "provider", restricted: false },
-  { scope: "global", restricted: false },
-  { scope: "global", restricted: true },
-  { scope: "client", restricted: false },
-  { scope: "client", restricted: true },
-] as const)(
-  "removing the final variant rejects a referenced $scope family route (restricted: $restricted)",
-  async ({ scope, restricted }) => {
-    const input = config();
-    const family = "gemini-3.8-flash";
-    const native = newAntigravityProvider();
-    native.models = [`${family}-high`];
-    if (restricted) input.providers[0].models.push(family);
-    const route = {
-      model: family,
-      ...(restricted ? { providers: [input.providers[0].id, native.id] } : {}),
-    };
-    if (scope === "provider") native.model_routes = { family: route };
-    if (scope === "global") input.model_routes.family = route;
-    if (scope === "client") input.api_keys[0].model_routes = { family: route };
-    const view = await store().save(
-      { ...input, providers: [...input.providers, native] },
-      0,
-      "test",
-    );
-    const provider = view.config.providers[1];
-    const { id: _id, credentials: _credentials, ...settings } = provider;
-    const before = await readEntities(env.CODY_DB);
-    const response = await call("/native-providers/antigravity", "PUT", {
-      version: view.version,
-      settings: { ...settings, models: [] },
-    });
-    expect(response.status).toBe(400);
-    expect(await readEntities(env.CODY_DB)).toEqual(before);
-    expect(await store().view()).toEqual(view);
-  },
-);
-
-test("removing a variant preserves family routes supported by a retained level", async () => {
-  const input = config();
-  const family = "gemini-3.8-flash";
-  const native = newAntigravityProvider();
-  native.models = [`${family}-low`, `${family}-high`];
-  native.model_routes = { family: { model: family } };
-  const route = { model: family, providers: [native.id] };
-  input.model_routes.family = route;
-  input.api_keys[0].model_routes = { family: route };
-  const view = await store().save(
-    { ...input, providers: [...input.providers, native] },
-    0,
-    "test",
-  );
-  const provider = view.config.providers[1];
-  const { id: _id, credentials: _credentials, ...settings } = provider;
-  const response = await call("/native-providers/antigravity", "PUT", {
-    version: view.version,
-    settings: { ...settings, models: [`${family}-low`] },
-  });
-  expect(response.status).toBe(200);
-  const current = await store().current();
-  expect(current.providers[1].model_routes).toEqual(provider.model_routes);
-  expect(current.model_routes).toEqual(view.config.model_routes);
-  expect(current.api_keys[0].model_routes).toEqual(
-    view.config.api_keys[0].model_routes,
-  );
-});
-
-test("removing the final variant permits explicitly removing its provider family route", async () => {
-  const input = config();
-  const native = newAntigravityProvider();
-  const family = "gemini-3.8-flash";
-  native.models = [`${family}-high`];
-  native.model_routes = { family: { model: family } };
-  const view = await store().save(
-    { ...input, providers: [...input.providers, native] },
-    0,
-    "test",
-  );
-  const {
-    id: _id,
-    credentials: _credentials,
-    ...settings
-  } = view.config.providers[1];
-  const response = await call("/native-providers/antigravity", "PUT", {
-    version: view.version,
-    settings: { ...settings, models: [], model_routes: {} },
-  });
-  expect(response.status).toBe(200);
-  expect((await store().current()).providers[1]).toMatchObject({ models: [] });
-});
-
-test("removing the final variant preserves unrestricted family routes supported elsewhere", async () => {
-  const input = config();
-  const family = "gemini-3.8-flash";
-  input.providers[0].models.push(family);
-  input.model_routes.family = { model: family };
-  input.api_keys[0].model_routes = { family: { model: family } };
-  const native = newAntigravityProvider();
-  native.models = [`${family}-high`];
-  const view = await store().save(
-    { ...input, providers: [...input.providers, native] },
-    0,
-    "test",
-  );
-  const {
-    id: _id,
-    credentials: _credentials,
-    ...settings
-  } = view.config.providers[1];
-  const response = await call("/native-providers/antigravity", "PUT", {
-    version: view.version,
-    settings: { ...settings, models: [] },
-  });
-  expect(response.status).toBe(200);
-  const current = await store().current();
-  expect(current.model_routes).toEqual(view.config.model_routes);
-  expect(current.api_keys[0].model_routes).toEqual(
-    view.config.api_keys[0].model_routes,
-  );
-});
-
 test("resource reads mask secrets without decrypting them, and ordinary CRUD bypasses document replacement", async () => {
   const view = await save();
   const current = vi
@@ -1431,193 +1307,6 @@ test("resource tags detect hidden key rotation without changing unrelated settin
   expect(next.etag).not.toBe(search.etag);
   expect((await read("/settings/reporting")).etag).toBe(reporting.etag);
   expect(JSON.stringify(next)).not.toContain("rotated-search-key");
-});
-
-test("family prices and context update every thinking level in one fenced transaction", async () => {
-  const family = "gemini-3.8-flash";
-  const models = ["low", "medium", "high"].map((level) => `${family}-${level}`);
-  const input = parseConfig(config());
-  input.providers.push(
-    antigravityProviderSchema.parse({
-      type: "antigravity",
-      id: "antigravity",
-      name: "Antigravity",
-      priority: 100,
-      disabled: true,
-      models,
-      credentials: [],
-      account_selection: "round_robin",
-    }),
-  );
-  const initial = await store().save(input, 0, "test");
-  const provider = initial.config.providers.find(
-    (entry) => entry.type === "antigravity",
-  )!;
-  const modelId = provider.model_settings![models[0]].id!;
-  const pricing = {
-    ...initial.config.model_prices![0].pricing!,
-    currency: "EUR",
-  };
-  const reply = await call(`/model-prices/${modelId}/family`, "PUT", {
-    version: initial.version,
-    pricing,
-  });
-  expect(reply.status).toBe(200);
-  const priced = await store().current();
-  const rates = priced.model_prices!.filter(
-    (price) => price.provider_id === provider.id,
-  );
-  expect(rates).toHaveLength(3);
-  expect(rates.every((price) => price.pricing?.currency === "EUR")).toBe(true);
-  expect(new Set(rates.map((price) => price.id)).size).toBe(3);
-  expect(
-    (
-      await call(`/providers/${provider.id}/models/${modelId}/family`, "PUT", {
-        version: initial.version + 1,
-        settings: { context_window: 1000000 },
-      })
-    ).status,
-  ).toBe(200);
-  const current = await store().current();
-  expect(
-    models.map(
-      (model) =>
-        current.providers.find((entry) => entry.id === provider.id)!
-          .model_settings![model].context_window,
-    ),
-  ).toEqual([1000000, 1000000, 1000000]);
-  expect(
-    (
-      await call(`/model-prices/${modelId}/family`, "PUT", {
-        version: initial.version + 1,
-        pricing: { ...pricing, currency: "JPY" },
-      })
-    ).status,
-  ).toBe(409);
-  expect(
-    (await store().current())
-      .model_prices!.filter((price) => price.provider_id === provider.id)
-      .every((price) => price.pricing?.currency === "EUR"),
-  ).toBe(true);
-  const history = await call(
-    `/pricing/history?provider_id=${provider.id}&model=${family}`,
-  );
-  expect(history.status).toBe(200);
-  const entries = z
-    .object({
-      items: z.array(
-        z.object({
-          revision: z.number(),
-          price: z.object({ model: z.string() }),
-        }),
-      ),
-    })
-    .parse(await history.json()).items;
-  expect(entries.length).toBeGreaterThan(0);
-  expect(new Set(entries.map((item) => item.revision)).size).toBe(
-    entries.length,
-  );
-  expect(entries.every((entry) => entry.price.model === family)).toBe(true);
-  expect(
-    (
-      await call(`/model-prices/${modelId}/family`, "DELETE", {
-        version: initial.version + 2,
-      })
-    ).status,
-  ).toBe(200);
-  expect(
-    (await store().current()).model_prices!.filter(
-      (price) => price.provider_id === provider.id,
-    ),
-  ).toEqual([]);
-  const ordinary = initial.config.providers.find(
-    (entry) => entry.type === "ai_gateway",
-  )!;
-  expect(
-    (
-      await call(
-        `/model-prices/${ordinary.model_settings!["real-model"].id}/family`,
-        "PUT",
-        { version: initial.version + 3, pricing },
-      )
-    ).status,
-  ).toBe(400);
-});
-
-test("enabling a new thinking level inherits the shared family price and context", async () => {
-  const family = "gemini-3.8-flash";
-  const high = `${family}-high`;
-  const low = `${family}-low`;
-  const input = parseConfig(config());
-  input.providers.push(
-    antigravityProviderSchema.parse({
-      type: "antigravity",
-      id: "antigravity",
-      name: "Antigravity",
-      disabled: true,
-      priority: 100,
-      models: [high],
-      credentials: [],
-      model_settings: {
-        [high]: { id: crypto.randomUUID(), context_window: 1000000 },
-      },
-    }),
-  );
-  input.model_prices!.push({
-    id: crypto.randomUUID(),
-    provider_id: "antigravity",
-    model: high,
-    pricing: input.model_prices![0].pricing,
-  });
-  const initial = await store().save(input, 0, "test");
-  const provider = initial.config.providers.find(
-    (entry) => entry.type === "antigravity",
-  )!;
-  const { id: _id, credentials: _credentials, ...settings } = provider;
-  const response = await call("/native-providers/antigravity", "PUT", {
-    version: initial.version,
-    settings: { ...settings, models: [high, low] },
-  });
-  expect(response.status).toBe(200);
-  const saved = await store().current();
-  expect(
-    saved.providers.find((entry) => entry.id === provider.id)?.model_settings?.[
-      low
-    ].context_window,
-  ).toBe(1000000);
-  const prices = saved.model_prices!.filter(
-    (price) => price.provider_id === provider.id,
-  );
-  expect(prices).toHaveLength(2);
-  expect(prices[0].pricing).toEqual(prices[1].pricing);
-  expect(prices[0].id).not.toBe(prices[1].id);
-  const lowPriceId = prices.find((price) => price.model === low)!.id;
-  const {
-    id: _savedId,
-    credentials: _savedCredentials,
-    ...savedSettings
-  } = saved.providers.find((entry) => entry.id === provider.id)!;
-  expect(
-    (
-      await call("/native-providers/antigravity", "PUT", {
-        version: initial.version + 1,
-        settings: { ...savedSettings, models: [high] },
-      })
-    ).status,
-  ).toBe(200);
-  expect(
-    (
-      await call("/native-providers/antigravity", "PUT", {
-        version: initial.version + 2,
-        settings: { ...savedSettings, models: [high, low] },
-      })
-    ).status,
-  ).toBe(200);
-  const reenabled = (await store().current()).model_prices!.find(
-    (price) => price.provider_id === provider.id && price.model === low,
-  )!;
-  expect(reenabled.pricing).toEqual(prices[0].pricing);
-  expect(reenabled.id).toBe(lowPriceId);
 });
 
 test("runtime session proxy preserves model fields and forwards exact deletion scopes", async () => {

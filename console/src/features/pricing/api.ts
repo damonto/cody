@@ -6,27 +6,22 @@ export function useSaveModelPrice() {
   return useConfigurationMutation<{
     version: number;
     modelId: string;
-    family?: boolean;
     pricing: ModelPrice["pricing"];
-  }>(
-    [resourceKeys.prices],
-    ({ version, operation_id, modelId, pricing, family }) => {
-      const model = rpc["model-prices"][":id"];
-      const resource = family ? model.family : model;
-      const param = { id: modelId };
-      return pricing
-        ? read(
-            resource.$put({
-              param,
-              json: { version, operation_id, pricing },
-            }),
-          )
-        : read(
-            resource.$delete({
-              param,
-              json: { version, operation_id },
-            }),
-          );
-    },
-  );
+  }>([resourceKeys.prices], ({ version, operation_id, modelId, pricing }) => {
+    const model = rpc["model-prices"][":id"];
+    const param = { id: modelId };
+    return pricing
+      ? read(
+          model.$put({
+            param,
+            json: { version, operation_id, pricing },
+          }),
+        )
+      : read(
+          model.$delete({
+            param,
+            json: { version, operation_id },
+          }),
+        );
+  });
 }

@@ -1,7 +1,3 @@
-import {
-  publicProviderModels,
-  antigravityFamilyModels,
-} from "../../../src/shared/antigravity-models.ts";
 import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { Link, useSearchParams } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
@@ -34,7 +30,7 @@ export default function Pricing() {
     config.providers.find((entry) => entry.id === search.get("provider")) ??
     config.providers.find((entry) => entry.models.length > 0) ??
     config.providers[0];
-  const models = provider ? publicProviderModels(provider) : [];
+  const models = provider?.models ?? [];
   const model =
     models.find((entry) => entry === search.get("model")) ?? models[0];
   return (
@@ -75,13 +71,7 @@ export default function Pricing() {
                 {models.map((name) => {
                   const price = config.prices?.find(
                     (entry) =>
-                      entry.provider_id === provider.id &&
-                      (entry.model === name ||
-                        (provider.type === "antigravity" &&
-                          antigravityFamilyModels(
-                            provider.models,
-                            name,
-                          ).includes(entry.model))),
+                      entry.provider_id === provider.id && entry.model === name,
                   );
                   return (
                     <button

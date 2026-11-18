@@ -1,6 +1,5 @@
 import { codexModeSchema } from "../codex/account-schema.ts";
 import { codexQuotaObservationSchema } from "../codex/quota.ts";
-import { ProviderType } from "../../config/values.ts";
 import { OAuthFlow } from "./values.ts";
 
 import { z } from "zod";
@@ -74,7 +73,7 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     account_ref: z.uuid(),
     actor: sessionOwner.actor,
     connection: connectionSchema,
-    provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
+    provider_type: oauthProviderTypeSchema,
     flow: z.enum(OAuthFlow).default(OAuthFlow.Pkce),
     request_consent: z.boolean().optional(),
   }),
@@ -94,7 +93,7 @@ export const accountCommandSchema = z.discriminatedUnion("action", [
     proxy_configuration: proxyConfigurationSchema,
   }),
   z.strictObject({
-    action: z.enum(["view", "disconnect", "reset_credits", "retry_project"]),
+    action: z.enum(["view", "disconnect", "reset_credits"]),
   }),
   z.strictObject({
     action: z.literal("consume_reset"),

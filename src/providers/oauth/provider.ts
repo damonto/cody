@@ -2,7 +2,6 @@ import type { CodexMode } from "../codex/account-schema.ts";
 import type { OAuthFlow } from "./values.ts";
 import type { z } from "zod";
 import type { UpstreamFetch } from "../../gateway/transport/index.ts";
-import type { Bindings } from "../../platform/bindings.ts";
 import type { ObjectContext } from "../../platform/object-context.ts";
 import type { AccountCommand } from "./commands.ts";
 import {
@@ -11,7 +10,6 @@ import {
   type ProviderConnection,
   type ProxyConfiguration,
   type ConsumeResetResult,
-  type QuotaSnapshot,
   type AccountModel,
   type resolvedOAuthSchema,
   type tokenSchema,
@@ -88,7 +86,6 @@ export interface AccountServices {
   configuredConnection(
     fallback: ProviderConnection,
   ): Promise<{ connection: ProviderConnection; config: ProxyConfiguration }>;
-  metadata: Pick<Bindings, "CODY_CONFIG_KV">;
   hostId(): Promise<string>;
   context: Pick<ObjectContext, "waitUntil">;
 }
@@ -126,7 +123,6 @@ export interface AccountAuthorization {
 export interface AccountMetadata {
   models(): Promise<AccountModel[]>;
   quota(generation: number): Promise<void>;
-  verification?(error: unknown): QuotaSnapshot["verification"];
 }
 
 export interface AccountProvider {
@@ -148,11 +144,6 @@ export interface AccountProvider {
         ): Promise<ConsumeResetResult>;
       }
     | undefined;
-  background?: {
-    pending(): boolean;
-    run(): Promise<void>;
-    retry(): Promise<void>;
-  };
   recoverUnauthorized?: boolean;
   /** Fence and clear credentials before remote cleanup; never wait on an in-flight refresh. */
   disconnect?: (() => Promise<void>) | undefined;

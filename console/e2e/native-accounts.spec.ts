@@ -29,7 +29,6 @@ for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
           provider_id: provider.id,
           status: "ready",
           email: `${credential.name}@example.test`,
-          project_id: null,
           expires_at: Date.now() + 3600000,
           error: null,
           models: [],

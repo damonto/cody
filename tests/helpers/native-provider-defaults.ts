@@ -1,5 +1,4 @@
 import {
-  newAntigravityProvider,
   newCodexProvider,
   newClaudeProvider,
   newXaiProvider,
@@ -11,7 +10,6 @@ import { ControlStore } from "../../src/control/store.ts";
 import { ProviderService } from "../../src/control/services/providers.ts";
 
 const nativeDefaults = () => [
-  newAntigravityProvider(),
   newCodexProvider(),
   newClaudeProvider(),
   newXaiProvider(),
@@ -26,7 +24,7 @@ export async function checkNativeDefaults(
   const service = new ProviderService(store);
   await migrate();
   const initial = (await service.list()).item;
-  assert.equal(initial.length, 4);
+  assert.equal(initial.length, 3);
   const defaults = nativeDefaults();
   for (const [index, provider] of initial.entries()) {
     z.uuid().parse(provider.id);
@@ -37,7 +35,35 @@ export async function checkNativeDefaults(
       model_routes: {},
     });
   }
-  assert.equal(new Set(initial.map((provider) => provider.id)).size, 4);
+  assert.equal(new Set(initial.map((provider) => provider.id)).size, 3);
+  await assert.rejects(
+    () =>
+      db
+        .prepare(
+          "INSERT INTO providers (id, name, type, priority, disabled, position, settings_json, version, created_at, updated_at) VALUES (?, 'Legacy', 'antigravity', 0, 1, 10, '{}', 0, 0, 0)",
+        )
+        .bind(crypto.randomUUID())
+        .run(),
+    /Unsupported provider type|providers_supported_type/,
+  );
+  await assert.rejects(
+    () =>
+      db
+        .prepare("UPDATE providers SET type = 'antigravity' WHERE id = ?")
+        .bind(initial[0].id)
+        .run(),
+    /Unsupported provider type|providers_supported_type/,
+  );
+  await assert.rejects(
+    () =>
+      db
+        .prepare(
+          "INSERT INTO oauth_accounts (account_ref, provider_id, provider_type, created_at) VALUES (?, ?, 'antigravity', 0)",
+        )
+        .bind(crypto.randomUUID(), initial[0].id)
+        .run(),
+    /Unsupported OAuth provider type|oauth_accounts_supported_provider_type/,
+  );
   await migrate();
   assert.deepEqual((await service.list()).item, initial);
 
@@ -51,6 +77,7 @@ export async function checkNativeDefaults(
           priority: 77,
           account_selection: "session_affinity",
         },
+        ...initial.slice(1),
       ],
       api_keys: [],
     },
@@ -72,7 +99,7 @@ export async function checkNativeDefaults(
       row,
     );
   const supplemented = (await service.list()).item;
-  assert.equal(supplemented.length, 4);
+  assert.equal(supplemented.length, 3);
   assert.equal(supplemented[0].name, "Custom");
   assert.deepEqual(
     supplemented.map((provider) => provider.type),
@@ -95,6 +122,16 @@ export async function checkNativeDefaults(
       )
       .bind(ref, provider.id, provider.type, Date.now())
       .run();
+    await assert.rejects(
+      () =>
+        db
+          .prepare(
+            "UPDATE oauth_accounts SET provider_type = 'antigravity' WHERE account_ref = ?",
+          )
+          .bind(ref)
+          .run(),
+      /Unsupported OAuth provider type|oauth_accounts_supported_provider_type/,
+    );
     const { version } = await store.state();
     const credential = {
       name: "First account",

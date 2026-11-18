@@ -27,7 +27,7 @@ export interface ProviderRuntimeContext extends Omit<
     | "CONFIG_ENCRYPTION_KEY"
     | "UPSTREAM_HTTP"
   > &
-    Partial<Pick<Bindings, "CODY_CONFIG_KV" | "HEALTH">>;
+    Partial<Pick<Bindings, "HEALTH">>;
 }
 
 export type ProviderEndpoint = Exclude<GatewayEndpoint, "health" | "sessions">;

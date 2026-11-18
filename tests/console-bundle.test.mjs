@@ -62,18 +62,8 @@ test("console production bundles respect size and feature boundaries", async (t)
     },
   );
 
-  await t.test("OAuth client registration stays out of browser bundles", () => {
-    for (const id of modules(chunks)) {
-      assert.doesNotMatch(id, /\/src\/providers\/antigravity\/api\.ts$/);
-    }
-    for (const chunk of chunks) {
-      assert.doesNotMatch(chunk.code, /GOCSPX-/);
-    }
-  });
-
   for (const page of [
     "providers",
-    "antigravity",
     "proxies",
     "clients",
     "pricing",

@@ -230,10 +230,8 @@ test("failed provider deletion stays open with an error and can be retried", asy
       .config.providers.filter((provider) => provider.type === "ai_gateway"),
   ).toHaveLength(0);
   expect(
-    mock
-      .current()
-      .config.providers.filter((provider) => provider.type !== "ai_gateway"),
-  ).toHaveLength(4);
+    mock.current().config.providers.map((provider) => provider.type),
+  ).toEqual(["codex", "claude", "xai"]);
 });
 
 test("provider deletion detaches clients and refreshes cached routes", async ({

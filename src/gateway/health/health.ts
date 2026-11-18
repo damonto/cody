@@ -7,7 +7,6 @@ import {
 } from "./values.ts";
 
 import { ProviderType } from "../../config/values.ts";
-import { antigravityQuotaObjectName } from "../../providers/antigravity/availability.ts";
 import { type ApiProtocol } from "../protocol-values.ts";
 
 import type { LeaseGrant, ResetOperation } from "./provider-health.ts";
@@ -103,7 +102,6 @@ export interface CoolingProviderHealth extends ProviderHealthSnapshot {
 interface CoolingCredentialHealth extends ProviderHealthSnapshot {
   provider_id: string;
   credential_id: string;
-  model?: string;
 }
 
 export type CoolingHealth = (
@@ -664,35 +662,8 @@ export async function listCoolingHealth(
           };
     },
   );
-  const modelDescriptors =
-    scope === HealthScope.Inference
-      ? providers.flatMap((provider) =>
-          provider.type === ProviderType.Antigravity
-            ? provider.credentials.flatMap((credential) =>
-                provider.models.map((model) => ({
-                  provider_id: provider.id,
-                  credential_id: credential.id,
-                  account_ref: credential.auth.account_ref,
-                  model,
-                })),
-              )
-            : [],
-        )
-      : [];
-  const modelStatuses = await mapWithConcurrency(
-    modelDescriptors,
-    PROVIDER_FAN_OUT_CONCURRENCY,
-    async (entry) => ({
-      provider_id: entry.provider_id,
-      credential_id: entry.credential_id,
-      model: entry.model,
-      ...(await env.HEALTH.getByName(
-        antigravityQuotaObjectName(entry.account_ref, entry.model),
-      ).getStatus()),
-    }),
-  );
   const now = Date.now();
-  return [...statuses, ...modelStatuses].filter(
+  return statuses.filter(
     (status) => status.cooling_until !== null && status.cooling_until > now,
   );
 }

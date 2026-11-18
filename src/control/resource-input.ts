@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   aiGatewayProviderSchema,
-  antigravityProviderFormSchema,
   codexProviderFormSchema,
   claudeProviderFormSchema,
   xaiProviderFormSchema,
@@ -31,14 +30,8 @@ export const credentialInputSchema = z.union([
   credentialSchema.omit({ id: true }).extend({ name: nameSchema }),
   oauthCredentialSchema.omit({ id: true }).extend({ name: nameSchema }),
 ]);
-export const nativeTypeSchema = z.enum([
-  "antigravity",
-  "codex",
-  "claude",
-  "xai",
-]);
+export const nativeTypeSchema = z.enum(["codex", "claude", "xai"]);
 export const nativeSettingsSchema = z.discriminatedUnion("type", [
-  antigravityProviderFormSchema.omit({ id: true, credentials: true }),
   codexProviderFormSchema.omit({ id: true, credentials: true }),
   claudeProviderFormSchema.omit({ id: true, credentials: true }),
   xaiProviderFormSchema.omit({ id: true, credentials: true }),

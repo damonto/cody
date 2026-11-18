@@ -28,7 +28,6 @@ function fixture() {
       expires_at: Date.now() + 3600000,
     },
     identity: { id: "account", email: null },
-    project_id: null,
     claude: {
       account_id: "account",
       organization_id: "organization",
@@ -239,13 +238,6 @@ async function refreshDuringAuthorizationFixture(send, options = {}) {
     {
       CONFIG_ENCRYPTION_KEY: key,
       LOG_LEVEL: "off",
-      CODY_CONFIG_KV: {
-        get: async () =>
-          JSON.stringify({
-            version: "2.9.1",
-            expires_at: Date.now() + 6 * 3600_000,
-          }),
-      },
       CODY_DB: {
         batch: async (statements) => statements.map(() => ({ results: [] })),
         prepare: (sql) => ({
@@ -259,7 +251,7 @@ async function refreshDuringAuthorizationFixture(send, options = {}) {
               : { version: 0, maintenance: 0, updated_at: 0 },
         }),
       },
-      UPSTREAM_HTTP: { direct: send, antigravity: send },
+      UPSTREAM_HTTP: { direct: send },
     },
   );
   await Promise.all(initializing);
@@ -284,10 +276,6 @@ function authorizationAccount(type, refreshToken) {
   account.connection.provider_id = type;
   account.claude = type === "claude" ? account.claude : null;
   account.identity.id = type === "xai" ? "subject" : "account:organization";
-  if (type === "antigravity") {
-    account.identity.id = "google-user";
-    account.project_id = "existing-project";
-  }
   const claims =
     type === "xai"
       ? { sub: "subject", iss: "https://auth.x.ai" }
@@ -763,162 +751,6 @@ test("a grant repeating the token captured before exchange inherits a concurrent
   assert.equal((await f.stored()).tokens.refresh_token, "rotated-refresh");
   await f.drain();
 });
-
-for (const refreshProject of [false, true]) {
-  test(`Antigravity inherited project ${refreshProject ? "refreshes through" : "retains"} the active token lifecycle`, async () => {
-    const account = authorizationAccount("antigravity");
-    if (refreshProject) account.session.tokens.expires_at = Date.now() - 1000;
-    const started = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    let refreshes = 0;
-    const f = await refreshDuringAuthorizationFixture(
-      async (request) => {
-        if (request.url.includes("/token")) {
-          refreshes++;
-          assert.equal(
-            new URLSearchParams(await request.text()).get("refresh_token"),
-            "original-refresh",
-          );
-          started.resolve();
-          await release.promise;
-          return Response.json({
-            access_token: "rotated-access",
-            refresh_token: "rotated-refresh",
-            expires_in: 3600,
-          });
-        }
-        assert.ok(request.url.endsWith(":loadCodeAssist"));
-        return Response.json({
-          cloudaicompanionProject: "replacement-project",
-        });
-      },
-      { account },
-    );
-    await f.core.alarm();
-    const staged = (await f.stored()).antigravity_initialization;
-    assert.equal(staged.inherit_refresh_token, true);
-    assert.equal(staged.tokens.refresh_token, undefined);
-    await f.core.transferReload();
-    const refresh = f.core.run(f.resolve);
-    await Promise.race([
-      started.promise,
-      refresh.then((result) => {
-        throw new Error(
-          `Refresh did not reach upstream: ${JSON.stringify(result)}`,
-        );
-      }),
-    ]);
-    const project = f.core.alarm();
-    await setImmediate();
-    assert.equal(refreshes, 1);
-    release.resolve();
-    await Promise.all([refresh, project]);
-    const stored = await f.stored();
-    assert.equal(stored.tokens.refresh_token, "rotated-refresh");
-    assert.equal(stored.project_id, "replacement-project");
-    assert.equal(stored.antigravity_initialization, null);
-    await f.drain();
-  });
-}
-
-test("Antigravity pending project progress cannot restore a refresh token rotated during the poll", async () => {
-  const account = authorizationAccount("antigravity");
-  const started = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  const f = await refreshDuringAuthorizationFixture(
-    async (request) => {
-      if (request.url.includes("/token"))
-        return Response.json({
-          access_token: "rotated-access",
-          refresh_token: "rotated-refresh",
-          expires_in: 3600,
-        });
-      if (request.url.endsWith(":loadCodeAssist")) {
-        started.resolve();
-        await release.promise;
-        return Response.json({});
-      }
-      assert.ok(request.url.endsWith(":onboardUser"));
-      return Response.json({
-        done: true,
-        response: { cloudaicompanionProject: "replacement-project" },
-      });
-    },
-    { account },
-  );
-  await f.core.alarm();
-  const project = f.core.alarm();
-  await started.promise;
-  assert.equal((await f.core.run(f.resolve)).ok, true);
-  release.resolve();
-  await project;
-  assert.equal(
-    (await f.stored()).antigravity_initialization.tokens.refresh_token,
-    undefined,
-  );
-  await f.core.transferReload();
-  await f.core.alarm();
-  assert.equal((await f.stored()).tokens.refresh_token, "rotated-refresh");
-  await f.drain();
-});
-
-for (const legacy of ["same", "different", "no_active"]) {
-  test(`legacy Antigravity project with ${legacy} refresh-token ownership recovers safely`, async () => {
-    const account = authorizationAccount("antigravity");
-    account.antigravity_initialization = {
-      tokens: {
-        ...account.session.tokens,
-        refresh_token:
-          legacy === "different" ? "ambiguous-refresh" : "original-refresh",
-      },
-      identity: account.identity,
-      connection: account.connection,
-      stage: "project",
-      tier: "free-tier",
-      attempts: 0,
-      next_at: Date.now(),
-      deadline: Date.now() + 600_000,
-      error: null,
-      last_result: null,
-    };
-    account.session.status = "complete";
-    account.session.tokens = null;
-    if (legacy === "no_active") {
-      account.tokens = null;
-      account.status = "disconnected";
-    }
-    let requests = 0;
-    const f = await refreshDuringAuthorizationFixture(
-      async (request) => {
-        requests++;
-        assert.ok(request.url.endsWith(":loadCodeAssist"));
-        return Response.json({
-          cloudaicompanionProject: "replacement-project",
-        });
-      },
-      { account },
-    );
-    await f.core.alarm();
-    const stored = await f.stored();
-    if (legacy === "different") {
-      assert.equal(requests, 0);
-      assert.match(
-        stored.antigravity_initialization.error,
-        /Start authorization again/,
-      );
-      assert.deepEqual(stored.tokens, account.tokens);
-      await f.core.transferReload();
-      assert.equal(
-        (await f.core.run({ action: "readiness" })).data.ready,
-        true,
-      );
-    } else {
-      assert.equal(stored.project_id, "replacement-project");
-      assert.equal(stored.tokens.refresh_token, "original-refresh");
-    }
-    await f.drain();
-  });
-}
 
 for (const transition of ["start", "cancel", "expire"]) {
   test(`authorization ${transition} preserves a successful in-flight token rotation`, async (t) => {

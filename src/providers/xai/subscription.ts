@@ -44,7 +44,6 @@ export function xaiSubscription(
     return {
       tier_id: tier?.[0] ?? key,
       tier_name: tier?.[1] ?? name,
-      credits: [],
     };
   }
   try {
@@ -62,7 +61,6 @@ export function xaiSubscription(
     return {
       tier_id: known?.[0] ?? `xai_tier_${tier}`,
       tier_name: known?.[1] ?? `Tier ${tier}`,
-      credits: [],
     };
   } catch {
     return null;

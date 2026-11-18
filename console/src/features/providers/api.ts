@@ -122,22 +122,13 @@ export function useSaveModelSettings() {
     version: number;
     providerId: string;
     modelId: string;
-    family?: boolean;
     context_window: number | null;
   }>(
     [resourceKeys.providers, resourceKeys.native],
-    ({
-      version,
-      operation_id,
-      providerId,
-      modelId,
-      context_window,
-      family,
-    }) => {
+    ({ version, operation_id, providerId, modelId, context_window }) => {
       const model = rpc.providers[":id"].models[":modelId"];
-      const resource = family ? model.family : model;
       return read(
-        resource.$put({
+        model.$put({
           param: { id: providerId, modelId },
           json: { version, operation_id, settings: { context_window } },
         }),

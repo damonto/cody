@@ -8,7 +8,6 @@ import {
 } from "../proxies/transport.ts";
 import { effectiveProxyGroup } from "../proxies/configuration.ts";
 import type { ProxyFailure } from "../proxies/errors.ts";
-import type { SocksFetchOptions } from "./socks-fetch.ts";
 export { socksFetch, type SocksFetchOptions } from "./socks-fetch.ts";
 export { effectiveProxyGroup } from "../proxies/configuration.ts";
 
@@ -21,7 +20,6 @@ export interface UpstreamTransport {
 
 export interface UpstreamTransportPolicy {
   readonly direct?: UpstreamFetch | undefined;
-  readonly socks?: Pick<SocksFetchOptions, "omitAlpn">;
 }
 
 export function createUpstreamTransport(
@@ -32,15 +30,7 @@ export function createUpstreamTransport(
 ): UpstreamTransport {
   const selection = effectiveProxyGroup(provider, credential);
   return selection
-    ? createProxyTransport(
-        selection,
-        context && policy.socks
-          ? {
-              ...context,
-              socks: { ...context.socks, ...policy.socks },
-            }
-          : context,
-      )
+    ? createProxyTransport(selection, context)
     : {
         send: policy.direct ?? ((request) => fetch(request)),
         proxyFailure: () => undefined,

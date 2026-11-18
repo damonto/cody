@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 import { mockApi } from "./fixtures";
 
 for (const [type, add] of [
-  ["antigravity", "Add Google account"],
   ["codex", "Add ChatGPT account"],
   ["claude", "Add Claude account"],
   ["xai", "Add SpaceXAI account"],

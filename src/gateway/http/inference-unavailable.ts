@@ -1,10 +1,5 @@
 import { xaiQuotaResponse } from "../../providers/xai/availability.ts";
 
-import {
-  antigravityQuotaResetsAt,
-  antigravityQuotaResponse,
-} from "../../providers/antigravity/exhaustion.ts";
-
 import { ProviderAvailabilityReason } from "../health/values.ts";
 import { SessionAffinityStatus } from "../routing/values.ts";
 
@@ -37,7 +32,6 @@ interface UnavailableInference {
   env: Bindings;
   config: GatewayConfig;
   route: ModelRoute;
-  routeForSelection: ModelRoute;
   selection: ProviderSelection;
   excludedCredentials: Set<string>;
   exhausted: Response | undefined;
@@ -54,7 +48,6 @@ export async function unavailableInference({
   env,
   config,
   route,
-  routeForSelection,
   selection,
   excludedCredentials,
   exhausted,
@@ -80,8 +73,7 @@ export async function unavailableInference({
         config.providers.some(
           (provider) =>
             provider.id === check.provider_id &&
-            (provider.type === ProviderType.Antigravity ||
-              provider.type === ProviderType.Codex),
+            provider.type === ProviderType.Codex,
         ) && check.reason === ProviderAvailabilityReason.HealthReadFailed,
     )
   ) {
@@ -91,15 +83,6 @@ export async function unavailableInference({
       code: "quota_state_unavailable",
       requestId,
     });
-  }
-  const antigravityReset = antigravityQuotaResetsAt(
-    routeForSelection,
-    selection,
-  );
-  if (antigravityReset !== undefined) {
-    if (exhausted) await discardBody(exhausted.body);
-    meter?.diagnostic("usage_limit_reached");
-    return antigravityQuotaResponse(protocol, antigravityReset, requestId);
   }
   const siwcOnly = siwcOnlySelection(selection);
   if (!resetConsumed && !siwcOnly) {

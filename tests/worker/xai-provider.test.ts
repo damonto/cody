@@ -39,7 +39,6 @@ beforeEach(async () => {
   settings = {};
   generic = false;
   pending = false;
-  await env.CODY_CONFIG_KV.delete("gateway-config");
   vi.stubGlobal(
     "fetch",
     vi.fn(async (request: Request) => {

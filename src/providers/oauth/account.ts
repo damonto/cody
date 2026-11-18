@@ -62,7 +62,6 @@ const SESSION_TTL_MS = 10 * 60_000;
 type AccountEnv = Pick<
   Bindings,
   | "CODY_DB"
-  | "CODY_CONFIG_KV"
   | "LOG_LEVEL"
   | "CONFIG_ENCRYPTION_KEY"
   | "PROXY_GROUP"
@@ -371,7 +370,6 @@ export class ProviderOAuthAccountCore {
       {
         outbound: (connection, config) => this.outbound(connection, config),
         configuredConnection: (fallback) => this.configuredConnection(fallback),
-        metadata: this.env,
         hostId: () => siwcHostId(this.env.CODY_DB),
         context: this.ctx,
       },
@@ -446,14 +444,7 @@ export class ProviderOAuthAccountCore {
       );
     const signal = new AbortController().signal;
     return [
-      providerOutbound(
-        selected,
-        network,
-        this.env,
-        signal,
-        account.provider_type,
-        this.ctx,
-      ).send,
+      providerOutbound(selected, network, this.env, signal, this.ctx).send,
       signal,
     ];
   }
@@ -526,7 +517,6 @@ export class ProviderOAuthAccountCore {
         connection,
         tokens: null,
         identity: null,
-        project_id: null,
         codex: null,
         claude_quota_revision: 0,
         error: null,
@@ -540,7 +530,6 @@ export class ProviderOAuthAccountCore {
       session.target_generation = account.generation;
       account.authorization_generation++;
       account.session = session;
-      account.antigravity_initialization = null;
       return account;
     });
     await this.env.CODY_DB.prepare(
@@ -845,7 +834,6 @@ export class ProviderOAuthAccountCore {
       account.authorization_generation++;
       account.tokens = null;
       account.session = null;
-      account.antigravity_initialization = null;
       account.status = OAuthAccountStatus.Disconnected;
       account.error = null;
       return account;
@@ -956,13 +944,6 @@ export class ProviderOAuthAccountCore {
         return this.view();
       case "readiness":
         return accountReadiness(this.requireAccount(), command.mode);
-      case "retry_project": {
-        const background = this.provider().background;
-        if (!background)
-          throw new OAuthError("Account initialization cannot be retried", 409);
-        await background.retry();
-        return this.view();
-      }
     }
   }
   async run(input: AccountCommand): Promise<AccountReply> {
@@ -990,16 +971,6 @@ export class ProviderOAuthAccountCore {
     await this.expireSession();
     const account = this.requireAccount();
     const provider = this.provider();
-    if (provider.background?.pending()) {
-      try {
-        await provider.background.run();
-      } catch (error) {
-        // Cancellation or reauthorization can supersede an in-flight alarm.
-        if (!(error instanceof OAuthError && error.code === "account_changed"))
-          throw error;
-      }
-      return;
-    }
     const session = account.session;
     if (!session) return;
     if (devicePending(session)) {

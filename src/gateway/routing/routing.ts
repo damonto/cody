@@ -3,13 +3,9 @@ import { codexModeForClient } from "../../shared/codex-client.ts";
 import type { CodexRequestPolicy } from "../../providers/codex/siwc-policy.ts";
 import { codexRequestAvailability } from "../../providers/codex/availability.ts";
 import { oauthAccountAvailability } from "../../providers/oauth/availability.ts";
-import { supportsProviderModel } from "../../shared/antigravity-models.ts";
-import { resolveAntigravityModel } from "../../providers/antigravity/reasoning.ts";
-import { ProviderRequestError } from "../../providers/errors.ts";
 import { xaiQuotaRoute } from "../../providers/xai/routing.ts";
 import { claudeQuotaRoute } from "../../providers/claude/routing.ts";
 import { SessionAffinityStatus } from "./values.ts";
-import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
 import { CodexAccountSelection, ProviderType } from "../../config/values.ts";
 
 import { HealthScope, ProviderAvailabilityReason } from "../health/values.ts";
@@ -45,7 +41,6 @@ import type { Bindings } from "../../platform/bindings.ts";
 
 export interface ModelRoute {
   requestedModel: string;
-  resolutionError?: ProviderRequestError;
   targets: ModelRoutedProvider[];
 }
 
@@ -100,8 +95,6 @@ export interface ProviderSelection extends TargetSelection {
 
 export interface ProviderSelectionOptions {
   codexRequest?: CodexRequestPolicy;
-  /** Real models resolved per provider; catalogs do not consult inference quotas. */
-  upstreamModels?: ReadonlyMap<string, string>;
   scope?: HealthScope;
   skipXaiQuota?: boolean;
   skipClaudeQuota?: boolean;
@@ -118,7 +111,6 @@ export interface ProviderSelectionOptions {
 type RequiredProviderCapability = "supports_websocket" | "supports_web_search";
 
 export interface ResolveModelRouteOptions {
-  payload?: Record<string, unknown>;
   requiredCapabilities?: readonly RequiredProviderCapability[];
   endpoint?: ProviderEndpoint;
   transport?: ProviderTransport;
@@ -213,8 +205,7 @@ function sortRoutedProviders<T extends RoutedProvider>(
   );
 }
 
-/** Resolve configured eligibility without choosing request-specific model variants. */
-export function configuredModelRoute(
+export function resolveModelRoute(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
   requestedModel: string,
@@ -243,7 +234,7 @@ export function configuredModelRoute(
     const upstreamModel = configuredRoute?.model ?? requestedModel;
     if (
       !routeAllowsProvider(configuredRoute, provider.id) ||
-      !supportsProviderModel(provider, upstreamModel)
+      !provider.models.includes(upstreamModel)
     ) {
       return [];
     }
@@ -258,41 +249,6 @@ export function configuredModelRoute(
   };
 }
 
-/** Resolve physical variants only for inference, after configured eligibility is established. */
-export function resolveModelRoute(
-  config: GatewayConfig,
-  client: ClientApiKeyConfig,
-  requestedModel: string,
-  options: ResolveModelRouteOptions = {},
-): ModelRoute {
-  const route = configuredModelRoute(config, client, requestedModel, options);
-  let resolutionError: ProviderRequestError | undefined;
-  const targets = route.targets.flatMap<ModelRoutedProvider>((target) => {
-    if (target.provider.type !== ProviderType.Antigravity) return [target];
-    try {
-      return [
-        {
-          ...target,
-          upstreamModel: resolveAntigravityModel(
-            target.provider.models,
-            target.upstreamModel,
-            options.payload,
-          ),
-        },
-      ];
-    } catch (error) {
-      if (!(error instanceof ProviderRequestError)) throw error;
-      resolutionError ??= error;
-      return [];
-    }
-  });
-  return {
-    requestedModel,
-    targets,
-    ...(!targets.length && resolutionError ? { resolutionError } : {}),
-  };
-}
-
 export function modelIsAvailableForClient(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
@@ -300,8 +256,8 @@ export function modelIsAvailableForClient(
   options: ResolveModelRouteOptions = {},
 ): boolean {
   return (
-    configuredModelRoute(config, client, requestedModel, options).targets
-      .length > 0
+    resolveModelRoute(config, client, requestedModel, options).targets.length >
+    0
   );
 }
 
@@ -327,8 +283,7 @@ function applyHealthReadPolicy(
 ): ProviderAvailability {
   if (
     health.reason === ProviderAvailabilityReason.HealthReadFailed &&
-    (provider.type === ProviderType.Antigravity ||
-      provider.type === ProviderType.Codex)
+    provider.type === ProviderType.Codex
   )
     return { ...health, available: false };
   return health;
@@ -338,7 +293,6 @@ async function evaluateAvailability<T extends RoutedProvider>(
   env: Bindings,
   routedProviders: T[],
   scope: HealthScope,
-  upstreamModels?: ReadonlyMap<string, string>,
   codexRequest?: CodexRequestPolicy,
 ): Promise<RouteAvailability<T>> {
   const checks = await mapWithConcurrency(
@@ -406,12 +360,7 @@ async function evaluateAvailability<T extends RoutedProvider>(
         );
         if (!backend.available) health = backend;
       }
-      const model = upstreamModels?.get(provider.id);
-      if (
-        key.auth.type === "oauth" &&
-        (provider.type === ProviderType.Codex ||
-          (provider.type === ProviderType.Antigravity && health.available))
-      ) {
+      if (key.auth.type === "oauth" && provider.type === ProviderType.Codex) {
         const readiness = await oauthAccountAvailability(
           env,
           key.auth.account_ref,
@@ -432,19 +381,6 @@ async function evaluateAvailability<T extends RoutedProvider>(
           health = codexRequestAvailability(health, codexRequest);
       }
 
-      if (provider.type === ProviderType.Antigravity) {
-        if (
-          health.available &&
-          scope === HealthScope.Inference &&
-          model &&
-          key.auth.type === "oauth"
-        )
-          health = await antigravityModelAvailability(
-            env,
-            key.auth.account_ref,
-            model,
-          );
-      }
       return { provider_id: provider.id, credential_id: key.id, ...health };
     },
   );
@@ -539,7 +475,6 @@ function affinityCandidates(
     priority: provider.priority,
     retain_available_account:
       provider.type === ProviderType.Codex ||
-      provider.type === ProviderType.Antigravity ||
       provider.type === ProviderType.Claude ||
       provider.type === ProviderType.Xai,
     credentials: credentials.map((credential) => ({
@@ -611,12 +546,6 @@ export async function selectAvailableProviderWithDetails(
     {
       ...options,
       requestedModel: route.requestedModel,
-      upstreamModels: new Map(
-        route.targets.map((target) => [
-          target.provider.id,
-          target.upstreamModel,
-        ]),
-      ),
     },
   );
   const target = selection.target;
@@ -647,7 +576,6 @@ export async function selectAvailableTargetWithDetails(
     env,
     providers,
     options.scope ?? HealthScope.Inference,
-    options.upstreamModels,
     options.codexRequest,
   );
   const availability = {
@@ -743,7 +671,6 @@ export async function selectAvailableCatalogTargetsWithDetails(
     env,
     routedProviders,
     HealthScope.Catalog,
-    undefined,
     codexRequest,
   );
   const targets = availability.candidates.flatMap(
@@ -783,7 +710,6 @@ export async function targetIsAvailableForRoute(
       },
     ],
     scope,
-    new Map([[routed.provider.id, routed.upstreamModel]]),
     codexRequest,
   );
   return availability.candidates.length > 0;

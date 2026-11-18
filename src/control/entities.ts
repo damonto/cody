@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProviderType } from "../config/values.ts";
 
 // SQL boundary schemas: malformed persisted data fails closed before reaching services.
 const timestamp = z.number().int().nonnegative();
@@ -22,7 +23,7 @@ export const entitySchemas = {
   }),
   providers: ordered.extend({
     name: z.string(),
-    type: z.enum(["ai_gateway", "antigravity", "codex", "claude", "xai"]),
+    type: z.enum(ProviderType),
     priority: z.number().int(),
     disabled: flag,
     proxy_group_id: z.uuid().nullable(),

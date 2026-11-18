@@ -6,7 +6,7 @@ import {
 } from "../../src/providers/oauth/schema";
 import { draftFixture, mockApi, type ConfigurationView } from "./fixtures";
 
-const providers = ["codex", "antigravity", "claude", "xai"] as const;
+const providers = ["codex", "claude", "xai"] as const;
 type NativeProvider = (typeof providers)[number];
 
 function account(provider: NativeProvider, model: string): AccountView {
@@ -15,7 +15,6 @@ function account(provider: NativeProvider, model: string): AccountView {
     provider_id: provider,
     status: "ready",
     email: `${model}@example.test`,
-    project_id: null,
     expires_at: Date.now() + 3_600_000,
     error: null,
     models: [

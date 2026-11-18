@@ -1,7 +1,3 @@
-import {
-  antigravityVariant,
-  providerModelNames,
-} from "../../shared/antigravity-models.ts";
 import type { ConfigurationOperation } from "../unit-of-work.ts";
 import { z } from "zod";
 import { providerSchema } from "../../config/schema.ts";
@@ -24,7 +20,6 @@ import {
   replaceRoutes,
   providerFor,
   modelFor,
-  modelFamily,
 } from "./shared.ts";
 
 type ProviderInput = z.infer<typeof providerInputSchema>;
@@ -73,13 +68,6 @@ function editable(work: ConfigurationUnitOfWork, id: string) {
   return provider;
 }
 
-function supportedModelNames(
-  type: EntityRows["providers"][number]["type"],
-  models: readonly string[],
-) {
-  return new Set(providerModelNames({ type, models }));
-}
-
 function providerModelSupport(
   rows: Pick<EntityRows, "providers" | "provider_models">,
 ): Map<string, Set<string>> {
@@ -91,13 +79,7 @@ function providerModelSupport(
   }
   const support = new Map<string, Set<string>>();
   for (const provider of live(rows.providers)) {
-    support.set(
-      provider.id,
-      supportedModelNames(
-        provider.type,
-        modelsByProvider.get(provider.id) ?? [],
-      ),
-    );
+    support.set(provider.id, new Set(modelsByProvider.get(provider.id)));
   }
   return support;
 }
@@ -234,54 +216,12 @@ function writeSettings(
   );
   for (const [position, model] of models.entries()) {
     const previous = before.find((row) => row.model === model);
-    const variant =
-      type === "antigravity" &&
-      !models.includes(antigravityVariant(model)?.family ?? "")
-        ? antigravityVariant(model)
-        : undefined;
-    const siblings = variant
-      ? before.filter(
-          (row) =>
-            row.deleted_at === null &&
-            antigravityVariant(row.model)?.family === variant.family,
-        )
-      : [];
-    const inherited =
-      (!previous || previous.deleted_at !== null) && siblings.length > 0;
-    const prices = inherited
-      ? siblings.map(
-          (row) =>
-            live(rows.model_prices).find(
-              (price) => price.provider_model_id === row.id,
-            )?.pricing_json ?? null,
-        )
-      : [];
-    if (
-      inherited &&
-      (new Set(prices).size > 1 ||
-        new Set(siblings.map((row) => row.context_window)).size > 1)
-    )
-      throw new ControlInputError(
-        "Set a shared family price and context window before enabling another thinking level",
-      );
     const modelMetadata = work.metadata(previous);
-    if (inherited && prices[0] !== null)
-      put(rows.model_prices, {
-        ...work.metadata(
-          rows.model_prices.find(
-            (price) => price.provider_model_id === modelMetadata.id,
-          ),
-        ),
-        provider_model_id: modelMetadata.id,
-        pricing_json: prices[0],
-      });
     rows.provider_models.push({
       ...modelMetadata,
       provider_id: id,
       model,
-      context_window:
-        model_settings?.[model]?.context_window ??
-        (inherited ? siblings[0].context_window : null),
+      context_window: model_settings?.[model]?.context_window ?? null,
       position,
     });
   }
@@ -289,9 +229,7 @@ function writeSettings(
   rows.model_prices = rows.model_prices.filter(
     (row) => row.deleted_at !== null || modelIds.has(row.provider_model_id),
   );
-  // Clean up physical models only; losing derived family support must still
-  // fail reference validation if its routes or provider restrictions remain.
-  const currentSupport = supportedModelNames(type, models);
+  const currentSupport = new Set(models);
   const removedModels = new Set(
     live(before)
       .map((row) => row.model)
@@ -622,28 +560,6 @@ export class ProviderService {
         "Provider model",
       ),
     };
-  }
-  saveModelFamily(
-    operation: ConfigurationOperation,
-    providerId: string,
-    modelId: string,
-    context: number | null,
-  ) {
-    return this.store.mutate(
-      operation,
-      (work) => {
-        const models = modelFamily(work.rows, modelId);
-        if (models[0].provider_id !== providerId)
-          throw new ControlInputError("Model belongs to a different provider");
-        for (const model of models)
-          Object.assign(model, {
-            context_window: context,
-            version: work.version,
-            updated_at: work.now,
-          });
-      },
-      (config) => ownedModel(config, providerId, modelId),
-    );
   }
   saveModel(
     operation: ConfigurationOperation,

@@ -25,7 +25,6 @@ function account(ref: string = crypto.randomUUID(), ready = true): AccountView {
     provider_id: "codex",
     status: ready ? "ready" : "authorizing",
     email: ready ? `chatgpt-${ref.slice(0, 4)}@example.test` : null,
-    project_id: null,
     codex: ready
       ? {
           account_id: `acct-${ref.slice(0, 4)}`,
@@ -289,15 +288,9 @@ async function mockCodex(page: Page, initial: AccountView[] = []) {
       if (url.pathname.endsWith("/models")) {
         const input = request.postDataJSON();
         controls.modelRefreshes.push(input);
-        if (controls.failModels && input.mode === "siwc") {
-          if (value.siwc)
-            value.siwc.models_error = "Public catalog unavailable";
-          await route.fulfill({
-            status: 503,
-            json: { error: "Model discovery unavailable" },
-          });
-          return;
-        }
+        // The account endpoint returns the saved model error in its account view.
+        if (controls.failModels && input.mode === "siwc" && value.siwc)
+          value.siwc.models_error = "Public catalog unavailable";
       }
       if (url.pathname.endsWith("/reset-credits/consume")) {
         controls.consumes.push(request.postDataJSON());

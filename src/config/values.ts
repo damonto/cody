@@ -2,7 +2,6 @@
 
 export const ProviderType = {
   AiGateway: "ai_gateway",
-  Antigravity: "antigravity",
   Codex: "codex",
   Claude: "claude",
   Xai: "xai",

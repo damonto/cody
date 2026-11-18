@@ -1,4 +1,3 @@
-import { publicProviderModels } from "../../../src/shared/antigravity-models.ts";
 import { ResourceRefreshNotice } from "@/components/resource-refresh-notice";
 import { useDeleteProvider } from "@/features/providers/api";
 import { ProviderType } from "../../../src/config/values.ts";
@@ -82,7 +81,10 @@ export default function Providers() {
             "Enabled providers",
             providers.filter((provider) => !provider.disabled).length,
           ],
-          ["Models", new Set(providers.flatMap(publicProviderModels)).size],
+          [
+            "Models",
+            new Set(providers.flatMap((provider) => provider.models)).size,
+          ],
         ].map(([title, count]) => (
           <Card key={title} className="shadow-none">
             <CardContent className="flex items-center justify-between py-1">
@@ -135,20 +137,18 @@ export default function Providers() {
                 header: "Models",
                 cell: ({ row }) => (
                   <div className="flex max-w-72 flex-wrap gap-1">
-                    {publicProviderModels(row.original)
-                      .slice(0, 3)
-                      .map((model) => (
-                        <Badge
-                          key={model}
-                          variant="secondary"
-                          className="font-mono text-[10px] font-normal"
-                        >
-                          {model}
-                        </Badge>
-                      ))}
-                    {publicProviderModels(row.original).length > 3 && (
+                    {row.original.models.slice(0, 3).map((model) => (
+                      <Badge
+                        key={model}
+                        variant="secondary"
+                        className="font-mono text-[10px] font-normal"
+                      >
+                        {model}
+                      </Badge>
+                    ))}
+                    {row.original.models.length > 3 && (
                       <Badge variant="outline">
-                        +{publicProviderModels(row.original).length - 3}
+                        +{row.original.models.length - 3}
                       </Badge>
                     )}
                   </div>

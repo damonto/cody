@@ -6,13 +6,11 @@ import type {
 import { ProviderType } from "../config/values.ts";
 import { createUpstreamTransport } from "../gateway/transport/index.ts";
 import { aiGatewayAdapter } from "./ai-gateway.ts";
-import { antigravityAdapter } from "./antigravity/index.ts";
 import { claudeAdapter } from "./claude/index.ts";
 import { codexAdapter } from "./codex/index.ts";
 import { xaiAdapter } from "./xai/index.ts";
 import { credentialMatchesProvider, resolveCredential } from "./credentials.ts";
 import { providerConnection } from "./outbound.ts";
-import { providerTransportPolicy } from "./transport.ts";
 import { ProviderTransport } from "./transport-values.ts";
 import type {
   PreparedProviderResult,
@@ -74,7 +72,7 @@ function bindAdapter<Provider extends ProviderConfig>(
           provider,
           credential,
           context && { ...context, clientSignal: input.request.signal },
-          providerTransportPolicy(provider.type, context?.env),
+          { direct: context?.env.UPSTREAM_HTTP?.direct },
         ),
       };
     },
@@ -85,8 +83,6 @@ function providerAdapter(provider: ProviderConfig) {
   switch (provider.type) {
     case ProviderType.AiGateway:
       return bindAdapter(provider, aiGatewayAdapter);
-    case ProviderType.Antigravity:
-      return bindAdapter(provider, antigravityAdapter);
     case ProviderType.Codex:
       return bindAdapter(provider, codexAdapter);
     case ProviderType.Claude:

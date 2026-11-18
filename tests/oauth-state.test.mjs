@@ -12,7 +12,6 @@ function stored(provider_type) {
     connection: { provider_id: "provider", credential_id: "credential" },
     tokens: null,
     identity: null,
-    project_id: null,
     codex: null,
     error: null,
     session: null,
@@ -30,7 +29,7 @@ function stored(provider_type) {
 }
 
 test("persisted OAuth states keep their provider, identity and default fields across parsing", () => {
-  for (const provider of ["antigravity", "codex", "claude", "xai"]) {
+  for (const provider of ["codex", "claude", "xai"]) {
     const input = stored(provider);
     const parsed = storedSchema.parse(input);
     assert.deepEqual(parsed, {
@@ -64,8 +63,7 @@ test("persisted OAuth states keep their provider, identity and default fields ac
       parsed,
     );
   }
-  const { provider_type, ...legacy } = stored("antigravity");
-  assert.equal(storedSchema.parse(legacy).provider_type, provider_type);
+  assert.equal(storedSchema.safeParse(stored(undefined)).success, false);
 });
 
 test("persisted Claude state retains per-field quota observation revisions", () => {
@@ -85,6 +83,28 @@ test("persisted Claude state retains per-field quota observation revisions", () 
   );
 });
 
+test("stored native accounts can still load after removing obsolete subscription fields", () => {
+  const input = stored("codex");
+  input.project_id = null;
+  input.quota.subscription = {
+    tier_id: "plus",
+    tier_name: "Plus",
+    credits: [],
+  };
+  input.quota.credits_balance = {
+    has_credits: true,
+    unlimited: false,
+    balance: "2.50",
+  };
+  const parsed = storedSchema.parse(input);
+  assert.equal(Object.hasOwn(parsed, "project_id"), false);
+  assert.deepEqual(parsed.quota.subscription, {
+    tier_id: "plus",
+    tier_name: "Plus",
+  });
+  assert.deepEqual(parsed.quota.credits_balance, input.quota.credits_balance);
+});
+
 test("persisted OAuth state rejects identity metadata from a different provider", () => {
   const identities = {
     codex: {
@@ -101,13 +121,10 @@ test("persisted OAuth state rejects identity metadata from a different provider"
       subscription_type: null,
       rate_limit_tier: null,
     },
-    project_id: "google-project",
   };
-  for (const provider of ["antigravity", "codex", "claude", "xai"]) {
+  for (const provider of ["codex", "claude", "xai"]) {
     for (const [field, value] of Object.entries(identities)) {
-      const matches =
-        provider === field ||
-        (provider === "antigravity" && field === "project_id");
+      const matches = provider === field;
       assert.equal(
         storedSchema.safeParse({ ...stored(provider), [field]: value }).success,
         matches,

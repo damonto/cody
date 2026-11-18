@@ -11,7 +11,6 @@ test("new OAuth credential names prefer email then the provider's stable identit
     xai: { subject: "xai-subject" },
   };
   for (const [provider, identifier] of [
-    ["antigravity", `antigravity:${view.account_ref}`],
     ["codex", "chatgpt-account"],
     ["claude", "claude-account"],
     ["xai", "xai-subject"],

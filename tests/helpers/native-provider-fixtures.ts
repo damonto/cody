@@ -3,29 +3,12 @@ import {
   ProviderType,
 } from "../../src/config/values.ts";
 import type {
-  AntigravityProviderConfig,
   CodexProviderConfig,
   ClaudeProviderConfig,
   XaiProviderConfig,
 } from "../../src/config/types.ts";
 
 // Fixtures mirror native providers initialized by database migrations.
-export function newAntigravityProvider(): AntigravityProviderConfig {
-  return {
-    type: ProviderType.Antigravity,
-    id: crypto.randomUUID(),
-    name: "Antigravity",
-    account_selection: CodexAccountSelection.RoundRobin,
-    priority: 100,
-    disabled: true,
-    models: [],
-    credentials: [],
-    supports_websocket: false,
-    supports_web_search: false,
-    anthropic_1m_context: false,
-    emulate_claude_code: false,
-  };
-}
 
 export function newCodexProvider(): CodexProviderConfig {
   return {

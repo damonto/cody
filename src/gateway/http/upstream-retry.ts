@@ -34,7 +34,7 @@ export interface UpstreamRetryOptions {
     timeoutMs: number | undefined,
   ) => Promise<UpstreamResponseInspection> | UpstreamResponseInspection;
   attemptTimeoutMs?: number;
-  /** Shared pre-response deadline across an Antigravity account-switch chain. */
+  /** Shared pre-response deadline across a native account-switch chain. */
   deadline?: number;
   observeDiscardedResponse?: (
     response: Response,

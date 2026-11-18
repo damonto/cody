@@ -3,7 +3,6 @@ import {
   isMeteredInferencePath,
   type MeteredInferencePath,
 } from "../gateway/protocol.ts";
-import { publicProviderModel } from "../shared/antigravity-models.ts";
 import {
   RequestOutcome,
   UsagePhase,
@@ -294,12 +293,7 @@ export class RequestMeter {
     this.data.upstream_model = target.model;
     if (target.codexAuthMode) this.data.codex_auth_mode = target.codexAuthMode;
     else delete this.data.codex_auth_mode;
-    const provider = this.config?.providers.find(
-      (provider) => provider.id === target.providerId,
-    );
-    this.data.model = provider
-      ? publicProviderModel(provider, target.model)
-      : target.model;
+    this.data.model = target.model;
     this.selectPrice();
     this.announceSelection();
   }

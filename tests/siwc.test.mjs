@@ -412,7 +412,6 @@ function accountFixture(options = {}) {
       id: "native-workspace:native-user",
       email: "operator@example.test",
     },
-    project_id: null,
     codex: {
       mode: "native",
       account_id: "native-workspace",
@@ -596,7 +595,6 @@ test("native automatic resets ignore SIWC credentials excluded by the current re
     provider_id: provider.id,
     status: "ready",
     email: null,
-    project_id: null,
     codex: {
       account_id: "native-workspace",
       user_id: null,

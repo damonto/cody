@@ -79,7 +79,6 @@ for (const [type, quotaRoute] of [
                 provider_id: type,
                 status: "ready",
                 email: null,
-                project_id: null,
                 expires_at: null,
                 error: null,
                 models: [],

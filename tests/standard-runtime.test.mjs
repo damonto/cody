@@ -30,11 +30,6 @@ import {
 } from "../src/platform/standard/sql/postgres.ts";
 import { sessionAffinityIdentity } from "../src/gateway/routing/affinity.ts";
 import { clearConfigCacheForTests } from "../src/config/store.ts";
-import {
-  antigravityModelAvailability,
-  recordAntigravityLimit,
-} from "../src/providers/antigravity/availability.ts";
-import { nextRotationCredential } from "../src/gateway/health/health.ts";
 import { sessionModelBindings } from "./helpers/session-model-bindings.ts";
 import { proxyBindingLifecycle } from "./helpers/proxy-binding-lifecycle.ts";
 import { MAX_VERCEL_REQUEST_BODY_BYTES } from "../src/shared/payload-limits.ts";
@@ -324,89 +319,6 @@ for (const [name, open] of Object.entries(databases)) {
       clearConfigCacheForTests();
     });
     const env = runtime.bindings;
-
-    await t.test(
-      "public Antigravity version metadata is shared without replacing SQL configuration",
-      async () => {
-        const metadataKey = "metadata:antigravity:hub-version";
-        const snapshot = JSON.stringify({
-          version: "2.12.1",
-          expires_at: Date.now() + 60_000,
-        });
-        await env.CODY_CONFIG_KV.put(metadataKey, snapshot);
-        assert.equal(
-          await second.bindings.CODY_CONFIG_KV.get(metadataKey),
-          snapshot,
-        );
-        await env.CODY_CONFIG_KV.put("gateway-config", "not a configuration");
-        assert.equal(
-          await second.bindings.CODY_CONFIG_KV.get("gateway-config"),
-          "not a configuration",
-        );
-        await second.bindings.CODY_CONFIG_KV.delete(metadataKey);
-        assert.equal(await env.CODY_CONFIG_KV.get(metadataKey), null);
-      },
-    );
-
-    await t.test(
-      "Antigravity model limits and rotation survive a Redis restart",
-      async () => {
-        const account = crypto.randomUUID();
-        const until = Date.now() + 120_000;
-        await Promise.all([
-          recordAntigravityLimit(env, account, "gemini", {
-            code: "QUOTA_EXHAUSTED",
-            resets_at: until,
-          }),
-          recordAntigravityLimit(second.bindings, account, "gemini", {
-            code: "RATE_LIMIT_EXCEEDED",
-            resets_at: until - 60_000,
-          }),
-        ]);
-        assert.equal(
-          await nextRotationCredential(env, "antigravity", ["a", "b"], true),
-          "a",
-        );
-        await runtime.tasks.drain();
-        await second.tasks.drain();
-        const restarted = await createRuntime({
-          target: "node",
-          root: ROOT,
-          source: settings,
-          resources: { ...resources, redis: new MemoryRedis() },
-        });
-        try {
-          const status = await antigravityModelAvailability(
-            restarted.bindings,
-            account,
-            "gemini",
-          );
-          assert.equal(status.available, false);
-          assert.equal(status.cooling_until, until);
-          assert.equal(
-            (
-              await antigravityModelAvailability(
-                restarted.bindings,
-                account,
-                "claude",
-              )
-            ).available,
-            true,
-          );
-          assert.equal(
-            await nextRotationCredential(
-              restarted.bindings,
-              "antigravity",
-              ["a", "b"],
-              true,
-            ),
-            "b",
-          );
-        } finally {
-          await restarted.close();
-        }
-      },
-    );
 
     await t.test(
       "concurrent session allocation rotates across shared durable accounts",

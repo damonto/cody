@@ -8,11 +8,9 @@ import type { HealthExecutionContext } from "../gateway/health/health.ts";
 import {
   proxyConfigurationSchema,
   type ProviderConnection,
-  type OAuthProviderType,
   type ProxyConfiguration,
 } from "./oauth/schema.ts";
 import type { Bindings } from "../platform/bindings.ts";
-import { providerTransportPolicy } from "./transport.ts";
 
 export function providerConnection(
   provider: Pick<ProviderConfig, "id" | "proxy_group">,
@@ -40,7 +38,6 @@ export function providerOutbound(
   config: ProxyConfiguration,
   env: Pick<Bindings, "PROXY_GROUP" | "UPSTREAM_HTTP">,
   signal: AbortSignal,
-  providerType: OAuthProviderType,
   context?: HealthExecutionContext,
 ) {
   return createUpstreamTransport(
@@ -53,6 +50,6 @@ export function providerOutbound(
       proxy_group: connection.credential_proxy_group,
     },
     { config, env, clientSignal: signal, context },
-    providerTransportPolicy(providerType, env),
+    { direct: env.UPSTREAM_HTTP?.direct },
   );
 }

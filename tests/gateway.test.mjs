@@ -75,9 +75,6 @@ function testEnv(config) {
   const env = {
     CODY_DB: snapshotDatabase(() => config),
     CONFIG_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    CODY_CONFIG_KV: {
-      get: async () => JSON.stringify(config),
-    },
     HEALTH: {
       getByName: (name) => {
         if (!healthObjects.has(name)) {

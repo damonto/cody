@@ -46,7 +46,7 @@ for (const [dialect, create] of Object.entries(factories)) {
     t.after(() => db.close());
     await applyMigrations(db, migrationDirectories(dialect, ROOT));
     const provider = await db
-      .prepare("SELECT id FROM providers WHERE type = 'antigravity'")
+      .prepare("SELECT id FROM providers WHERE type = 'codex'")
       .first();
     const family = "gemini-3.8-flash";
     const start = Date.UTC(2026, 8, 14, 10);
@@ -203,6 +203,7 @@ for (const [dialect, create] of Object.entries(factories)) {
       "0016_remove_history_notes.sql",
       "0017_siwc_host.sql",
       "0018_cache_write_durations.sql",
+      "0019_remove_antigravity_seed.sql",
       "1001_object_storage.sql",
     ]);
     assert.deepEqual(

@@ -8,9 +8,7 @@ import {
 import { RequestMeter } from "../src/telemetry/meter.ts";
 import { parseUsageEvent } from "../src/telemetry/schema.ts";
 import { WebSocketUsage } from "../src/gateway/websocket/usage.ts";
-import { convertResponse as antigravityResponse } from "../src/providers/antigravity/response.ts";
 import { convertResponse as xaiResponse } from "../src/providers/xai/response.ts";
-import { antigravityMetadata } from "../src/providers/antigravity/observation.ts";
 
 const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const target = {
@@ -200,16 +198,6 @@ test("metadata extracts dialect fields without defaults, budget conversion or se
     ),
     { reasoning: { effort: "max", mode: "enabled", budget_tokens: 8192 } },
   );
-  assert.deepEqual(
-    antigravityMetadata("gemini-test-high", {
-      thinkingLevel: "high",
-      thinkingBudget: -1,
-    }),
-    {
-      model: "gemini-test-high",
-      reasoning: { effort: "high", budget_tokens: -1 },
-    },
-  );
   for (const payload of [
     null,
     [],
@@ -362,44 +350,6 @@ test("legacy events remain absent and new metadata is validated at the event bou
 });
 
 for (const streaming of [false, true]) {
-  test(`Antigravity ${streaming ? "SSE" : "JSON"} observes native model before synthetic model and reasoning`, async () => {
-    const meter = fixture();
-    const raw = {
-      response: {
-        modelVersion: "native-version",
-        candidates: [
-          { content: { parts: [{ text: "hello" }] }, finishReason: "STOP" },
-        ],
-        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 3 },
-      },
-    };
-    const converted = await antigravityResponse(
-      streaming ? sse([raw]) : Response.json(raw),
-      {
-        protocol: "openai",
-        model: "alias",
-        scope,
-        key,
-        tools: [],
-        stream: streaming,
-        request: { reasoning: { effort: "high" } },
-        observe: (metadata, terminal) =>
-          meter.observeUpstream(metadata, terminal),
-      },
-    );
-    const text = await meter.response(converted).text();
-    assert.ok(text.includes('"model":"alias"'));
-    assert.ok(text.includes('"effort":"high"'));
-    assert.deepEqual(meter.checkpoint().upstream_observation.response, {
-      model: "native-version",
-    });
-    assert.equal(
-      compareUpstream(meter.checkpoint().upstream_observation).reasoning,
-      "unknown",
-    );
-    await meter.drain();
-  });
-
   test(`xAI ${streaming ? "SSE" : "JSON"} observes original model and effort before conversion`, async () => {
     const meter = fixture("anthropic");
     const converted = await xaiResponse(
@@ -445,28 +395,6 @@ for (const streaming of [false, true]) {
     await meter.drain();
   });
 }
-
-test("adapter metadata observer failures do not interrupt response conversion", async () => {
-  const converted = await antigravityResponse(
-    Response.json({
-      candidates: [
-        { content: { parts: [{ text: "hello" }] }, finishReason: "STOP" },
-      ],
-    }),
-    {
-      protocol: "openai",
-      model: "alias",
-      scope,
-      key,
-      tools: [],
-      stream: false,
-      observe: () => {
-        throw new Error("observer failed");
-      },
-    },
-  );
-  assert.equal((await converted.json()).status, "completed");
-});
 
 test("WebSocket turns keep distinct reasoning and response identities", async () => {
   const usage = new WebSocketUsage(

@@ -77,7 +77,6 @@ test("SpaceXAI cards show native quota and paid usage without reset controls", a
     provider_id: "xai",
     status: "ready",
     email: "xai@example.test",
-    project_id: null,
     xai: { subject: "account" },
     expires_at: Date.now() + 3600000,
     error: null,
@@ -204,7 +203,6 @@ test("SpaceXAI account editor requests device authorization and supports cancell
     provider_id: "xai",
     status: "authorizing",
     email: null,
-    project_id: null,
     expires_at: null,
     error: null,
     models: [],
@@ -280,7 +278,6 @@ test("SpaceXAI distinguishes first failures, partial billing and retained data",
     provider_id: "xai",
     status: "ready",
     email: "partial@example.test",
-    project_id: null,
     expires_at: null,
     error: null,
     models: [],
@@ -375,7 +372,7 @@ test("SpaceXAI distinguishes first failures, partial billing and retained data",
     ["free", "Free"],
     ["supergrok", "SuperGrok"],
   ]) {
-    account.quota.subscription = { tier_id: id, tier_name: name, credits: [] };
+    account.quota.subscription = { tier_id: id, tier_name: name };
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByText(name, { exact: true })).toBeVisible();
     await expect(page.getByText("Available", { exact: true })).toBeVisible();

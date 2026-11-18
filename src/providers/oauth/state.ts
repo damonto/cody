@@ -8,7 +8,6 @@ import {
   claudeRefreshSchema,
 } from "../claude/account-schema.ts";
 import { xaiAccountSchema } from "../xai/account-schema.ts";
-import { antigravityVerificationSchema } from "../../shared/antigravity-verification.ts";
 import { xaiDeviceSchema } from "../xai/api.ts";
 import { codexQuotaSyncSchema } from "../codex/quota.ts";
 import { codexRefreshSchema } from "../codex/refresh-state.ts";
@@ -22,8 +21,6 @@ import {
 import { ProviderType } from "../../config/values.ts";
 
 import { z } from "zod";
-
-import { projectInitializationSchema } from "../antigravity/initialization.ts";
 
 import {
   OAuthError,
@@ -79,7 +76,7 @@ export const codexPartitionSchema = z
 const storedBase = z.object({
   account_ref: z.uuid(),
   provider_id: z.string(),
-  provider_type: oauthProviderTypeSchema.default(ProviderType.Antigravity),
+  provider_type: oauthProviderTypeSchema,
   generation: z.number(),
   revision: z.number().int().nonnegative().default(0),
   // Pending authorization has its own fence; it must not revoke active refreshes.
@@ -88,8 +85,6 @@ const storedBase = z.object({
   connection: connectionSchema,
   tokens: tokenSchema.nullable(),
   identity: identitySchema.nullable(),
-  project_id: z.string().nullable(),
-  antigravity_initialization: projectInitializationSchema.nullable().optional(),
   codex: codexAccountSchema,
   claude: claudeAccountSchema.nullable().optional(),
   xai: xaiAccountSchema,
@@ -99,18 +94,9 @@ const storedBase = z.object({
   models: z.array(modelSchema),
   models_updated_at: z.number().nullable(),
   models_error: z.string().nullable(),
-  models_verification: z.array(antigravityVerificationSchema).optional(),
   quota: quotaSnapshotSchema,
 });
 export const storedSchema = z.discriminatedUnion("provider_type", [
-  storedBase.extend({
-    provider_type: z
-      .literal(ProviderType.Antigravity)
-      .default(ProviderType.Antigravity),
-    codex: z.null().default(null),
-    claude: z.null().optional(),
-    xai: z.null().optional(),
-  }),
   storedBase
     .extend({
       provider_type: z.literal(ProviderType.Codex),
@@ -119,8 +105,6 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
       siwc: codexPartitionSchema.nullable().default(null),
       codex_quota_sync: codexQuotaSyncSchema.prefault({}),
       codex_refresh: codexRefreshSchema,
-      project_id: z.null(),
-      antigravity_initialization: z.null().optional(),
       claude: z.null().optional(),
       xai: z.null().optional(),
     })
@@ -132,15 +116,11 @@ export const storedSchema = z.discriminatedUnion("provider_type", [
     provider_type: z.literal(ProviderType.Claude),
     claude_quota_sync: claudeQuotaSyncSchema.prefault({}),
     claude_refresh: claudeRefreshSchema.prefault({}),
-    project_id: z.null(),
-    antigravity_initialization: z.null().optional(),
     codex: z.null().default(null),
     xai: z.null().optional(),
   }),
   storedBase.extend({
     provider_type: z.literal(ProviderType.Xai),
-    project_id: z.null(),
-    antigravity_initialization: z.null().optional(),
     codex: z.null().default(null),
     claude: z.null().optional(),
   }),
@@ -210,17 +190,12 @@ export function nextAccountAlarm(account: AccountSnapshot): number | null {
     )
       times.push(session.next_at);
   }
-  const project = account.antigravity_initialization;
-  if (project && project.error === null)
-    times.push(project.next_at, project.deadline);
   return times.length ? Math.min(...times) : null;
 }
 export function accountViewStatus(
   account: AccountSnapshot,
 ): OAuthAccountViewStatus {
   if (account.status === OAuthAccountStatus.Ready) return account.status;
-  if (account.antigravity_initialization)
-    return OAuthAccountViewStatus.Initializing;
   if (account.status !== OAuthAccountStatus.Disconnected) return account.status;
   switch (account.session?.status) {
     case OAuthSessionStatus.Initializing:

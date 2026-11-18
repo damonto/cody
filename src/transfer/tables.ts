@@ -171,7 +171,7 @@ export function validateRows(
   }
 }
 
-/** A freshly migrated target has only four untouched native-provider seeds. */
+/** A freshly migrated target has only three untouched native-provider seeds. */
 export async function requireEmptyTarget(
   db: SqlDatabase,
   prepared = false,
@@ -198,9 +198,9 @@ export async function requireEmptyTarget(
   const providers = (
     await db.prepare("SELECT * FROM providers ORDER BY position").all()
   ).results;
-  const expected = ["antigravity", "codex", "claude", "xai"];
+  const expected = ["codex", "claude", "xai"];
   if (prepared && providers.length === 0) return;
-  if (providers.length !== 4)
+  if (providers.length !== expected.length)
     throw new TransferError("Target is not a fresh instance");
   for (const [index, row] of providers.entries()) {
     const type = expected[index];
@@ -216,13 +216,13 @@ export async function requireEmptyTarget(
         : {}),
       ...(type === "xai" ? { inject_x_search: false } : {}),
     };
-    const names = ["Antigravity", "Codex", "Claude", "Xai"];
+    const names = ["Codex", "Claude", "Xai"];
     if (
       row.type !== type ||
       row.name !== names[index] ||
       row.disabled !== 1 ||
       row.priority !== 100 ||
-      row.position !== index ||
+      row.position !== index + 1 ||
       row.version !== 0 ||
       row.deleted_at !== null ||
       row.proxy_group_id !== null ||

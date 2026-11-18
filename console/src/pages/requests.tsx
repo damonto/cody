@@ -1,5 +1,4 @@
 import { CACHE_WRITE_DURATIONS } from "../../../src/shared/cache-durations.ts";
-import { antigravityVariant } from "../../../src/shared/antigravity-models.ts";
 import { UpstreamMismatchIndicator } from "@/features/requests/upstream-observation";
 import { RetryDecision } from "@/features/requests/retry-diagnostic";
 import { useReporting } from "@/lib/resources";
@@ -516,10 +515,10 @@ function RequestDetail({ id, timeZone }: { id: string; timeZone?: string }) {
               ],
               ...(item.upstream_model && item.upstream_model !== item.model
                 ? [
-                    [
-                      "Thinking level",
-                      antigravityVariant(item.upstream_model)?.level ?? "—",
-                    ] satisfies [string, string],
+                    ["Upstream model", item.upstream_model] satisfies [
+                      string,
+                      string,
+                    ],
                   ]
                 : []),
               [

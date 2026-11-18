@@ -12,12 +12,6 @@ import {
   fetchWithConfiguredRetries,
   type UpstreamRetryOptions,
 } from "../http/upstream-retry.ts";
-import { antigravityCatalogModels } from "../../providers/antigravity/catalog.ts";
-import {
-  antigravityThinkingLevels,
-  antigravityVariant,
-  supportsProviderModel,
-} from "../../shared/antigravity-models.ts";
 import {
   ProviderAvailabilityReason,
   HealthFailureScope,
@@ -514,18 +508,10 @@ function exposedClientModels(
   upstreamModel: string,
   routes: Record<string, ModelRouteConfig>,
 ): string[] {
-  if (!supportsProviderModel(provider, upstreamModel)) {
+  if (!provider.models.includes(upstreamModel)) {
     return [];
   }
-  const variant =
-    provider.type === ProviderType.Antigravity
-      ? antigravityVariant(upstreamModel)
-      : undefined;
-  const hiddenVariant = variant && !provider.models.includes(variant.family);
-  const ids =
-    Object.hasOwn(routes, upstreamModel) || hiddenVariant
-      ? []
-      : [upstreamModel];
+  const ids = Object.hasOwn(routes, upstreamModel) ? [] : [upstreamModel];
   for (const [clientModel, route] of Object.entries(routes)) {
     if (
       route.model === upstreamModel &&
@@ -535,12 +521,6 @@ function exposedClientModels(
     }
   }
   return [...new Set(ids)];
-}
-
-function catalogModels(result: ProviderModelsResult): UpstreamModel[] {
-  return result.provider.type === ProviderType.Antigravity
-    ? antigravityCatalogModels(result.models, result.provider.models)
-    : result.models;
 }
 
 function aggregateClientModels(
@@ -553,7 +533,7 @@ function aggregateClientModels(
     if (!result.success) {
       continue;
     }
-    for (const model of catalogModels(result)) {
+    for (const model of result.models) {
       const clientModels = exposedClientModels(
         result.provider,
         model.id,
@@ -595,7 +575,7 @@ function codexModelIds(
     if (!result.success) {
       continue;
     }
-    for (const model of catalogModels(result)) {
+    for (const model of result.models) {
       for (const clientModel of exposedClientModels(
         result.provider,
         model.id,
@@ -630,125 +610,10 @@ function withoutHistoryNotes(model: JsonObject): JsonObject {
   };
 }
 
-/** Only client presentation and prompting metadata can cross provider boundaries. */
-function codexClientMetadata(catalog: JsonObject | undefined): JsonObject {
-  if (!catalog) return {};
-  const metadata: JsonObject = {};
-  for (const field of [
-    "display_name",
-    "description",
-    "base_instructions",
-    "shell_type",
-    "apply_patch_tool_type",
-    "truncation_policy",
-    "effective_context_window_percent",
-    "priority",
-    "minimal_client_version",
-    "multi_agent_version",
-    "include_skills_usage_instructions",
-    "include_apps_usage_instructions",
-    "include_plugin_usage_instructions",
-    "reasoning_summary_format",
-    "default_reasoning_summary",
-    "comp_hash",
-  ]) {
-    if (catalog[field] !== undefined) metadata[field] = catalog[field];
-  }
-  if (isObject(catalog.model_messages)) {
-    const { instructions_template, instructions_variables, approvals } =
-      catalog.model_messages;
-    metadata.model_messages = {
-      instructions_template,
-      instructions_variables,
-      approvals,
-    };
-  }
-  return metadata;
-}
-
-function antigravityCodexModel(
-  { id, upstream }: ClientModel,
-  index: number,
-): JsonObject {
-  const model = upstream.raw;
-  // Match the real model before applying client aliases. Only Gemini thinking
-  // variants may reuse a family template; other suffixes remain independent.
-  const family = antigravityVariant(upstream.id)?.family;
-  const catalog =
-    codexModelBySlug.get(upstream.id) ??
-    (family ? codexModelBySlug.get(family) : undefined);
-  const catalogLevels = Array.isArray(catalog?.supported_reasoning_levels)
-    ? catalog.supported_reasoning_levels.filter(isObject)
-    : [];
-  let levels: readonly string[] = [];
-  if (Array.isArray(model.thinking_levels))
-    levels = model.thinking_levels.filter(
-      (level): level is string => typeof level === "string",
-    );
-  else if (model.supports_thinking === true) levels = antigravityThinkingLevels;
-  const defaultLevel = Array.isArray(model.thinking_levels)
-    ? model.default_thinking_level
-    : "medium";
-  const contextWindow =
-    typeof model.context_window === "number" ? model.context_window : null;
-  return {
-    display_name: model.display_name ?? id,
-    description: "Antigravity account model",
-    shell_type: "shell_command",
-    visibility: "list",
-    supported_in_api: true,
-    priority: index,
-    base_instructions: "",
-    default_reasoning_summary: "none",
-    apply_patch_tool_type: "freeform",
-    truncation_policy: { mode: "bytes", limit: 10000 },
-    effective_context_window_percent: 95,
-    ...codexClientMetadata(catalog),
-    slug: id,
-    default_reasoning_level:
-      typeof defaultLevel === "string" && levels.includes(defaultLevel)
-        ? defaultLevel
-        : null,
-    supported_reasoning_levels: levels.map((effort) => {
-      const description = catalogLevels.find(
-        (level) => level.effort === effort,
-      )?.description;
-      return {
-        effort,
-        description:
-          typeof description === "string"
-            ? description
-            : `${effort} thinking budget`,
-      };
-    }),
-    // Account capabilities and limits remain authoritative, including unknown
-    // limits for incomplete families. Templates only supply client metadata.
-    supports_reasoning_summaries: model.supports_thinking === true,
-    support_verbosity: false,
-    context_window: contextWindow,
-    max_context_window: contextWindow,
-    supports_parallel_tool_calls: true,
-    experimental_supported_tools: [],
-    input_modalities: model.input_modalities ?? ["text"],
-    supports_experimental_context: false,
-    supports_search_tool: false,
-    node_repl_disabled: true,
-    prefer_websockets: false,
-    use_responses_lite: false,
-    supports_image_detail_original: false,
-  };
-}
-
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
-  nativeModels: ClientModel[] = [],
   codexAccountModels: JsonObject[] = [],
 ): JsonObject[] {
-  const nativeById = new Map(
-    nativeModels
-      .filter((model) => clientModelIds.has(model.id))
-      .map((model) => [model.id, model]),
-  );
   // A Codex account's own ModelInfo is authoritative for its slug; route
   // aliases reuse it under the client-facing name.
   const accountById = new Map(
@@ -757,7 +622,6 @@ export function aggregateCodexModels(
         (model) =>
           typeof model.id === "string" &&
           clientModelIds.has(model.id) &&
-          !nativeById.has(model.id) &&
           isObject(model.codex),
       )
       .map((model) => [model.id as string, model.codex as JsonObject]),
@@ -774,15 +638,10 @@ export function aggregateCodexModels(
       (model) =>
         typeof model.slug === "string" &&
         clientModelIds.has(model.slug) &&
-        !nativeById.has(model.slug) &&
         !accountById.has(model.slug),
     )
     .map(withoutHistoryNotes);
-  return [
-    ...account,
-    ...standard,
-    ...[...nativeById.values()].map(antigravityCodexModel),
-  ];
+  return [...account, ...standard];
 }
 
 export function modelsFormatFor(request: Request): ModelsFormat {
@@ -812,7 +671,7 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
   }
   let catalog: JsonObject | undefined;
   if (isObject(model.codex)) catalog = model.codex;
-  else if (model.owned_by !== "antigravity") catalog = codexModelBySlug.get(id);
+  else catalog = codexModelBySlug.get(id);
   let inputModalities: unknown[] = [];
   if (Array.isArray(model.input_modalities))
     inputModalities = model.input_modalities;
@@ -825,11 +684,7 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     typeof catalog.node_repl_disabled === "boolean" &&
     !catalog.node_repl_disabled;
   let supportedEffortLevels: string[] = [];
-  if (Array.isArray(model.thinking_levels))
-    supportedEffortLevels = model.thinking_levels.filter(
-      (level): level is string => typeof level === "string",
-    );
-  else if (model.supports_thinking === true)
+  if (model.supports_thinking === true)
     supportedEffortLevels = ["low", "medium", "high"];
   else if (Array.isArray(catalog?.supported_reasoning_levels))
     supportedEffortLevels = (catalog.supported_reasoning_levels as unknown[])
@@ -883,8 +738,8 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
       // The Codex catalog has no per-model equivalent for these two, and the
       // gateway cannot probe an upstream for them, so they report the protocol
       // default rather than a verified per-model value.
-      batch: { supported: model.owned_by !== "antigravity" },
-      citations: { supported: model.owned_by !== "antigravity" },
+      batch: { supported: true },
+      citations: { supported: true },
       code_execution: { supported: supportsCodeExecution },
       // Three named Anthropic beta strategies with nothing equivalent in the
       // Codex catalog. Reasoning-summary support says nothing about them, so
@@ -1109,12 +964,6 @@ function modelsPayload(
       return {
         models: aggregateCodexModels(
           modelIds,
-          aggregateClientModels(
-            results.filter(
-              ({ provider }) => provider.type === ProviderType.Antigravity,
-            ),
-            routesByProvider,
-          ),
           aggregateStandardModels(
             results.filter(
               ({ provider }) => provider.type === ProviderType.Codex,

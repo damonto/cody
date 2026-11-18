@@ -2,7 +2,7 @@
 
 ## Project
 
-Cody is a TypeScript AI API gateway and React web console for OpenAI- and Anthropic-compatible clients. The same application runs on Cloudflare Workers, native Node.js and Vercel. Supported providers are AI Gateway, Antigravity, Codex, Claude and xAI.
+Cody is a TypeScript AI API gateway and React web console for OpenAI- and Anthropic-compatible clients. The same application runs on Cloudflare Workers, native Node.js and Vercel. Supported providers are AI Gateway, Codex, Claude and xAI.
 
 ## Start here
 

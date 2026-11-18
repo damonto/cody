@@ -291,7 +291,6 @@ async function configure(
     env.CONFIG_ENCRYPTION_KEY,
     JSON.stringify(config),
   );
-  await env.CODY_CONFIG_KV.delete("gateway-config");
 }
 
 test("SIWC persists a validated registration, reuses it after eviction and keeps host ID shared", async () => {

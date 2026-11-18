@@ -263,7 +263,6 @@ test("the model list keeps each account ModelInfo and adds a client version", as
   );
   const [aggregated] = aggregateCodexModels(
     new Set(["gpt-5.5-codex"]),
-    [],
     prepared.parseModels({ models: [info] }).data,
   );
   assert.deepEqual(aggregated, info);

@@ -1,19 +1,13 @@
 import { expect, test } from "@playwright/test";
 import { draftFixture, mockApi } from "./fixtures";
 import {
-  newAntigravityProvider,
   newCodexProvider,
   newClaudeProvider,
   newXaiProvider,
 } from "../../tests/helpers/native-provider-fixtures";
 import { accountViewSchema } from "../../src/providers/oauth/schema";
 
-for (const create of [
-  newAntigravityProvider,
-  newCodexProvider,
-  newClaudeProvider,
-  newXaiProvider,
-]) {
+for (const create of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
   for (const email of ["person@example.test", null]) {
     test(`${create().type}: authorization ${email ? "email" : "identity"} names a new account and preserves edits`, async ({
       page,
@@ -25,7 +19,6 @@ for (const create of [
         provider_id: provider.id,
         status: "ready",
         email,
-        project_id: null,
         expires_at: null,
         error: null,
         models: [],
@@ -126,7 +119,6 @@ for (const create of [
       const expected =
         email ??
         {
-          antigravity: `antigravity:${ref}`,
           codex: "chatgpt-id",
           claude: "claude-id",
           xai: "xai-id",

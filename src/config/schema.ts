@@ -1,7 +1,3 @@
-import {
-  providerModelNames,
-  supportsProviderModel,
-} from "../shared/antigravity-models.ts";
 import { tokenCountSchema } from "../billing/schema.ts";
 
 import {
@@ -258,25 +254,6 @@ export const aiGatewayProviderSchema = z.strictObject({
   model_routes: routes(providerRouteSchema).optional(),
 });
 export const codexAccountSelectionSchema = z.enum(CodexAccountSelection);
-export const antigravityProviderFormSchema = aiGatewayProviderSchema
-  .omit({ base_url: true })
-  .extend({
-    type: z.literal(ProviderType.Antigravity),
-    id: identifierSchema,
-    sensitive_words: z
-      .array(z.string().trim().min(1).max(256))
-      .max(128)
-      .optional(),
-    account_selection: codexAccountSelectionSchema.default(
-      CodexAccountSelection.RoundRobin,
-    ),
-    models: nameList,
-    credentials: oauthCredentials,
-    supports_websocket: z.literal(false).default(false),
-    supports_web_search: z.literal(false).default(false),
-    anthropic_1m_context: z.literal(false).default(false),
-    emulate_claude_code: z.literal(false).default(false),
-  });
 /** Enabled native providers need models and at least one account before saving. */
 function requireEnabledCredentials<
   T extends z.ZodType<{
@@ -297,14 +274,10 @@ function requireEnabledCredentials<
       context.addIssue({
         code: "custom",
         path: ["credentials"],
-        message: `add ${label === "Antigravity" ? "an" : "a"} ${label} account before enabling the provider`,
+        message: `add a ${label} account before enabling the provider`,
       });
   });
 }
-export const antigravityProviderSchema = requireEnabledCredentials(
-  antigravityProviderFormSchema,
-  "Antigravity",
-);
 export const codexProviderFormSchema = aiGatewayProviderSchema
   .omit({ base_url: true })
   .extend({
@@ -358,7 +331,6 @@ export const xaiProviderSchema = requireEnabledCredentials(
 );
 export const providerSchema = z.discriminatedUnion("type", [
   aiGatewayProviderSchema,
-  antigravityProviderSchema,
   codexProviderSchema,
   claudeProviderSchema,
   xaiProviderSchema,
@@ -412,7 +384,6 @@ const formShape = shape.extend({
   providers: z.array(
     z.discriminatedUnion("type", [
       aiGatewayProviderSchema,
-      antigravityProviderFormSchema,
       codexProviderFormSchema,
       claudeProviderFormSchema,
       xaiProviderFormSchema,
@@ -422,7 +393,6 @@ const formShape = shape.extend({
 
 function validateIdentities(config: Configuration, context: z.RefinementCtx) {
   for (const [type, label] of [
-    [ProviderType.Antigravity, "Antigravity"],
     [ProviderType.Codex, "Codex"],
     [ProviderType.Claude, "Claude"],
     [ProviderType.Xai, "xAI"],
@@ -456,7 +426,9 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
   const providers = new Map(
     config.providers.map((provider) => [provider.id, provider]),
   );
-  const models = new Set(config.providers.flatMap(providerModelNames));
+  const models = new Set(
+    config.providers.flatMap((provider) => provider.models),
+  );
   const issue = (path: (string | number)[], message: string) =>
     context.addIssue({ code: "custom", path, message });
   const validateRoute = (
@@ -472,7 +444,7 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
       const provider = providers.get(id);
       if (!provider)
         issue([...path, "providers"], `references unknown provider ${id}`);
-      else if (!supportsProviderModel(provider, route.model))
+      else if (!provider.models.includes(route.model))
         issue(
           [...path, "model"],
           `${route.model} is not listed by provider ${id}`,
@@ -507,7 +479,7 @@ function validateReferences(config: Configuration, context: z.RefinementCtx) {
         issue([...path], `references unknown proxy group ${reference}`);
     }
     for (const [alias, route] of Object.entries(provider.model_routes ?? {})) {
-      if (!supportsProviderModel(provider, route.model))
+      if (!provider.models.includes(route.model))
         issue(
           ["providers", index, "model_routes", alias, "model"],
           `${route.model} is not listed by provider ${provider.id}`,

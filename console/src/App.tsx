@@ -12,7 +12,6 @@ import { PageErrorBoundary } from "@/components/error-boundary";
 const Overview = lazy(() => import("@/pages/overview"));
 const Requests = lazy(() => import("@/pages/requests"));
 const Providers = lazy(() => import("@/pages/providers"));
-const Antigravity = lazy(() => import("@/pages/antigravity"));
 const Xai = lazy(() => import("@/pages/xai"));
 const Claude = lazy(() => import("@/pages/claude"));
 const Codex = lazy(() => import("@/pages/codex"));
@@ -26,7 +25,6 @@ const pages = [
   ["overview", Overview],
   ["requests", Requests],
   ["providers/ai-gateway", Providers],
-  ["providers/antigravity", Antigravity],
   ["providers/codex", Codex],
   ["providers/claude", Claude],
   ["providers/xai", Xai],

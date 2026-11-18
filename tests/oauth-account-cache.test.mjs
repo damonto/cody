@@ -16,7 +16,6 @@ function account(generation, status = "ready") {
     provider_id: "codex",
     status,
     email: "operator@example.test",
-    project_id: null,
     codex: null,
     expires_at: null,
     error: null,

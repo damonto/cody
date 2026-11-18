@@ -237,7 +237,6 @@ function updatePlan(state: CodexQuotaState, plan: string) {
     ...state.quota.subscription,
     tier_id: plan,
     tier_name: state.quota.subscription?.tier_name ?? null,
-    credits: state.quota.subscription?.credits ?? [],
     active_until: state.codex?.subscription_active_until ?? null,
   };
 }

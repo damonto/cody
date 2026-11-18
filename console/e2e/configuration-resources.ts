@@ -1,8 +1,3 @@
-import {
-  antigravityVariant,
-  antigravityFamilyModels,
-  providerModelNames,
-} from "../../src/shared/antigravity-models.ts";
 import { z } from "zod";
 import {
   maskedConfigurationSchema,
@@ -96,21 +91,15 @@ export function resourceRequest(
       ([, value]) => value.id === childId,
     )!;
     const settings = object.parse(body.settings);
-    const members =
-      parts[4] === "family"
-        ? antigravityFamilyModels(
-            provider.models,
-            antigravityVariant(model[0])!.family,
-          )
-        : [model[0]];
-    for (const name of members)
-      provider.model_settings![name] = {
-        id: provider.model_settings![name].id,
-        ...(typeof settings.context_window === "number"
-          ? { context_window: settings.context_window }
-          : {}),
-      };
-    item = provider.model_settings![model[0]];
+    const [name, existing] = model;
+    const next = {
+      id: existing.id,
+      ...(typeof settings.context_window === "number"
+        ? { context_window: settings.context_window }
+        : {}),
+    };
+    provider.model_settings![name] = next;
+    item = next;
   } else if (child === "model-routes" || resource === "model-routes") {
     const routes = maskedConfigurationSchema.parse({
       ...config,
@@ -125,7 +114,9 @@ export function resourceRequest(
   } else if (resource === "providers") {
     if (method === "DELETE") {
       config.providers = config.providers.filter((item) => item.id !== id);
-      const models = new Set(config.providers.flatMap(providerModelNames));
+      const models = new Set(
+        config.providers.flatMap((provider) => provider.models),
+      );
       const detachRoutes = (routes: GatewayConfig["model_routes"]) =>
         Object.fromEntries(
           Object.entries(routes).flatMap(([alias, route]) => {
@@ -220,27 +211,21 @@ export function resourceRequest(
     const model = Object.entries(provider.model_settings!).find(
       ([, settings]) => settings.id === id,
     )![0];
-    const members =
-      child === "family"
-        ? antigravityFamilyModels(
-            provider.models,
-            antigravityVariant(model)!.family,
-          )
-        : [model];
     config.model_prices = config.model_prices?.filter(
-      (price) =>
-        price.provider_id !== provider.id || !members.includes(price.model),
+      (price) => price.provider_id !== provider.id || price.model !== model,
     );
     if (method !== "DELETE") {
       const parsed = maskedConfigurationSchema.parse({
         ...config,
-        model_prices: members.map((model) => ({
-          provider_id: provider.id,
-          model,
-          pricing: body.pricing,
-        })),
+        model_prices: [
+          {
+            provider_id: provider.id,
+            model,
+            pricing: body.pricing,
+          },
+        ],
       });
-      item = parsed.model_prices!.find((price) => price.model === model);
+      item = parsed.model_prices![0];
       config.model_prices = [
         ...(config.model_prices ?? []),
         ...parsed.model_prices!,

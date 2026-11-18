@@ -25,13 +25,11 @@ export class AccountInventory {
           account.models = models;
           account.models_updated_at = Date.now();
           account.models_error = null;
-          delete account.models_verification;
         });
       } catch (error) {
         if (this.state.current().generation === generation)
           await this.state.update(generation, (account) => {
             account.models_error = safeError(error);
-            account.models_verification = inventory.verification?.(error);
           });
       }
     });
@@ -46,7 +44,6 @@ export class AccountInventory {
         if (this.state.current().generation === generation)
           await this.state.update(generation, (account) => {
             account.quota.last_error = safeError(error);
-            delete account.quota.verification;
           });
       }
     });

@@ -53,7 +53,6 @@ export class ClaudeInventory {
         subscription: {
           tier_id: account.claude?.subscription_type ?? null,
           tier_name: account.claude?.rate_limit_tier ?? null,
-          credits: [],
         },
       };
     });

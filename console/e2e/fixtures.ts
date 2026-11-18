@@ -1,6 +1,4 @@
-import { publicProviderModels } from "../../src/shared/antigravity-models.ts";
 import {
-  newAntigravityProvider,
   newCodexProvider,
   newClaudeProvider,
   newXaiProvider,
@@ -158,12 +156,7 @@ export async function mockApi(
   for (const group of initial.config.proxy_groups)
     for (const node of group.proxies) node.name ??= node.id;
   let draft = structuredClone(initial);
-  for (const make of [
-    newAntigravityProvider,
-    newCodexProvider,
-    newClaudeProvider,
-    newXaiProvider,
-  ]) {
+  for (const make of [newCodexProvider, newClaudeProvider, newXaiProvider]) {
     const provider = make();
     if (!draft.config.providers.some((item) => item.type === provider.type))
       draft.config.providers.push(provider);
@@ -459,7 +452,7 @@ export async function mockApi(
     } else if (url.pathname === "/console/api/report-options") {
       response = {
         providers: draft.config.providers.map((provider) => provider.id),
-        models: draft.config.providers.flatMap(publicProviderModels),
+        models: draft.config.providers.flatMap((provider) => provider.models),
         clients: draft.config.api_keys.map((client) => client.id),
         time_zone: "UTC",
       };

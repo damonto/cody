@@ -41,23 +41,6 @@ export async function seedTransferAccounts(
       tokens,
       identity,
       error: null,
-      project_id: provider.type === "antigravity" ? "mock-project" : null,
-      ...(provider.type === "antigravity"
-        ? {
-            antigravity_initialization: {
-              tokens,
-              identity,
-              connection,
-              stage: "onboard",
-              tier: "free",
-              attempts: 2,
-              next_at: now + 600000,
-              deadline: now + 900000,
-              error: null,
-              last_result: "pending",
-            },
-          }
-        : {}),
       codex:
         provider.type === "codex"
           ? {

@@ -1191,11 +1191,9 @@ test("Codex catalogs disable history/notes even when an account advertises them"
       },
     },
   };
-  const [model] = aggregateCodexModels(
-    new Set([info.slug]),
-    [],
-    [{ id: info.slug, codex: info }],
-  );
+  const [model] = aggregateCodexModels(new Set([info.slug]), [
+    { id: info.slug, codex: info },
+  ]);
   assert.equal(model.supports_experimental_context, false);
   assert.deepEqual(model.model_messages, {
     instructions_template: "keep instructions",

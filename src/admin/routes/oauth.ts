@@ -8,7 +8,6 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
-import { antigravityModelAvailability } from "../../providers/antigravity/availability.ts";
 import { identifierSchema } from "../../config/schema.ts";
 import {
   clearCredentialHealth,
@@ -90,6 +89,7 @@ async function checkedAccount(
     .first<{ provider_id: string; provider_type: string }>();
   if (
     !row ||
+    !oauthProviderTypeSchema.safeParse(row.provider_type).success ||
     (providerId && row.provider_id !== providerId) ||
     (providerType && row.provider_type !== providerType)
   )
@@ -254,9 +254,12 @@ export const oauthRoutes = new Hono<AdminContext>()
     validate("query", z.object({ provider_id: identifierSchema })),
     async (c) => {
       const rows = await c.env.CODY_DB.prepare(
-        "SELECT account_ref FROM oauth_accounts WHERE provider_id = ? ORDER BY created_at",
+        "SELECT account_ref FROM oauth_accounts WHERE provider_id = ? AND provider_type IN (?, ?, ?) ORDER BY created_at",
       )
-        .bind(c.req.valid("query").provider_id)
+        .bind(
+          c.req.valid("query").provider_id,
+          ...oauthProviderTypeSchema.options,
+        )
         .all<{ account_ref: string }>();
       const items = await mapWithConcurrency(
         rows.results,
@@ -281,8 +284,7 @@ export const oauthRoutes = new Hono<AdminContext>()
         (entry) => entry.id === providerId,
       );
       const items = await mapWithConcurrency(
-        provider?.type === ProviderType.Antigravity ||
-          provider?.type === ProviderType.Codex ||
+        provider?.type === ProviderType.Codex ||
           provider?.type === ProviderType.Claude ||
           provider?.type === ProviderType.Xai
           ? provider.credentials
@@ -320,32 +322,6 @@ export const oauthRoutes = new Hono<AdminContext>()
                     cooling_until: siwcHealth.cooling_until ?? null,
                     cooldown_reason: siwcHealth.cooldown_reason ?? null,
                   },
-                }
-              : {}),
-            ...(provider?.type === ProviderType.Antigravity
-              ? {
-                  model_cooldowns: (
-                    await mapWithConcurrency(
-                      provider.models,
-                      PROVIDER_FAN_OUT_CONCURRENCY,
-                      async (model) => {
-                        const status = await antigravityModelAvailability(
-                          c.env,
-                          credential.auth.account_ref,
-                          model,
-                        );
-                        return {
-                          model,
-                          available: status.available,
-                          until: status.cooling_until ?? null,
-                          reason:
-                            status.cooldown_reason === "quota"
-                              ? "quota"
-                              : "unavailable",
-                        };
-                      },
-                    )
-                  ).filter((status) => !status.available),
                 }
               : {}),
             ...(quota
@@ -516,22 +492,6 @@ export const oauthRoutes = new Hono<AdminContext>()
         result.result.code === ConsumeResetCode.AlreadyRedeemed
       )
         await clearResetCooldowns(c.env, ref);
-      return c.json(result);
-    },
-  )
-  .post(
-    "/provider-accounts/:ref/retry-project",
-    validate("param", accountParam),
-    validate("json", z.strictObject({})),
-    async (c) => {
-      const ref = c.req.valid("param").ref;
-      const result = await reply(
-        (
-          await checkedAccount(c.env, ref, undefined, ProviderType.Antigravity)
-        ).run({ action: "retry_project" }),
-        accountViewSchema,
-      );
-      await audit(c.env, c.get("actor"), `antigravity_project_retry:${ref}`);
       return c.json(result);
     },
   )

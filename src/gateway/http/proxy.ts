@@ -182,7 +182,6 @@ export async function handleInference(
         env,
         config,
         route,
-        routeForSelection,
         selection,
         excludedCredentials,
         exhausted,

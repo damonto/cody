@@ -36,12 +36,6 @@
     "ACCESS_AUD": "67f224db541b57523a0d49a02d41ee179b19bae02b4f9bc3eee2a5801fda8df4",
     "ADMIN_LOCAL_DEV": "false",
   },
-  "kv_namespaces": [
-    {
-      "binding": "CODY_CONFIG_KV",
-      "id": "8c9a59105a1e4c4f918e33a93323c533",
-    },
-  ],
   "d1_databases": [
     {
       "binding": "CODY_DB",

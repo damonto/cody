@@ -67,7 +67,6 @@ test("Claude cards show native quota and organization without reset controls", a
     provider_id: "claude",
     status: "ready",
     email: "claude@example.test",
-    project_id: null,
     claude: {
       account_id: "account",
       organization_id: "org",

@@ -3,7 +3,6 @@ import { app } from "../../app.ts";
 import { MAX_VERCEL_REQUEST_BODY_BYTES } from "../../shared/payload-limits.ts";
 import { ProviderHealthCore } from "../../gateway/health/provider-health.ts";
 import { SessionAffinityCore } from "../../gateway/sessions/session-affinity.ts";
-import { createAntigravityHttpConnector } from "./antigravity-http.ts";
 import { fetchUpstream } from "./http.ts";
 import { setDefaultSocksDial } from "../../gateway/transport/socks.ts";
 import { runMaintenance } from "../../maintenance.ts";
@@ -111,11 +110,6 @@ export async function createRuntime(
   }
   const { db, redis } = resources;
   const tasks = new TaskTracker(options.waitUntil);
-  const antigravityHttp = createAntigravityHttpConnector(
-    options.target === "vercel"
-      ? { idleTimeoutMs: 5_000, waitUntil: (promise) => tasks.track(promise) }
-      : {},
-  );
   const objects = new ObjectRuntime({
     locks: new RedisObjectLocks(redis, settings.REDIS_PREFIX),
     tasks,
@@ -133,7 +127,6 @@ export async function createRuntime(
         request.headers.get("upgrade")?.toLowerCase() === "websocket"
           ? connectUpstreamWebSocket(request)
           : fetchUpstream(request),
-      antigravity: antigravityHttp.send,
     },
     CONFIG_ENCRYPTION_KEY: settings.CONFIG_ENCRYPTION_KEY,
     MODELS_CACHE_TTL_SECONDS: settings.MODELS_CACHE_TTL_SECONDS,
@@ -165,15 +158,6 @@ export async function createRuntime(
         await redis.set(`${settings.REDIS_PREFIX}:models:v1:${key}`, value, {
           px: ttlMs,
         });
-      },
-    },
-    CODY_CONFIG_KV: {
-      get: (key) => redis.get(`${settings.REDIS_PREFIX}:public:${key}`),
-      put: async (key, value) => {
-        await redis.set(`${settings.REDIS_PREFIX}:public:${key}`, value);
-      },
-      delete: async (key) => {
-        await redis.del(`${settings.REDIS_PREFIX}:public:${key}`);
       },
     },
     USAGE_QUEUE: new DirectIngestQueue(db),
@@ -350,7 +334,6 @@ export async function createRuntime(
     async close() {
       await tasks.drain();
       accountCache.clear();
-      antigravityHttp.close();
       await resources.close();
     },
   };

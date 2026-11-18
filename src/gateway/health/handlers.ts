@@ -1,12 +1,6 @@
 import { codexHealthProviderId } from "../../providers/codex/health-scope.ts";
 import { HealthScope } from "./values.ts";
 import { ProviderType } from "../../config/values.ts";
-import { antigravityQuotaObjectName } from "../../providers/antigravity/availability.ts";
-import {
-  mapWithConcurrency,
-  PROVIDER_FAN_OUT_CONCURRENCY,
-} from "../../shared/concurrency.ts";
-
 import type { ClientApiKeyConfig, GatewayConfig } from "../../config/types.ts";
 import type { RequestLogContext } from "../../shared/log.ts";
 import { jsonResponse, openAiError } from "../http/http.ts";
@@ -142,23 +136,6 @@ export async function handleHealthClear(
     credentialId === undefined
       ? await clearProviderHealth(env, providerId, scope)
       : await clearCredentialHealth(env, providerId, credentialId, scope);
-  if (
-    provider.type === ProviderType.Antigravity &&
-    scope === HealthScope.Inference &&
-    credentialId !== undefined
-  ) {
-    const credential = provider.credentials.find(
-      (entry) => entry.id === credentialId,
-    )!;
-    await mapWithConcurrency(
-      provider.models,
-      PROVIDER_FAN_OUT_CONCURRENCY,
-      (model) =>
-        env.HEALTH.getByName(
-          antigravityQuotaObjectName(credential.auth.account_ref, model),
-        ).clear(),
-    );
-  }
   requestLog.set({
     health: {
       action: "clear",

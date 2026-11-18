@@ -1,6 +1,5 @@
 import type { CodexMode } from "../codex/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
-import { antigravityAccount } from "../antigravity/account.ts";
 import { codexAccount } from "../codex/account.ts";
 import { claudeAccount } from "../claude/account.ts";
 import { xaiAccount } from "../xai/account.ts";
@@ -20,8 +19,6 @@ export function accountProvider(
   mode: CodexMode = "native",
 ): AccountProvider {
   switch (type) {
-    case ProviderType.Antigravity:
-      return antigravityAccount(providerState(state, type), services);
     case ProviderType.Codex:
       return codexAccount(providerState(state, type), services, mode);
     case ProviderType.Claude:

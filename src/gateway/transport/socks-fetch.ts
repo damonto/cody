@@ -16,7 +16,6 @@ export interface SocksFetchOptions {
   /** Extra trusted roots for local integration fixtures; never a configuration option. */
   readonly trustedCertificates?: readonly string[];
   /** Omit the TLS ALPN extension while continuing to use HTTP/1.1. */
-  readonly omitAlpn?: boolean;
   readonly connectTimeoutMs?: number;
   readonly clientSignal?: AbortSignal;
   readonly onStage?: (stage: SocksStage) => void;
@@ -78,7 +77,6 @@ export async function socksFetch(
         connection,
         url.hostname,
         options.trustedCertificates,
-        options.omitAlpn,
       );
     }
     clearTimeout(timeout);

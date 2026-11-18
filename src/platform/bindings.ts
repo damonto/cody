@@ -30,12 +30,6 @@ import type { XaiReplaySnapshot } from "../providers/xai/replay-store.ts";
 // ---------------------------------------------------------------------------
 
 /** Published-configuration snapshot store (Cloudflare KV or Redis). */
-export interface KeyValueStore {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-}
-
 export type SqlDialect = "sqlite" | "postgres";
 
 export interface SqlRunMeta {
@@ -236,9 +230,7 @@ export interface Bindings extends Partial<WorkerSettings> {
   readonly UPSTREAM_HTTP?: {
     /** Handles ordinary HTTP and WebSocket upgrades without global registration. */
     readonly direct?: (request: Request) => Promise<Response>;
-    readonly antigravity: (request: Request) => Promise<Response>;
   };
-  readonly CODY_CONFIG_KV: KeyValueStore;
   readonly CODY_DB: SqlDatabase;
   readonly USAGE_QUEUE: UsageQueue;
   readonly ASSETS?: AssetFetcher;

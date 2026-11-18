@@ -2,7 +2,7 @@
 
 An AI API gateway with a web console, for Codex, Claude Code and other OpenAI- or Anthropic-compatible clients. It runs on Cloudflare Workers, as a Node.js server, or on Vercel.
 
-- Manage AI Gateway, Antigravity, Codex and Claude providers, credentials, client keys and model aliases in the console.
+- Manage AI Gateway, Codex, Claude and xAI providers, credentials, client keys and model aliases in the console.
 - Route traffic through SOCKS5 proxy groups.
 - Track usage, costs and request details, with custom pricing by provider and model.
 
@@ -28,7 +28,7 @@ libSQL works with [Turso](https://turso.tech/) or a self-hosted `sqld`.
 | HTTP inference on Node.js                                      | 64 MiB                   |
 | HTTP inference on Workers                                      | 16 MiB                   |
 | HTTP inference on Vercel                                       | 4.5 MB (4,500,000 bytes) |
-| Antigravity / xAI decoded and translated requests              | 16 MiB                   |
+| xAI decoded and translated requests                            | 16 MiB                   |
 | WebSocket message                                              | 32 MiB                   |
 | Each WebSocket processing buffer, including the active message | 32 MiB / 1024 messages   |
 | Management API request                                         | 16 MiB                   |
@@ -77,13 +77,12 @@ The first run creates a local database and `.dev.vars` with an encryption key. K
 
    ```bash
    npx wrangler login
-   npx wrangler kv namespace create CODY_CONFIG_KV
    npx wrangler d1 create cody
    npx wrangler queues create cody-usage
    npx wrangler queues create cody-usage-dlq
    ```
 
-2. Put the returned KV namespace and D1 database IDs in [wrangler.jsonc](wrangler.jsonc).
+2. Put the returned D1 database ID in [wrangler.jsonc](wrangler.jsonc).
 
 3. Bind your domain to the Worker and protect the console with [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/): create a self-hosted application for the path `console/*` and allow your administrator emails. In `wrangler.jsonc`, set `ACCESS_TEAM_DOMAIN` to `https://your-team.cloudflareaccess.com`, `ACCESS_AUD` to the application's AUD tag, and keep `ADMIN_LOCAL_DEV=false`.
 

@@ -555,7 +555,7 @@ test("report APIs validate ranges and expose historical boundary limitations", a
 
 test("Persisted canonical models share report filters and ranking without rewriting names", async () => {
   const providerId = (await bindings.CODY_DB.prepare(
-    "SELECT id FROM providers WHERE type = 'antigravity'",
+    "SELECT id FROM providers WHERE type = 'codex'",
   ).first<{ id: string }>())!.id;
   const family = "gemini-3.8-flash";
   for (const [index, level] of ["low", "medium", "high"].entries()) {

@@ -1,7 +1,6 @@
 import { accountPartition } from "../codex/partition.ts";
 import type { CodexMode } from "../codex/account-schema.ts";
 import { ProviderType } from "../../config/values.ts";
-import { antigravityAccountCredential } from "../antigravity/account-credential.ts";
 import { codexAccountCredential } from "../codex/account-credential.ts";
 import { claudeAccountCredential } from "../claude/account-credential.ts";
 import { xaiAccountCredential } from "../xai/account-credential.ts";
@@ -52,9 +51,6 @@ export function activeAccount(
   const generation = account.generation;
   let credential: AccountCredential;
   switch (account.provider_type) {
-    case ProviderType.Antigravity:
-      credential = antigravityAccountCredential(account);
-      break;
     case ProviderType.Codex:
       credential = codexAccountCredential(account);
       break;

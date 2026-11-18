@@ -49,7 +49,6 @@ beforeEach(async () => {
   partialRefresh = false;
   countTokensRejected = false;
   messageHeaders = {};
-  await env.CODY_CONFIG_KV.delete("gateway-config");
   vi.stubGlobal(
     "fetch",
     vi.fn(async (request: Request) => {

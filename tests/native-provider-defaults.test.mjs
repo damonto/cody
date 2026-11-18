@@ -1,36 +1,23 @@
-import { readFile, readdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createSqliteDatabase } from "../src/platform/standard/sql/sqlite.ts";
+import {
+  applyMigrations,
+  migrationDirectories,
+} from "../src/platform/standard/sql/migrate.ts";
 import { createTestPostgresDatabase } from "./helpers/postgres.mjs";
 import { checkNativeDefaults } from "./helpers/native-provider-defaults.ts";
 
+const root = fileURLToPath(new URL("..", import.meta.url));
 for (const dialect of ["sqlite", "postgres"]) {
-  test(`${dialect}: native defaults preserve settings and history and allow the first account`, async () => {
+  test(`${dialect}: native defaults preserve settings and history and allow the first account`, async (t) => {
     const db =
       dialect === "sqlite"
         ? await createSqliteDatabase(":memory:")
         : createTestPostgresDatabase();
-    try {
-      const directory = new URL(
-        `../migrations/${dialect === "sqlite" ? "d1" : "postgres"}/`,
-        import.meta.url,
-      );
-      const name = "0015_native_provider_defaults.sql";
-      for (const migration of (await readdir(directory))
-        .filter((item) => item.endsWith(".sql") && item < name)
-        .sort())
-        await db.exec(await readFile(new URL(migration, directory), "utf8"));
-      const sql = await readFile(new URL(name, directory), "utf8");
-      const cleanup = await readFile(
-        new URL("0016_remove_history_notes.sql", directory),
-        "utf8",
-      );
-      await checkNativeDefaults(db, async () => {
-        await db.exec(sql);
-        await db.exec(cleanup);
-      });
-    } finally {
-      await db.close();
-    }
+    t.after(() => db.close());
+    await checkNativeDefaults(db, () =>
+      applyMigrations(db, migrationDirectories(dialect, root)),
+    );
   });
 }

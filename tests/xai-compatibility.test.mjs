@@ -360,7 +360,6 @@ test("encrypted history isolates clients and rejects disconnected account proven
       generation,
       status: "ready",
       email: null,
-      project_id: null,
       expires_at: null,
       error: null,
       models: [],

@@ -5,7 +5,6 @@ import type {
   ProviderConfig,
   ProviderCredentialConfig,
 } from "../config/types.ts";
-import { antigravityCredentialSchema } from "./antigravity/account-schema.ts";
 import { codexCredentialSchema } from "./codex/account-schema.ts";
 import { claudeCredentialSchema } from "./claude/account-schema.ts";
 import { xaiCredentialSchema } from "./xai/account-schema.ts";
@@ -21,13 +20,6 @@ import type { ProviderRuntimeContext } from "./types.ts";
 export interface ResolvedApiKey {
   readonly type: typeof CredentialAuthType.ApiKey;
   readonly token: string;
-}
-export interface ResolvedAntigravityOAuth {
-  readonly type: typeof CredentialAuthType.OAuth;
-  readonly provider: typeof ProviderType.Antigravity;
-  readonly token: string;
-  readonly project_id: string;
-  readonly account_ref: string;
 }
 export interface ResolvedNativeCodexOAuth {
   readonly mode: "native";
@@ -65,10 +57,7 @@ export interface ResolvedXaiOAuth {
   readonly generation: number;
 }
 export type ResolvedOAuth =
-  | ResolvedAntigravityOAuth
-  | ResolvedCodexOAuth
-  | ResolvedClaudeOAuth
-  | ResolvedXaiOAuth;
+  ResolvedCodexOAuth | ResolvedClaudeOAuth | ResolvedXaiOAuth;
 export type ResolvedCredential = ResolvedApiKey | ResolvedOAuth;
 export type ResolvedCredentialFor<Auth extends CredentialAuth> = Extract<
   ResolvedCredential,
@@ -119,13 +108,7 @@ const oauthResolver: CredentialResolver<
   type: CredentialAuthType.OAuth,
   async resolve(auth, context) {
     const provider = context?.provider.type;
-    if (
-      !context ||
-      (provider !== ProviderType.Antigravity &&
-        provider !== ProviderType.Codex &&
-        provider !== ProviderType.Claude &&
-        provider !== ProviderType.Xai)
-    )
+    if (!context || !provider || provider === ProviderType.AiGateway)
       throw new OAuthError("OAuth account storage is unavailable", 503);
     const token = await accountReply(
       context.env.PROVIDER_OAUTH_ACCOUNT.getByName(auth.account_ref).run({
@@ -161,33 +144,23 @@ const oauthResolver: CredentialResolver<
         generation: value.generation,
       };
     }
-    if (provider === ProviderType.Codex) {
-      const parsed = codexCredentialSchema.parse(token);
-      if (parsed.mode === "siwc")
-        return {
-          ...parsed,
-          type: CredentialAuthType.OAuth,
-          provider,
-          account_ref,
-        };
-      const { account_id, is_fedramp, generation } = parsed;
+    const parsed = codexCredentialSchema.parse(token);
+    if (parsed.mode === "siwc")
       return {
+        ...parsed,
         type: CredentialAuthType.OAuth,
         provider,
-        mode: "native",
-        token: token.token,
-        account_id,
-        generation,
-        ...(is_fedramp ? { is_fedramp: true } : {}),
         account_ref,
       };
-    }
-    const { project_id } = antigravityCredentialSchema.parse(token);
+    const { account_id, is_fedramp, generation } = parsed;
     return {
       type: CredentialAuthType.OAuth,
       provider,
+      mode: "native",
       token: token.token,
-      project_id,
+      account_id,
+      generation,
+      ...(is_fedramp ? { is_fedramp: true } : {}),
       account_ref,
     };
   },
