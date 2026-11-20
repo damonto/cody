@@ -77,7 +77,7 @@ import type { UpstreamFetch } from "../transport/index.ts";
 import codexCatalog from "./models.json" with { type: "json" };
 import type { Bindings } from "../../platform/bindings.ts";
 
-const MODEL_CATALOG_TIMEOUT_MS = 3_000;
+const MODEL_CATALOG_TIMEOUT_MS = 10_000;
 export const MODEL_CATALOG_CONCURRENCY = PROVIDER_FAN_OUT_CONCURRENCY;
 const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
 const MAX_MODELS_CACHE_TTL_SECONDS = 300;
