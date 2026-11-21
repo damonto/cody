@@ -43,7 +43,7 @@
     "@types/ws": "^8.18.2",
     "concurrently": "^10.0.7",
     "esbuild": "^0.28.2",
-    "oxlint": "^1.93.0",
+    "oxlint": "^1.94.0",
     "oxlint-tsgolint": "^7.0.2006",
     "prettier": "^3.10.0",
     "tsx": "^4.23.15",
