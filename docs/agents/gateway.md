@@ -83,7 +83,7 @@ Start with `src/gateway/proxies/` and `src/gateway/transport/`.
 
 ## Catalog and web search
 
-- Catalog fetches time out after three seconds and cache successful aggregates for a short, configurable isolate-local TTL. Node/Vercel also share these results in Redis, preserving the client/config/request cache key and original expiry; cache failures do not replace ordinary routing health checks.
+- Catalog fetches time out after ten seconds and cache successful aggregates for a short, configurable isolate-local TTL. Node/Vercel also share these results in Redis, preserving the client/config/request cache key and original expiry; cache failures do not replace ordinary routing health checks.
 - Model cache identities include the selected Codex partition and credential generation; a failed coordinated read explicitly bypasses both cache reads and writes for that request. User agents containing `codex` receive `{models: [...]}`; other clients receive the standard model-list shape. A model served by Codex uses that account's upstream `ModelInfo` instead of the static catalog entry for Codex clients.
 - `web_search` is global. Proxy mode sends `alpha/search` to providers with `supports_web_search`; Tavily/Exa modes execute in the gateway.
 - Configured search requests use a 1 MiB upload budget, narrowed by the deployment ceiling. Search provider responses and the total query-batch response budget use separate 16 MiB constants in `src/shared/payload-limits.ts`; keep cancellation on either boundary.

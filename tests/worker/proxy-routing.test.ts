@@ -18,7 +18,10 @@ vi.mock(
     socksFetch: vi.fn<typeof socksFetch>(),
   }),
 );
-afterEach(() => vi.resetAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.resetAllMocks();
+});
 
 function fixture() {
   const id = crypto.randomUUID();
@@ -213,21 +216,27 @@ test("catalog transport failures share proxy cooldown with inference while provi
 });
 
 test("catalog's total deadline during proxy setup is attributed to the proxy", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "performance", "setTimeout", "clearTimeout"],
+  });
   const config = fixture();
-  vi.mocked(socksFetch).mockImplementation(async (request, _node, options) => {
+  let markConnectionStarted!: (signal: AbortSignal) => void;
+  const connectionStarted = new Promise<AbortSignal>((resolve) => {
+    markConnectionStarted = resolve;
+  });
+  vi.mocked(socksFetch).mockImplementation((request, _node, options) => {
     options?.onStage?.("proxy");
-    await new Promise<never>((_resolve, reject) => {
+    return new Promise<Response>((_resolve, reject) => {
       request.signal.addEventListener(
         "abort",
         () => reject(new SocksProxyError("SOCKS5 connection timed out")),
         { once: true },
       );
+      markConnectionStarted(request.signal);
     });
-    throw new Error("unreachable");
   });
   const context = createExecutionContext();
-  const started = Date.now();
-  const response = await handleModels(
+  const pending = handleModels(
     new Request("https://gateway.test/v1/models"),
     env,
     config,
@@ -235,8 +244,14 @@ test("catalog's total deadline during proxy setup is attributed to the proxy", a
     "catalog-timeout",
     context,
   );
+  const signal = await connectionStarted;
+  await vi.advanceTimersByTimeAsync(9_999);
+  expect(signal.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(signal.aborted).toBe(true);
+
+  const response = await pending;
   expect(response.status).toBe(502);
-  expect(Date.now() - started).toBeLessThan(4500);
   await waitOnExecutionContext(context);
   expect(socksFetch).toHaveBeenCalledTimes(1);
   expect(
@@ -249,5 +264,5 @@ test("catalog's total deadline during proxy setup is attributed to the proxy", a
   const status = await env.PROXY_GROUP.getByName(
     config.proxy_groups[0].id,
   ).getStatus(await proxyGroupSnapshot(config, config.proxy_groups[0]));
-  expect(status.proxies[0].failures).toBe(1);
+  expect(status.proxies.map((proxy) => proxy.failures)).toEqual([1, 0]);
 });
