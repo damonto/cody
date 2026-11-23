@@ -10,7 +10,7 @@
     "dev:cloudflare": "node scripts/setup-local.mjs && concurrently --kill-others --names gateway,console \"wrangler dev --local --assets console/public\" \"npm run dev:console\"",
     "build:cloudflare": "npm run build:console && wrangler deploy --dry-run",
     "deploy:cloudflare": "npm run build:console && node scripts/deploy.mjs",
-    "types:cloudflare": "wrangler types --include-runtime=false --strict-vars=false",
+    "types:cloudflare": "wrangler types --strict-vars=false",
     "dev:node": "concurrently --kill-others --names gateway,console \"node --env-file-if-exists=.env --import tsx --watch src/server.ts\" \"npm run dev:console\"",
     "build:node": "npm run build:console && node scripts/build-standard.mjs node",
     "start:node": "node --env-file-if-exists=.env dist/server.mjs",

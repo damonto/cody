@@ -35,6 +35,7 @@ Code: `src/platform/cloudflare/http-dispatch.ts`, `src/platform/cloudflare/http-
 
 ## Builds, deployment and migrations
 
+- Commit `worker-configuration.d.ts` with both binding and runtime types. The console's TypeScript checks use it on all platforms. Run `npm run types:cloudflare` after changing Worker bindings, compatibility settings or the Wrangler version.
 - `build:cloudflare` builds the console and runs `wrangler deploy --dry-run`; it does not deploy. `build:node` and `build:vercel` bundle code/assets without connecting to SQL. Vercel output lives in `.vercel/output/`.
 - `deploy:cloudflare` builds the console and applies pending D1 migrations before deploying. Configure the target account D1 binding in `wrangler.jsonc`. Use Workers Builds Git integration from `main` for automatic deployment; do not add a GitHub Actions deployment workflow unless requested.
 - `deploy:node` and `deploy:vercel` build, then run `npm run db:migrate`. `vercel.json` uses `deploy:vercel` as its build command, so migration failure blocks deployment. Never run migrations in Vercel request handling.
