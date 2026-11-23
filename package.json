@@ -63,7 +63,7 @@
     "jose": "^6.2.18",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
-    "websocket-driver": "0.7.5",
+    "websocket-driver": "0.8.0",
     "ws": "^8.23.0",
     "zod": "^4.6.7"
   },
