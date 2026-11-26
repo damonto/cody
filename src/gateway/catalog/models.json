@@ -301,7 +301,7 @@
     {
       "id": "gemini-4-hydrogen",
       "display_name": "Gemini 4 Hydrogen",
-      "description": "speed and efficiency for everyday coding and agentic workflows.",
+      "description": "Built for speed and efficiency in everyday coding and agentic workflows.",
       "priority": 402,
       "input_modalities": [
         "text",
