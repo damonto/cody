@@ -21,6 +21,12 @@ import {
   accountViewSchema,
   sessionViewSchema,
 } from "../../src/providers/oauth/schema.ts";
+
+vi.mock(
+  import("../../src/gateway/catalog/models.json"),
+  () => import("../helpers/model-catalog.json"),
+);
+
 const bindings = env as Env & { TEST_MIGRATIONS: D1Migration[] };
 const sent: { token: string; body: string; headers: Headers }[] = [];
 const counted: { url: string; body: string; headers: Headers }[] = [];

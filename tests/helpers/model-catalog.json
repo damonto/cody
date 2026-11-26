@@ -1,0 +1,122 @@
+{
+  "models": [
+    {
+      "id": "claude-sonnet-5-5",
+      "display_name": "Sonnet 5.5",
+      "description": "Test metadata for Sonnet 5.5",
+      "priority": 403,
+      "input_modalities": ["text", "image"],
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "supported_reasoning_levels": ["low", "medium", "high", "xhigh", "max"]
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "display_name": "GPT-6.2-Sol",
+      "description": "Test metadata for GPT-6.2-Sol",
+      "priority": 1,
+      "input_modalities": ["text", "image"],
+      "context_window": 500000,
+      "max_context_window": 872000,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "display_name": "GPT-5.6-Sol",
+      "description": "Test metadata for GPT-5.6-Sol",
+      "priority": 8,
+      "input_modalities": ["text", "image"],
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-blue-latest",
+      "display_name": "Daybreak Blue",
+      "description": "Test metadata for Daybreak Blue",
+      "priority": 11,
+      "input_modalities": ["text", "image"],
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-red-latest",
+      "display_name": "Daybreak Red",
+      "description": "Test metadata for Daybreak Red",
+      "priority": 12,
+      "input_modalities": ["text", "image"],
+      "context_window": 372000,
+      "max_context_window": 372000,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "id": "codex-auto-review",
+      "display_name": "Codex Auto Review",
+      "description": "Test metadata for Codex Auto Review",
+      "priority": 43,
+      "input_modalities": ["text", "image"],
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "supported_reasoning_levels": ["low", "medium", "high", "xhigh", "max"]
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "display_name": "DeepSeek-Flash",
+      "description": "Test metadata for DeepSeek-Flash",
+      "priority": 101,
+      "input_modalities": ["text", "image"],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": ["low", "high", "max"]
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash",
+      "description": "Test metadata for Gemini 3.8 Flash",
+      "priority": 501,
+      "input_modalities": ["text"],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": ["low", "medium", "high"]
+    },
+    {
+      "id": "glm-5.3",
+      "display_name": "GLM-5.3",
+      "description": "Test metadata for GLM-5.3",
+      "priority": 301,
+      "input_modalities": ["text"],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": ["low", "high", "max"]
+    }
+  ]
+}

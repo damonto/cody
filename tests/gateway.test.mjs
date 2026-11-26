@@ -20,8 +20,13 @@ import {
   ProviderHealthState,
   providerIsAvailable,
 } from "../src/gateway/health/health.ts";
-import { gatewayApp as worker } from "../src/gateway/app.ts";
-import { clearModelsCacheForTests } from "../src/gateway/catalog/models.ts";
+import { withModelCatalogFixture } from "./helpers/model-catalog.mjs";
+
+const { gatewayApp: worker } = await withModelCatalogFixture(
+  () => import("../src/gateway/app.ts"),
+);
+const { clearModelsCacheForTests } =
+  await import("../src/gateway/catalog/models.ts");
 
 function gatewayConfig() {
   return {

@@ -5,16 +5,18 @@ import { parseConfig } from "../src/config/store.ts";
 import { configureLogging } from "../src/shared/log.ts";
 import { ProviderHealthState } from "../src/gateway/health/health.ts";
 import { handleInference } from "../src/gateway/http/proxy.ts";
-import {
-  clearModelsCacheForTests,
-  handleModels,
-} from "../src/gateway/catalog/models.ts";
 import { decodeRequestBody } from "../src/gateway/http/content-encoding.ts";
 import { BodyTooLargeError } from "../src/gateway/http/body.ts";
 import { upstreamErrorEvent } from "../src/gateway/websocket/websocket-protocol.ts";
 import { RequestMeter } from "../src/telemetry/meter.ts";
 import { socksFetch } from "../src/gateway/transport/socks-fetch.ts";
 import { memoryProxy } from "./helpers/memory-socks.mjs";
+import { withModelCatalogFixture } from "./helpers/model-catalog.mjs";
+
+const { clearModelsCacheForTests, handleModels } =
+  await withModelCatalogFixture(
+    () => import("../src/gateway/catalog/models.ts"),
+  );
 
 configureLogging("off");
 const MODEL = "gpt-5.5-codex";

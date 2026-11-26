@@ -6,16 +6,22 @@ import {
   credentialIsAvailable,
   ProviderHealthState,
 } from "../src/gateway/health/health.ts";
-import {
+import { withModelCatalogFixture } from "./helpers/model-catalog.mjs";
+import catalogFixture from "./helpers/model-catalog.json" with { type: "json" };
+import catalog from "../src/gateway/catalog/models.json" with { type: "json" };
+import { codexDefaultInstructions } from "../src/gateway/catalog/codex/default-instructions.ts";
+
+const {
   aggregateStandardModels,
   clearModelsCacheForTests,
   handleModels,
   MODEL_CATALOG_CONCURRENCY,
   modelsFormatFor,
-} from "../src/gateway/catalog/models.ts";
-import { modelCatalogSchema } from "../src/gateway/catalog/metadata.ts";
-import catalog from "../src/gateway/catalog/models.json" with { type: "json" };
-import { codexDefaultInstructions } from "../src/gateway/catalog/codex/default-instructions.ts";
+} = await withModelCatalogFixture(
+  () => import("../src/gateway/catalog/models.ts"),
+);
+const { modelCatalogSchema } =
+  await import("../src/gateway/catalog/metadata.ts");
 
 const results = [
   {
@@ -123,7 +129,7 @@ test("standard aggregation resolves routes per provider", () => {
 
 test("catalog metadata rejects duplicate IDs, unknown efforts, and invalid context windows", () => {
   assert.deepEqual(modelCatalogSchema.parse(catalog), catalog);
-  const [model] = catalog.models;
+  const [model] = catalogFixture.models;
   for (const [models, pattern] of [
     [[model, model], /Model IDs must be unique/],
     [

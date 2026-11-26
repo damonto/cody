@@ -261,6 +261,60 @@
         "high",
         "max"
       ]
+    },
+    {
+      "id": "gemini-4-carbon",
+      "display_name": "Gemini 4 Carbon",
+      "description": "Frontier performance in long-horizon agentic workflows across complex knowledge work, engineering, cybersecurity and scientific reasoning.",
+      "priority": 400,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    {
+      "id": "gemini-4-neon",
+      "display_name": "Gemini 4 Neon",
+      "description": "Built for complex coding, analytical reasoning, and production-grade enterprise workflows.",
+      "priority": 401,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "display_name": "Gemini 4 Hydrogen",
+      "description": "speed and efficiency for everyday coding and agentic workflows.",
+      "priority": 402,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "supported_reasoning_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     }
   ]
 }
