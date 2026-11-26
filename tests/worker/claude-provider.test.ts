@@ -9,6 +9,7 @@ import {
 } from "cloudflare:test";
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from "vitest";
 import { parseConfig } from "../../src/config/store.ts";
+import { handleModels } from "../../src/gateway/catalog/models.ts";
 import { handleInference } from "../../src/gateway/http/proxy.ts";
 import {
   headerQuota,
@@ -272,6 +273,109 @@ async function infer(
   await waitOnExecutionContext(context);
   return response;
 }
+test("Anthropic catalogs preserve native entries and append configured gateway entries", async () => {
+  const account = await ready();
+  const sonnet = {
+    id: "claude-sonnet-5-5",
+    type: "model",
+    max_tokens: null,
+    capabilities: { image_input: { supported: false } },
+    vendor_extension: "native",
+  };
+  const opus = {
+    id: "claude-opus-5-5",
+    type: "model",
+    name: "claude-opus-5-5",
+    capabilities: null,
+  };
+  const base = config([account], { models: [sonnet.id, opus.id] });
+  const settings = parseConfig({
+    ...base,
+    providers: [
+      ...base.providers,
+      {
+        type: "ai_gateway",
+        id: "gateway",
+        base_url: "https://upstream.example/v1",
+        priority: 200,
+        disabled: false,
+        models: [sonnet.id, "glm-5.3", "unconfigured"],
+        credentials: [
+          {
+            id: "gateway-key",
+            auth: { type: "api_key", api_key: "mock-token" },
+            priority: 100,
+            disabled: false,
+          },
+        ],
+      },
+    ],
+    api_keys: [{ ...base.api_keys[0], providers: ["claude", "gateway"] }],
+    model_routes: { "opus-alias": { model: opus.id } },
+  });
+  const hosts: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe("/v1/models");
+      hosts.push(url.hostname);
+      return url.hostname === "upstream.example"
+        ? Response.json({
+            data: [
+              { id: sonnet.id, object: "model", owned_by: "gateway" },
+              { id: "glm-5.3", object: "model", owned_by: "gateway" },
+              { id: "unconfigured", object: "model", owned_by: "gateway" },
+            ],
+          })
+        : Response.json({ data: [sonnet, opus] });
+    }),
+  );
+  const discover = async (userAgent: string) => {
+    const context = createExecutionContext();
+    const response = await handleModels(
+      new Request("https://gateway.test/v1/models", {
+        headers: { "user-agent": userAgent },
+      }),
+      env,
+      settings,
+      settings.api_keys[0]!,
+      crypto.randomUUID(),
+      context,
+    );
+    await waitOnExecutionContext(context);
+    expect(response.status).toBe(200);
+    return response.json<{
+      object?: string;
+      data?: Record<string, unknown>[];
+      models?: Record<string, unknown>[];
+    }>();
+  };
+
+  const { data } = await discover("Claude Code");
+  expect(data?.slice(0, 3)).toEqual([
+    sonnet,
+    opus,
+    { ...opus, id: "opus-alias", name: "opus-alias" },
+  ]);
+  expect(data?.slice(3)).toMatchObject([
+    { id: "glm-5.3", display_name: "GLM-5.3" },
+  ]);
+
+  hosts.length = 0;
+  const { models } = await discover("Codex CLI");
+  expect(models?.map(({ slug }) => slug)).toEqual([sonnet.id, "glm-5.3"]);
+  expect(hosts).toEqual(["upstream.example"]);
+
+  const standard = await discover("OpenAI-SDK");
+  expect(standard.object).toBe("list");
+  expect(standard.data).toContainEqual({
+    id: "unconfigured",
+    object: "model",
+    owned_by: "gateway",
+  });
+});
+
 test("Claude PKCE identity survives eviction and rejects stale observations", async () => {
   const a = await ready();
   const view = await accountReply(

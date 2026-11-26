@@ -74,8 +74,19 @@ import {
   type RoutedProvider,
 } from "../routing/routing.ts";
 import type { UpstreamFetch } from "../transport/index.ts";
-import codexCatalog from "./models.json" with { type: "json" };
 import type { Bindings } from "../../platform/bindings.ts";
+import { modelMetadata, MODEL_TEMPLATES_CACHE_IDENTITY } from "./metadata.ts";
+import {
+  anthropicModelInfo,
+  CODEX_AUTO_REVIEW_MODEL,
+  codexModelInfo,
+} from "./templates.ts";
+import {
+  isObject,
+  type JsonObject,
+  parseUpstreamModels,
+  type UpstreamModel,
+} from "./upstream.ts";
 
 const MODEL_CATALOG_TIMEOUT_MS = 10_000;
 export const MODEL_CATALOG_CONCURRENCY = PROVIDER_FAN_OUT_CONCURRENCY;
@@ -83,18 +94,10 @@ const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
 const MAX_MODELS_CACHE_TTL_SECONDS = 300;
 
 export type ModelsFormat = "openai" | "codex" | "anthropic";
-
-type JsonObject = Record<string, unknown>;
-
-interface UpstreamModel {
-  id: string;
-  raw: JsonObject;
-}
-
-interface ClientModel {
-  id: string;
-  upstream: UpstreamModel;
-}
+const nativeCatalogProviders = {
+  codex: ProviderType.Codex,
+  anthropic: ProviderType.Claude,
+};
 
 interface ProviderModelsResult {
   provider: ProviderConfig;
@@ -175,54 +178,6 @@ class ModelsRequestError extends Error {
 }
 
 const modelsCache = new ModelsCache();
-
-// The Codex catalog does not publish release dates or per-model max output
-// limits. Claude Code treats 32k as the default max_tokens for unknown
-// models (refs/claude-code/src/utils/context.ts) and 200k as the fallback
-// context window, so mirror those values for models outside the catalog.
-const ANTHROPIC_MODEL_CREATED_AT = "2024-01-01T00:00:00Z";
-const ANTHROPIC_MODEL_MAX_TOKENS = 32000;
-const ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS = 200000;
-// A model only advertises 1M context when its context window actually reaches
-// 1M. The fallback above is 200k, so models outside the catalog report false.
-const ANTHROPIC_1M_CONTEXT_TOKENS = 1_000_000;
-
-const codexCatalogModels = (codexCatalog as { models: JsonObject[] }).models;
-const codexModelBySlug = new Map<string, JsonObject>();
-for (const model of codexCatalogModels) {
-  if (typeof model.slug === "string") {
-    codexModelBySlug.set(model.slug, model);
-  }
-}
-
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseUpstreamModels(value: unknown): UpstreamModel[] | undefined {
-  if (!isObject(value)) {
-    return undefined;
-  }
-  let list: unknown[] | undefined;
-  if (Array.isArray(value.data)) list = value.data;
-  else if (Array.isArray(value.models)) list = value.models;
-  if (!list) {
-    return undefined;
-  }
-  const models: UpstreamModel[] = [];
-  for (const entry of list) {
-    if (!isObject(entry)) {
-      continue;
-    }
-    let id: string | undefined;
-    if (typeof entry.id === "string") id = entry.id;
-    else if (typeof entry.slug === "string") id = entry.slug;
-    if (id) {
-      models.push({ id, raw: entry });
-    }
-  }
-  return models;
-}
 
 function timeoutError(): Error {
   return new Error(
@@ -409,6 +364,7 @@ async function fetchProviderModels(
     }
     const models = parseUpstreamModels(
       prepared.parseModels ? prepared.parseModels(result.body) : result.body,
+      provider.type === ProviderType.Codex,
     );
     if (!models) {
       const upstream = {
@@ -429,9 +385,8 @@ async function fetchProviderModels(
       );
       return { provider, success: false, models: [], upstream };
     }
-    const filteredModels = models.filter((model) =>
-      provider.models.includes(model.id),
-    );
+    const allowedModels = new Set(provider.models);
+    const filteredModels = models.filter(({ id }) => allowedModels.has(id));
     await scheduleHealthUpdate(
       context,
       recordProviderSuccess(
@@ -483,49 +438,46 @@ function standardModel(raw: JsonObject, id: string): JsonObject {
   };
 }
 
-function exposedClientModels(
-  provider: ProviderConfig,
-  upstreamModel: string,
+function indexModelAliases(
+  providerId: string,
   routes: Record<string, ModelRouteConfig>,
-): string[] {
-  if (!provider.models.includes(upstreamModel)) {
-    return [];
+): Map<string, string[]> {
+  const aliases = new Map<string, string[]>();
+  for (const [id, route] of Object.entries(routes)) {
+    if (route.providers && !route.providers.includes(providerId)) continue;
+    const ids = aliases.get(route.model);
+    if (ids) ids.push(id);
+    else aliases.set(route.model, [id]);
   }
-  const ids = Object.hasOwn(routes, upstreamModel) ? [] : [upstreamModel];
-  for (const [clientModel, route] of Object.entries(routes)) {
-    if (
-      route.model === upstreamModel &&
-      (route.providers === undefined || route.providers.includes(provider.id))
-    ) {
-      ids.push(clientModel);
-    }
-  }
-  return [...new Set(ids)];
+  return aliases;
 }
 
-function aggregateClientModels(
+function aggregateClientModels<T>(
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
-): ClientModel[] {
-  const merged = new Map<string, ClientModel>();
+  render: (
+    id: string,
+    upstream: UpstreamModel,
+    provider: ProviderType,
+  ) => T | undefined,
+): T[] {
+  const merged = new Map<string, T>();
 
-  for (const result of results) {
-    if (!result.success) {
-      continue;
-    }
-    for (const model of result.models) {
-      const clientModels = exposedClientModels(
-        result.provider,
-        model.id,
-        routesByProvider.get(result.provider.id) ?? {},
-      );
-      for (const clientModel of clientModels) {
-        if (clientModel === "codex-auto-review") {
-          continue;
-        }
-        if (!merged.has(clientModel)) {
-          merged.set(clientModel, { id: clientModel, upstream: model });
-        }
+  for (const { provider, success, models } of results) {
+    if (!success) continue;
+    const routes = routesByProvider.get(provider.id) ?? {};
+    const aliasesByModel = indexModelAliases(provider.id, routes);
+    const allowedModels = new Set(provider.models);
+    for (const upstream of models) {
+      if (!allowedModels.has(upstream.id)) continue;
+      const aliases = aliasesByModel.get(upstream.id) ?? [];
+      const ids = Object.hasOwn(routes, upstream.id)
+        ? aliases
+        : [upstream.id, ...aliases];
+      for (const id of ids) {
+        if (merged.has(id)) continue;
+        const model = render(id, upstream, provider.type);
+        if (model !== undefined) merged.set(id, model);
       }
     }
   }
@@ -536,92 +488,11 @@ export function aggregateStandardModels(
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
 ): JsonObject[] {
-  return aggregateClientModels(results, routesByProvider).map(
-    ({ id, upstream }) => standardModel(upstream.raw, id),
-  );
-}
-
-function codexModelIds(
-  standardModels: JsonObject[],
-  results: ProviderModelsResult[],
-  routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
-): Set<string> {
-  const ids = new Set(
-    standardModels
-      .map((model) => model.id)
-      .filter((id): id is string => typeof id === "string"),
-  );
-  for (const result of results) {
-    if (!result.success) {
-      continue;
-    }
-    for (const model of result.models) {
-      for (const clientModel of exposedClientModels(
-        result.provider,
-        model.id,
-        routesByProvider.get(result.provider.id) ?? {},
-      )) {
-        ids.add(clientModel);
-      }
-    }
-  }
-  return ids;
-}
-
-/** Native history/notes are not served by this gateway. */
-function withoutHistoryNotes(model: JsonObject): JsonObject {
-  if (
-    !isObject(model.model_messages) ||
-    !isObject(model.model_messages.token_budget)
-  ) {
-    return { ...model, supports_experimental_context: false };
-  }
-  return {
-    ...model,
-    supports_experimental_context: false,
-    model_messages: {
-      ...model.model_messages,
-      token_budget: {
-        ...model.model_messages.token_budget,
-        enabled: false,
-        use_history_notes_extension: false,
-      },
-    },
-  };
-}
-
-export function aggregateCodexModels(
-  clientModelIds: Set<string>,
-  codexAccountModels: JsonObject[] = [],
-): JsonObject[] {
-  // A Codex account's own ModelInfo is authoritative for its slug; route
-  // aliases reuse it under the client-facing name.
-  const accountById = new Map(
-    codexAccountModels
-      .filter(
-        (model) =>
-          typeof model.id === "string" &&
-          clientModelIds.has(model.id) &&
-          isObject(model.codex),
-      )
-      .map((model) => [model.id as string, model.codex as JsonObject]),
-  );
-  const account = [...accountById].map(([id, model]) => {
-    const info: JsonObject = { ...model, slug: id };
-    return info.supports_experimental_context === true ||
-      isObject(info.model_messages)
-      ? withoutHistoryNotes(info)
-      : info;
+  return aggregateClientModels(results, routesByProvider, (id, upstream) => {
+    if (id === CODEX_AUTO_REVIEW_MODEL) return undefined;
+    const { codex: _codex, ...model } = upstream.raw;
+    return standardModel(model, id);
   });
-  const standard = codexCatalogModels
-    .filter(
-      (model) =>
-        typeof model.slug === "string" &&
-        clientModelIds.has(model.slug) &&
-        !accountById.has(model.slug),
-    )
-    .map(withoutHistoryNotes);
-  return [...account, ...standard];
 }
 
 export function modelsFormatFor(request: Request): ModelsFormat {
@@ -631,119 +502,6 @@ export function modelsFormatFor(request: Request): ModelsFormat {
     return "anthropic";
   }
   return isCodexClientRequest(request) ? "codex" : "openai";
-}
-
-/**
- * True when the upstream already returned an Anthropic `ModelInfo`, which a real
- * Anthropic-compatible `/v1/models` does. Its own fields beat anything the
- * gateway could derive from the Codex catalog.
- */
-function isAnthropicModelInfo(model: JsonObject): boolean {
-  return model.type === "model" && isObject(model.capabilities);
-}
-
-function anthropicModelInfo(model: JsonObject): JsonObject {
-  const id = typeof model.id === "string" ? model.id : "";
-  if (isAnthropicModelInfo(model)) {
-    // api.anthropic.com does not send `name`, so add it without overwriting a
-    // value the upstream did provide. Claude Desktop Discovery needs it.
-    return { name: id, ...model, id };
-  }
-  let catalog: JsonObject | undefined;
-  if (isObject(model.codex)) catalog = model.codex;
-  else catalog = codexModelBySlug.get(id);
-  let inputModalities: unknown[] = [];
-  if (Array.isArray(model.input_modalities))
-    inputModalities = model.input_modalities;
-  else if (Array.isArray(catalog?.input_modalities))
-    inputModalities = catalog.input_modalities;
-  const supportsImages = inputModalities.includes("image");
-  const supportsPdf = inputModalities.includes("pdf");
-  const supportsCodeExecution =
-    catalog !== undefined &&
-    typeof catalog.node_repl_disabled === "boolean" &&
-    !catalog.node_repl_disabled;
-  let supportedEffortLevels: string[] = [];
-  if (model.supports_thinking === true)
-    supportedEffortLevels = ["low", "medium", "high"];
-  else if (Array.isArray(catalog?.supported_reasoning_levels))
-    supportedEffortLevels = (catalog.supported_reasoning_levels as unknown[])
-      .filter(
-        (entry): entry is { effort?: unknown } =>
-          typeof entry === "object" && entry !== null,
-      )
-      .map((entry) => entry.effort)
-      .filter((effort): effort is string => typeof effort === "string");
-  const supportsEffort = supportedEffortLevels.length > 0;
-  let maxInputTokens = ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
-  if (typeof model.context_window === "number")
-    maxInputTokens = model.context_window;
-  else if (typeof catalog?.max_context_window === "number")
-    maxInputTokens = catalog.max_context_window;
-
-  const supports1mContext = maxInputTokens >= ANTHROPIC_1M_CONTEXT_TOKENS;
-
-  let displayName = id;
-  if (typeof model.display_name === "string") displayName = model.display_name;
-  else if (typeof catalog?.display_name === "string")
-    displayName = catalog.display_name;
-  const effortCapability = {
-    supported: supportsEffort,
-    low: { supported: supportedEffortLevels.includes("low") },
-    medium: { supported: supportedEffortLevels.includes("medium") },
-    high: { supported: supportedEffortLevels.includes("high") },
-    max: { supported: supportedEffortLevels.includes("max") },
-    xhigh: { supported: supportedEffortLevels.includes("xhigh") },
-  };
-
-  return {
-    id,
-    // Fields the API reference does not list, because they serve the clients
-    // rather than api.anthropic.com: Claude Desktop Discovery requires `name`,
-    // and Claude Code reads the 1M flags to offer that context window.
-    name: id,
-    type: "model",
-    display_name: displayName,
-    supports1m: supports1mContext,
-    prefer1m: supports1mContext,
-    created_at: ANTHROPIC_MODEL_CREATED_AT,
-    max_input_tokens: maxInputTokens,
-    // The catalog publishes no output-token field for any model, so this is the
-    // Claude Code default for unknown models rather than a per-model limit.
-    max_tokens:
-      typeof model.max_output_tokens === "number"
-        ? model.max_output_tokens
-        : ANTHROPIC_MODEL_MAX_TOKENS,
-    capabilities: {
-      // The Codex catalog has no per-model equivalent for these two, and the
-      // gateway cannot probe an upstream for them, so they report the protocol
-      // default rather than a verified per-model value.
-      batch: { supported: true },
-      citations: { supported: true },
-      code_execution: { supported: supportsCodeExecution },
-      // Three named Anthropic beta strategies with nothing equivalent in the
-      // Codex catalog. Reasoning-summary support says nothing about them, so
-      // they report unsupported instead of guessing from an unrelated signal.
-      context_management: {
-        supported: false,
-        clear_thinking_20251015: { supported: false },
-        clear_tool_uses_20250919: { supported: false },
-        compact_20260112: { supported: false },
-      },
-      effort: effortCapability,
-      image_input: { supported: supportsImages },
-      pdf_input: { supported: supportsPdf },
-      // Protocol default, as with batch and citations above.
-      structured_outputs: { supported: true },
-      thinking: {
-        supported: supportsEffort,
-        types: {
-          adaptive: { supported: supportsEffort },
-          enabled: { supported: supportsEffort },
-        },
-      },
-    },
-  };
 }
 
 function cacheTtlMs(env: Bindings): number {
@@ -799,6 +557,7 @@ async function modelsCacheKey(
     client.id,
     requestHeaderVary(request),
     oauthIdentity,
+    ...(format === "openai" ? [] : [MODEL_TEMPLATES_CACHE_IDENTITY]),
   ].join("\u0000");
   return hashText(vary);
 }
@@ -919,13 +678,7 @@ async function collectModels(
   }
 
   const routesByProvider = modelRoutesByProvider(config, client);
-  const standardModels = aggregateStandardModels(results, routesByProvider);
-  const payload = modelsPayload(
-    standardModels,
-    results,
-    routesByProvider,
-    format,
-  );
+  const payload = modelsPayload(results, routesByProvider, format);
   return {
     payload,
     partialSuccess: upstreamErrors.length > 0,
@@ -933,28 +686,39 @@ async function collectModels(
 }
 
 function modelsPayload(
-  standardModels: JsonObject[],
   results: ProviderModelsResult[],
   routesByProvider: Map<string, Record<string, ModelRouteConfig>>,
   format: ModelsFormat,
 ): JsonObject {
+  if (format === "openai")
+    return {
+      object: "list",
+      data: aggregateStandardModels(results, routesByProvider),
+    };
+
+  // Append gateway entries after native entries so an alias collision keeps native metadata.
+  const native = nativeCatalogProviders[format];
+  const orderedResults = [
+    ...results.filter(({ provider }) => provider.type === native),
+    ...results.filter(
+      ({ provider }) => provider.type === ProviderType.AiGateway,
+    ),
+  ];
   switch (format) {
-    case "codex": {
-      const modelIds = codexModelIds(standardModels, results, routesByProvider);
+    case "codex":
       return {
-        models: aggregateCodexModels(
-          modelIds,
-          aggregateStandardModels(
-            results.filter(
-              ({ provider }) => provider.type === ProviderType.Codex,
-            ),
-            routesByProvider,
-          ),
+        models: aggregateClientModels(
+          orderedResults,
+          routesByProvider,
+          codexCatalogEntry,
         ),
       };
-    }
     case "anthropic": {
-      const data = standardModels.map(anthropicModelInfo);
+      const data = aggregateClientModels(
+        orderedResults,
+        routesByProvider,
+        anthropicCatalogEntry,
+      );
       return {
         data,
         has_more: false,
@@ -962,13 +726,45 @@ function modelsPayload(
         last_id: data.at(-1)?.id ?? null,
       };
     }
-    case "openai":
-      return {
-        object: "list",
-        // The raw Codex ModelInfo only serves the Codex and Anthropic shapes.
-        data: standardModels.map(({ codex: _codex, ...model }) => model),
-      };
   }
+}
+
+function codexCatalogEntry(
+  id: string,
+  upstream: UpstreamModel,
+  provider: ProviderType,
+): JsonObject | undefined {
+  if (provider === ProviderType.Codex) {
+    const info = upstream.codexInfo;
+    if (!info || id === upstream.id) return info;
+    return { ...info, slug: id };
+  }
+  const metadata = modelMetadata(id, upstream.id);
+  if (!metadata && !upstream.codexInfo) return undefined;
+  return codexModelInfo({ id, upstream, metadata });
+}
+
+function anthropicCatalogEntry(
+  id: string,
+  upstream: UpstreamModel,
+  provider: ProviderType,
+): (JsonObject & { id: string }) | undefined {
+  if (id === CODEX_AUTO_REVIEW_MODEL) return undefined;
+  const { raw } = upstream;
+  if (provider === ProviderType.Claude) {
+    // Some Claude clients use the optional name field as the model ID.
+    const name =
+      id !== upstream.id && raw.name === upstream.id ? { name: id } : {};
+    return { ...raw, ...name, id };
+  }
+  const metadata = modelMetadata(id, upstream.id);
+  const hasModelInfo =
+    raw.type === "model" &&
+    (typeof raw.created_at === "string" ||
+      raw.capabilities === null ||
+      isObject(raw.capabilities));
+  if (!metadata && !hasModelInfo) return undefined;
+  return anthropicModelInfo({ id, upstream, metadata });
 }
 
 function isCachedModelsPayload(
@@ -1046,14 +842,20 @@ export async function handleModels(
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<Response> {
+  const format = modelsFormatFor(request);
+  const nativeProvider =
+    format === "openai" ? undefined : nativeCatalogProviders[format];
   const configuredTargets = allowedProviderCandidates(config, client).filter(
-    ({ provider }) => providerSupportsEndpoint(provider, "models"),
+    ({ provider }) =>
+      (nativeProvider === undefined ||
+        provider.type === nativeProvider ||
+        provider.type === ProviderType.AiGateway) &&
+      providerSupportsEndpoint(provider, "models"),
   );
   requestLog?.registerSensitiveValues([
     client.api_key,
     ...upstreamSecretValues(config),
   ]);
-  const format = modelsFormatFor(request);
   const ttlMs = cacheTtlMs(env);
   const oauthIdentity =
     ttlMs > 0

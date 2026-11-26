@@ -1458,7 +1458,7 @@ test("metered inference endpoints record rejected requests, including aliases", 
   }
 });
 
-test("model endpoint returns complete Anthropic ModelInfo entries to Claude clients", async () => {
+test("model endpoint generates Anthropic ModelInfo for configured gateway entries", async () => {
   clearConfigCacheForTests();
   clearModelsCacheForTests();
   const originalFetch = globalThis.fetch;
@@ -1487,7 +1487,7 @@ test("model endpoint returns complete Anthropic ModelInfo entries to Claude clie
     const body = await response.json();
     assert.deepEqual(
       body.data.map((model) => model.id),
-      ["upstream-chat", "gpt-5.6-sol", "review-model"],
+      ["gpt-5.6-sol"],
     );
     for (const entry of body.data) {
       assert.equal(entry.type, "model");
@@ -1497,7 +1497,7 @@ test("model endpoint returns complete Anthropic ModelInfo entries to Claude clie
       assert.equal(typeof entry.max_tokens, "number");
       assert.equal(typeof entry.capabilities, "object");
     }
-    assert.equal(body.data[0].display_name, "upstream-chat");
+    assert.equal(body.data[0].display_name, "GPT-5.6-Sol");
   } finally {
     globalThis.fetch = originalFetch;
   }

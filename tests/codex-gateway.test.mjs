@@ -454,6 +454,56 @@ test("a health read failure after exhaustion cannot trigger an automatic reset",
   assert.equal(resetAttempts, 0);
 });
 
+test("Codex catalogs preserve native ModelInfo and append configured gateway models", async (t) => {
+  const f = fixture({ accounts: 1, backup: true });
+  f.config.providers[1].priority = 200;
+  f.config.providers[1].models.push("gemini-3.8-flash", "unconfigured");
+  const alias = "gpt-6.2-sol";
+  f.config.model_routes = { [alias]: { model: MODEL } };
+  const info = {
+    slug: MODEL,
+    display_name: "Account catalog",
+    context_window: 128_000,
+    supported_reasoning_levels: [
+      { effort: "high", description: "Upstream effort" },
+    ],
+    supports_experimental_context: true,
+    model_messages: {
+      token_budget: { enabled: true, use_history_notes_extension: true },
+    },
+    extension: { version: 2 },
+  };
+  const accountIds = [];
+  t.mock.method(globalThis, "fetch", async (request) => {
+    if (new URL(request.url).hostname === "backup.example")
+      return Response.json({
+        data: [
+          { id: MODEL, display_name: "Backup" },
+          { id: "gemini-3.8-flash" },
+          { id: "unconfigured" },
+        ],
+      });
+    accountIds.push(request.headers.get("chatgpt-account-id"));
+    return Response.json({ models: [info] });
+  });
+  const response = await handleModels(
+    new Request("https://gateway.example/models", {
+      headers: { "user-agent": "Codex CLI" },
+    }),
+    f.env,
+    f.config,
+    f.client,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(accountIds, ["account-1"]);
+  const { models } = await response.json();
+  assert.deepEqual(models.slice(0, 2), [info, { ...info, slug: alias }]);
+  assert.equal(models.length, 3);
+  assert.equal(models[2].slug, "gemini-3.8-flash");
+  assert.equal(models[2].display_name, "Gemini 3.8 Flash");
+  assert.equal(models[2].supports_experimental_context, false);
+});
+
 test("a rejected catalog account cools so the next request can use another account", async (t) => {
   const f = fixture();
   const calls = [];

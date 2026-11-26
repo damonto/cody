@@ -7,13 +7,15 @@ import {
   ProviderHealthState,
 } from "../src/gateway/health/health.ts";
 import {
-  aggregateCodexModels,
   aggregateStandardModels,
   clearModelsCacheForTests,
   handleModels,
   MODEL_CATALOG_CONCURRENCY,
   modelsFormatFor,
 } from "../src/gateway/catalog/models.ts";
+import { modelCatalogSchema } from "../src/gateway/catalog/metadata.ts";
+import catalog from "../src/gateway/catalog/models.json" with { type: "json" };
+import { codexDefaultInstructions } from "../src/gateway/catalog/codex/default-instructions.ts";
 
 const results = [
   {
@@ -119,23 +121,202 @@ test("standard aggregation resolves routes per provider", () => {
   );
 });
 
-test("Codex aggregation only returns exact catalog matches", () => {
-  const models = aggregateCodexModels(
-    new Set(["upstream-chat", "gpt-5.6-sol", "codex-auto-review"]),
+test("catalog metadata rejects duplicate IDs, unknown efforts, and invalid context windows", () => {
+  assert.deepEqual(modelCatalogSchema.parse(catalog), catalog);
+  const [model] = catalog.models;
+  for (const [models, pattern] of [
+    [[model, model], /Model IDs must be unique/],
+    [
+      [{ ...model, supported_reasoning_levels: ["extreme"] }],
+      /supported_reasoning_levels/,
+    ],
+    [[{ ...model, context_window: 0 }], /context_window/],
+    [
+      [{ ...model, max_context_window: model.context_window - 1 }],
+      /max_context_window/,
+    ],
+    [[{ ...model, supports_search_tool: true }], /Unrecognized key/],
+  ]) {
+    assert.throws(() => modelCatalogSchema.parse({ models }), pattern);
+  }
+});
+
+test("the same catalog metadata serves Codex and Anthropic routes", async (t) => {
+  const config = modelConfig();
+  config.providers[0].models = [
+    "gpt-6.2-sol",
+    "gemini-3.8-flash",
+    "gpt-daybreak-blue-latest",
+    "gpt-daybreak-red-latest",
+    "other",
+    "glm-5.3",
+  ];
+  config.model_routes["public-sol"] = { model: "gpt-6.2-sol" };
+  config.model_routes["codex-auto-review"].model = "other";
+  const { env } = healthEnvironment();
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      data: [
+        {
+          id: "gpt-6.2-sol",
+          input_modalities: ["text", "pdf"],
+          context_window: 300_000,
+          priority: 17,
+        },
+        {
+          id: "gemini-3.8-flash",
+          priority: 4.5,
+          default_reasoning_level: null,
+          supported_reasoning_levels: [{ effort: 42 }],
+        },
+        { id: "gpt-daybreak-blue-latest" },
+        { id: "gpt-daybreak-red-latest" },
+        { id: "other" },
+      ],
+    }),
+  );
+  const getModels = async (userAgent) => {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: { "user-agent": userAgent },
+      }),
+      env,
+      config,
+      config.api_keys[0],
+    );
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  const codex = await getModels("Codex CLI");
+  assert.deepEqual(
+    codex.models.map(({ slug }) => slug),
+    [
+      "gpt-6.2-sol",
+      "public-sol",
+      "gemini-3.8-flash",
+      "gpt-daybreak-blue-latest",
+      "gpt-daybreak-red-latest",
+      "codex-auto-review",
+    ],
+  );
+  assert.ok(
+    codex.models.slice(3).every(({ visibility }) => visibility === "hide"),
+  );
+  const sol = codex.models[1];
+  assert.equal(sol.display_name, "GPT-6.2-Sol");
+  assert.equal(sol.context_window, 300_000);
+  assert.equal(sol.max_context_window, 872_000);
+  assert.equal(sol.priority, 17);
+  assert.equal(sol.default_reasoning_level, "medium");
+  assert.equal(sol.supports_experimental_context, false);
+  assert.deepEqual(sol.input_modalities, ["text"]);
+  assert.equal(
+    sol.model_messages.instructions_template,
+    codexDefaultInstructions,
   );
   assert.deepEqual(
-    models.map((model) => model.slug),
-    ["gpt-5.6-sol", "codex-auto-review"],
+    sol.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high", "xhigh", "max", "ultra"],
   );
+  assert.ok(
+    sol.supported_reasoning_levels.every(({ description }) => description),
+  );
+  const gemini = codex.models[2];
+  assert.equal(gemini.priority, 501);
+  assert.equal(gemini.default_reasoning_level, null);
+  assert.deepEqual(
+    gemini.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high"],
+  );
+
+  const anthropic = await getModels("Claude Code");
+  assert.ok(
+    !anthropic.data.some(({ id }) =>
+      ["codex-auto-review", "glm-5.3", "other"].includes(id),
+    ),
+  );
+  const alias = anthropic.data.find(({ id }) => id === "public-sol");
+  assert.equal(alias.name, "public-sol");
+  assert.equal(alias.display_name, sol.display_name);
+  assert.equal(alias.max_input_tokens, 300_000);
+  assert.equal(alias.capabilities.image_input.supported, false);
+  assert.equal(alias.capabilities.pdf_input.supported, true);
+  assert.equal(alias.capabilities.effort.xhigh.supported, true);
+  assert.ok(!Object.hasOwn(alias.capabilities.effort, "ultra"));
+  assert.equal(
+    anthropic.data.find(({ id }) => id === "gemini-3.8-flash").supports1m,
+    true,
+  );
+});
+
+test("Codex catalog recognition uses the upstream envelope before deduplication", async (t) => {
+  const config = modelConfig(2);
+  config.providers[0].models = ["shared", "standard-only"];
+  config.providers[1].models = ["shared"];
+  config.model_routes.alias = { model: "shared" };
+  t.mock.method(globalThis, "fetch", async (request) => {
+    if (new URL(request.url).hostname === "provider-0.example")
+      return Response.json({
+        data: [
+          {
+            id: "shared",
+            slug: "shared",
+            type: "model",
+            display_name: "Anthropic metadata",
+            capabilities: null,
+          },
+          {
+            id: "standard-only",
+            slug: "standard-only",
+            codex: { slug: "standard-only", display_name: "Nested extension" },
+          },
+        ],
+      });
+    return Response.json({
+      models: [
+        { slug: "shared", id: "vendor-id", display_name: "Codex metadata" },
+      ],
+    });
+  });
+  const { env } = healthEnvironment();
+  const getModels = async (userAgent) => {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: { "user-agent": userAgent },
+      }),
+      env,
+      config,
+      config.api_keys[0],
+    );
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  const { models } = await getModels("Codex CLI");
+  assert.deepEqual(
+    models.map(({ slug, display_name }) => [slug, display_name]),
+    [
+      ["shared", "Codex metadata"],
+      ["alias", "Codex metadata"],
+    ],
+  );
+  const { data } = await getModels("Claude Code");
+  assert.equal(
+    data.find(({ id }) => id === "shared").display_name,
+    "Anthropic metadata",
+  );
+  assert.ok(!data.some(({ id }) => id === "standard-only"));
 });
 
 test("Anthropic clients receive the Anthropic model-list shape", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
+  config.providers[0].models = ["gpt-5.6-sol"];
   const client = config.api_keys[0];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    Response.json({ data: [{ id: "model", object: "model" }] });
+    Response.json({ data: [{ id: "gpt-5.6-sol", object: "model" }] });
   const { env } = healthEnvironment();
 
   try {
@@ -155,11 +336,11 @@ test("Anthropic clients receive the Anthropic model-list shape", async () => {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.has_more, false);
-    assert.equal(body.first_id, "model");
-    assert.equal(body.last_id, "model");
+    assert.equal(body.first_id, "gpt-5.6-sol");
+    assert.equal(body.last_id, "gpt-5.6-sol");
     assert.deepEqual(
       body.data.map((entry) => entry.id),
-      ["model"],
+      ["gpt-5.6-sol"],
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -229,7 +410,7 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
     assert.equal(gpt.display_name, "GPT-5.6-Sol");
     assert.equal(gpt.max_input_tokens, 872000);
     assert.equal(gpt.capabilities.image_input.supported, true);
-    assert.equal(gpt.capabilities.code_execution.supported, true);
+    assert.equal(gpt.capabilities.code_execution.supported, false);
     assert.equal(gpt.capabilities.effort.max.supported, true);
   } finally {
     globalThis.fetch = originalFetch;
@@ -280,7 +461,7 @@ test("synthesized Anthropic entries carry client fields and do not guess context
   }
 });
 
-test("a real Anthropic ModelInfo upstream is passed through unchanged", async () => {
+test("Anthropic ModelInfo preserves upstream fields and capabilities", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
   config.providers[0].models = ["claude-opus-5"];
@@ -352,7 +533,78 @@ test("a real Anthropic ModelInfo upstream is passed through unchanged", async ()
   }
 });
 
-test("Anthropic model entries fall back conservatively outside the catalog", async () => {
+test("Anthropic ModelInfo fills missing fields and preserves false and nullable fields", async (t) => {
+  const config = modelConfig();
+  config.providers[0].models = ["gpt-6.2-sol", "gemini-3.8-flash"];
+  config.model_routes["public-sol"] = { model: "gpt-6.2-sol" };
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      data: [
+        {
+          id: "gpt-6.2-sol",
+          name: "gpt-6.2-sol",
+          type: "model",
+          max_input_tokens: 1_200_000,
+          max_tokens: null,
+          prefer1m: false,
+          capabilities: {
+            image_input: { supported: false },
+            effort: { high: { supported: false }, xhigh: null },
+            thinking: {
+              supported: false,
+              types: { adaptive: { supported: false, reason: "upstream" } },
+            },
+            vendor_extension: { supported: true },
+          },
+        },
+        {
+          id: "gemini-3.8-flash",
+          type: "model",
+          max_input_tokens: null,
+          capabilities: null,
+        },
+      ],
+    }),
+  );
+  const { env } = healthEnvironment();
+  const response = await handleModels(
+    new Request("https://gateway.example/v1/models", {
+      headers: { "anthropic-version": "2023-06-01" },
+    }),
+    env,
+    config,
+    config.api_keys[0],
+  );
+  assert.equal(response.status, 200);
+  const { data } = await response.json();
+  const alias = data.find(({ id }) => id === "public-sol");
+  assert.equal(alias.name, "public-sol");
+  assert.equal(alias.display_name, "GPT-6.2-Sol");
+  assert.equal(alias.max_input_tokens, 1_200_000);
+  assert.equal(alias.max_tokens, null);
+  assert.equal(alias.supports1m, true);
+  assert.equal(alias.prefer1m, false);
+  assert.deepEqual(alias.capabilities.image_input, { supported: false });
+  assert.deepEqual(alias.capabilities.vendor_extension, { supported: true });
+  assert.equal(alias.capabilities.effort.supported, true);
+  assert.equal(alias.capabilities.effort.high.supported, false);
+  assert.equal(alias.capabilities.effort.xhigh, null);
+  assert.equal(alias.capabilities.effort.max.supported, true);
+  assert.deepEqual(alias.capabilities.thinking, {
+    supported: false,
+    types: {
+      adaptive: { supported: false, reason: "upstream" },
+      enabled: { supported: false },
+    },
+  });
+  const gemini = data.find(({ id }) => id === "gemini-3.8-flash");
+  assert.equal(gemini.display_name, "Gemini 3.8 Flash");
+  assert.equal(gemini.max_input_tokens, null);
+  assert.equal(gemini.capabilities, null);
+  assert.equal(gemini.supports1m, false);
+});
+
+test("Anthropic catalogs skip unconfigured standard entries", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
   const client = config.api_keys[0];
@@ -376,20 +628,12 @@ test("Anthropic model entries fall back conservatively outside the catalog", asy
       "test",
     );
     assert.equal(response.status, 200);
-    const body = await response.json();
-    const entry = body.data[0];
-    assert.equal(entry.display_name, "model");
-    assert.equal(entry.max_input_tokens, 200000);
-    assert.equal(entry.max_tokens, 32000);
-    assert.equal(entry.capabilities.image_input.supported, false);
-    assert.equal(entry.capabilities.pdf_input.supported, false);
-    assert.equal(entry.capabilities.code_execution.supported, false);
-    assert.equal(entry.capabilities.effort.supported, false);
-    assert.equal(entry.capabilities.thinking.supported, false);
-    assert.equal(entry.capabilities.context_management.supported, false);
-    // The 200k fallback is not a 1M context window.
-    assert.equal(entry.supports1m, false);
-    assert.equal(entry.prefer1m, false);
+    assert.deepEqual(await response.json(), {
+      data: [],
+      has_more: false,
+      first_id: null,
+      last_id: null,
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1178,7 +1422,7 @@ test("model catalogs skip providers without an enabled key", async () => {
   }
 });
 
-test("Codex catalogs disable history/notes even when an account advertises them", () => {
+test("Codex entries generated for AI Gateway preserve instructions and disable history/notes", async (t) => {
   const info = {
     slug: "custom-codex",
     supports_experimental_context: true,
@@ -1191,9 +1435,24 @@ test("Codex catalogs disable history/notes even when an account advertises them"
       },
     },
   };
-  const [model] = aggregateCodexModels(new Set([info.slug]), [
-    { id: info.slug, codex: info },
-  ]);
+  const config = modelConfig();
+  config.providers[0].models = [info.slug];
+  const { env } = healthEnvironment();
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ models: [info] }),
+  );
+  const response = await handleModels(
+    new Request("https://gateway.example/v1/models", {
+      headers: { "user-agent": "codex" },
+    }),
+    env,
+    config,
+    config.api_keys[0],
+  );
+  assert.equal(response.status, 200);
+  const {
+    models: [model],
+  } = await response.json();
   assert.equal(model.supports_experimental_context, false);
   assert.deepEqual(model.model_messages, {
     instructions_template: "keep instructions",

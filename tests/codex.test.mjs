@@ -24,7 +24,6 @@ import {
   DEFAULT_QUOTA_COOLDOWN_MS,
 } from "../src/providers/codex/limits.ts";
 import { inspectCodexResponse } from "../src/providers/codex/inspect.ts";
-import { aggregateCodexModels } from "../src/gateway/catalog/models.ts";
 
 const ref = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const now = Date.UTC(2026, 8, 28, 12);
@@ -260,11 +259,6 @@ test("the model list keeps each account ModelInfo and adds a client version", as
       ],
     },
   );
-  const [aggregated] = aggregateCodexModels(
-    new Set(["gpt-5.5-codex"]),
-    prepared.parseModels({ models: [info] }).data,
-  );
-  assert.deepEqual(aggregated, info);
 });
 
 test("authorization uses the Codex CLI public client and localhost callback", () => {
