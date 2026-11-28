@@ -58,7 +58,7 @@
     "@reclaimprotocol/tls": "0.1.5",
     "@vercel/functions": "^3.11.3",
     "hono": "^4.13.20",
-    "ioredis": "^6.0.0",
+    "ioredis": "^6.1.0",
     "jose": "^6.2.18",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
